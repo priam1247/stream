@@ -231,6 +231,57 @@ the console (`user: admin`). Copy it from there, or set the variables.
 Then open the panel's address for that server, e.g.
 `http://195.123.189.187:25811/` (or the domain the panel gives you).
 
+### No variable editor? Use a `.env` file
+
+Some panel eggs only expose the built-in `SERVER_*` variables — there is no
+"add a variable" button. Put the settings in a **`.env`** file next to
+`bot.py` instead:
+
+```ini
+# /home/container/.env
+SCRIBD_WEB_USER=me
+SCRIBD_WEB_PASS=change-me-to-something-long
+SCRIBD_WEB_COOKIES=/home/container/cookies.txt
+```
+
+Upload it with the panel's **Files** tab (or copy `.env.example` and edit it).
+A real environment variable always wins over the file, and the console prints
+just the path it loaded:
+
+```
+starting from /home/container
+settings: loaded /home/container/.env
+auth: configured (SCRIBD_WEB_USER/SCRIBD_WEB_PASS or SCRIBD_WEB_TOKEN)
+```
+
+`.env` is git-ignored — it is never committed, and values are never logged.
+
+`cookies.txt` needs no setting at all: if `SCRIBD_WEB_COOKIES` is unset, the app
+uses `cookies.txt` from the code folder (or `webdata/cookies.txt`). Upload it
+next to `bot.py` and it is picked up. `/api/health` tells you whether it found
+one:
+
+```json
+{"ok": true, "env_file": "/home/container/.env", "cookies": true,
+ "browser": {"playwright": true, "chromium": true}}
+```
+
+Everything recognised in `.env`:
+
+| Key | Meaning | Default |
+| --- | --- | --- |
+| `SCRIBD_WEB_USER` / `SCRIBD_WEB_PASS` | login for the page | random password printed once |
+| `SCRIBD_WEB_TOKEN` | alternative: `X-Token` header / `?token=` | none |
+| `SCRIBD_WEB_COOKIES` | path to your Netscape `cookies.txt` | `./cookies.txt` if present |
+| `SCRIBD_WEB_DATA` | where PDFs and job logs live | `./webdata` |
+| `SCRIBD_WEB_AUTO_BROWSER` | `1` = download Chromium on boot | `0` |
+| `SCRIBD_WEB_CONCURRENCY` | jobs at a time (each is a Chromium) | `1` |
+| `SCRIBD_WEB_MAX_JOBS` | how many job records to keep | `200` |
+| `SCRIBD_WEB_FORMATS` | CLI `-f` formats | `pdf` |
+| `SCRIBD_WEB_FAST` / `SCRIBD_WEB_WORKERS` / `SCRIBD_WEB_JOBS` | passed to the CLI | off |
+
+The same file works on your PC (`python -m scribd.webapp` reads it too).
+
 ### First start: Chromium
 
 Search and PDF printing both run in headless Chromium. The console tells you

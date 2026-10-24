@@ -3144,3 +3144,83 @@ def test_bot_entry_point_is_importable(monkeypatch):
     # the auto-install hook is opt-in and does nothing without the env var
     monkeypatch.delenv("SCRIBD_WEB_AUTO_BROWSER", raising=False)
     bot.ensure_browser()
+
+
+# ---------------------------------------------------------------------------
+# .env: the panel has no variable editor
+# ---------------------------------------------------------------------------
+def test_parse_env_text_handles_quotes_comments_and_junk():
+    from scribd.dotenv import parse_env_text
+
+    values = parse_env_text(
+        "\n".join(
+            [
+                "# a comment",
+                "",
+                "SCRIBD_WEB_USER=me",
+                'SCRIBD_WEB_PASS="with spaces and #hash"',
+                "export SCRIBD_WEB_COOKIES='/home/container/cookies.txt'",
+                "TRAILING=value  # an inline comment",
+                "not a pair",
+                "=nameless",
+                "EMPTY=",
+            ]
+        )
+    )
+    assert values["SCRIBD_WEB_USER"] == "me"
+    assert values["SCRIBD_WEB_PASS"] == "with spaces and #hash"
+    assert values["SCRIBD_WEB_COOKIES"] == "/home/container/cookies.txt"
+    assert values["TRAILING"] == "value"
+    assert values["EMPTY"] == ""
+    assert "not a pair" not in values
+    assert "" not in values
+
+
+def test_load_env_file_does_not_override_real_variables(tmp_path, monkeypatch):
+    from scribd.dotenv import load_env_file
+
+    env = tmp_path / ".env"
+    env.write_text("SCRIBD_WEB_USER=fromfile\nSCRIBD_WEB_PASS=fromfile\n", encoding="utf-8")
+
+    monkeypatch.setenv("SCRIBD_WEB_USER", "frompanel")
+    monkeypatch.delenv("SCRIBD_WEB_PASS", raising=False)
+    applied = load_env_file(env)
+
+    assert os.environ["SCRIBD_WEB_USER"] == "frompanel"   # the panel wins
+    assert os.environ["SCRIBD_WEB_PASS"] == "fromfile"    # unset: file fills it
+    assert set(applied) == {"SCRIBD_WEB_PASS"}
+
+
+def test_load_env_file_missing_is_silent(tmp_path):
+    from scribd.dotenv import load_env_file
+
+    assert load_env_file(tmp_path / "nope.env") == {}
+
+
+def test_webapp_reads_dotenv_and_finds_cookies(tmp_path, monkeypatch):
+    import importlib
+
+    import scribd.webapp as webapp
+
+    (tmp_path / ".env").write_text(
+        "SCRIBD_WEB_USER=me\nSCRIBD_WEB_PASS=secret\n", encoding="utf-8"
+    )
+    (tmp_path / "cookies.txt").write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    monkeypatch.setenv("SCRIBD_WEB_ENV_FILE", str(tmp_path / ".env"))
+    monkeypatch.setenv("SCRIBD_WEB_DATA", str(tmp_path))
+    monkeypatch.delenv("SCRIBD_WEB_COOKIES", raising=False)
+    monkeypatch.delenv("SCRIBD_WEB_USER", raising=False)
+    monkeypatch.delenv("SCRIBD_WEB_PASS", raising=False)
+
+    try:
+        importlib.reload(webapp)  # reads .env at import, like a panel start
+        assert webapp.ENV_FILE == tmp_path / ".env"
+        assert os.environ["SCRIBD_WEB_USER"] == "me"
+        assert os.environ["SCRIBD_WEB_PASS"] == "secret"
+        # no SCRIBD_WEB_COOKIES: webdata/cookies.txt is picked up on its own
+        assert webapp.cookies_file() == str(tmp_path / "cookies.txt")
+        assert webapp._cookies_args() == ["--cookies-file", str(tmp_path / "cookies.txt")]
+        assert webapp.app.test_client().get("/api/health").get_json()["cookies"] is True
+    finally:
+        monkeypatch.undo()
+        importlib.reload(webapp)  # leave clean globals for the other tests
