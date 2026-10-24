@@ -425,15 +425,21 @@ class BrowserStrategy:
     async def _print_pages_individually(self, page, ctx, selector: str) -> bytes | None:
         """Print each document page on its own sheet and merge the results.
 
-        Approach ported from themrsami/scribd-downloader: isolate one page,
-        set ``@page`` to that page's exact size, print it alone, verify the
-        result is exactly one sheet, then merge with pypdf.
+        Per page: scroll it into view so the viewer hydrates it, clone it into
+        a fixed-size print root (``ISOLATE_PAGE_JS``), print with that page's
+        paper size and ``page_ranges="1"``, and only accept the result when
+        pypdf counts exactly one sheet. A page whose print fails is rendered
+        from a screenshot of the isolated clone, so no page silently vanishes.
         """
         from .pdfprint import (
             CLEANUP_JS,
             ISOLATE_PAGE_JS,
+            PRINT_ROOT_SELECTOR,
+            WAIT_FOR_PRINT_JS,
             count_pages,
+            image_to_pdf,
             merge_pdfs,
+            pdf_page_sizes,
             px_to_inches,
         )
 
@@ -445,68 +451,140 @@ class BrowserStrategy:
 
         parts: list[bytes] = []
         bad = 0
+        fallbacks = 0
+        odd = 0
         ctx.note(f"browser: printing {count} pages, one sheet each")
+        locator = page.locator(selector)
+
         for index in range(count):
             info = None
+            # The viewer only keeps a window of pages hydrated: scroll this one
+            # into view before cloning it, or the clone can be empty.
+            try:
+                await locator.nth(index).scroll_into_view_if_needed(timeout=5000)
+            except Exception:
+                pass
             try:
                 info = await page.evaluate(
                     ISOLATE_PAGE_JS, {"selector": selector, "index": index}
                 )
             except Exception as exc:
-                ctx.note(f"browser: page {index + 1} isolate failed ({type(exc).__name__})")
+                ctx.note(
+                    f"browser: page {index + 1} isolate failed "
+                    f"({type(exc).__name__}: {exc})"[:160]
+                )
             if not info:
                 bad += 1
-                continue
-            width_in = px_to_inches(info.get("pageWidth") or info.get("width") or 0)
-            height_in = px_to_inches(info.get("pageHeight") or info.get("height") or 0)
-            if not width_in or not height_in:
-                bad += 1
-                continue
-            try:
-                blob = await page.pdf(
-                    width=f"{width_in}in",
-                    height=f"{height_in}in",
-                    margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
-                    print_background=True,
-                    prefer_css_page_size=True,
-                )
-            except Exception as exc:
-                ctx.note(
-                    f"browser: page {index + 1} print failed ({type(exc).__name__})"
-                )
-                bad += 1
-                continue
-            finally:
                 try:
                     await page.evaluate(CLEANUP_JS)
                 except Exception:
                     pass
+                continue
 
-            sheets = count_pages(blob)
+            # Let the clone's images decode before printing it.
+            loaded = None
+            try:
+                loaded = await page.evaluate(WAIT_FOR_PRINT_JS)
+            except Exception:
+                pass
+
+            width_in = px_to_inches(info.get("pageWidth") or info.get("width") or 0)
+            height_in = px_to_inches(info.get("pageHeight") or info.get("height") or 0)
+            blob: bytes | None = None
+            if width_in and height_in:
+                try:
+                    blob = await self._print_one(page, width_in, height_in)
+                except Exception as exc:
+                    ctx.note(
+                        f"browser: page {index + 1} print failed "
+                        f"({type(exc).__name__}: {exc})"[:160]
+                    )
+
+            sheets = count_pages(blob) if blob else 0
             if sheets == 1:
                 parts.append(blob)
-            elif sheets > 1:
-                # Keep it rather than lose the page, but say so.
-                parts.append(blob)
-                ctx.note(f"browser: page {index + 1} produced {sheets} sheets")
+                if index == 0:
+                    size = (pdf_page_sizes(blob) or [(0, 0)])[0]
+                    ctx.note(
+                        f"browser: page 1 -> 1 sheet {size[0]}x{size[1]} pt "
+                        f"({info.get('width')}x{info.get('height')} px, "
+                        f"{info.get('images', 0)} img"
+                        f"({(loaded or {}).get('loaded', '?')} loaded), "
+                        f"{info.get('text', 0)} chars)"
+                    )
             else:
-                bad += 1
+                # Print gave 0 or several sheets: rasterise the isolated clone
+                # instead of shipping a wrong sheet with the page missing.
+                shot = None
+                try:
+                    shot = await page.locator(PRINT_ROOT_SELECTOR).screenshot(
+                        timeout=15_000, animations="disabled"
+                    )
+                except Exception:
+                    pass
+                as_image = image_to_pdf(shot) if shot else None
+                if as_image:
+                    parts.append(as_image)
+                    fallbacks += 1
+                    ctx.note(
+                        f"browser: page {index + 1} printed as image "
+                        f"(print gave {sheets} sheets)"
+                    )
+                else:
+                    bad += 1
+                    ctx.note(f"browser: page {index + 1} lost (print gave {sheets} sheets)")
+
+            if info.get("runaway"):
+                odd += 1
+
+            try:
+                await page.evaluate(CLEANUP_JS)
+            except Exception:
+                pass
+
             if (index + 1) % 10 == 0:
                 ctx.note(f"browser: printed {len(parts)}/{count} pages…")
 
         if bad:
             ctx.note(f"browser: {bad} page(s) could not be printed")
+        if fallbacks:
+            ctx.note(f"browser: {fallbacks} page(s) came from the image fallback")
+        if odd:
+            ctx.note(
+                f"browser: {odd} page(s) had content far outside the page box "
+                f"(clipped to their sheet)"
+            )
         if not parts:
             return None
         merged = merge_pdfs(parts)
         if merged:
-            ctx.note(
-                f"browser: merged {len(parts)} page PDFs -> "
-                f"{count_pages(merged)} sheets"
-            )
+            sheets = count_pages(merged)
+            ctx.note(f"browser: merged {len(parts)} page PDFs -> {sheets} sheets")
+            if sheets != len(parts):
+                ctx.note(
+                    f"browser: WARNING merged PDF has {sheets} sheets for "
+                    f"{len(parts)} pages"
+                )
         else:
             ctx.note("browser: pypdf missing, cannot merge page PDFs")
         return merged
+
+    @staticmethod
+    async def _print_one(page, width_in: float, height_in: float) -> bytes:
+        """Print the current isolated page as exactly one sheet."""
+        kwargs = {
+            "width": f"{width_in}in",
+            "height": f"{height_in}in",
+            "margin": {"top": "0", "bottom": "0", "left": "0", "right": "0"},
+            "print_background": True,
+            "prefer_css_page_size": True,
+        }
+        try:
+            # pageRanges: "1" — the belt to the isolation's braces. Even if a
+            # page somehow paginates, the sheet we keep is the first one.
+            return await page.pdf(page_ranges="1", **kwargs)
+        except TypeError:  # older playwright/pyppeteer wrapper
+            return await page.pdf(**kwargs)
 
     async def _pick_selector(self, page, ctx) -> str:
         """Choose the selector that yields the most plausible page elements."""
