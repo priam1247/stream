@@ -5,16 +5,28 @@ scribd.com, so fix/verify cycles have to run on the user's machine.
 `--diagnose` prints only *shapes* (statuses, byte counts, which markers
 are present, first few asset URLs) — never cookie values — and saves the
 raw page for offline inspection.
+
+Each section is isolated: one failing probe must never abort the report,
+because the report is the evidence we need.
 """
 from __future__ import annotations
 
 import re
+import traceback
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import quote
 
 from .config import DOWNLOAD_PDF_URL, EMBED_URL, OEMBED_URL, RENDER_META_URL
-from .extractors import extract_content_urls, extract_state, parse_doc_url
-from urllib.parse import quote
+from .extractors import (
+    build_screenshot_template,
+    extract_content_urls,
+    extract_page_count,
+    extract_page_image_urls,
+    extract_screenshot_urls,
+    extract_state,
+    parse_doc_url,
+)
 
 MARKERS = (
     "window.__PRELOADED_STATE__",
@@ -34,9 +46,17 @@ MARKERS = (
     "og:title",
     # embed-page structure
     "newpage",
+    "outer_page",
     "text_layer",
     "/images/1-",
 )
+
+TEXT_FIELDS = ("content", "html", "body", "text", "pageContent")
+
+
+def _mask(u: str) -> str:
+    """Keep the URL's shape, hide the random document hash."""
+    return re.sub(r"\b[0-9a-f]{8,}\b", "<hash>", u)[:160]
 
 
 def _embed_structure(html: str) -> str:
@@ -61,14 +81,52 @@ def _embed_structure(html: str) -> str:
     return "\n".join(lines)
 
 
-def _mask(u: str) -> str:
-    """Keep the URL's shape, hide the random document hash."""
-    return re.sub(r"\b[0-9a-f]{8,}\b", "<hash>", u)[:160]
+async def _probe(fetcher, url: str, referer: str | None) -> tuple[str, object]:
+    """GET with the same headers the downloader uses. Never raises."""
+    headers = {"Referer": referer} if referer else None
+    try:
+        resp = await fetcher.get(url, headers=headers, use_cache=False)
+    except Exception as exc:  # noqa: BLE001 - report, never crash
+        return f"ERROR {type(exc).__name__}: {str(exc)[:80]}", None
+    return "", resp
+
+
+def _payload_summary(body: str) -> str:
+    """Describe a page payload without depending on the parser working."""
+    from .fetch import _parse_payload
+
+    payload = _parse_payload(body)
+    if not payload:
+        return "NOT parseable as JSON"
+    keys = sorted(payload)[:8]
+    for k in TEXT_FIELDS:
+        v = payload.get(k)
+        if isinstance(v, str) and v.strip():
+            return f"parsed OK, keys={keys}, {k}: {len(v)} chars"
+    return f"parsed OK, keys={keys}, NO text field"
+
+
+def _guess_jsonp_urls(page_html: str) -> dict[int, str]:
+    """Last-resort extraction: any /pages/N-*.jsonp URL, any host.
+
+    Independent of the production regexes so the report still tells us
+    something even if those patterns are the thing that broke.
+    """
+    pat = re.compile(
+        r'https?://[^"\'\s<>\\]*?/pages/(\d+)-[^"\'\s<>\\?]+\.jsonp', re.I
+    )
+    out: dict[int, str] = {}
+    for m in pat.finditer(page_html.replace("\\/", "/")):
+        out.setdefault(int(m.group(1)), m.group(0))
+    return out
 
 
 async def diagnose(fetcher, url: str, *, save_dir: str | Path = ".debug") -> int:
     out = Path(save_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     try:
         kind, doc_id = parse_doc_url(url)
     except ValueError as exc:
@@ -86,16 +144,13 @@ async def diagnose(fetcher, url: str, *, save_dir: str | Path = ".debug") -> int
 
     page_html = ""
     for label, ep in endpoints:
-        try:
-            resp = await fetcher.get(ep, use_cache=False)
-        except Exception as exc:
-            print(f"{label:16}: ERROR {type(exc).__name__}")
+        err, resp = await _probe(fetcher, ep, referer=url)
+        if err:
+            print(f"{label:16}: {err}")
             continue
         body = resp.content or b""
-        ctype = resp.headers.get("content-type", "?").split(";")[0]
-        print(
-            f"{label:16}: HTTP {resp.status_code}  {len(body):>9,} bytes  {ctype}"
-        )
+        ctype = str(resp.headers.get("content-type", "?")).split(";")[0]
+        print(f"{label:16}: HTTP {resp.status_code}  {len(body):>9,} bytes  {ctype}")
         if label == "doc page" and resp.status_code == 200:
             page_html = resp.text
 
@@ -104,125 +159,113 @@ async def diagnose(fetcher, url: str, *, save_dir: str | Path = ".debug") -> int
         return 1
 
     tmp = out / f"page-{doc_id}.html"
-    tmp.write_text(page_html, encoding="utf-8")
-    print(f"\nraw page saved to: {tmp}")
-
-    print("\nmarkers present in page HTML:")
-    for m in MARKERS:
-        print(f"  {'yes' if m in page_html else ' no'}  {m}")
-
-    state_keys = sorted(extract_state(page_html))[:25]
-    print(f"\nstate keys found ({len(state_keys)} shown): {state_keys}")
-
-    urls = extract_content_urls(page_html)
-    print(f"\npage asset URLs extracted: {len(urls)}")
-    for n in sorted(urls)[:3]:
-        print(f"  p{n}: {_mask(urls[n])}")
-
-    shapes = sorted(
-        {
-            m.group(0)[:60]
-            for m in re.finditer(r"https?://[a-z0-9.-]*scribdassets\.com/[^\"'\s<>\\]{0,40}", page_html)
-        }
-    )[:8]
-    print("\nscribdassets URL shapes seen:")
-    for s in shapes:
-        print(f"  {_mask(s)}")
-    if not shapes:
-        print("  none — the page may be a JS shell; the HTML above is what we need.")
-
-    # The embed endpoint is the strategy that works on modern documents,
-    # so report its structure too.
-    emb_text = ""
     try:
-        emb = await fetcher.get(
-            EMBED_URL.format(doc_id=doc_id), headers={"Referer": url}, use_cache=False
-        )
-    except Exception as exc:
-        print(f"\nembed: ERROR {type(exc).__name__}")
+        tmp.write_text(page_html, encoding="utf-8")
+        print(f"\nraw page saved to: {tmp}")
+    except OSError:
+        pass
+
+    # ---- sections below are each isolated: never abort the report ----
+    try:
+        print("\nmarkers present in page HTML:")
+        for m in MARKERS:
+            print(f"  {'yes' if m in page_html else ' no'}  {m}")
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+
+    try:
+        keys = sorted(extract_state(page_html))[:25]
+        print(f"\nstate keys found ({len(keys)} shown): {keys}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"\nstate keys: ERROR {type(exc).__name__}: {exc}")
+
+    urls: dict[int, str] = {}
+    try:
+        urls = extract_content_urls(page_html)
+        print(f"\npage asset URLs extracted: {len(urls)}")
+        for n in sorted(urls)[:3]:
+            print(f"  p{n}: {_mask(urls[n])}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"\npage asset URLs: ERROR {type(exc).__name__}: {exc}")
+
+    if not urls:
+        fallback = _guess_jsonp_urls(page_html)
+        print(f"lax scan for any /pages/N-*.jsonp URL: {len(fallback)}")
+        urls = fallback or urls
+
+    # ---- THE decisive probe: do those page assets actually download? ----
+    print(f"\njsonp page assets to probe: {len(urls)}")
+    if urls:
+        picks = sorted({1, max(urls) // 2, max(urls)} & set(urls))
+        for n in picks:
+            u = urls[n]
+            err, resp = await _probe(fetcher, u, referer=url)
+            if err:
+                print(f"  page {n:>3}: {err}")
+                continue
+            body = resp.text or ""
+            ctype = str(resp.headers.get("content-type", "?"))[:28]
+            print(
+                f"  page {n:>3}: HTTP {resp.status_code}  "
+                f"{len(resp.content or b''):>8,} bytes  {ctype}"
+            )
+            print(f"            head: {body[:110]!r}")
+            print(f"            {_payload_summary(body)}")
     else:
-        print(
-            f"\nembed page: HTTP {emb.status_code}, {len(emb.content or b''):,} bytes"
-        )
+        print("  none found — this document has no JSONP page assets")
+
+    # ---- embed structure ----
+    emb_text = ""
+    err, emb = await _probe(fetcher, EMBED_URL.format(doc_id=doc_id), referer=url)
+    if err:
+        print(f"\nembed: {err}")
+    else:
+        print(f"\nembed page: HTTP {emb.status_code}, {len(emb.content or b''):,} bytes")
         if emb.status_code == 200 and emb.text:
             emb_text = emb.text
-            (out / f"embed-{doc_id}.html").write_text(emb.text, encoding="utf-8")
-            print("embed class census (top 15):")
-            print(_embed_structure(emb.text))
-            print(f"  saved to: {out / f'embed-{doc_id}.html'}")
-
-    # --- page-image probe: does the "merge images into a PDF" route work? ---
-    from .extractors import (
-        build_screenshot_template,
-        extract_page_image_urls,
-        extract_page_count,
-        extract_screenshot_urls,
-    )
-
-    total = extract_page_count(page_html) or extract_page_count(emb_text)
-    imgs = extract_page_image_urls(page_html)
-    shot = build_screenshot_template(extract_screenshot_urls(page_html))
-    print(f"\npage count detected: {total or 'unknown'}")
-    print(f"page image URLs in HTML: {len(imgs)}; screenshot template: {shot or 'none'}")
-
-    def url_for(n: int) -> str | None:
-        return imgs.get(n) or (shot.format(n=n) if shot else None)
-
-    probes = [n for n in (1, 2, 3, max(1, (total or 4) // 2), total or 4) if url_for(n)]
-    if not probes:
-        print("no page image URLs found — the image route cannot work on this page")
-    for n in dict.fromkeys(probes):
-        u = url_for(n)
-        try:
-            r = await fetcher.get(u, headers={"Referer": url}, use_cache=False)
-        except Exception as exc:
-            print(f"  page {n:>3}: ERROR {type(exc).__name__}")
-            continue
-        head = (r.content or b"")[:4]
-        kind = "JPEG" if head[:3] == b"\xff\xd8\xff" else ("PNG" if head[:4] == b"\x89PNG" else "not an image")
-        print(
-            f"  page {n:>3}: HTTP {r.status_code}  {len(r.content or b''):>8,} bytes  "
-            f"{r.headers.get('content-type','?')[:24]}  {kind}"
-        )
-
-    # --- JSONP page-asset probe: the route that should give every page ---
-    from .extractors import extract_content_urls
-
-    jurls = extract_content_urls(page_html)
-    print(f"\njsonp page assets found: {len(jurls)}")
-    if jurls:
-        from .fetch import _parse_payload
-
-        picks = [n for n in (1, max(jurls) // 2, max(jurls)) if n in jurls and n > 0]
-        for n in dict.fromkeys(picks):
-            u = jurls[n]
             try:
-                r = await fetcher.get(u, headers={"Referer": url}, use_cache=False)
-            except Exception as exc:
-                print(f"  page {n:>3}: ERROR {type(exc).__name__}")
+                (out / f"embed-{doc_id}.html").write_text(emb.text, encoding="utf-8")
+                print("embed class census (top 15):")
+                print(_embed_structure(emb.text))
+            except Exception as exc:  # noqa: BLE001
+                print(f"  embed census failed: {type(exc).__name__}: {exc}")
+
+    # ---- page-image route (PDF from images) ----
+    try:
+        total = extract_page_count(page_html) or extract_page_count(emb_text)
+        imgs = extract_page_image_urls(page_html)
+        shot = build_screenshot_template(extract_screenshot_urls(page_html))
+        print(f"\npage count detected: {total or 'unknown'}")
+        print(f"page image URLs: {len(imgs)}; screenshot template: {shot or 'none'}")
+
+        def url_for(n: int) -> str | None:
+            return imgs.get(n) or (shot.format(n=n) if shot else None)
+
+        probes = [n for n in (1, 2, 3, (total or 4) // 2 or 1, total or 4) if url_for(n)]
+        if not probes:
+            print("no page image URLs — the image->PDF route cannot work here")
+        for n in dict.fromkeys(probes):
+            err, r = await _probe(fetcher, url_for(n), referer=url)
+            if err:
+                print(f"  page {n:>3}: {err}")
                 continue
-            body = r.text or ""
-            ctype = str(r.headers.get("content-type", "?"))[:28]
-            print(
-                f"  page {n:>3}: HTTP {r.status_code}  {len(r.content or b''):>8,} bytes  {ctype}"
+            head = (r.content or b"")[:4]
+            kind = (
+                "JPEG"
+                if head[:3] == b"\xff\xd8\xff"
+                else ("PNG" if head[:4] == b"\x89PNG" else "not an image")
             )
-            print(f"            head: {body[:110].replace(chr(10), ' ')!r}")
-            payload = _parse_payload(body)
-            if payload:
-                keys = sorted(payload)[:8]
-                body_field = ""
-                for k in ("content", "html", "body", "text", "pageContent"):
-                    v = payload.get(k)
-                    if isinstance(v, str) and v.strip():
-                        body_field = f"{k}: {len(v)} chars"
-                        break
-                print(f"            parsed OK, keys={keys}, {body_field or 'NO text field'}")
-            else:
-                print("            NOT parseable as JSON")
+            print(
+                f"  page {n:>3}: HTTP {r.status_code}  "
+                f"{len(r.content or b''):>8,} bytes  "
+                f"{str(r.headers.get('content-type', '?'))[:24]}  {kind}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"\npage-image probe failed: {type(exc).__name__}: {exc}")
 
     print(
-        "\nSend this report back. If the counts above are zero, also share the "
-        "saved page HTML (it is the public document page, but it can contain "
-        "your account identifiers — review before sharing)."
+        "\nSend this report back. It contains no cookie values; the saved HTML "
+        "is the public document page but may include your account identifiers, "
+        "so review it before sharing."
     )
     return 0

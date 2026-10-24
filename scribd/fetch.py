@@ -458,12 +458,30 @@ class PageImagesPdfStrategy(Strategy):
     name = "page-images-pdf"
 
     async def run(self, ctx: ScrapeContext, fetcher) -> ScrapedDocument | None:
-        html = await _asset_html(ctx, fetcher)
+        # Use the document page itself first: _asset_html() requires a
+        # "scribdassets"/"contentUrl" marker, which is not guaranteed here.
+        html = ""
+        try:
+            page = await fetcher.get(ctx.url, headers={"Referer": ctx.url})
+        except Exception:
+            page = None
+        if page is not None and page.status_code == 200 and page.text:
+            html = page.text
+        if not html:
+            html = await _asset_html(ctx, fetcher)
         if not html:
             return None
         meta = extract_meta(html, ctx.url, ctx.doc_id, ctx.kind)
         urls = extract_page_image_urls(html)
         shot = build_screenshot_template(extract_screenshot_urls(html))
+        if not urls and not shot:
+            # The doc page may carry none; the embed endpoint usually does.
+            alt = await _asset_html(ctx, fetcher)
+            if alt and alt != html:
+                alt_urls = extract_page_image_urls(alt)
+                alt_shot = build_screenshot_template(extract_screenshot_urls(alt))
+                if alt_urls or alt_shot:
+                    html, urls, shot = alt, alt_urls, alt_shot
         if not urls and not shot:
             ctx.note("page-images: no page image URLs found")
             return None
@@ -491,22 +509,46 @@ class PageImagesPdfStrategy(Strategy):
         sem = asyncio.Semaphore(6)
         ctx.note(f"page-images: fetching {total} page images")
 
+        failures: dict[str, int] = {}
+
+        def fail(reason: str) -> None:
+            failures[reason] = failures.get(reason, 0) + 1
+
         async def fetch_image(n: int) -> tuple[int, bytes] | None:
             u = url_for(n)
             if not u:
+                fail("no url")
                 return None
             async with sem:
-                try:
-                    r = await fetcher.get(u, headers={"Referer": ctx.url})
-                except Exception:
-                    return None
-            if r.status_code != 200 or not r.content:
-                return None
-            if looks_challenged(r.text if b"<html" in r.content[:200] else ""):
-                return None
-            return n, r.content
+                for attempt in range(3):
+                    try:
+                        r = await fetcher.get(u, headers={"Referer": ctx.url})
+                    except Exception as exc:  # transport hiccup: retry
+                        if attempt == 2:
+                            fail(f"exception:{type(exc).__name__}")
+                        else:
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                    if r.status_code == 200 and r.content:
+                        head = r.content[:200]
+                        if b"<html" in head.lower():
+                            fail("html-response")
+                            return None
+                        return n, r.content
+                    if attempt == 2:
+                        fail(f"http:{r.status_code}")
+                    else:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+            return None
 
-        results = [x for x in await asyncio.gather(*(fetch_image(n) for n in range(1, total + 1))) if x]
+        raw = await asyncio.gather(
+            *(fetch_image(n) for n in range(1, total + 1)), return_exceptions=True
+        )
+        results = [x for x in raw if isinstance(x, tuple)]
+        results.sort(key=lambda item: item[0])
+        if failures:
+            detail = ", ".join(f"{k} x{v}" for k, v in sorted(failures.items()))
+            ctx.note(f"page-images: failures — {detail}")
         if len(results) < 2:
             ctx.note(f"page-images: only {len(results)} images downloaded")
             return None
@@ -523,7 +565,10 @@ class PageImagesPdfStrategy(Strategy):
                 (d / f"page-{n:03d}.{ext}").write_bytes(data)
             ctx.note(f"page-images: saved images to {d}")
 
-        pdf = _images_to_pdf([data for _, data in results])
+        skipped: list[int] = []
+        pdf = _images_to_pdf([data for _, data in results], skipped=skipped)
+        if skipped:
+            ctx.note(f"page-images: skipped {len(skipped)} unreadable image(s)")
         if not pdf:
             ctx.note("page-images: PDF assembly failed (is Pillow installed?)")
             return None
@@ -544,21 +589,32 @@ class PageImagesPdfStrategy(Strategy):
         )
 
 
-def _images_to_pdf(blobs: list[bytes]) -> bytes | None:
-    """Merge page images into a single PDF (needs Pillow)."""
+def _images_to_pdf(blobs: list[bytes], skipped: list[int] | None = None) -> bytes | None:
+    """Merge page images into a single PDF (needs Pillow).
+
+    Corrupt/partial images are skipped, never fatal: one bad chunk used to
+    be able to take down the whole document build. ``skipped`` collects the
+    1-based indexes that were dropped so the caller can report them.
+    """
     try:
         from io import BytesIO
 
-        from PIL import Image
+        from PIL import Image, UnidentifiedImageError
     except Exception:
         return None
     frames = []
     try:
-        for b in blobs:
+        for idx, b in enumerate(blobs, start=1):
+            if not b:
+                if skipped is not None:
+                    skipped.append(idx)
+                continue
             try:
                 im = Image.open(BytesIO(b))
                 im.load()
-            except Exception:
+            except (UnidentifiedImageError, OSError, SyntaxError, ValueError):
+                if skipped is not None:
+                    skipped.append(idx)
                 continue
             frames.append(im.convert("RGB"))
         if not frames:
