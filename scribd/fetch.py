@@ -7,6 +7,7 @@ from urllib.parse import unquote
 
 from bs4 import BeautifulSoup
 
+from .blockers import CHALLENGE_HINT, ChallengeError, looks_challenged
 from .config import DOWNLOAD_PDF_URL, EMBED_URL, RENDER_META_URL
 from .extractors import (
     build_page_template,
@@ -84,6 +85,8 @@ async def _asset_html(ctx: ScrapeContext, fetcher) -> str:
             ctx.note(f"{url} -> HTTP {resp.status_code}")
             continue
         text = resp.text
+        if looks_challenged(text):
+            raise ChallengeError(CHALLENGE_HINT)
         # Accept any page that carries a document-config marker. The old
         # check only looked for "scribdassets.com"/"contentUrl" in the raw
         # string, which missed pages whose config is escaped or that use
@@ -266,6 +269,12 @@ class EmbedTextStrategy(Strategy):
         if resp.status_code != 200:
             ctx.note(f"embed -> HTTP {resp.status_code}")
             return None
+        if looks_challenged(resp.text):
+            # Belt and braces: Fetcher raises on challenges, but a stale
+            # cached challenge page would otherwise be written out as a
+            # "successful" one-paragraph document.
+            ctx.note("embed -> anti-bot challenge page")
+            raise ChallengeError(CHALLENGE_HINT)
         if len(resp.text) < 500:
             ctx.note(f"embed -> {len(resp.text)} bytes, too small")
             return None
@@ -327,6 +336,12 @@ def build_from_embed(ctx: ScrapeContext, html: str) -> ScrapedDocument | None:
     while pages and not pages[-1].text.strip():
         pages.pop()
     if not pages or not any(p.text.strip() for p in pages):
+        return None
+    # A one-paragraph result is almost always an error page, not a document
+    # (this is what let a "Client Challenge" page be saved as a 3-line txt).
+    total_text = " ".join(p.text for p in pages)
+    if not containers and len(total_text.split()) < 40:
+        ctx.note(f"embed-text: only {len(total_text.split())} words — not a document")
         return None
 
     meta.page_count = meta.page_count or len(pages)
