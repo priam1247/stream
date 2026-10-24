@@ -179,6 +179,7 @@ async def find_documents(
     *,
     limit: int = 5,
     pages: int = 3,
+    debug_dir=None,
     log=print,
 ) -> list[SearchHit]:
     """Search Scribd for ``query`` and return up to ``limit`` documents.
@@ -205,5 +206,29 @@ async def find_documents(
             f"{len(fresh)} new"
         )
         if not fresh:
+            # Nothing parsable: keep the page so the markup can be inspected
+            # instead of guessing why the search "found nothing".
+            if debug_dir is not None:
+                path = _dump_search_page(debug_dir, query, page_number, html)
+                if path:
+                    log(
+                        f"search: no usable results on page {page_number}; "
+                        f"saved the raw page to {path}"
+                    )
             break
     return found[:limit]
+
+
+def _dump_search_page(debug_dir, query: str, page: int, html: str):
+    """Write a search response to disk (never contains cookies)."""
+    try:
+        from pathlib import Path
+
+        folder = Path(debug_dir)
+        folder.mkdir(parents=True, exist_ok=True)
+        stem = re.sub(r"[^A-Za-z0-9]+", "-", (query or "query")).strip("-") or "query"
+        path = folder / f"search-{stem}-p{page}.html"
+        path.write_text(html or "", encoding="utf-8", errors="ignore")
+        return path
+    except Exception:
+        return None

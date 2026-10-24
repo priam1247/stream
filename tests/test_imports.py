@@ -2272,3 +2272,35 @@ def test_cli_without_urls_or_search_exits_2(capsys):
     assert _asyncio.run(cli.run(args)) == 2
     out = capsys.readouterr().out
     assert "--search" in out
+
+
+def test_find_documents_dumps_unparsable_page(tmp_path):
+    """A search page with no parsable results is kept for inspection."""
+    import asyncio as _asyncio
+
+    from scribd.search import find_documents
+
+    class Response:
+        status_code = 200
+        text = "<html><body><div>nothing here</div></body></html>"
+
+    class Fetcher:
+        async def get(self, url, **kw):
+            return Response()
+
+    logs: list[str] = []
+    hits = _asyncio.run(
+        find_documents(
+            Fetcher(),
+            "excel formulas",
+            limit=5,
+            pages=3,
+            debug_dir=tmp_path,
+            log=logs.append,
+        )
+    )
+    assert hits == []
+    dumped = list(tmp_path.glob("search-*.html"))
+    assert dumped and dumped[0].name == "search-excel-formulas-p1.html", dumped
+    assert "nothing here" in dumped[0].read_text()
+    assert any("no usable results" in m for m in logs), logs
