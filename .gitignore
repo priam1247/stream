@@ -2,16 +2,14 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-.scribd-cache/
-out/
+downloads/
 .debug/
 *.egg-info/
 .pytest_cache/
+
 # Session credentials — NEVER commit these (equivalent to a password)
 cookies.txt
 *cookies*.txt
-webdata/
-.cache/
 
 # local settings (may contain a password) — uploaded to the host, never committed
 .env
