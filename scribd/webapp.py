@@ -20,7 +20,7 @@ Endpoints (all behind HTTP Basic auth when the env vars are set):
     POST /api/jobs                  {"mode":"search","query":"excel","limit":50}
     POST /api/jobs                  {"mode":"download","urls":[...]}  or
                                     {"mode":"download","query":"excel","limit":0}
-    POST /api/jobs                  {"mode":"setup"}   install Chromium
+    POST /api/jobs                  {"mode":"setup"}   install Chromium (+ its libs)
     GET  /api/jobs                  all jobs + counts
     GET  /api/jobs/<id>             status, results, file list, manifest counts
     GET  /api/jobs/<id>/log?offset= incremental log text
@@ -52,6 +52,7 @@ from flask import Flask, Response, jsonify, request, send_file
 
 from . import __version__
 from .dotenv import load_env
+from .sysroot import lib_dirs
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # Panels without a variable editor: read ./.env (never overrides real env vars).
@@ -527,6 +528,7 @@ def health():
             "concurrency": CONCURRENCY,
             "env_file": str(ENV_FILE) if ENV_FILE else "",
             "cookies": bool(cookies_file()),
+            "sysroot_libs": len(lib_dirs()),
             "out": str(OUT_DIR),
             "auth": bool(
                 os.environ.get("SCRIBD_WEB_USER")

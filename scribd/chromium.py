@@ -17,6 +17,11 @@ worked:
 The winner is cached in `<repo>/webdata/browser.json` (override with
 SCRIBD_BROWSER_CACHE), so later jobs start with the working one first.
 
+Missing system libraries (`libnspr4.so`, `libnss3.so`, …) are handled too: if
+`scribd.sysroot` has already unpacked them into `webdata/sysroot`, every launch
+gets `LD_LIBRARY_PATH` pointing there. `python -m scribd.sysroot` fetches them
+without root.
+
 Environment knobs:
 
     SCRIBD_BROWSER_MODE=shell|chrome|path|auto   force one variant
@@ -42,12 +47,26 @@ BASE_ARGS = [
 ]
 
 HINT_NO_LIBS = (
-    "The browser log above names the missing library (libnss3, libatk-1.0, "
-    "libgbm, libxkbcommon, …). Those are operating-system packages: without "
-    "root they cannot be installed from here.\n"
-    "  - ask the host to run `playwright install-deps chromium` once, or\n"
-    "  - run the web UI on your own machine (python -m scribd.webapp)."
+    "The browser log above names the missing library (libnspr4, libnss3, "
+    "libatk-1.0, libgbm, libxkbcommon, …). No root is needed for these: they "
+    "are files inside Debian packages,\n"
+    "  - `python -m scribd.sysroot` fetches exactly the ones the loader asks "
+    "for and unpacks them into webdata/sysroot\n"
+    "  - the web page's *Install & test Chromium* button does that "
+    "automatically, then relaunches\n"
+    "  - ask the host to run `playwright install-deps chromium` once, or run "
+    "the web UI on your own machine (python -m scribd.webapp)."
 )
+
+
+def apply_sysroot() -> str:
+    """Make container-fetched libraries visible to Chromium (no-op when absent)."""
+    try:
+        from .sysroot import apply_env
+
+        return apply_env()
+    except Exception:  # never let this break a launch
+        return os.environ.get("LD_LIBRARY_PATH", "")
 
 
 def base_args(extra: list[str] | None = None) -> list[str]:
@@ -139,6 +158,7 @@ def chromium_binary() -> str:
 def candidates(headless: bool = True, extra_args: list[str] | None = None) -> list[tuple[str, dict[str, Any]]]:
     """Ordered `(mode, kwargs)` launch attempts, cheapest/best first."""
     args = base_args(extra_args)
+    apply_sysroot()
     tries: list[tuple[str, dict[str, Any]]] = [
         ("shell", {"headless": headless, "args": args}),
         ("chrome", {"headless": headless, "args": args, "channel": "chromium"}),

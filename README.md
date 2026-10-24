@@ -350,10 +350,70 @@ If all three fail, the log tells you exactly why — look for these lines:
 
 | Log line | Meaning | What to do |
 | --- | --- | --- |
-| `error while loading shared libraries: libnss3.so` (or `libatk-1.0`, `libgbm`, `libxkbcommon`) | the image lacks Chromium's system packages | ask the host to run `playwright install-deps chromium` once, or run the UI locally |
+| `error while loading shared libraries: libnspr4.so` (or `libnss3`, `libatk-1.0`, `libgbm`) | the image lacks Chromium's system packages | the button fetches them itself (see below); `python -m scribd.sysroot` does it by hand |
 | `No usable sandbox` / `Failed to move to new namespace` | the container blocks user namespaces | already handled: `--no-sandbox` is passed by default |
 | `Executable doesn't exist at …` | Chromium is not downloaded | press *Install & test Chromium* |
 | `Failed to download … ECONNRESET` | `cdn.playwright.dev` is blocked | retry, or point `PLAYWRIGHT_DOWNLOAD_HOST` at a mirror |
+
+### Missing system libraries, without root
+
+The panel can have Chromium downloaded and still refuse to start it:
+
+```
+/home/container/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome:
+error while loading shared libraries: libnspr4.so: cannot open shared object file
+```
+
+`apt-get install` and `playwright install-deps` both need root. But these
+libraries are ordinary files inside Debian packages, and a `.deb` is just an
+`ar` archive around a tarball. So the app fetches **exactly the sonames the
+dynamic loader complains about**, unpacks them into `webdata/sysroot/`, and
+points `LD_LIBRARY_PATH` at them. The container's own glibc is used; only the
+missing pieces are added.
+
+Press **Install & test Chromium** in the page and it happens automatically:
+
+```
+launching headless Chromium…
+  all 3 Chromium launch variant(s) failed:
+  - full Chrome (channel=chromium): … error while loading shared libraries: libnspr4.so
+fetching the missing libraries into the app folder (no root needed)…
+  libnspr4.so: libnspr4
+  libnss3.so: libnss3
+  libatk-1.0.so.0: libatk1.0-0
+  ok: all libraries found (3 package(s) unpacked into webdata/sysroot)
+retrying the launch with the fetched libraries…
+OK: Chromium 156.0.8078.4 launches, renders and prints PDFs
+```
+
+From a shell:
+
+```bash
+python -m scribd.sysroot --check     # list what is missing and which packages provide it
+python -m scribd.sysroot             # fetch, unpack and verify
+python -m scribd.sysroot --clean     # remove webdata/sysroot
+```
+
+How it decides, and why it is safe:
+
+* `ldd` (part of glibc, always present) prints `lib → not found`. Those names
+  are resolved to Debian binary packages by a table in `scribd/sysroot.py`, and
+  fetched from `deb.debian.org` following the suite in `/etc/os-release`
+  (override with `SCRIBD_DEB_SUITE`).
+* The downloaded libraries are probed with `ldd` themselves, so their own
+  dependencies are fetched too — a few rounds is enough.
+* Extraction uses `dpkg-deb -x` when available; otherwise a 40-line pure-Python
+  `ar` + `tarfile` reader handles `.xz` / `.gz` / `.bz2`. Only `.zst` needs the
+  optional `zstandard` wheel.
+* Nothing is installed system-wide, nothing is overwritten, and
+  `python -m scribd.sysroot --clean` undoes all of it.
+* Downloads are cached in `webdata/debs/`, so a second run is instant and works
+  offline.
+
+If a soname is unknown to the table, the log says so (`no Debian package known
+for: …`) instead of pretending to fix it — that line is a one-line addition to
+`scribd/sysroot.py`.
+
 
 Force one variant (e.g. skip the shell entirely) by adding to `.env`:
 
