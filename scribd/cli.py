@@ -77,6 +77,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force the Chromium route (auto-scrolls the viewer; needs playwright)",
     )
     p.add_argument(
+        "--no-print-pages",
+        action="store_true",
+        help="With --browser: print the document in one pass instead of one sheet per page",
+    )
+    p.add_argument(
         "--screenshots",
         action="store_true",
         help="With --browser: also screenshot each page (slower, fallback PDF)",
@@ -176,7 +181,10 @@ async def run(args: argparse.Namespace) -> int:
             from .fetch import JsonpPagesStrategy
 
             strategies = [
-                BrowserStrategy(screenshot=bool(getattr(args, "screenshots", False))),
+                BrowserStrategy(
+                    screenshot=bool(getattr(args, "screenshots", False)),
+                    print_pages=not bool(getattr(args, "no_print_pages", False)),
+                ),
                 JsonpPagesStrategy(),
             ]
             console.print("[dim]using the Chromium route (--browser)[/dim]")

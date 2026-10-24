@@ -225,6 +225,7 @@ class BrowserStrategy:
         settle_ms: int = 150,
         image_wait_ms: int = 4000,
         timeout: float = 60_000,
+        print_pages: bool = True,
         screenshot: bool = False,
         # Print-to-PDF gives a vector PDF with selectable text and is far
         # faster than screenshotting every page; screenshots remain a
@@ -234,6 +235,7 @@ class BrowserStrategy:
         self.settle_ms = settle_ms
         self.image_wait_ms = image_wait_ms
         self.timeout = timeout
+        self.print_pages = print_pages
         self.screenshot = screenshot
 
     async def run(self, ctx, fetcher) -> ScrapedDocument | None:
@@ -321,39 +323,40 @@ class BrowserStrategy:
                     entries = await self._capture_pages(page, ctx, selector)
                     page_html = await page.content()
 
-                    # 2) Prepare print CSS and print the whole document. This
-                    #    yields a real PDF with selectable text, sized to the
-                    #    document's own page, instead of stitched screenshots.
-                    try:
-                        paper = await page.evaluate(
-                            PRINT_JS,
-                            {
-                                "widthIn": 8.5,
-                                "heightIn": 11.0,
-                            },
-                        ) or {}
-                        width = float(paper.get("widthIn") or 8.5)
-                        height = float(paper.get("heightIn") or 11.0)
-                        printed_pdf = await page.pdf(
-                            print_background=True,
-                            prefer_css_page_size=True,
-                            width=f"{width:.3f}in",
-                            height=f"{height:.3f}in",
-                            margin={
-                                "top": "0",
-                                "bottom": "0",
-                                "left": "0",
-                                "right": "0",
-                            },
+                    # 2) Print ONE page per PDF sheet, each sized to that
+                    #    page. This is what makes the output "just the book
+                    #    page" instead of a screenshot of the whole viewport.
+                    if self.print_pages:
+                        printed_pdf = await self._print_pages_individually(
+                            page, ctx, selector
                         )
-                    except Exception as exc:
-                        ctx.note(f"browser: print-to-PDF failed ({type(exc).__name__})")
+
+                    # 3) Fallback: one whole-document print (still isolated
+                    #    by print CSS, but it cannot guarantee one sheet per
+                    #    page when print widths vary).
+                    if not printed_pdf:
                         try:
+                            paper = await page.evaluate(
+                                PRINT_JS, {"widthIn": 8.5, "heightIn": 11.0}
+                            ) or {}
+                            width = float(paper.get("widthIn") or 8.5)
+                            height = float(paper.get("heightIn") or 11.0)
                             printed_pdf = await page.pdf(
-                                format="A4", print_background=True
+                                print_background=True,
+                                prefer_css_page_size=True,
+                                width=f"{width:.3f}in",
+                                height=f"{height:.3f}in",
+                                margin={
+                                    "top": "0",
+                                    "bottom": "0",
+                                    "left": "0",
+                                    "right": "0",
+                                },
                             )
-                        except Exception:
-                            printed_pdf = None
+                        except Exception as exc:
+                            ctx.note(
+                                f"browser: document print failed ({type(exc).__name__})"
+                            )
                 finally:
                     await browser.close()
         except Exception as exc:
@@ -418,6 +421,92 @@ class BrowserStrategy:
             pdf=pdf,
             complete=complete,
         )
+
+    async def _print_pages_individually(self, page, ctx, selector: str) -> bytes | None:
+        """Print each document page on its own sheet and merge the results.
+
+        Approach ported from themrsami/scribd-downloader: isolate one page,
+        set ``@page`` to that page's exact size, print it alone, verify the
+        result is exactly one sheet, then merge with pypdf.
+        """
+        from .pdfprint import (
+            CLEANUP_JS,
+            ISOLATE_PAGE_JS,
+            count_pages,
+            merge_pdfs,
+            px_to_inches,
+        )
+
+        count = await self._count(page, selector)
+        if not count:
+            ctx.note("browser: no pages to print")
+            return None
+        count = min(count, self.max_pages)
+
+        parts: list[bytes] = []
+        bad = 0
+        ctx.note(f"browser: printing {count} pages, one sheet each")
+        for index in range(count):
+            info = None
+            try:
+                info = await page.evaluate(
+                    ISOLATE_PAGE_JS, {"selector": selector, "index": index}
+                )
+            except Exception as exc:
+                ctx.note(f"browser: page {index + 1} isolate failed ({type(exc).__name__})")
+            if not info:
+                bad += 1
+                continue
+            width_in = px_to_inches(info.get("pageWidth") or info.get("width") or 0)
+            height_in = px_to_inches(info.get("pageHeight") or info.get("height") or 0)
+            if not width_in or not height_in:
+                bad += 1
+                continue
+            try:
+                blob = await page.pdf(
+                    width=f"{width_in}in",
+                    height=f"{height_in}in",
+                    margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
+                    print_background=True,
+                    prefer_css_page_size=True,
+                )
+            except Exception as exc:
+                ctx.note(
+                    f"browser: page {index + 1} print failed ({type(exc).__name__})"
+                )
+                bad += 1
+                continue
+            finally:
+                try:
+                    await page.evaluate(CLEANUP_JS)
+                except Exception:
+                    pass
+
+            sheets = count_pages(blob)
+            if sheets == 1:
+                parts.append(blob)
+            elif sheets > 1:
+                # Keep it rather than lose the page, but say so.
+                parts.append(blob)
+                ctx.note(f"browser: page {index + 1} produced {sheets} sheets")
+            else:
+                bad += 1
+            if (index + 1) % 10 == 0:
+                ctx.note(f"browser: printed {len(parts)}/{count} pages…")
+
+        if bad:
+            ctx.note(f"browser: {bad} page(s) could not be printed")
+        if not parts:
+            return None
+        merged = merge_pdfs(parts)
+        if merged:
+            ctx.note(
+                f"browser: merged {len(parts)} page PDFs -> "
+                f"{count_pages(merged)} sheets"
+            )
+        else:
+            ctx.note("browser: pypdf missing, cannot merge page PDFs")
+        return merged
 
     async def _pick_selector(self, page, ctx) -> str:
         """Choose the selector that yields the most plausible page elements."""

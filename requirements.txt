@@ -7,3 +7,4 @@ ebooklib>=0.18     # optional, for EPUB export
 Pillow>=10         # merge page images into a PDF
 # Optional: browser route for lazy-loaded pages (then: playwright install chromium)
 # playwright>=1.44
+pypdf>=4           # merge one-sheet-per-page PDFs

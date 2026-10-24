@@ -1408,3 +1408,215 @@ def test_browser_scroll_pass_and_print_pdf(monkeypatch):
     assert seen["pdf_kwargs"]["prefer_css_page_size"] is True
     assert doc is not None and doc.pdf == b"%PDF-official"
     assert len(doc.pages) == 3
+
+
+# ---------------------------------------------------------------------------
+# "It is still taking screenshots of the whole page, not just the book page"
+# Ported from themrsami/scribd-downloader (one page per sheet, sized to the
+# page) and xDatx/Studocu-Scribd-Helper (isolate the viewer, hide the UI).
+# ---------------------------------------------------------------------------
+def _one_page_pdf(width_pt: float, height_pt: float) -> bytes:
+    from io import BytesIO
+
+    from pypdf import PdfWriter
+
+    w = PdfWriter()
+    w.add_blank_page(width=width_pt, height=height_pt)
+    out = BytesIO()
+    w.write(out)
+    return out.getvalue()
+
+
+def test_px_to_inches():
+    from scribd.pdfprint import px_to_inches
+
+    assert px_to_inches(96) == 1.0
+    assert px_to_inches(816) == 8.5      # US Letter width in CSS px
+    assert px_to_inches(1056) == 11.0
+
+
+def test_merge_pdfs_keeps_order_and_sizes():
+    from scribd.pdfprint import count_pages, merge_pdfs
+
+    parts = [
+        _one_page_pdf(612, 792),   # letter
+        _one_page_pdf(595, 842),   # A4
+        _one_page_pdf(400, 600),   # odd size
+    ]
+    merged = merge_pdfs(parts)
+    assert merged and merged.startswith(b"%PDF")
+    assert count_pages(merged) == 3
+
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    sizes = [
+        (round(float(p.mediabox.width)), round(float(p.mediabox.height)))
+        for p in PdfReader(BytesIO(merged)).pages
+    ]
+    assert sizes == [(612, 792), (595, 842), (400, 600)]
+
+
+def test_merge_pdfs_skips_junk():
+    from scribd.pdfprint import count_pages, merge_pdfs
+
+    merged = merge_pdfs([_one_page_pdf(100, 100), b"<html>not a pdf</html>", b""])
+    assert merged and count_pages(merged) == 1
+    assert merge_pdfs([b"junk"]) is None
+
+
+def test_isolation_js_and_cleanup_js_are_valid():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    from scribd.pdfprint import CLEANUP_JS, ISOLATE_PAGE_JS
+
+    if not node:  # pragma: no cover - sandbox without node
+        pytest.skip("node not available")
+    for name, script in (("ISOLATE_PAGE_JS", ISOLATE_PAGE_JS), ("CLEANUP_JS", CLEANUP_JS)):
+        proc = subprocess.run(
+            [node, "-e", f"new Function('return ' + {script!r}); console.log('ok')"],
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, f"{name} is not valid JS: {proc.stderr}"
+    # the isolation must hide non-target pages and the site chrome
+    assert 'data-export-target="true"' in ISOLATE_PAGE_JS
+    assert "display: none !important" in ISOLATE_PAGE_JS
+    assert ".toolbar_top" in ISOLATE_PAGE_JS
+
+
+def test_browser_prints_one_sheet_per_page(monkeypatch):
+    """Each document page becomes exactly one PDF sheet of its own size."""
+    import sys
+    import types
+
+    from scribd.browser import BrowserStrategy
+    from scribd.fetch import ScrapeContext
+    from scribd.pdfprint import count_pages
+
+    # 3 pages of different sizes; each print returns a 1-sheet PDF of that size.
+    sizes_px = [(816, 1056), (612, 792), (700, 900)]
+    printed: list[dict] = []
+
+    class Locator:
+        def __init__(self, i):
+            self.i = i
+
+        async def scroll_into_view_if_needed(self, timeout=None):
+            return None
+
+        def locator(self, sel):
+            return self
+
+        @property
+        def first(self):
+            return self
+
+        async def evaluate(self, script, arg=None):
+            return {"text": f"page {self.i} text", "image": ""}
+
+        async def screenshot(self, **kw):
+            return b""
+
+    class Locators:
+        def __init__(self, n):
+            self.n = n
+
+        async def count(self):
+            return self.n
+
+        def nth(self, i):
+            return Locator(i)
+
+    class Page:
+        async def goto(self, *a, **kw):
+            return None
+
+        async def wait_for_selector(self, *a, **kw):
+            return None
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+        def locator(self, sel):
+            return Locators(len(sizes_px))
+
+        async def evaluate(self, script, arg=None):
+            if "data-export-target" in str(script):
+                w, h = sizes_px[arg["index"]]
+                # mirror the real ISOLATE_PAGE_JS: @page gets a 4px pad
+                return {"width": w, "height": h, "pageWidth": w + 4, "pageHeight": h + 4}
+            if "synthetic-pages" in str(script):
+                return {"selector": "div.outer_page", "pages": 3, "rounds": 1}
+            return {}
+
+        async def content(self):
+            return "<html><body><span>3 pages</span></body></html>"
+
+        async def pdf(self, **kw):
+            printed.append(kw)
+            w = float(str(kw["width"]).rstrip("in")) * 72
+            h = float(str(kw["height"]).rstrip("in")) * 72
+            return _one_page_pdf(w, h)
+
+    class Context:
+        async def add_cookies(self, c):
+            return None
+
+        async def new_page(self):
+            return Page()
+
+    class Browser:
+        async def new_context(self, **kw):
+            return Context()
+
+        async def close(self):
+            return None
+
+    class PW:
+        class chromium:
+            @staticmethod
+            async def launch(headless=True):
+                return Browser()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    fake = types.ModuleType("playwright.async_api")
+    fake.async_playwright = lambda: PW()
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake)
+
+    class Fetcher:
+        cookies = {}
+
+        async def get(self, url, **kw):
+            class R:
+                status_code = 200
+
+                def json(self):
+                    return {"title": "Sheet Per Page"}
+
+            return R()
+
+    logs: list[str] = []
+    ctx = ScrapeContext(doc_id="9", url="https://www.scribd.com/document/9/X", log=logs.append)
+    doc = asyncio.run(BrowserStrategy(screenshot=False).run(ctx, Fetcher()))
+
+    # one print call per document page, never one print of the whole window
+    assert len(printed) == 3, printed
+    assert all(p.get("prefer_css_page_size") is True for p in printed)
+    assert all(p["margin"] == {"top": "0", "bottom": "0", "left": "0", "right": "0"}
+               for p in printed)
+    # sizes converted 96px -> inches, plus the 4px pad
+    assert abs(float(str(printed[0]["width"]).rstrip("in")) - (816 + 4) / 96) < 0.001
+
+    assert doc is not None and doc.pdf
+    assert count_pages(doc.pdf) == 3, count_pages(doc.pdf)
+    assert any("one sheet each" in m for m in logs), logs
