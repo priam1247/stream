@@ -1506,12 +1506,19 @@ def test_isolate_js_one_page_per_sheet_in_mock_dom():
     node = shutil.which("node")
     if not node:  # pragma: no cover - sandbox without node
         pytest.skip("node not available")
+    from scribd.embedprint import ISOLATE_PAGE_JS as EMBED_ISOLATE_JS
     from scribd.pdfprint import CLEANUP_JS, ISOLATE_PAGE_JS
 
     script = pathlib.Path(__file__).with_name("mock_dom.js")
     proc = subprocess.run(
         [node, str(script)],
-        input=json.dumps({"isolate": ISOLATE_PAGE_JS, "cleanup": CLEANUP_JS}),
+        input=json.dumps(
+            {
+                "isolate": ISOLATE_PAGE_JS,
+                "cleanup": CLEANUP_JS,
+                "embedIsolate": EMBED_ISOLATE_JS,
+            }
+        ),
         capture_output=True,
         text=True,
         timeout=120,
@@ -1801,3 +1808,222 @@ def test_print_failure_falls_back_to_a_single_image_sheet(monkeypatch):
     # 2 pages -> 2 sheets, even though the printer produced 4
     assert count_pages(doc.pdf) == 2, count_pages(doc.pdf)
     assert sum("printed as image" in m for m in logs) == 2, logs
+
+
+# ---------------------------------------------------------------------------
+# themrsami/scribd-downloader's export path: embed viewer + docManager page
+# loading + CDP Page.printToPDF per page + pypdf merge.
+# ---------------------------------------------------------------------------
+def test_embed_url_conversion():
+    from scribd.embedprint import embed_url
+
+    assert embed_url(doc_id="804179430") == (
+        "https://www.scribd.com/embeds/804179430/content"
+    )
+    assert embed_url(
+        url="https://www.scribd.com/document/804179430/2024-Updated-Book-List"
+    ) == "https://www.scribd.com/embeds/804179430/content"
+    # legacy /doc/ URLs
+    assert embed_url(url="https://www.scribd.com/doc/12345/Title") == (
+        "https://www.scribd.com/embeds/12345/content"
+    )
+    assert embed_url(url="https://example.com/document/1/x") == ""
+    assert embed_url() == ""
+
+
+def test_embedprint_scripts_are_valid_js():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    from scribd import embedprint
+
+    scripts = {
+        "LOAD_ALL_PAGES_JS": embedprint.LOAD_ALL_PAGES_JS,
+        "LOAD_PAGE_BATCH_JS": embedprint.LOAD_PAGE_BATCH_JS,
+        "RELEASE_PAGE_BATCH_JS": embedprint.RELEASE_PAGE_BATCH_JS,
+        "PREPARE_JS": embedprint.PREPARE_JS,
+        "HIDE_COOKIES_JS": embedprint.HIDE_COOKIES_JS,
+        "PRINT_CSS_JS": embedprint.PRINT_CSS_JS,
+        "WAIT_SETTLE_JS": embedprint.WAIT_SETTLE_JS,
+        "MEASURE_PAPER_JS": embedprint.MEASURE_PAPER_JS,
+        "ISOLATE_PAGE_JS": embedprint.ISOLATE_PAGE_JS,
+    }
+    if not node:  # pragma: no cover - sandbox without node
+        pytest.skip("node not available")
+    for name, script in scripts.items():
+        proc = subprocess.run(
+            [node, "-e", f"new Function('return ' + {script!r}); console.log('ok')"],
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, f"{name} is not valid JS: {proc.stderr}"
+    # the exported sheet must be capped at one page and sized from CSS
+    import inspect
+
+    printer = inspect.getsource(embedprint.EmbedPrintStrategy._print_one)
+    assert '"pageRanges": "1"' in printer, printer
+    assert '"preferCSSPageSize": True' in printer, printer
+    assert '"scale": 1' in printer, printer
+    assert "@page" in embedprint.ISOLATE_PAGE_JS
+    assert "window.docManager" in embedprint.LOAD_ALL_PAGES_JS
+    # a page that is a direct child of <body> must not be caught by the
+    # "hide site chrome" rule (it would beat the target rule on specificity)
+    assert "body > *:not(.outer_page):not(:has(" in embedprint.PRINT_CSS_JS
+
+
+def test_embedprint_exports_one_sheet_per_page(monkeypatch):
+    """3 pages -> 3 CDP printToPDF calls, one sheet each, merged in order."""
+    import base64
+    import sys
+    import types
+
+    from scribd import embedprint
+    from scribd.fetch import ScrapeContext
+    from scribd.pdfprint import count_pages, pdf_page_sizes
+
+    sizes_px = [(816, 1056), (612, 792), (700, 900)]
+    printed: list[dict] = []
+    batches: list[list[int]] = []
+    released: list[list[int]] = []
+    visited: list[str] = []
+
+    class CDP:
+        async def send(self, method, params=None):
+            if method == "Page.printToPDF":
+                printed.append(params or {})
+                w = float(params["paperWidth"]) * 72
+                h = float(params["paperHeight"]) * 72
+                blob = _one_page_pdf(w, h)
+                return {"data": base64.b64encode(blob).decode("ascii")}
+            return {}
+
+    class Page:
+        async def goto(self, url, **kw):
+            visited.append(url)
+
+        async def wait_for_selector(self, *a, **kw):
+            return None
+
+        def locator(self, sel):
+            class L:
+                async def count(self):
+                    return len(sizes_px)
+
+            return L()
+
+        async def content(self):
+            return "<html><head><title>Embed Title</title></head><body></body></html>"
+
+        async def evaluate(self, script, arg=None):
+            if script == embedprint.LOAD_ALL_PAGES_JS:
+                return {"supported": True, "total": 3, "loaded": 3,
+                        "failed": [], "elapsedMs": 1200}
+            if script == embedprint.PREPARE_JS:
+                return {"toolbarTop": True, "toolbarBottom": True, "containers": 1}
+            if script == embedprint.HIDE_COOKIES_JS:
+                return 2
+            if script == embedprint.PRINT_CSS_JS:
+                return True
+            if script == embedprint.WAIT_SETTLE_JS:
+                return {"timedOut": False}
+            if script == embedprint.MEASURE_PAPER_JS:
+                return {"widthInches": 8.5, "heightInches": 11.0,
+                        "selector": ".outer_page"}
+            if script == embedprint.LOAD_PAGE_BATCH_JS:
+                batches.append(list(arg["pageNumbers"]))
+                return {"supported": True, "failed": []}
+            if script == embedprint.RELEASE_PAGE_BATCH_JS:
+                released.append(list(arg))
+                return len(arg)
+            if script == embedprint.ISOLATE_PAGE_JS:
+                w, h = sizes_px[arg]
+                return {"width": w, "height": h, "text": f"page {arg + 1} text",
+                        "images": 1, "ready": 1}
+            return {}
+
+    class Context:
+        async def add_cookies(self, cookies):
+            return None
+
+        async def new_page(self):
+            return Page()
+
+        async def new_cdp_session(self, page):
+            return CDP()
+
+    class Browser:
+        async def new_context(self, **kw):
+            return Context()
+
+        async def close(self):
+            return None
+
+    class PW:
+        class chromium:
+            @staticmethod
+            async def launch(headless=True, args=None):
+                return Browser()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    fake = types.ModuleType("playwright.async_api")
+    fake.async_playwright = lambda: PW()
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake)
+
+    class Fetcher:
+        cookies = {"_scribd_session": "SECRET"}
+
+        async def get(self, url, **kw):
+            class R:
+                status_code = 200
+
+                def json(self):
+                    return {"title": "Embed Title"}
+
+            return R()
+
+    logs: list[str] = []
+    ctx = ScrapeContext(
+        doc_id="804179430",
+        url="https://www.scribd.com/document/804179430/Title",
+        log=logs.append,
+    )
+    doc = asyncio.run(embedprint.EmbedPrintStrategy(batch_size=2).run(ctx, Fetcher()))
+
+    # the bare embed viewer, not the full document page
+    assert visited == ["https://www.scribd.com/embeds/804179430/content"], visited
+
+    # one CDP print per document page, each capped to a single sheet
+    assert len(printed) == 3, printed
+    assert all(p.get("pageRanges") == "1" for p in printed)
+    assert all(p.get("preferCSSPageSize") is True for p in printed)
+    assert all(p.get("scale") == 1 for p in printed)
+    assert all(
+        p.get("marginTop") == p.get("marginBottom") == 0
+        and p.get("marginLeft") == p.get("marginRight") == 0
+        for p in printed
+    )
+    # paper size = measured px / 96, exactly like the upstream script
+    assert abs(printed[0]["paperWidth"] - 816 / 96) < 1e-6
+    assert abs(printed[0]["paperHeight"] - 1056 / 96) < 1e-6
+
+    # pages are loaded and released in bounded batches
+    assert batches == [[1, 2], [3]], batches
+    assert released == [[1, 2], [3]], released
+
+    assert doc is not None and doc.pdf
+    assert count_pages(doc.pdf) == 3, count_pages(doc.pdf)
+    assert pdf_page_sizes(doc.pdf) == [(612, 792), (459, 594), (525, 675)]
+    assert doc.strategy == "embed-print"
+    assert [p.text for p in doc.pages] == ["page 1 text", "page 2 text", "page 3 text"]
+    assert doc.meta.title == "Embed Title"
+    assert doc.meta.page_count == 3
+    assert doc.complete is True
+    assert any("loaded 3/3 pages directly" in m for m in logs), logs
+    assert any("merged 3 page PDFs -> 3 sheets" in m for m in logs), logs

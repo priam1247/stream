@@ -33,6 +33,11 @@ with a strategy chain and graceful degradation instead of one brittle path.
 4. **`pdf-download`** — `/document_downloads/<id>?extension=pdf`: full fidelity,
    often works without login, sometimes subscriber-only.
 
+With `--browser` the chain is different, and it is where the working PDF
+comes from: **`embed-print`** (themrsami's model — see "The embed route"
+below) → **`scroll-print`** (the older scroll-the-main-viewer route) →
+`jsonp-pages`. `--no-embed` skips the first one.
+
 ## Why the typical attempt dies
 
 1. `requests.get(url)` + regex on the visible HTML → you get page 1 only. The
@@ -233,7 +238,80 @@ cached, so a re-run is instant. `--keep-images` also saves
 `PARTIAL` in the output means fewer than 90% of pages were captured — never
 assume it is the whole book.
 
+## The embed route: what `--browser` tries first
+
+`--browser` now starts with the export path from
+**[themrsami/scribd-downloader](https://github.com/themrsami/scribd-downloader)**
+(ported in `scribd/embedprint.py`, not re-invented). That project is known to
+produce clean PDFs on very large documents, and it does not fight the viewer:
+
+1. `/document/<id>/Title` → `https://www.scribd.com/embeds/<id>/content` — the
+   bare embed viewer: no site navigation, sidebar, footer or paywall chrome.
+2. Pages are loaded **through the viewer's own manager**, not by scrolling:
+
+   ```js
+   window.docManager.pages[n].load()          // fetch the page DOM
+   window.docManager.pages[n].display()       // render it
+   window.docManager.pages[n].turnOnImages()  // start image decoding
+   window.docManager.pages[n].innerPageElem   // "ready" marker
+   ```
+
+   with bounded concurrency (8) and bounded export batches (8 pages), so a
+   thousand-page document does not exhaust Chrome's memory.
+3. Toolbars are removed, cookie/consent banners are removed, and
+   `.document_scroller` is flattened while keeping its class (removing the
+   class breaks math/SVG CSS — that was a bug in older versions).
+4. Each `.outer_page` is printed **alone** via the DevTools Protocol:
+   `.outer_page { display: none }` for everything else, the target pinned at
+   `0,0` at its measured size, `html`/`body` clamped to that size with
+   `overflow: hidden`, `@page { size: <w>px <h>px; margin: 0 }`, and
+   `Page.printToPDF` with `scale: 1`, `paperWidth/paperHeight` = measured
+   px / 96, zero margins, `preferCSSPageSize: true`, **`pageRanges: "1"`**.
+5. Every page PDF is read back with `pypdf` and must contain **exactly one
+   sheet**; the pages are merged in order.
+
+```bash
+python -m scribd "URL" -o out -f pdf --cookies-file cookies.txt --no-cache --browser
+# embed-print: https://www.scribd.com/embeds/804179430/content
+# embed-print: loaded 95/95 pages directly in 12.43s (concurrency 8)
+# embed-print: toolbars removed (1 top, 1 bottom), 1 scroll container(s) flattened
+# embed-print: render settled
+# embed-print: paper from .outer_page 11.60x15.02 in
+# embed-print: exporting 95 pages in batches of 8
+# embed-print: page 1 1114x1442px -> 1 sheet
+# embed-print: merged 95 page PDFs -> 95 sheets
+# OK via embed-print
+```
+
+Tuning (same names as upstream):
+
+| env var | default | meaning |
+|---|---|---|
+| `SCRIBD_PAGE_LOAD_CONCURRENCY` | 8 | pages loaded in parallel |
+| `SCRIBD_PAGE_LOAD_TIMEOUT` | 120 | seconds per batch |
+| `SCRIBD_EXPORT_BATCH_SIZE` | 8 | pages kept in Chrome at once |
+| `SCRIBD_RENDER_SETTLE_TIMEOUT` | 30 | max seconds waiting for fonts/images |
+
+If the embed route is unavailable (`window.docManager` missing, or no
+`.outer_page` appears), the CLI falls back to the scroll-based route described
+in the next section. `--no-embed` skips it on purpose.
+
+### If our port ever fails and you just need the file
+
+Both upstream projects work independently of this repo:
+
+```bash
+git clone https://github.com/themrsami/scribd-downloader.git && cd scribd-downloader && pip install -r requirements.txt && python scribd-downloader.py
+# then paste: https://www.scribd.com/document/804179430/...
+```
+
+Or install **xDatx/Studocu-Scribd-Helper** (Chrome → `chrome://extensions` →
+Developer mode → Load unpacked, from their Releases ZIP), open the document
+with your account, and use its **In PDF** button.
+
 ## One book page per PDF sheet
+
+
 
 Earlier browser output contained the whole browser viewport (toolbars,
 sidebars, viewer chrome) and, after the first attempt at isolating pages,
@@ -300,9 +378,10 @@ viewport-shaped output); `--screenshots` additionally screenshots each page.
   deriving page images from asset URLs (`/pages/N-hash.jsonp` →
   `/images/N-hash.jpg`).
 - **[themrsami/scribd-downloader](https://github.com/themrsami/scribd-downloader)**
-  — print each page alone with `@page` sized to that page, `pageRanges: "1"`,
-  `scale: 1`, assert exactly one sheet per document page, and merge with
-  `pypdf`.
+  — the whole `--browser` export path in `scribd/embedprint.py`: embed URL,
+  `window.docManager` page loading in bounded batches, chrome removal,
+  per-page `@page` + `Page.printToPDF` with `pageRanges: "1"` and `scale: 1`,
+  one-sheet assertion, `pypdf` merge.
 - **[xDatx/Studocu-Scribd-Helper](https://github.com/xDatx/Studocu-Scribd-Helper)**
   — isolate the viewer (move the page container under `<body>`, hide every
   other body child, flatten ancestors, hide the decorative corner classes) so
