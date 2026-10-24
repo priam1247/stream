@@ -192,6 +192,43 @@ If you still get challenged with `curl_cffi` active: wait a few minutes
 challenge page is reused. A residential IP works far better than a VPN or
 datacentre IP; `--proxy` can point at your own proxy.
 
+## Getting the whole document (PDF)
+
+Text extraction gives you the readable text, but on modern Scribd documents
+the embed page ships only the **first few pages** of HTML — a 95-page
+document yields 3 pages of text. The complete file comes from the page
+images:
+
+1. **`pdf-download`** — the real PDF from `/document_downloads/<id>`.
+   Works when your account has a download credit; a 403 here is normal
+   for free accounts (the CLI says so).
+2. **`page-images-pdf`** — downloads every page image
+   (`html.scribdassets.com/<uuid>/images/<n>-<hash>.jpg`, plus the uniform
+   `screenshots.scribd.com/.../<doc_id>/<n>.jpeg` pattern for pages missing
+   from the HTML) and merges them into one PDF with Pillow.
+
+```bash
+# whole document as a PDF, keeping the page images too
+python -m scribd "https://www.scribd.com/document/REAL_ID/Title" \
+    -o out -f pdf --cookies-file cookies.txt --no-cache --keep-images
+```
+
+`pdf` is included in the default format list, so a plain run already writes
+it. Progress looks like:
+
+```
+[123] embed-text: PARTIAL 3/95 pages (the rest is lazy-loaded) — trying fuller strategies
+[123] pdf-download: HTTP 403 … usually needs a subscriber download credit
+[123] page-images: 95/95 images downloaded
+[123] OK via page-images-pdf
+```
+
+Notes: 95 images at the default `--rate 6` takes a couple of minutes and is
+cached, so a re-run is instant. `--keep-images` also saves
+`out/_pages/page-001.jpg …` if you want to OCR them yourself.
+`PARTIAL` in the output means fewer than 90% of pages were captured — never
+assume it is the whole book.
+
 ## When a document fails: `--diagnose`
 
 If a real document reports `all strategies failed: no result`, the page

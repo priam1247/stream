@@ -186,3 +186,53 @@ async def fetch_oembed(fetcher, url: str) -> dict[str, Any]:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+# ---------------------------------------------------------------------------
+# Page images — the route to a whole-document PDF
+# ---------------------------------------------------------------------------
+# Modern documents render each page as an image. Two shapes are served:
+#   html.scribdassets.com/<format_uuid>/images/<n>-<hash>.jpg?token=...
+#   screenshots.scribd.com/Scribd/<a>_<b>_<c>/<d>/<doc_id>/<n>.jpeg
+# The first is the rendered page (higher quality, per-page hash); the second
+# is uniform across the document — only the trailing page number changes —
+# so it can be turned into a template for pages missing from the HTML.
+PAGE_IMG_ASSET_RE = re.compile(
+    r"https://html\.scribdassets\.com/[A-Za-z0-9_]+/images/(\d+)-[A-Za-z0-9]+\.(?:jpe?g|png)"
+    r"(?:\?[^\"'\s<>\\]*)?"
+)
+PAGE_IMG_SHOT_RE = re.compile(
+    r"https://screenshots\.scribd\.com/Scribd/[^\"'\s<>\\]*?/(\d+)\.(?:jpe?g|png)"
+)
+SHOT_TEMPLATE_RE = re.compile(
+    r"^(?P<prefix>https?://screenshots\.scribd\.com/Scribd/.+/)\d+\.(?P<ext>jpe?g|png)(?P<q>\?.*)?$"
+)
+
+
+def extract_page_image_urls(html: str) -> dict[int, str]:
+    """Map page number -> best page image URL (rendered page preferred)."""
+    html = _normalise(html)
+    out: dict[int, str] = {}
+    for m in PAGE_IMG_ASSET_RE.finditer(html):
+        out.setdefault(int(m.group(1)), m.group(0))
+    for m in PAGE_IMG_SHOT_RE.finditer(html):
+        out.setdefault(int(m.group(1)), m.group(0))
+    return out
+
+
+def extract_screenshot_urls(html: str) -> dict[int, str]:
+    """Only the uniform screenshots.scribd.com URLs (any one gives us the
+    template that covers every page)."""
+    out: dict[int, str] = {}
+    for m in PAGE_IMG_SHOT_RE.finditer(_normalise(html)):
+        out.setdefault(int(m.group(1)), m.group(0))
+    return out
+
+
+def build_screenshot_template(urls: dict[int, str]) -> str | None:
+    """Uniform screenshots.scribd.com URL -> '{n}' template (all pages)."""
+    for url in urls.values():
+        m = SHOT_TEMPLATE_RE.match(url)
+        if m:
+            return f"{m['prefix']}{{n}}.{m['ext']}{m['q'] or ''}"
+    return None

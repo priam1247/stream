@@ -357,3 +357,143 @@ def test_scrape_error_raised_when_all_strategies_fail():
 
     with pytest.raises(ScrapeError):
         asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# Full-document PDF from page images
+# ---------------------------------------------------------------------------
+DOC_PAGE_HTML = """
+<html><head><meta property="og:title" content="Scribd"></head><body>
+<script>window.__PRELOADED_STATE__ = {"pageParams": {"pageCount": 5}};</script>
+<img src="https://html.scribdassets.com/6ysb4bcr7kdognn0/images/1-10b1c7fecb.png?token=T">
+<img src="https://html.scribdassets.com/6ysb4bcr7kdognn0/images/2-40c83ec18c.jpg?token=T">
+<img src="https://screenshots.scribd.com/Scribd/252_100_85/356/804179430/1.jpeg">
+<img src="https://screenshots.scribd.com/Scribd/252_100_85/356/804179430/2.jpeg">
+</body></html>
+"""
+
+
+def test_page_image_urls_and_template():
+    from scribd.extractors import (
+        build_screenshot_template,
+        extract_page_image_urls,
+        extract_screenshot_urls,
+    )
+
+    urls = extract_page_image_urls(DOC_PAGE_HTML)
+    assert 1 in urls and 2 in urls
+    assert "images/1-10b1c7fecb.png" in urls[1]
+    tmpl = build_screenshot_template(extract_screenshot_urls(DOC_PAGE_HTML))
+    # The uniform screenshots pattern is what fills in the missing pages.
+    assert tmpl == "https://screenshots.scribd.com/Scribd/252_100_85/356/804179430/{n}.jpeg"
+
+
+def _fake_png(color, size=(60, 80)):
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_images_merge_into_a_valid_pdf():
+    from scribd.fetch import _images_to_pdf
+
+    blobs = [_fake_png("red"), _fake_png("green"), _fake_png("blue")]
+    pdf = _images_to_pdf(blobs)
+    assert pdf and pdf.startswith(b"%PDF")
+    assert pdf.count(b"/Type /Page") >= 3 or pdf.count(b"/Type/Page") >= 3
+
+
+def test_page_images_strategy_builds_full_pdf():
+    """The reported request: 95-page doc must come out as one full PDF."""
+    from scribd.fetch import PageImagesPdfStrategy, ScrapeContext
+
+    html = DOC_PAGE_HTML.replace('"pageCount": 5', '"pageCount": 5')
+
+    class Resp:
+        def __init__(self, content=b"", ctype="text/html", status=200):
+            self.content = content
+            self.status_code = status
+            self.headers = {"content-type": ctype}
+            self.text = content.decode("latin-1", "ignore")
+
+        def json(self):
+            import json as _json
+
+            return _json.loads(self.text)
+
+    class F:
+        calls = []
+
+        async def get(self, url, **kw):
+            F.calls.append(url)
+            if "oembed" in url:
+                return Resp(b'{"title":"Malawi Book List","author_name":"cherished568"}',
+                            "application/json")
+            if url.startswith("https://screenshots.scribd.com") or "images/" in url:
+                return Resp(_fake_png("white"), "image/png")
+            return Resp(html.encode())
+
+    F.calls = []
+    ctx = ScrapeContext(doc_id="804179430", url="https://www.scribd.com/document/804179430/X")
+    doc = asyncio.run(PageImagesPdfStrategy().run(ctx, F()))
+    assert doc is not None
+    assert doc.pdf and doc.pdf.startswith(b"%PDF")
+    assert doc.complete, "5 of 5 pages should be complete"
+    assert len(doc.pages) == 5
+    assert doc.meta.title == "Malawi Book List"   # not the literal "Scribd"
+    # pages missing from HTML were filled in from the screenshot template
+    assert any("screenshots.scribd.com" in u for u in [c for c in F.calls])
+
+
+def test_partial_result_does_not_stop_the_chain():
+    from scribd import ScribdScraper
+    from scribd.fetch import Strategy
+    from scribd.models import DocumentMeta, Page, ScrapedDocument
+
+    class Partial(Strategy):
+        name = "embed-text"
+
+        async def run(self, ctx, fetcher):
+            return ScrapedDocument(
+                meta=DocumentMeta(doc_id="1", url=ctx.url, page_count=95),
+                pages=[Page(number=i, text=f"page {i}") for i in (1, 2, 3)],
+                strategy=self.name,
+                complete=False,
+            )
+
+    class Full(Strategy):
+        name = "page-images-pdf"
+
+        async def run(self, ctx, fetcher):
+            return ScrapedDocument(
+                meta=DocumentMeta(doc_id="1", url=ctx.url, page_count=95),
+                strategy=self.name,
+                pdf=b"%PDF-1.4 full",
+            )
+
+    async def go():
+        return await ScribdScraper(
+            object(), strategies=[Partial(), Full()], log=lambda m: None
+        ).scrape("https://www.scribd.com/document/1/X")
+
+    doc = asyncio.run(go())
+    assert doc.strategy == "page-images-pdf" and doc.pdf
+
+
+def test_pdf_is_exported_even_without_text_pages(tmp_path):
+    from scribd.export import write_all
+    from scribd.models import DocumentMeta, Page, ScrapedDocument
+
+    doc = ScrapedDocument(
+        meta=DocumentMeta(doc_id="1", url="u", title="Full Book", page_count=5),
+        pages=[Page(number=i, image_url="x") for i in range(1, 6)],
+        strategy="page-images-pdf",
+        pdf=b"%PDF-1.4 x",
+    )
+    written = write_all(doc, tmp_path, ["txt", "pdf"])
+    pdfs = [p for p in written if p.suffix == ".pdf"]
+    assert pdfs and pdfs[0].read_bytes().startswith(b"%PDF")

@@ -38,6 +38,16 @@ class ScrapedDocument:
     pages: list[Page] = field(default_factory=list)
     strategy: str = ""
     pdf: bytes | None = None
+    # False when the document is known to be longer than what we captured
+    # (the embed page ships only the first pages of a 95-page document).
+    # The scraper then keeps looking instead of stopping at a partial.
+    complete: bool = True
+
+    def quality(self) -> tuple[int, int]:
+        """Higher is better: a real PDF beats many pages beats few pages."""
+        if self.pdf:
+            return (2, self.meta.page_count or 10**6)
+        return (1, len(self.pages))
 
     @property
     def text(self) -> str:
@@ -49,5 +59,6 @@ class ScrapedDocument:
             "strategy": self.strategy,
             "page_count": len(self.pages),
             "has_pdf": self.pdf is not None,
+            "complete": self.complete,
             "pages": [p.to_dict() for p in self.pages],
         }
