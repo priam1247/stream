@@ -195,7 +195,85 @@ All endpoints except `/api/health` then require HTTP Basic auth (or
 `SCRIBD_WEB_TOKEN`, sent as `X-Token` or `?token=`). The cookie file is only
 ever read by the CLI subprocess — it is never served, logged or echoed.
 
-### Hosting it on xsystemshosting.com
+## Hosting it on a panel (Pterodactyl / panel.xsystemshosting.com)
+
+A Pterodactyl "Python server" is not a shell and not cPanel. It pulls the repo,
+runs `pip install -r requirements.txt`, then **executes one file** — by default
+`bot.py` — with the panel's own port already in `SERVER_PORT`. `bot.py` in this
+repo is that entry point: it starts the web UI on `0.0.0.0:$SERVER_PORT`.
+
+Panel fields (Startup tab):
+
+| Field | Value |
+| --- | --- |
+| Git Repo | `https://github.com/priam1247/stream` |
+| Git Branch | `main` (or the branch you were sent) |
+| **PY_FILE** | `bot.py` |
+| PY_PACKAGES | leave **empty** — `playwright` is in `requirements.txt` |
+| Auto Update | On, if you want the latest code on each start |
+
+Startup variables, then **Start**:
+
+```
+SCRIBD_WEB_USER=me
+SCRIBD_WEB_PASS=some-long-password
+SCRIBD_WEB_COOKIES=/home/container/cookies.txt
+```
+
+`cookies.txt` is never committed: upload it with the panel's **Files** tab
+(left sidebar → `Files` → upload into `/home/container`). If you have no
+cookies, leave `SCRIBD_WEB_COOKIES` unset — public documents still work.
+
+If you set neither `SCRIBD_WEB_USER` nor `SCRIBD_WEB_PASS`, the app refuses to
+stay open on a public port: it generates a random password and prints it once in
+the console (`user: admin`). Copy it from there, or set the variables.
+
+Then open the panel's address for that server, e.g.
+`http://195.123.189.187:25811/` (or the domain the panel gives you).
+
+### First start: Chromium
+
+Search and PDF printing both run in headless Chromium. The console tells you
+exactly what is missing:
+
+```
+browser: chromium at /home/container/.cache/ms-playwright/chromium-…/chrome
+browser: playwright is installed but Chromium is not downloaded yet.
+         open the page and press 'Install Chromium', or run:
+         python -m playwright install chromium
+```
+
+There is no shell in the panel, so either
+
+* press **Install Chromium** in the page (it starts a normal job and streams the
+  download, ~150 MB, once), or
+* set `SCRIBD_WEB_AUTO_BROWSER=1` so `bot.py` downloads it on boot.
+
+`/api/health` always reports the truth:
+
+```json
+{"ok": true, "version": "1.5.0",
+ "browser": {"playwright": true, "chromium": false, "chromium_path": ""}}
+```
+
+If Playwright itself cannot launch Chromium, the console/log says which system
+library is missing (`libnss3`, `libatk-1.0`, …). That is the one thing you
+cannot fix from inside this container — it needs the host image to have them, or
+a different host.
+
+### Caveats on a panel
+
+* The panel's RAM/CPU limit applies: one Chromium print job wants ~4 GB during
+  a large document. Keep `SCRIBD_WEB_CONCURRENCY=1`, and keep `--workers` low.
+* Disk is finite. PDFs land in `/home/container/webdata/out/`; delete old jobs
+  from **Files** when the disk fills.
+* A restart kills running jobs, but not the downloads already finished — the
+  CLI skips existing PDFs, so start the same job again and it continues.
+* Some panels stop the server after a crash-loop. `bot.py` fails loudly and
+  quickly (instead of a silent no-op) when `playwright` is missing, so read the
+  console before assuming the app is broken.
+
+### The older cPanel/Python-App route
 
 The app is a normal WSGI app (`scribd.webapp:app`), so cPanel's **Setup Python
 App** works: create the app with application root = the checkout, application

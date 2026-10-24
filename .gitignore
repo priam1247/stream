@@ -10,3 +10,5 @@ out/
 # Session credentials — NEVER commit these (equivalent to a password)
 cookies.txt
 *cookies*.txt
+webdata/
+.cache/
