@@ -330,13 +330,28 @@ card text → thumbnail `alt` → slug. Duplicates (thumbnail link, title link,
 Then every hit is printed with its URL and handed to the download chain, so
 `out/` ends up with five PDFs.
 
-Knobs: `--limit 5` (how many), `--search-pages 3` (how deep), `--jobs 3`
-(documents in parallel — default 3 for `--search`), `--search-only` (list the
-matches and download nothing — the quickest way to check the search itself):
+Knobs: `--limit 5` (how many), `--search-pages 3` (how deep), `--jobs 2`
+(documents in parallel — default 2 for `--search`, because every job is a
+browser with two tabs), `--search-only` (list the matches and download
+nothing), `--pick 1,3,7` (download only those numbers from the printed list):
 
 ```bash
-python -m scribd --search "excel" --limit 5 --search-only --browser --no-cache
+# 1) see what the search finds (fast, downloads nothing)
+python -m scribd --search "excel and succeed" --limit 50 --search-only --browser --no-cache
+
+# 2) download three of them — the 1st, 3rd and 7th of that list
+python -m scribd --search "excel and succeed" --pick 1,3,7 -o out -f pdf --cookies-file cookies.txt --no-cache --browser
+
+# ...or just take the first three
+python -m scribd --search "excel and succeed" --limit 3 -o out -f pdf --cookies-file cookies.txt --no-cache --browser
 ```
+
+`--pick` reads as far as the highest number you ask for, marks the chosen rows
+with `*` in the printed list, and warns if a number does not exist.
+
+Every search also writes `out/search-<query>.txt` (one URL per line) and
+`.json` (title + URL) for the selection — so you can trim that file by hand and
+feed it back with `--file out/search-excel_and_succeed.txt`.
 
 Repeat `--search` for several queries:
 

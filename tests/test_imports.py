@@ -2589,3 +2589,131 @@ def test_cli_search_only_lists_without_downloading(monkeypatch, tmp_path):
     assert _asyncio.run(cli.run(args)) == 0
     assert FakeScraper.attempted == []
     assert list(tmp_path.glob("*.pdf")) == []
+
+
+def test_parse_picks():
+    from scribd.cli import parse_picks
+
+    assert parse_picks("1,3,7") == {1, 3, 7}
+    assert parse_picks(" 1, 3 , 7 ") == {1, 3, 7}
+    assert parse_picks("3,3,0,-2,x,") == {3}
+    assert parse_picks(None) == set()
+    assert parse_picks("") == set()
+
+
+def _cli_search_env(monkeypatch, hits, *, scraped):
+    """Shared fakes: HTTP search empty, browser search returns ``hits``."""
+    import scribd.cli as cli
+    import scribd.search as search_mod
+    from scribd.models import DocumentMeta, Page, ScrapedDocument
+
+    class Response:
+        status_code = 200
+        text = "<html><body>shell</body></html>"
+
+    class FakeFetcher:
+        backend = "fake"
+        cookies = {}
+
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def get(self, url, **kw):
+            return Response()
+
+    class FakeScraper:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def scrape(self, url):
+            scraped.append(url)
+            doc_id = url.split("/")[4]
+            return ScrapedDocument(
+                meta=DocumentMeta(
+                    doc_id=doc_id, url=url, title=f"Doc {doc_id}", page_count=1
+                ),
+                pages=[Page(number=1, text="x")],
+                strategy="embed-print",
+                pdf=_one_page_pdf(300, 400),
+                complete=True,
+            )
+
+    async def fake_browser_search(cookies, query, *, limit=5, pages=3, debug_dir=None, log=print):
+        return list(hits)[:limit]
+
+    monkeypatch.setattr(cli, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(cli, "ScribdScraper", FakeScraper)
+    monkeypatch.setattr(search_mod, "browser_search", fake_browser_search)
+    return cli, search_mod
+
+
+def test_cli_pick_downloads_only_the_chosen_results(monkeypatch, tmp_path):
+    """`--pick 2,4` downloads exactly those two from the printed list."""
+    import asyncio as _asyncio
+
+    import scribd.search as search_mod
+
+    hits = [
+        search_mod.SearchHit(doc_id=str(4000 + n), title=f"Excel {n}", slug=f"Excel-{n}")
+        for n in range(1, 6)
+    ]
+    scraped: list[str] = []
+    cli, _ = _cli_search_env(monkeypatch, hits, scraped=scraped)
+
+    args = cli.build_parser().parse_args(
+        [
+            "--search", "excel",
+            "--limit", "5",
+            "--pick", "2,4",
+            "--jobs", "1",
+            "-o", str(tmp_path),
+            "-f", "pdf",
+        ]
+    )
+    rc = _asyncio.run(cli.run(args))
+
+    assert rc == 0
+    assert scraped == [hits[1].url, hits[3].url], scraped
+    assert len(list(tmp_path.glob("*.pdf"))) == 2
+    saved = sorted(tmp_path.glob("search-*.txt"))
+    assert saved, list(tmp_path.iterdir())
+    lines = [line for line in saved[0].read_text().splitlines() if line.strip()]
+    assert lines == [hits[1].url, hits[3].url], lines
+
+
+def test_cli_search_only_saves_the_url_list(monkeypatch, tmp_path):
+    """`--search-only` writes what it found so it can be edited and reused."""
+    import asyncio as _asyncio
+
+    import scribd.search as search_mod
+
+    hits = [
+        search_mod.SearchHit(doc_id="5001", title="First", slug="First"),
+        search_mod.SearchHit(doc_id="5002", title="Second", slug="Second"),
+    ]
+    scraped: list[str] = []
+    cli, _ = _cli_search_env(monkeypatch, hits, scraped=scraped)
+
+    args = cli.build_parser().parse_args(
+        ["--search", "excel and succeed", "--limit", "5", "--search-only", "-o", str(tmp_path)]
+    )
+    assert _asyncio.run(cli.run(args)) == 0
+
+    assert scraped == []
+    txt = tmp_path / "search-excel_and_succeed.txt"
+    js = tmp_path / "search-excel_and_succeed.json"
+    assert txt.exists() and js.exists(), list(tmp_path.iterdir())
+    assert [line for line in txt.read_text().splitlines() if line] == [
+        hits[0].url,
+        hits[1].url,
+    ]
+    payload = json.loads(js.read_text())
+    assert payload["query"] == "excel and succeed"
+    assert payload["count"] == 2
+    assert [item["doc_id"] for item in payload["results"]] == ["5001", "5002"]

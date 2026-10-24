@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -117,6 +118,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--pick",
+        metavar="N,N",
+        help=(
+            "With --search: download only these result numbers from the printed "
+            'list, 1-based (e.g. --pick 1,3,7)'
+        ),
+    )
+    p.add_argument(
         "--search-only",
         action="store_true",
         help="With --search: only list the matches (verify the search), download nothing",
@@ -180,6 +189,21 @@ def collect_urls(args: argparse.Namespace) -> list[str]:
             if line and not line.startswith("#"):
                 urls.append(line)
     return urls
+
+
+def parse_picks(value: str | None) -> set[int]:
+    """``"1,3, 7"`` -> ``{1, 3, 7}`` (1-based result numbers; junk ignored)."""
+    picks: set[int] = set()
+    for part in str(value or "").replace(" ", "").split(","):
+        if not part:
+            continue
+        try:
+            number = int(part)
+        except ValueError:
+            continue
+        if number > 0:
+            picks.add(number)
+    return picks
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -249,9 +273,14 @@ async def run(args: argparse.Namespace) -> int:
         # --- search: keyword -> document URLs (no link needed) -----------
         if queries:
             from .search import browser_search, find_documents
+            from .utils import slugify
 
+            out_dir.mkdir(parents=True, exist_ok=True)
             limit = max(1, int(getattr(args, "limit", 5) or 5))
             pages = max(1, int(getattr(args, "search_pages", 3) or 3))
+            picks = parse_picks(getattr(args, "pick", None))
+            # --pick 47 must be able to reach result 47, so read that far.
+            want = max(limit, max(picks)) if picks else limit
             found_any = 0
             for query in queries:
                 console.print(f"\n[bold]search:[/bold] {query!r} (limit {limit})")
@@ -260,7 +289,7 @@ async def run(args: argparse.Namespace) -> int:
                     hits = await find_documents(
                         fetcher,
                         query,
-                        limit=limit,
+                        limit=want,
                         pages=pages,
                         debug_dir=".debug",
                         log=lambda m: console.print(f"[dim]  {m}[/dim]"),
@@ -270,7 +299,7 @@ async def run(args: argparse.Namespace) -> int:
                         f"[red]  http search failed: {type(exc).__name__}: {exc}[/red]"[:300]
                     )
 
-                if len(hits) < limit:
+                if len(hits) < want:
                     # Scribd's search page is client-rendered: when the HTTP
                     # response has no links (it usually has none), read the
                     # results in a real browser — no login needed.
@@ -283,7 +312,7 @@ async def run(args: argparse.Namespace) -> int:
                         browser_hits = await browser_search(
                             cookies,
                             query,
-                            limit=limit,
+                            limit=want,
                             pages=pages,
                             debug_dir=".debug",
                             log=lambda m: console.print(f"[dim]  {m}[/dim]"),
@@ -296,7 +325,7 @@ async def run(args: argparse.Namespace) -> int:
                         )
                     seen = {hit.doc_id for hit in hits}
                     for hit in browser_hits:
-                        if len(hits) >= limit:
+                        if len(hits) >= want:
                             break
                         if hit.doc_id in seen:
                             continue
@@ -307,11 +336,55 @@ async def run(args: argparse.Namespace) -> int:
                     console.print("[yellow]  no matching documents[/yellow]")
                     continue
                 for number, hit in enumerate(hits, start=1):
+                    chosen = " [green]*[/green]" if number in picks else ""
                     console.print(
-                        f"  [cyan]{number}.[/cyan] {hit.title[:70]} — {hit.url}"
+                        f"  [cyan]{number}.[/cyan] {hit.title[:70]} — "
+                        f"{hit.url}{chosen}"
+                    )
+                if picks:
+                    missing = sorted(n for n in picks if n > len(hits))
+                    hits = [hit for number, hit in enumerate(hits, start=1) if number in picks]
+                    if missing:
+                        console.print(
+                            f"[yellow]  --pick: no result "
+                            f"{', '.join(str(n) for n in missing)} "
+                            f"in the first {want}[/yellow]"
+                        )
+                    if not hits:
+                        console.print("[yellow]  --pick selected nothing[/yellow]")
+                        continue
+                    console.print(
+                        "[dim]  picked: "
+                        + ", ".join(str(n) for n in sorted(picks))
+                        + "[/dim]"
                     )
                 found_any += len(hits)
                 urls.extend(hit.url for hit in hits)
+
+                # Keep the list: it can be edited and fed back with --file.
+                stem = out_dir / f"search-{slugify(query) or 'query'}"
+                try:
+                    stem.with_suffix(".txt").write_text(
+                        "".join(f"{hit.url}\n" for hit in hits), encoding="utf-8"
+                    )
+                    stem.with_suffix(".json").write_text(
+                        json.dumps(
+                            {
+                                "query": query,
+                                "count": len(hits),
+                                "results": [hit.to_dict() for hit in hits],
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                    console.print(
+                        f"[dim]  list saved: {stem.with_suffix('.txt')} "
+                        f"(feed it back with --file)[/dim]"
+                    )
+                except OSError:
+                    pass
             if not urls:
                 console.print("[red]Nothing found to download.[/red]")
                 return 1
@@ -444,7 +517,9 @@ async def run(args: argparse.Namespace) -> int:
                     "holds all pages[/dim]"
                 )
 
-        jobs = int(getattr(args, "jobs", 0) or 0) or (3 if queries else 1)
+        # Two textbooks at once is already two browsers with two tabs each;
+        # more than that is the usual way to run a laptop out of memory.
+        jobs = int(getattr(args, "jobs", 0) or 0) or (2 if queries else 1)
         jobs = max(1, min(jobs, len(urls)))
         if jobs > 1:
             console.print(
