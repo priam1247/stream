@@ -1019,30 +1019,71 @@ def test_browser_strategy_is_last_and_degrades_quietly(monkeypatch):
 # ---------------------------------------------------------------------------
 # Browser route: lazy-loaded pages only appear after scrolling
 # ---------------------------------------------------------------------------
-def test_dom_items_to_pages_numbers_and_filters():
-    from scribd.browser import dom_items_to_pages
+def test_dedupe_entries_collapses_duplicate_containers():
+    """The real DOM had 124 containers for a 95-page document."""
+    from scribd.browser import dedupe_entries, entries_to_pages
 
-    items = [
-        {"text": "page one", "images": ["https://x/1.jpg"]},
-        {"text": "", "images": ["https://x/2.jpg"]},      # image-only page kept
-        {"text": " ", "images": []},                       # empty -> dropped
-        {"text": "third page here", "images": []},
+    entries = [
+        {"text": "page one", "image": "u1"},
+        {"text": "page one", "image": "u1"},          # wrapper duplicate
+        {"text": "", "image": "u2", "screenshot": b"png"},   # image-only kept
+        {"text": " ", "image": ""},                    # empty -> dropped
+        {"text": "third page here", "image": "u3"},
     ]
-    pages = dom_items_to_pages(items)
+    kept = dedupe_entries(entries)
+    assert len(kept) == 3
+    pages = entries_to_pages(kept)
     assert [p.number for p in pages] == [1, 2, 3]
-    assert pages[1].text == "" and pages[1].image_url == "https://x/2.jpg"
+    assert pages[1].image_url == "u2"
     assert pages[2].text == "third page here"
-    assert pages[2].image_url is None
 
 
-def test_browser_strategy_builds_pdf_from_scrolled_images(monkeypatch):
-    """Simulates the reported behaviour: images exist only after scrolling."""
+def _fake_playwright(monkeypatch, *, containers=12, unique=8, fail_shots=0):
+    """Install a fake playwright module; returns the capture log."""
     import sys
     import types
 
-    from scribd.browser import BrowserStrategy
+    from scribd.browser import PAGE_INFO_JS
 
-    captured = {"scrolled": False}
+    log = {"scrolled": [], "collected": False, "cookies": None}
+
+    class FakeLocator:
+        def __init__(self, i):
+            self.i = i
+
+        async def scroll_into_view_if_needed(self, timeout=None):
+            log["scrolled"].append(self.i)
+
+        def locator(self, sel):
+            return FakeLocator(self.i)
+
+        @property
+        def first(self):
+            return self
+
+        async def evaluate(self, script, arg=None):
+            if "Promise" in str(script):
+                return True
+            return {
+                "text": f"page {(self.i % unique) + 1} text",
+                "image": f"https://html.scribdassets.com/u/images/{(self.i % unique) + 1}-a.jpg",
+                "imageReady": True,
+            }
+
+        async def screenshot(self, **kw):
+            if self.i < fail_shots:
+                raise RuntimeError("screenshot failed")
+            return _fake_png("white")
+
+    class FakeLocators:
+        def __init__(self, n):
+            self.n = n
+
+        async def count(self):
+            return self.n
+
+        def nth(self, i):
+            return FakeLocator(i)
 
     class FakePage:
         async def goto(self, *a, **kw):
@@ -1051,25 +1092,25 @@ def test_browser_strategy_builds_pdf_from_scrolled_images(monkeypatch):
         async def wait_for_selector(self, *a, **kw):
             return None
 
-        async def evaluate(self, script, arg=None):
-            if script == __import__("scribd.browser", fromlist=["SCROLL_JS"]).SCROLL_JS:
-                captured["scrolled"] = True
-                return {"steps": 12, "height": 90000, "pages": 4, "images": 4}
-            # COLLECT_JS: every page now has an image because we scrolled
-            return {
-                "selector": "div.outer_page",
-                "items": [
-                    {"text": f"page {n} text", "images": [f"https://html.scribdassets.com/u/images/{n}-a.jpg"]}
-                    for n in range(1, 5)
-                ],
-            }
+        async def wait_for_timeout(self, ms):
+            return None
+
+        def locator(self, sel):
+            return FakeLocators(containers)
+
+        async def evaluate(self, *a, **kw):
+            log["collected"] = True
+            return {}
+
+        async def content(self):
+            return f"<html><body><span>{unique} pages</span></body></html>"
 
         async def pdf(self, **kw):
             return b"%PDF-printed"
 
     class FakeContext:
         async def add_cookies(self, cookies):
-            captured["cookies"] = cookies
+            log["cookies"] = cookies
 
         async def new_page(self):
             return FakePage()
@@ -1081,7 +1122,7 @@ def test_browser_strategy_builds_pdf_from_scrolled_images(monkeypatch):
         async def close(self):
             return None
 
-    class FakePlaywright:
+    class FakePW:
         class chromium:
             @staticmethod
             async def launch(headless=True):
@@ -1094,41 +1135,68 @@ def test_browser_strategy_builds_pdf_from_scrolled_images(monkeypatch):
             return None
 
     fake = types.ModuleType("playwright.async_api")
-    fake.async_playwright = lambda: FakePlaywright()
+    fake.async_playwright = lambda: FakePW()
     monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
     monkeypatch.setitem(sys.modules, "playwright.async_api", fake)
+    assert PAGE_INFO_JS
+    return log
+
+
+def test_browser_captures_every_page_one_by_one(monkeypatch):
+    """Regression: the old strategy scrolled the window 4 steps and got 15/95."""
+    from scribd.browser import BrowserStrategy
+    from scribd.fetch import ScrapeContext
+
+    log = _fake_playwright(monkeypatch, containers=12, unique=8)
 
     class Fetcher:
         cookies = {"_scribd_session": "SECRET"}
 
         async def get(self, url, **kw):
-            if "oembed" in url:
-                class R:
-                    status_code = 200
-
-                    def json(self):
-                        return {"title": "Real Title", "author_name": "someone"}
-
-                return R()
-
             class R:
                 status_code = 200
-                content = _fake_png("white")
-                headers = {"content-type": "image/png"}
-                text = ""
+
+                def json(self):
+                    return {"title": "Real Title", "author_name": "someone"}
 
             return R()
-
-    from scribd.fetch import ScrapeContext
 
     logs: list[str] = []
     ctx = ScrapeContext(doc_id="9", url="https://www.scribd.com/document/9/X", log=logs.append)
     doc = asyncio.run(BrowserStrategy().run(ctx, Fetcher()))
 
-    assert captured["scrolled"], "the strategy must scroll before collecting"
-    assert captured["cookies"][0]["name"] == "_scribd_session"
+    # every container was visited individually (not one window scroll)
+    assert log["scrolled"] == list(range(12)), log["scrolled"]
+    assert log["cookies"][0]["name"] == "_scribd_session"
     assert doc is not None and doc.pdf and doc.pdf.startswith(b"%PDF")
-    assert len(doc.pages) == 4
-    assert doc.strategy == "browser"
+    # 12 containers collapse to 8 unique pages
+    assert len(doc.pages) == 8, len(doc.pages)
     assert doc.meta.title == "Real Title"
-    assert any("scrolled" in m for m in logs)
+    assert doc.strategy == "browser"
+    assert any("screenshots" in m for m in logs), logs
+
+
+def test_browser_survives_failed_screenshots(monkeypatch):
+    from scribd.browser import BrowserStrategy
+    from scribd.fetch import ScrapeContext
+
+    _fake_playwright(monkeypatch, containers=6, unique=6, fail_shots=2)
+
+    class Fetcher:
+        cookies = {}
+
+        async def get(self, url, **kw):
+            class R:
+                status_code = 200
+
+                def json(self):
+                    return {}
+
+            return R()
+
+    logs: list[str] = []
+    ctx = ScrapeContext(doc_id="9", url="https://www.scribd.com/document/9/X", log=logs.append)
+    doc = asyncio.run(BrowserStrategy().run(ctx, Fetcher()))
+    assert doc is not None
+    assert doc.pages, "text is still captured when a screenshot fails"
+    assert doc.pdf is not None  # falls back to the browser print
