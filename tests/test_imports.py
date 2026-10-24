@@ -136,6 +136,23 @@ def test_cli_missing_urls_file_is_clean_error_not_traceback():
     assert asyncio.run(run(args)) == 2
 
 
+def test_netscape_loader_keeps_httponly_session_cookies(tmp_path):
+    # Regression: exporters mark HttpOnly cookies "#HttpOnly_...".
+    # Skipping every "#..." line dropped the actual login session.
+    from scribd.cli import _load_netscape
+
+    f = tmp_path / "cookies.txt"
+    f.write_text(
+        "# Netscape HTTP Cookie File\n"
+        "#HttpOnly_www.scribd.com\tTRUE\t/\tTRUE\t1893456000\t_scribd_session\tSECRET\n"
+        "www.scribd.com\tFALSE\t/\tFALSE\t1893456000\tlocale\ten\n",
+        encoding="utf-8",
+    )
+    jar = _load_netscape(str(f))
+    assert jar["_scribd_session"] == "SECRET"
+    assert jar["locale"] == "en"
+
+
 def test_scrape_error_raised_when_all_strategies_fail():
     from scribd import ScrapeError, ScribdScraper
 

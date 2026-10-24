@@ -28,11 +28,19 @@ def _parse_cookie(arg: str | None) -> dict[str, str]:
 def _load_netscape(path: str) -> dict[str, str]:
     jar: dict[str, str] = {}
     for line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
-        if not line or line.startswith("#"):
+        # Exporters (e.g. "Get cookies.txt LOCALLY") prefix HttpOnly
+        # cookies with "#HttpOnly_" instead of a plain comment marker.
+        # Those are usually THE session cookies — skipping every line
+        # starting with "#" (as the original did) silently dropped the
+        # login session, so the scraper ran anonymous while the user
+        # believed they were authenticated.
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif not line or line.startswith("#"):
             continue
         parts = line.split("\t")
         if len(parts) >= 7:
-            jar[parts[5]] = parts[6]
+            jar[parts[5]] = parts[6].strip()
     return jar
 
 
@@ -98,6 +106,15 @@ async def run(args: argparse.Namespace) -> int:
         except OSError:
             console.print(f"[red]Cannot read cookies file: {args.cookies_file}[/red]")
             return 2
+    if cookies:
+        # Count only — never print names/values; a cookie value is a
+        # live session credential, equivalent to your password.
+        console.print(f"[dim]loaded {len(cookies)} account cookies (values hidden)[/dim]")
+        if args.cache_dir and not args.no_cache:
+            console.print(
+                "[dim]tip: add --no-cache on the first logged-in run so "
+                "anonymous cached pages aren't reused[/dim]"
+            )
 
     out_dir = Path(args.out)
     formats = [f.strip() for f in args.format.split(",") if f.strip()]

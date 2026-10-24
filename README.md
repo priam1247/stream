@@ -75,6 +75,33 @@ python -m scribd URL --cookies-file cookies.txt -f pdf
 > `-f/--format` = formats and `--file` = URL-list file; both documented
 > forms above work.
 
+## Using your Scribd account (cookies)
+
+Cookies make the scraper run **as you**: subscriber documents you're
+entitled to open in the browser, and the PDF endpoint, work far more
+reliably. They do **not** add search — you still find the book/document
+in your browser and copy its URL; the scraper downloads from there.
+
+1. Log in to `scribd.com` in Chrome/Edge/Firefox.
+2. Install a cookies.txt exporter (e.g. **"Get cookies.txt LOCALLY"**),
+   and — while on a scribd.com page — export cookies for the site.
+3. Save the file as `cookies.txt` in the project folder.
+   **Treat it like your password:** it's a live session credential.
+   Never paste it into a chat, screenshot it, or commit it (it's already
+   in `.gitignore`). Logging out of Scribd invalidates it.
+4. Run with it — and use `--no-cache` on the first logged-in run so
+   earlier anonymous cached pages aren't reused:
+
+```bash
+python -m scribd "https://www.scribd.com/document/REAL_ID/Real-Title" \
+    -o out -f txt,md,json,pdf --cookies-file cookies.txt --no-cache
+```
+
+You should see `loaded N account cookies (values hidden)` at startup.
+If you see `loaded 0 …`, the export didn't include scribd.com cookies —
+re-export while on a scribd.com tab. Sessions expire; when downloads
+start failing as if logged out, export a fresh `cookies.txt`.
+
 Python API:
 
 ```python

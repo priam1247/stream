@@ -6,3 +6,6 @@ venv/
 out/
 *.egg-info/
 .pytest_cache/
+# Session credentials — NEVER commit these (equivalent to a password)
+cookies.txt
+*cookies*.txt
