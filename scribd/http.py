@@ -87,6 +87,63 @@ class Fetcher:
         # from plain httpx. curl_cffi reproduces a real Chrome handshake.
         self.impersonate = impersonate
         self.backend = "httpx"
+        self._targets: list[str] = []
+        self._target_i = 0
+        self.challenges = 0
+
+    def _target_list(self) -> list[str]:
+        """Fingerprint rotation order.
+
+        Akamai sometimes accepts one browser family and challenges another
+        from the same IP, so on a challenge we try a different real
+        fingerprint (not just a different User-Agent string).
+        """
+        if not self.impersonate:
+            return []
+        primary = [t.strip() for t in str(self.impersonate).split(",") if t.strip()]
+        fallbacks = ["chrome", "chrome124", "safari", "edge101", "chrome110"]
+        out: list[str] = []
+        for t in primary + fallbacks:
+            if t not in out:
+                out.append(t)
+        return out
+
+    async def _new_cffi_session(self, target: str):
+        from curl_cffi.requests import AsyncSession  # type: ignore
+
+        kwargs: dict = dict(
+            impersonate=target,
+            timeout=self._timeout,
+            cookies=self._cookies,
+            headers=self._headers(),
+            allow_redirects=True,
+        )
+        if self._proxy:
+            kwargs["proxies"] = {"http": self._proxy, "https": self._proxy}
+        return AsyncSession(**kwargs)
+
+    async def _rotate_fingerprint(self) -> bool:
+        """Switch to the next real browser fingerprint. False if exhausted."""
+        if self._cffi is None:
+            return False
+        self.challenges += 1
+        nxt = self._target_i + 1
+        while nxt < len(self._targets):
+            target = self._targets[nxt]
+            try:
+                new_session = await self._new_cffi_session(target)
+            except Exception:
+                nxt += 1
+                continue
+            try:
+                await self._cffi.close()
+            except Exception:
+                pass
+            self._cffi = new_session
+            self._target_i = nxt
+            self.backend = f"curl_cffi ({target})"
+            return True
+        return False
 
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         h = dict(BASE_HEADERS)
@@ -96,23 +153,16 @@ class Fetcher:
         return h
 
     async def __aenter__(self) -> "Fetcher":
-        if self.impersonate:
+        self._targets = self._target_list()
+        if self._targets:
             try:
-                from curl_cffi.requests import AsyncSession  # type: ignore
-            except Exception:
+                self._cffi = await self._new_cffi_session(self._targets[0])
+            except ImportError:
                 self.backend = "httpx (curl_cffi not installed)"
+            except Exception:
+                self.backend = "httpx (curl_cffi failed)"
             else:
-                kwargs: dict = dict(
-                    impersonate=self.impersonate,
-                    timeout=self._timeout,
-                    cookies=self._cookies,
-                    headers=self._headers(),
-                    allow_redirects=True,
-                )
-                if self._proxy:
-                    kwargs["proxies"] = {"http": self._proxy, "https": self._proxy}
-                self._cffi = AsyncSession(**kwargs)
-                self.backend = f"curl_cffi ({self.impersonate})"
+                self.backend = f"curl_cffi ({self._targets[0]})"
                 return self
 
         kwargs = dict(
@@ -177,7 +227,10 @@ class Fetcher:
                             last_exc = ChallengeError(CHALLENGE_HINT)
                             if self.rotate_ua:
                                 self._ua += 1
-                            delay = 1.5 * (attempt + 1)
+                            # Try a different real browser fingerprint
+                            # before giving up on this attempt.
+                            rotated = await self._rotate_fingerprint()
+                            delay = (1.0 if rotated else 1.5) * (attempt + 1)
                         else:
                             if use_cache and self.cache and resp.status_code == 200:
                                 self.cache.put(url, resp.content)
