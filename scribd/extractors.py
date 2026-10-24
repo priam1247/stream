@@ -282,10 +282,54 @@ SHOT_TEMPLATE_RE = re.compile(
 )
 
 
+ORIG_ATTR_RE = re.compile(r'orig=\\?\\?"(https?://[^"\\]+)', re.I)
+
+
+def extract_orig_image_urls(html: str) -> dict[int, str]:
+    """Image URLs from ``<img class="absimg" orig="...">``.
+
+    Adapted from Phoenix124/scribd-downloader: the ``src`` of these tags is
+    often a lazy placeholder (which answers with HTML — the cause of
+    "html-response x11" in an earlier run), while ``orig`` holds the real
+    asset URL.
+    """
+    html = _normalise(html)
+    out: dict[int, str] = {}
+    for m in ORIG_ATTR_RE.finditer(html):
+        url = m.group(1).replace("\\/", "/")
+        page = PAGE_IN_PATH_RE.search(url) or re.search(r"/images/(\d+)-", url)
+        if page:
+            out.setdefault(int(page.group(1)), url)
+    return out
+
+
+def jsonp_to_image_url(jsonp_url: str) -> str | None:
+    """Derive the page image from a page asset URL.
+
+    Documented approach in Phoenix124/scribd-downloader: when a payload has
+    no explicit image, ``/pages/N-hash.jsonp`` maps to
+    ``/images/N-hash.jpg``. Keeps the signed query string.
+    """
+    if "/pages/" not in jsonp_url:
+        return None
+    query = ""
+    if "?" in jsonp_url:
+        jsonp_url, query = jsonp_url.split("?", 1)
+        query = "?" + query
+    base = jsonp_url.replace("/pages/", "/images/")
+    for ext in (".jsonp", ".json"):
+        if base.endswith(ext):
+            return base[: -len(ext)] + ".jpg" + query
+    return None
+
+
 def extract_page_image_urls(html: str) -> dict[int, str]:
     """Map page number -> best page image URL (rendered page preferred)."""
     html = _normalise(html)
     out: dict[int, str] = {}
+    # Real URLs first (orig attributes beat lazy src placeholders).
+    for n, u in extract_orig_image_urls(html).items():
+        out.setdefault(n, u)
     for m in PAGE_IMG_ASSET_RE.finditer(html):
         out.setdefault(int(m.group(1)), m.group(0))
     for m in PAGE_IMG_SHOT_RE.finditer(html):
