@@ -3220,7 +3220,11 @@ def test_webapp_reads_dotenv_and_finds_cookies(tmp_path, monkeypatch):
         assert webapp.ENV_FILE == tmp_path / ".env"
         assert os.environ["SCRIBD_WEB_USER"] == "me"
         assert os.environ["SCRIBD_WEB_PASS"] == "secret"
-        # no SCRIBD_WEB_COOKIES: webdata/cookies.txt is picked up on its own
+        # no SCRIBD_WEB_COOKIES: a cookies.txt in the data folder is picked up.
+        # (REPO_ROOT is pointed at tmp_path so a developer's own cookies.txt in
+        # the checkout cannot decide the result of this test.)
+        monkeypatch.setattr(webapp, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(webapp, "DATA_DIR", tmp_path)
         assert webapp.cookies_file() == str(tmp_path / "cookies.txt")
         assert webapp._cookies_args() == ["--cookies-file", str(tmp_path / "cookies.txt")]
         assert webapp.app.test_client().get("/api/health").get_json()["cookies"] is True
