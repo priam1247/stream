@@ -206,6 +206,42 @@ All endpoints except `/api/health` then require HTTP Basic auth (or
 `SCRIBD_WEB_TOKEN`, sent as `X-Token` or `?token=`). The cookie file is only
 ever read by the CLI subprocess — it is never served, logged or echoed.
 
+## Search without a browser (`tools/scribd_download.py`)
+
+The single-file tool (standard library only) does search *and* download. Scribd's
+own search page is a JavaScript app whose HTML contains no results, so the keyword
+goes to the search engines that already index scribd.com, in this order:
+
+1. DuckDuckGo html (`html.duckduckgo.com/html/`)
+2. DuckDuckGo lite (`lite.duckduckgo.com/lite/`)
+3. Bing (`www.bing.com/search?q=site:scribd.com …`)
+4. Mojeek
+5. Scribd's own search page (kept last: it usually answers with a JS shell)
+
+Every engine's answer is printed, e.g. `duckduckgo: HTTP 202 (blocked or
+throttled here)` next to `bing: 12 link(s)`, so "no documents found" can always
+be told apart from "this address was blocked". Search engines are asked with
+**no cookies**; only scribd.com and scribdassets.com ever see them.
+
+```bash
+python tools/scribd_download.py --search "physics 12th"            # list links only
+python tools/scribd_download.py --search "physics 12th" --results 20
+python tools/scribd_download.py --search "physics 12th" --pick 1,4 --download
+```
+
+The panel page has the same thing as a form: type a keyword → **Find** → tick
+the rows → **Download ticked**. Each ticked link goes through exactly the same
+download path as a pasted link, one document after another, and the verdict at
+the end counts them (`PDF BUILT — 3 of 3 document(s) built`).
+
+**If the engines block the panel's IP** (datacenter addresses often are), the
+panel page shows a bookmarklet. Open a Scribd search in your own browser and
+click it: it collects every document link on that page and sends them to the
+panel's `/send` endpoint, which queues the downloads and does the fetching. The
+search then happens in your browser, and only the links travel — which is the
+same division of labour the rest of this repo uses: the browser never has to run
+on the panel.
+
 ## Hand in hand: the panel does the downloading
 
 The panel was never the problem — forcing `--browser` was. That flag *skips* the
