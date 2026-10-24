@@ -991,6 +991,60 @@ or edit `out/search-excel_and_succeed.txt` down to the lines you want and:
 python -m scribd --file out/search-excel_and_succeed.txt -o out -f pdf --browser
 ```
 
+### The one public API route: oEmbed (metadata only)
+
+Scribd has no public search API. What it does have is an **oEmbed provider**,
+registered by WordPress for both `/doc/` and `/document/` URLs, and a request
+for a public document really does return JSON:
+
+```
+https://www.scribd.com/services/oembed?url=<encoded document URL>&format=json
+→ {"title": …, "author_name": …, "author_url": …, "thumbnail_url": …,
+   "width": …, "height": …, "html": "<iframe src=\"/embeds/<id>/content\">"}
+```
+
+That establishes metadata for a public document. It does **not** establish a
+search API, and it changes nothing about permissions: a restricted document
+simply returns no metadata.
+
+What this repo now does with it:
+
+* **before every download**, one oEmbed request gives the real title and author
+  — used in the log line, in `manifest.jsonl` (`"author"`, `"oembed": {...}`) and
+  as the fallback when a search result's label is only a slug;
+* `--require-public` turns it into a cheap refusal: if oEmbed answers 401/403/404
+  the document is skipped **without starting a browser**, which saves minutes
+  per private or mistyped link;
+* `--no-oembed` disables the request entirely (one extra round trip per
+  document, nothing more).
+
+```
+oembed: 751945245 → '2K Data' by Some Publisher
+oembed: 999999 → HTTP 404 (no public metadata)
+SKIPPED https://www.scribd.com/document/999999/x — oEmbed said HTTP 404 (not public; --require-public)
+```
+
+Two honest limits, because the difference matters:
+
+* a transport failure returns **no metadata** (None) — never "this document is
+  private";
+* only an explicit 401/403/404 combined with `--require-public` refuses a
+  download. Without the flag, every document is still attempted exactly as
+  before.
+
+#### Other Scribd endpoints: patterns, not an API
+
+| pattern | status |
+| --- | --- |
+| `https://www.scribd.com/search?query=…` | a browser page, not a machine-readable search API — this is why the search needs Chromium or a search engine |
+| `https://www.scribd.com/embeds/<id>/content` | the embed viewer, named by oEmbed's own HTML; used by the `--browser` route |
+| `https://imgv2-N-f.scribdassets.com/img/document/<id>/<w>x<h>/<token>/<page>` | a thumbnail URL **observed in metadata**; the token is per response, so constructed URLs are not guaranteed |
+| `http://api.scribd.com/api` (`docs.search`, `docs.getSettings`…) | the historical Platform API: keyed and signed, not usable as a public endpoint today |
+| `https://api.development.scribd.com/api/v3/playground` | a development-environment GraphQL example, not a public production API |
+
+So the architecture does not change: a browser (or a search engine) finds
+documents, page assets produce the PDF, and oEmbed supplies the metadata.
+
 ### Speed
 
 * `--workers N` — the per-page `Page.printToPDF` work is split across N tabs
