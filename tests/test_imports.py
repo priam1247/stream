@@ -3,6 +3,7 @@ the core parsing insights (brace matcher, JSONP strip, page template)."""
 import asyncio
 import io
 import json
+import os
 import pathlib
 import zipfile
 
@@ -3060,3 +3061,86 @@ def test_webapp_rejects_bad_requests(tmp_path, monkeypatch):
     assert client.post("/api/jobs", json={"mode": "nope"}).status_code == 400
     assert client.get("/api/jobs/doesnotexist").status_code == 404
     assert client.get("/api/jobs/doesnotexist/zip").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Panel hosting (Pterodactyl runs exactly one file: bot.py)
+# ---------------------------------------------------------------------------
+def test_resolve_bind_prefers_panel_port(monkeypatch):
+    import scribd.webapp as webapp
+
+    monkeypatch.delenv("SCRIBD_WEB_PORT", raising=False)
+    monkeypatch.setenv("SERVER_PORT", "25811")
+    assert webapp.resolve_bind(None, None) == ("127.0.0.1", 25811)
+    assert webapp.resolve_bind("0.0.0.0", None) == ("0.0.0.0", 25811)
+    # an explicit argument still wins over the environment
+    assert webapp.resolve_bind("0.0.0.0", 9000) == ("0.0.0.0", 9000)
+
+    monkeypatch.setenv("SCRIBD_WEB_PORT", "8100")
+    assert webapp.resolve_bind() == ("127.0.0.1", 8100)
+
+    monkeypatch.setenv("SCRIBD_WEB_PORT", "not-a-number")
+    monkeypatch.delenv("SERVER_PORT")
+    assert webapp.resolve_bind()[1] == 8000
+
+
+def test_ensure_auth_generates_password_for_public_host(monkeypatch):
+    import scribd.webapp as webapp
+
+    names = ("SCRIBD_WEB_USER", "SCRIBD_WEB_PASS", "SCRIBD_WEB_TOKEN")
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    try:
+        # loopback stays open (local use)
+        assert webapp.ensure_auth("127.0.0.1") == "open-loopback"
+        assert not os.environ.get("SCRIBD_WEB_USER")
+
+        # a public bind never ends up unauthenticated
+        assert webapp.ensure_auth("0.0.0.0") == "generated"
+        assert os.environ["SCRIBD_WEB_USER"] == "admin"
+        assert len(os.environ["SCRIBD_WEB_PASS"]) >= 12
+    finally:
+        # ensure_auth writes to os.environ directly (it must survive for the
+        # real server), so monkeypatch will not undo it
+        for name in names:
+            os.environ.pop(name, None)
+
+    monkeypatch.setenv("SCRIBD_WEB_USER", "me")
+    monkeypatch.setenv("SCRIBD_WEB_PASS", "mine")
+    assert webapp.ensure_auth("0.0.0.0") == "configured"
+    assert os.environ["SCRIBD_WEB_PASS"] == "mine"
+
+
+def test_webapp_health_reports_browser_status(tmp_path, monkeypatch):
+    webapp = _webapp(tmp_path, monkeypatch)
+    payload = webapp.app.test_client().get("/api/health").get_json()
+    assert payload["ok"] is True
+    assert payload["version"].count(".") >= 1
+    assert set(payload["browser"]) >= {"playwright", "chromium", "chromium_path"}
+    assert isinstance(payload["browser"]["chromium"], bool)
+
+
+def test_setup_job_runs_playwright_install(tmp_path, monkeypatch):
+    webapp = _webapp(tmp_path, monkeypatch)
+    client = webapp.app.test_client()
+
+    created = client.post("/api/jobs", json={"mode": "setup"})
+    assert created.status_code == 202, created.data
+    job = webapp.JOBS[created.get_json()["id"]]
+    command = webapp.build_command(job)
+    assert command[1:] == ["-m", "playwright", "install", "chromium"], command
+
+
+def test_bot_entry_point_is_importable(monkeypatch):
+    """The panel runs `python bot.py`; importing it must not start a server."""
+    import importlib
+
+    import bot
+
+    importlib.reload(bot)
+    assert bot.ROOT.name == "stream"
+    assert hasattr(bot, "main")
+
+    # the auto-install hook is opt-in and does nothing without the env var
+    monkeypatch.delenv("SCRIBD_WEB_AUTO_BROWSER", raising=False)
+    bot.ensure_browser()

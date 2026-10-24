@@ -11,12 +11,16 @@ streams the CLI's own log, and serves the files.
     export SCRIBD_WEB_COOKIES=/path/to/cookies.txt      # optional
     python -m scribd.webapp --host 0.0.0.0 --port 8000
 
+On a Pterodactyl-style panel there is no shell and only one file is run, so
+`bot.py` (repo root) starts this app on `0.0.0.0:$SERVER_PORT` instead.
+
 Endpoints (all behind HTTP Basic auth when the env vars are set):
 
     GET  /                          the page
     POST /api/jobs                  {"mode":"search","query":"excel","limit":50}
     POST /api/jobs                  {"mode":"download","urls":[...]}  or
                                     {"mode":"download","query":"excel","limit":0}
+    POST /api/jobs                  {"mode":"setup"}   install Chromium
     GET  /api/jobs                  all jobs + counts
     GET  /api/jobs/<id>             status, results, file list, manifest counts
     GET  /api/jobs/<id>/log?offset= incremental log text
@@ -46,6 +50,8 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_file
 
+from . import __version__
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("SCRIBD_WEB_DATA", "./webdata")).resolve()
 JOBS_DIR = DATA_DIR / "jobs"
@@ -60,6 +66,91 @@ JOBS_LOCK = threading.Lock()
 QUEUE: "queue.Queue[str]" = queue.Queue()
 WORKERS: list[threading.Thread] = []
 WORKERS_LOCK = threading.Lock()
+
+
+def _playwright_installed() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("playwright") is not None
+
+
+def _chromium_path() -> str:
+    """Where playwright keeps Chromium, if any build was downloaded."""
+    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if root and Path(root).is_dir():
+        bases = [Path(root)]
+    else:
+        bases = [Path.home() / ".cache" / "ms-playwright", REPO_ROOT / ".cache" / "ms-playwright"]
+    for base in bases:
+        if not base.is_dir():
+            continue
+        for name in ("chrome-linux/chrome", "chrome-linux/headless_shell",
+                     "chrome-headless-shell-linux64/chrome-headless-shell"):
+            for match in base.glob(f"chromium*/{name}"):
+                if match.is_file():
+                    return str(match)
+    return ""
+
+
+def browser_status() -> dict:
+    """What the panel needs to know: is a browser even usable here?"""
+    chromium = _chromium_path()
+    return {
+        "playwright": _playwright_installed(),
+        "chromium": bool(chromium),
+        "chromium_path": chromium,
+    }
+
+
+def resolve_bind(host: str | None = None, port: int | str | None = None) -> tuple[str, int]:
+    """--host/--port, else SCRIBD_WEB_*, else the panel's SERVER_PORT / PORT."""
+    resolved_host = host or os.environ.get("SCRIBD_WEB_HOST") or "127.0.0.1"
+    raw = port
+    if raw is None:
+        raw = (
+            os.environ.get("SCRIBD_WEB_PORT")
+            or os.environ.get("SERVER_PORT")   # Pterodactyl / Pterodactyl-derived panels
+            or os.environ.get("PORT")
+            or 8000
+        )
+    try:
+        resolved_port = int(raw)
+    except (TypeError, ValueError):
+        resolved_port = 8000
+    return resolved_host, resolved_port
+
+
+def _is_public(host: str) -> bool:
+    return host not in ("127.0.0.1", "localhost", "::1")
+
+
+def ensure_auth(host: str) -> str:
+    """Never serve an open downloader on a public port.
+
+    If the app is bound to something other than loopback and no credentials are
+    configured, a random password is generated and printed once to the console
+    (the panel log), where only the server owner can read it.
+    """
+    if os.environ.get("SCRIBD_WEB_USER") or os.environ.get("SCRIBD_WEB_PASS") or os.environ.get("SCRIBD_WEB_TOKEN"):
+        return "configured"
+    if not _is_public(host):
+        return "open-loopback"
+    import secrets
+
+    password = secrets.token_urlsafe(12)
+    os.environ["SCRIBD_WEB_USER"] = "admin"
+    os.environ["SCRIBD_WEB_PASS"] = password
+    print(
+        "\n" + "=" * 64 +
+        "\nNo SCRIBD_WEB_USER/SCRIBD_WEB_PASS set, and this server is public.\n"
+        "Generated credentials for this run:\n"
+        f"    user:     admin\n"
+        f"    password: {password}\n"
+        "Log in with those, or set the env vars in the panel to keep a fixed one.\n"
+        + "=" * 64 + "\n",
+        flush=True,
+    )
+    return "generated"
 
 
 def _now() -> str:
@@ -256,6 +347,10 @@ def _formats() -> str:
 
 
 def build_command(job: Job) -> list[str]:
+    if job.mode == "setup":
+        # no shell on most panels: downloading Chromium is itself a job
+        return [sys.executable, "-m", "playwright", "install", "chromium"]
+
     command = [
         sys.executable, "-m", "scribd",
         "-o", str(OUT_DIR),
@@ -419,6 +514,8 @@ def health():
     return jsonify(
         {
             "ok": True,
+            "version": __version__,
+            "browser": browser_status(),
             "jobs": len(JOBS),
             "concurrency": CONCURRENCY,
             "out": str(OUT_DIR),
@@ -435,8 +532,8 @@ def health():
 def create_job():
     payload = request.get_json(silent=True) or {}
     mode = str(payload.get("mode") or "search").lower()
-    if mode not in ("search", "download"):
-        return jsonify({"error": "mode must be 'search' or 'download'"}), 400
+    if mode not in ("search", "download", "setup"):
+        return jsonify({"error": "mode must be 'search', 'download' or 'setup'"}), 400
 
     query = str(payload.get("query") or "").strip()
     urls = [str(url).strip() for url in (payload.get("urls") or []) if str(url).strip()]
@@ -449,6 +546,11 @@ def create_job():
         pages = int(payload.get("pages", 3))
     except (TypeError, ValueError):
         pages = 3
+
+    if mode == "setup":
+        job = Job(id=uuid.uuid4().hex[:12], mode="setup", query="")
+        enqueue(job)
+        return jsonify(job.as_dict()), 202
 
     if mode == "search" and not query:
         return jsonify({"error": "query is required for a search"}), 400
@@ -597,6 +699,13 @@ PAGE = """<!doctype html>
 </style>
 <h1>Scribd search &amp; download</h1>
 
+<div id="setup" hidden>
+  <p><strong>This server has no browser yet.</strong>
+     Searches and downloads run in Chromium — nothing works until it is installed.</p>
+  <p class="muted" id="setupmsg"></p>
+  <button class="primary" id="installbrowser">Install Chromium (about 150 MB)</button>
+</div>
+
 <form id="search">
   <input type="text" id="q" placeholder="search Scribd, e.g. excel and succeed" required>
   <label class="muted">results <input type="number" id="limit" value="50" min="0" max="500" style="width:80px"></label>
@@ -744,6 +853,42 @@ function render() {
   });
 }
 
+async function checkBrowser() {
+  try {
+    const health = await api('/api/health');
+    const status = health.browser || {};
+    if (!status.playwright) {
+      $('setup').hidden = false;
+      $('setupmsg').textContent = 'The python package playwright is missing. Add it to requirements.txt (or the Additional Python packages field) and restart; this button cannot fix that.';
+      $('installbrowser').hidden = true;
+    } else if (!status.chromium) {
+      $('setup').hidden = false;
+      $('setupmsg').textContent = 'Playwright is installed, Chromium is not. Press the button once; it stays installed.';
+      $('installbrowser').hidden = false;
+    } else {
+      $('setup').hidden = true;
+    }
+  } catch (e) {}
+}
+
+$('installbrowser').onclick = async () => {
+  $('installbrowser').disabled = true;
+  $('setupmsg').textContent = 'downloading Chromium… the log below shows the progress';
+  const job = await api('/api/jobs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mode: 'setup'})
+  });
+  watchJob(job.id);
+  const finished = await waitFor(job.id);
+  $('installbrowser').disabled = false;
+  await checkBrowser();
+  $('setupmsg').textContent = finished.returncode === 0
+    ? 'Chromium installed. Reload the page and search.'
+    : 'install failed — the log says why (missing system libraries cannot be fixed from here).';
+};
+
+checkBrowser();
+
 // the search job writes its hits to disk; poll for them
 const originalWaitFor = waitFor;
 waitFor = async function (id) {
@@ -766,26 +911,46 @@ loadJobs();
 """
 
 
-def main() -> None:
+def main(host: str | None = None, port: int | None = None) -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Scribd search/download web UI")
-    parser.add_argument("--host", default=os.environ.get("SCRIBD_WEB_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("SCRIBD_WEB_PORT", "8000")))
+    parser.add_argument("--host", default=None, help="default: SCRIBD_WEB_HOST, else 127.0.0.1")
+    parser.add_argument("--port", type=int, default=None,
+                        help="default: SCRIBD_WEB_PORT, SERVER_PORT (panels), PORT, else 8000")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+    host, port = resolve_bind(args.host or host, args.port or port)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ensure_workers()
-    if not os.environ.get("SCRIBD_WEB_USER") and not os.environ.get("SCRIBD_WEB_TOKEN"):
+    auth = ensure_auth(host)
+    if auth == "configured":
+        print("auth: configured (SCRIBD_WEB_USER/SCRIBD_WEB_PASS or SCRIBD_WEB_TOKEN)", flush=True)
+    elif auth == "open-loopback":
+        print("auth: none, but bound to loopback only — fine for local use", flush=True)
+
+    status = browser_status()
+    if not status["playwright"]:
         print(
-            "WARNING: no SCRIBD_WEB_USER/SCRIBD_WEB_PASS set — anyone who reaches "
-            "this port can start downloads. Put it behind auth or a private network.",
-            file=sys.stderr,
+            "browser: playwright is NOT installed — search and download will fail.\n"
+            "         fix: add `playwright` to requirements.txt (or the panel's "
+            "PY_PACKAGES) and restart.",
+            flush=True,
         )
-    print(f"data: {DATA_DIR}\nlistening on http://{args.host}:{args.port}")
-    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
+    elif not status["chromium"]:
+        print(
+            "browser: playwright is installed but Chromium is not downloaded yet.\n"
+            "         open the page and press 'Install Chromium', or run:\n"
+            "         python -m playwright install chromium",
+            flush=True,
+        )
+    else:
+        print(f"browser: chromium at {status['chromium_path']}", flush=True)
+
+    print(f"data: {DATA_DIR}\nlistening on http://{host}:{port}", flush=True)
+    app.run(host=host, port=port, debug=args.debug, threaded=True)
 
 
 if __name__ == "__main__":
