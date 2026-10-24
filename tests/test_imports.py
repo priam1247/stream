@@ -837,3 +837,121 @@ def test_jsonp_sends_referer_to_asset_cdn():
     doc = asyncio.run(JsonpPagesStrategy().run(ctx, F()))
     assert doc is not None
     assert seen["referer"] == "https://www.scribd.com/document/1/X"
+
+
+# ---------------------------------------------------------------------------
+# Regressions from the real --diagnose crash and the pasted patch review
+# ---------------------------------------------------------------------------
+def test_diagnose_does_not_crash_when_sections_fail(tmp_path):
+    """UnboundLocalError killed the report before the decisive probe."""
+    from scribd.diagnose import diagnose
+
+    page = (
+        "<html><body>95 pages"
+        '<img src="https://html.scribdassets.com/u/pages/1-abc.jsonp">'
+        '<img src="https://html.scribdassets.com/u/pages/95-xyz.jsonp"></body></html>'
+    )
+
+    class R:
+        def __init__(self, t="", st=200, ct="text/html"):
+            self.text = t
+            self.content = t.encode()
+            self.status_code = st
+            self.headers = {"content-type": ct}
+
+        def json(self):
+            return {}
+
+    class F:
+        async def get(self, url, **kw):
+            if "/pages/" in url:
+                return R('window.page1 = {"content":"<p>hi</p>"}', 200, "application/javascript")
+            if "oembed" in url:
+                return R("{}", 200, "application/json")
+            return R(page)
+
+    rc = asyncio.run(diagnose(F(), "https://www.scribd.com/document/9/X", save_dir=tmp_path))
+    assert rc == 0
+
+
+def test_diagnose_reports_jsonp_probe_results(capsys, tmp_path):
+    """The report must state what the page assets actually return."""
+    from scribd.diagnose import diagnose
+
+    page = ('<html><body>95 pages'
+            '<img src="https://html.scribdassets.com/u/pages/1-abc.jsonp"></body></html>')
+
+    class R:
+        def __init__(self, t="", st=200, ct="text/html"):
+            self.text = t
+            self.content = t.encode()
+            self.status_code = st
+            self.headers = {"content-type": ct}
+
+        def json(self):
+            return {}
+
+    class F:
+        async def get(self, url, **kw):
+            if "/pages/" in url:
+                return R("<html>denied</html>", 403)
+            if "oembed" in url:
+                return R("{}", 200, "application/json")
+            return R(page)
+
+    asyncio.run(diagnose(F(), "https://www.scribd.com/document/9/X", save_dir=tmp_path))
+    out = capsys.readouterr().out
+    assert "jsonp page assets to probe: 1" in out
+    assert "HTTP 403" in out
+
+
+def test_images_to_pdf_skips_corrupt_blobs():
+    """One bad chunk must not destroy the whole PDF."""
+    from scribd.fetch import _images_to_pdf
+
+    good = _fake_png("red")
+    skipped: list[int] = []
+    pdf = _images_to_pdf([good, b"not an image", b"", _fake_png("blue")], skipped=skipped)
+    assert pdf and pdf.startswith(b"%PDF")
+    assert skipped == [2, 3]
+
+
+def test_image_strategy_isolates_fetch_failures():
+    from scribd.fetch import PageImagesPdfStrategy, ScrapeContext
+
+    html = (
+        "<html><body>4 pages"
+        '<img src="https://screenshots.scribd.com/Scribd/a_b/c/9/1.jpeg">'
+        "</body></html>"
+    )
+
+    class R:
+        def __init__(self, c=b"", ct="image/png", st=200):
+            self.content = c
+            self.text = c.decode("latin-1", "ignore")
+            self.status_code = st
+            self.headers = {"content-type": ct}
+
+        def json(self):
+            return {}
+
+    class F:
+        calls = 0
+
+        async def get(self, url, **kw):
+            if "screenshots.scribd.com" in url:
+                F.calls += 1
+                n = int(url.rsplit("/", 1)[-1].split(".")[0])
+                if n == 2:
+                    raise RuntimeError("network hiccup")
+                return R(_fake_png("white"))
+            if "oembed" in url:
+                return R(b"{}", "application/json")
+            return R(html.encode())
+
+    logs: list[str] = []
+    ctx = ScrapeContext(doc_id="9", url="https://www.scribd.com/document/9/X", log=logs.append)
+    doc = asyncio.run(PageImagesPdfStrategy().run(ctx, F()))
+    assert doc is not None and doc.pdf, "a single failed page must not abort the build"
+    assert len(doc.pages) == 3, f"expected 3 of 4 pages, got {len(doc.pages)}"
+    assert any("failures" in m for m in logs), logs
