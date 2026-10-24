@@ -77,14 +77,27 @@ def collect_urls(args: argparse.Namespace) -> list[str]:
 
 
 async def run(args: argparse.Namespace) -> int:
-    urls = collect_urls(args)
+    # Missing/unreadable input files are user errors, not crashes:
+    # report them cleanly (exit 2) instead of dumping a traceback.
+    try:
+        urls = collect_urls(args)
+    except OSError:
+        console.print(
+            f"[red]Cannot read URL file: {args.file}[/red] "
+            "(create it with one Scribd URL per line, or drop --file)"
+        )
+        return 2
     if not urls:
         console.print("[red]No URLs given.[/red]")
         return 2
 
     cookies = _parse_cookie(args.cookie)
     if args.cookies_file:
-        cookies.update(_load_netscape(args.cookies_file))
+        try:
+            cookies.update(_load_netscape(args.cookies_file))
+        except OSError:
+            console.print(f"[red]Cannot read cookies file: {args.cookies_file}[/red]")
+            return 2
 
     out_dir = Path(args.out)
     formats = [f.strip() for f in args.format.split(",") if f.strip()]

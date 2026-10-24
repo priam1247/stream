@@ -77,6 +77,9 @@ async def _asset_html(ctx: ScrapeContext, fetcher) -> str:
             ctx.note(f"{url} -> {type(exc).__name__}")
             continue
         if resp.status_code != 200:
+            # Say why, so a dead/placeholder doc ID (404) doesn't look
+            # like a mysterious "no result" from every strategy.
+            ctx.note(f"{url} -> HTTP {resp.status_code}")
             continue
         text = resp.text
         if "scribdassets.com" in text or "contentUrl" in text:
