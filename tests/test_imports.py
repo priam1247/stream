@@ -4517,3 +4517,34 @@ def test_check_deployment_is_standalone():
     import check_deployment as cd
 
     assert cd.selftest().startswith("selftest:")
+
+
+# ---------------------------------------------------------------------------
+# credentials never belong in the repository
+# ---------------------------------------------------------------------------
+def test_a_cookie_file_is_never_tracked():
+    """`.gitignore` cannot protect a file git has already committed — and a
+    cookies.txt uploaded through GitHub's web UI is committed anyway. The
+    workflow refuses to run in that state; this guards the repository itself."""
+    import subprocess
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    if not (root / ".git").exists():
+        pytest.skip("not a git checkout")
+    tracked = subprocess.run(["git", "ls-files", "cookies.txt"], cwd=root,
+                             capture_output=True, text=True)
+    assert tracked.stdout.strip() == "", (
+        "cookies.txt is tracked in git — run: git rm --cached cookies.txt"
+    )
+    assert "cookies.txt" in (root / ".gitignore").read_text(encoding="utf-8")
+
+
+def test_the_workflow_does_not_upload_debug_dumps():
+    """The .debug/ HTML can hold pages fetched with the user's session."""
+    workflow = (pathlib.Path(__file__).resolve().parents[1]
+                / ".github" / "workflows" / "scribd.yml").read_text(encoding="utf-8")
+    upload = workflow.split("- name: Upload PDFs and the search list")[1]
+    setting = [line.strip() for line in upload.splitlines()
+               if line.strip() and not line.strip().startswith("#")]
+    assert "path: out/" in setting
+    assert not [line for line in setting if ".debug/" in line]

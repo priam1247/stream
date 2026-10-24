@@ -121,8 +121,10 @@ in your browser and copy its URL; the scraper downloads from there.
    and — while on a scribd.com page — export cookies for the site.
 3. Save the file as `cookies.txt` in the project folder.
    **Treat it like your password:** it's a live session credential.
-   Never paste it into a chat, screenshot it, or commit it (it's already
-   in `.gitignore`). Logging out of Scribd invalidates it.
+   Never paste it into a chat, screenshot it, or commit it. `.gitignore` only
+   protects files git has never seen — uploading it through GitHub's web UI
+   commits it anyway, and `.gitignore` cannot undo that. Logging out of Scribd
+   invalidates it, which is also the remedy if it ever leaks.
 4. Run with it — and use `--no-cache` on the first logged-in run so
    earlier anonymous cached pages aren't reused:
 
@@ -430,6 +432,10 @@ Private repos get 2,000 free minutes a month; public repos are unlimited.
 
 1. **Once:** Settings → Secrets and variables → Actions → *New repository
    secret* → name `SCRIBD_COOKIES_B64`, value = base64 of your `cookies.txt`.
+   **Never** use GitHub's *Add file → Upload files* for `cookies.txt`: the web
+   upload ignores `.gitignore` and commits the file, and a public repository
+   means a live session credential anyone can read. The workflow now refuses to
+   run if `cookies.txt` is tracked.
    On Windows, in Git Bash:
    ```bash
    base64 -w0 cookies.txt        # copy the output, paste it as the secret

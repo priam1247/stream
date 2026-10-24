@@ -65,6 +65,14 @@ jobs:
       - name: Install Chromium (with its system libraries)
         run: python -m playwright install --with-deps chromium
 
+      - name: Refuse to run while a cookie file is tracked
+        run: |
+          if git ls-files --error-unmatch cookies.txt >/dev/null 2>&1; then
+            echo "::error::cookies.txt is tracked in this repository — remove it now: git rm --cached cookies.txt"
+            exit 1
+          fi
+          echo "credential check: no cookie file is tracked"
+
       - name: Restore your Scribd cookies (optional)
         env:
           SCRIBD_COOKIES_B64: ${{ secrets.SCRIBD_COOKIES_B64 }}
@@ -123,9 +131,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: scribd-out-${{ github.run_number }}
-          path: |
-            out/
-            .debug/
+          path: out/
           if-no-files-found: warn
           retention-days: 14
           compression-level: 0        # PDFs are already compressed
+          # .debug/ is deliberately not uploaded: the HTML dumps can contain
+          # pages and metadata fetched with your session.
