@@ -2444,9 +2444,12 @@ $('copybm').onclick = async () => {
 
 // The bookmarklet: take every document link on the page you are looking at and
 // hand the links to this panel, which does the downloading.
+const PANEL = location.origin;   // this page's own address, baked into the link
 $('bm').textContent =
-  "javascript:(()=>{const o=location.origin+'/send?';"
-  + "const u=[...document.querySelectorAll('a[href*=\\\"/document/\\\"]')]"
+  "javascript:(()=>{const o=" + JSON.stringify(PANEL + '/send?') + ";"
+  + "const sel='a[href*=\\\"/document/\\"],a[href*=\\\"/presentation/\\"],'"
+  + "+ 'a[href*=\\\"/spreadsheet/\\"],a[href*=\\\"/ebook/\\"]';"
+  + "const u=[...document.querySelectorAll(sel)]"
   + ".map(a=>a.href.split('?')[0]).filter((v,i,s)=>s.indexOf(v)===i).slice(0,40);"
   + "if(!u.length){alert('no document links on this page');return}"
   + "location.href=o+u.map(x=>'url='+encodeURIComponent(x)).join('&')})()";
