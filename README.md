@@ -254,8 +254,18 @@ python -m scribd "https://www.scribd.com/document/REAL_ID/Title" \
     -o out -f pdf,txt --cookies-file cookies.txt --no-cache --browser
 ```
 
-Expect `browser: scrolled N steps, 95 page containers, 95 images in DOM` and
-`browser: PDF assembled from page images`.
+Expect a line per ten pages, then:
+
+```
+browser: 'div.outer_page' matched 124 containers
+browser: captured 10 pages…
+…
+browser: captured 95 pages via 'div.outer_page' (95 screenshots, 95 image URLs)
+browser: PDF from 95 page screenshots
+```
+
+Each container is scrolled into view and **screenshotted**, so the PDF no longer
+depends on CDN image URLs (those were lazy placeholders returning HTML).
 
 Scribd's viewer is lazy-loaded: page images for later pages only exist in the
 DOM after scrolling, so the strategy scrolls first and collects afterwards.
