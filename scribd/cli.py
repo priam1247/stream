@@ -108,6 +108,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="Browser TLS fingerprint via curl_cffi (default: chrome; 'none' to disable)",
     )
     p.add_argument(
+        "--search",
+        action="append",
+        metavar="QUERY",
+        help=(
+            "Search Scribd for this keyword and download the matches — no link "
+            'needed (e.g. --search "excel"). Repeat for several queries.'
+        ),
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="With --search: how many documents to download (default 5)",
+    )
+    p.add_argument(
+        "--search-pages",
+        type=int,
+        default=3,
+        help="With --search: how many result pages to read while filling --limit",
+    )
+    p.add_argument(
+        "--jobs",
+        type=int,
+        default=0,
+        help=(
+            "How many documents to download in parallel "
+            "(default: 3 with --search, 1 otherwise)"
+        ),
+    )
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help=(
+            "With --browser: tabs printing pages in parallel "
+            "(default: 2, or 4 with --fast)"
+        ),
+    )
+    p.add_argument(
+        "--fast",
+        action="store_true",
+        help="Shorter settle wait, bigger batches, 4 printing tabs",
+    )
+    p.add_argument(
+        "--preload-all",
+        action="store_true",
+        help=(
+            "With --browser: load every page up front (upstream's slow mode) "
+            "instead of only the pages being printed"
+        ),
+    )
+    p.add_argument(
         "--diagnose",
         action="store_true",
         help="Report what the live page returns (no download); saves .debug/page-*.html",
@@ -136,8 +188,12 @@ async def run(args: argparse.Namespace) -> int:
             "(create it with one Scribd URL per line, or drop --file)"
         )
         return 2
-    if not urls:
-        console.print("[red]No URLs given.[/red]")
+    queries = [q for q in (getattr(args, "search", None) or []) if str(q).strip()]
+    if not urls and not queries:
+        console.print(
+            "[red]No URLs given.[/red] Pass a Scribd URL, --file urls.txt, "
+            'or search without a link: --search "excel"'
+        )
         return 2
 
     cookies = _parse_cookie(args.cookie)
@@ -185,20 +241,68 @@ async def run(args: argparse.Namespace) -> int:
                 rc = max(rc, await diagnose(fetcher, url))
             return rc
 
+        # --- search: keyword -> document URLs (no link needed) -----------
+        if queries:
+            from .search import find_documents
+
+            limit = max(1, int(getattr(args, "limit", 5) or 5))
+            pages = max(1, int(getattr(args, "search_pages", 3) or 3))
+            found_any = 0
+            for query in queries:
+                console.print(f"\n[bold]search:[/bold] {query!r} (limit {limit})")
+                try:
+                    hits = await find_documents(
+                        fetcher,
+                        query,
+                        limit=limit,
+                        pages=pages,
+                        log=lambda m: console.print(f"[dim]  {m}[/dim]"),
+                    )
+                except Exception as exc:
+                    console.print(
+                        f"[red]search failed: {type(exc).__name__}: {exc}[/red]"[:300]
+                    )
+                    continue
+                if not hits:
+                    console.print(
+                        "[yellow]  no matching documents "
+                        "(Scribd returned no parsable results)[/yellow]"
+                    )
+                    continue
+                for number, hit in enumerate(hits, start=1):
+                    console.print(
+                        f"  [cyan]{number}.[/cyan] {hit.title[:70]} — {hit.url}"
+                    )
+                found_any += len(hits)
+                urls.extend(hit.url for hit in hits)
+            if not urls:
+                console.print("[red]Nothing found to download.[/red]")
+                return 1
+            console.print(f"[dim]found {found_any} document(s) to download[/dim]")
+
         out_dir.mkdir(parents=True, exist_ok=True)
+        fast = bool(getattr(args, "fast", False))
         strategies = None
         if getattr(args, "browser", False):
             from .browser import BrowserStrategy
+            from .embedprint import EmbedPrintStrategy
             from .fetch import JsonpPagesStrategy
 
-            from .embedprint import EmbedPrintStrategy
-
+            workers = int(getattr(args, "workers", 0) or 0) or (4 if fast else 2)
             strategies = []
             if not getattr(args, "no_embed", False):
                 # First choice: themrsami/scribd-downloader's model — the bare
                 # embed viewer, pages loaded through window.docManager, then
-                # one CDP Page.printToPDF sheet per document page.
-                strategies.append(EmbedPrintStrategy())
+                # one CDP Page.printToPDF sheet per document page. Printing is
+                # split across `workers` tabs.
+                strategies.append(
+                    EmbedPrintStrategy(
+                        workers=workers,
+                        batch_size=12 if fast else 8,
+                        settle_timeout=10 if fast else 30,
+                        preload_all=bool(getattr(args, "preload_all", False)),
+                    )
+                )
             strategies.append(
                 BrowserStrategy(
                     screenshot=bool(getattr(args, "screenshots", False)),
@@ -209,7 +313,9 @@ async def run(args: argparse.Namespace) -> int:
             console.print(
                 "[dim]using the Chromium route (--browser): "
                 + ("embed-print -> " if len(strategies) > 2 else "")
-                + "scroll-print -> jsonp[/dim]"
+                + f"scroll-print -> jsonp (embed-print uses {workers} tab(s)"
+                + (", fast preset" if fast else "")
+                + ")[/dim]"
             )
         scraper = ScribdScraper(
             fetcher,
@@ -220,9 +326,20 @@ async def run(args: argparse.Namespace) -> int:
             images_dir=str(out_dir / "_pages"),
             log=lambda m: console.print(f"[dim]{m}[/dim]"),
         )
+
         ok = 0
-        for url in urls:
-            console.print(f"\n[bold cyan]{url}[/bold cyan]")
+        done = 0
+        counter_lock = asyncio.Lock()
+
+        async def download_one(url: str) -> None:
+            nonlocal ok, done
+            async with counter_lock:
+                done += 1
+                position = done
+            console.print(
+                f"\n[bold cyan]{url}[/bold cyan] "
+                f"[dim]({position}/{len(urls)})[/dim]"
+            )
             try:
                 doc = await scraper.scrape(url)
             except ScrapeError as exc:
@@ -235,7 +352,12 @@ async def run(args: argparse.Namespace) -> int:
                         "If it persists, your IP may be rate-limited — wait a "
                         "while, or use --proxy with your own proxy.[/yellow]"
                     )
-                continue
+                return
+            except Exception as exc:  # one document must not kill the batch
+                console.print(
+                    f"[red]FAILED[/red] {url} — {type(exc).__name__}: {exc}"[:300]
+                )
+                return
             written = write_all(doc, out_dir, formats)
             if not written:
                 # e.g. "-f pdf" on a text-only result: nothing was saved,
@@ -250,8 +372,9 @@ async def run(args: argparse.Namespace) -> int:
                         else ""
                     )
                 )
-                continue
-            ok += 1
+                return
+            async with counter_lock:
+                ok += 1
             label = doc.meta.title[:70]
             what = (
                 f"PDF {len(doc.pdf):,} bytes"
@@ -278,6 +401,23 @@ async def run(args: argparse.Namespace) -> int:
                     "  [dim]text export is empty (image-only document); the PDF "
                     "holds all pages[/dim]"
                 )
+
+        jobs = int(getattr(args, "jobs", 0) or 0) or (3 if queries else 1)
+        jobs = max(1, min(jobs, len(urls)))
+        if jobs > 1:
+            console.print(
+                f"[dim]downloading {len(urls)} document(s), {jobs} at a time[/dim]"
+            )
+            semaphore = asyncio.Semaphore(jobs)
+
+            async def guarded(url: str) -> None:
+                async with semaphore:
+                    await download_one(url)
+
+            await asyncio.gather(*(guarded(url) for url in urls))
+        else:
+            for url in urls:
+                await download_one(url)
 
         console.print(f"\n[bold]{ok}/{len(urls)} succeeded[/bold] → {out_dir.resolve()}")
         return 0 if ok else 1

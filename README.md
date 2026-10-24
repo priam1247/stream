@@ -296,6 +296,48 @@ If the embed route is unavailable (`window.docManager` missing, or no
 `.outer_page` appears), the CLI falls back to the scroll-based route described
 in the next section. `--no-embed` skips it on purpose.
 
+### Search and download without a link
+
+```bash
+python -m scribd --search "excel" --limit 5 -o out -f pdf --cookies-file cookies.txt --no-cache --browser
+```
+
+`--search` replaces the URL argument: the CLI queries
+`https://www.scribd.com/search?query=excel&page=1` (same cookies and TLS
+fingerprint as the download), reads the result page, prints every hit with its
+URL, and hands those URLs to the normal download chain — so the five files land
+in `out/` without you pasting a single link.
+
+Title parsing per result: the anchor's `title` / `aria-label`, else its text,
+else the thumbnail's `img alt`, else the slug. The same document appears as a
+thumbnail link, a title link and a "Save" link on one page; those collapse into
+one hit (the longest real title wins). If a result page ships the data only as
+inline JSON, `"documentId": <id>` paired with the nearest `"title": "..."` is
+used instead. Documents order is Scribd's order.
+
+Knobs: `--limit 5` (how many to download), `--search-pages 3` (how many result
+pages to read while filling the limit), `--jobs 3` (documents in parallel —
+default 3 for `--search`, 1 otherwise). Repeat `--search` for several queries:
+
+```bash
+python -m scribd --search "excel" --search "pivot tables" --limit 5 -o out -f pdf --cookies-file cookies.txt --no-cache --browser
+```
+
+### Speed
+
+* `--workers N` — the per-page `Page.printToPDF` work is split across N tabs
+  (default 2, 4 with `--fast`). Each tab loads only the pages it prints, so the
+  download cost is unchanged and only the printing runs in parallel.
+* `--jobs N` — download several documents at once (default 3 for `--search`).
+* `--fast` — 4 tabs, batch of 12, 10s settle budget instead of 30s.
+* No more "load every page first": the page count comes from
+  `window.docManager` and only the pages being printed are fetched.
+  `--preload-all` restores upstream's slower load-everything-first mode.
+* Every tab reports its own throughput, e.g.
+  `embed-print[w1]: done — 47/47 pages in 90.3s (0.5 pages/s)`, so you can tell
+  whether more workers helps on your machine (weak CPU: keep 2; a 3 GB doc with
+  `--jobs 3` may want `--jobs 1`).
+
 ### If our port ever fails and you just need the file
 
 Both upstream projects work independently of this repo:
