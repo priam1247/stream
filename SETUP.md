@@ -228,6 +228,43 @@ It will work **only if Chromium can start there**. In order:
    there; use Path A or B. Do not spend another day on it — the code is not the
    problem.
 
+### Test the panel first: one file, no installs
+
+Before you upload the whole zip, run `check_deployment.py`. It is one file,
+uses only Python's standard library, and needs no package, no Chromium and no
+repository next to it. It answers one question: **can this machine do the job?**
+
+1. Download the single file (right-click → *Save link as*):
+   <https://raw.githubusercontent.com/priam1247/stream/main/check_deployment.py>
+2. Upload it to the panel's file manager, next to `bot.py`.
+3. In the panel's startup settings, set **`PY_FILE=check_deployment.py`**, keep
+   the port as it is, and restart.
+4. Open your server address in the browser. The page shows PASS / FAIL lines and
+   a verdict, and refreshes itself while the checks run (about a minute).
+5. Put `PY_FILE=bot.py` back when you are done.
+
+You can also run it by hand anywhere: `python check_deployment.py`
+(add `--json` for the raw data, `--doc <scribd url>` to test a different
+document, `--cookies <path>` if the file is not in the project root).
+
+It tests, and prints the evidence for: Python version, writable folder, free
+disk, **glibc or musl**, whether a Chromium binary exists, whether its `.so`
+files resolve, whether it really launches, whether it really writes a PDF,
+whether `scribd.com` / the oEmbed endpoint / DuckDuckGo / Bing / `deb.debian.org`
+are reachable, how many cookies load and whether a session cookie is among them
+(counts only — never a value), and the document page anonymous vs. with cookies.
+
+Read only the verdict line:
+
+| verdict | what it means | what to do |
+| --- | --- | --- |
+| `YES` | browser works, Scribd answers, printing works | deploy the zip here |
+| `PARTLY` | Scribd answers but no browser (or Scribd walls this IP) | `SCRIBD_WEB_BROWSER=off`, or use Path A |
+| `NO` | cannot reach `scribd.com` at all | do not deploy here; use Path A |
+
+Nothing it writes leaves the machine: the report lands in
+`.debug/deployment-check.txt` and `.debug/deployment-check.html`.
+
 Panel files, once it runs:
 
 ```
@@ -278,6 +315,7 @@ The CLI flags that matter:
 | `.github/workflows/scribd.yml` | the GitHub Actions batch runner |
 | `Dockerfile` | the image for a 24/7 hosted page |
 | `bot.py` | entry point a panel runs |
+| `check_deployment.py` | one-file test of a host, before deploying anything |
 | `SETUP.md` | this file |
 
 ---

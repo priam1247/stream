@@ -4484,3 +4484,36 @@ def test_cli_manifest_carries_oembed_title_and_author(monkeypatch, tmp_path):
     assert row["status"] == "ok"
     assert row["author"] == "Some Publisher"
     assert row["oembed"]["title"] == "2K Data"
+
+
+# ---------------------------------------------------------------------------
+# check_deployment.py — the standalone pre-deployment test file
+# ---------------------------------------------------------------------------
+def test_check_deployment_parses_cookies_and_documents():
+    import check_deployment as cd
+
+    jar, expired = cd.parse_netscape_cookies(
+        "# Netscape HTTP Cookie File\n"
+        ".scribd.com\tTRUE\t/\tFALSE\t0\t_scribd_session\tabc\n"
+        ".scribd.com\tTRUE\t/\tFALSE\t1\tstale\told\n"
+        "#HttpOnly_.scribd.com\tTRUE\t/\tFALSE\t0\tsessionid\tzzz\n"
+    )
+    assert jar == {"_scribd_session": "abc", "sessionid": "zzz"}
+    assert expired == 1
+    assert cd.doc_id_of("https://www.scribd.com/document/751945245/2K-Data") == "751945245"
+    assert cd.doc_id_of("https://www.scribd.com/embeds/7/content") == "7"
+    assert cd.doc_id_of("nothing here") == ""
+    assert cd.classify_html(b"<title>Just a moment...</title>")["challenge"] is True
+    assert cd.classify_html(b"window.docManager={page_count:3}")["content"] is True
+
+
+def test_check_deployment_is_standalone():
+    """The whole point: one file, no repo imports, no third-party packages."""
+    source = pathlib.Path("check_deployment.py").read_text(encoding="utf-8")
+    assert "import scribd" not in source
+    assert "from scribd" not in source
+    for package in ("httpx", "flask", "playwright", "bs4", "curl_cffi", "pypdf"):
+        assert f"import {package}" not in source
+    import check_deployment as cd
+
+    assert cd.selftest().startswith("selftest:")
