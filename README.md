@@ -146,6 +146,34 @@ python -m scribd --help
   strategy: render the page, grab `page.content()`, and feed that string
   straight into `_build_from_html` — no other code changes needed.
 
+## When a document fails: `--diagnose`
+
+If a real document reports `all strategies failed: no result`, the page
+loaded but the extractors found no asset URLs. Ask the tool what the live
+page actually looks like instead of guessing:
+
+```bash
+python -m scribd "https://www.scribd.com/document/REAL_ID/Title" \
+    --cookies-file cookies.txt --diagnose
+```
+
+It reports, per endpoint (page, embed, render-metadata, oembed, PDF): HTTP
+status, byte count and content type; which config markers occur in the
+page; the parsed state keys; how many page asset URLs were extracted; and
+the scribdassets URL *shapes* seen. It saves the raw page to
+`.debug/page-<id>.html` (git-ignored) for offline inspection. Cookie
+values are never printed.
+
+Common causes, in order of likelihood:
+
+1. **Escaped slashes** — config embedded as JSON writes
+   `https:\/\/html.scribdassets.com\/…`; handled by `_normalise()`.
+2. **JS-only shell** — the HTML is a skeleton and the state arrives via a
+   later XHR. The report shows zero markers; the fix is a Playwright
+   strategy (see below).
+3. **Paywall/403** — cookies not accepted; the report shows the status.
+4. **Scanned document** — pages load but have no text layer (images only).
+
 ### Respect the source
 
 Only scrape content you have the right to access, keep the rate limits on,

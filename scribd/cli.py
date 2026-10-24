@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cookie", help='Raw cookie string: "k=v; k2=v2"')
     p.add_argument("--cookies-file", help="Netscape cookies.txt export")
     p.add_argument("--proxy", help="e.g. http://127.0.0.1:8080")
+    p.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="Report what the live page returns (no download); saves .debug/page-*.html",
+    )
     return p
 
 
@@ -128,6 +133,15 @@ async def run(args: argparse.Namespace) -> int:
         cookies=cookies,
         proxy=args.proxy,
     ) as fetcher:
+        if args.diagnose:
+            from .diagnose import diagnose
+
+            rc = 0
+            for url in urls:
+                console.print(f"\n[bold cyan]{url}[/bold cyan]")
+                rc = max(rc, await diagnose(fetcher, url))
+            return rc
+
         scraper = ScribdScraper(
             fetcher,
             markdown=args.markdown,

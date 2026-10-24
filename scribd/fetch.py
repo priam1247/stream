@@ -82,7 +82,22 @@ async def _asset_html(ctx: ScrapeContext, fetcher) -> str:
             ctx.note(f"{url} -> HTTP {resp.status_code}")
             continue
         text = resp.text
-        if "scribdassets.com" in text or "contentUrl" in text:
+        # Accept any page that carries a document-config marker. The old
+        # check only looked for "scribdassets.com"/"contentUrl" in the raw
+        # string, which missed pages whose config is escaped or that use
+        # a different state key — those fell through to "no result".
+        if any(
+            marker in text
+            for marker in (
+                "scribdassets.com",
+                "contentUrl",
+                "content_url",
+                "/pages/1-",
+                "pageParams",
+                "docManager",
+                "access_key",
+            )
+        ):
             if i > 0:
                 ctx.note("using embed endpoint")
             return text

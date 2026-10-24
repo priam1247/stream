@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .scribd-cache/
 out/
+.debug/
 *.egg-info/
 .pytest_cache/
 # Session credentials — NEVER commit these (equivalent to a password)
