@@ -72,6 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cookies-file", help="Netscape cookies.txt export")
     p.add_argument("--proxy", help="e.g. http://127.0.0.1:8080")
     p.add_argument(
+        "--browser",
+        action="store_true",
+        help="Force the Chromium route (auto-scrolls the viewer; needs playwright)",
+    )
+    p.add_argument(
         "--keep-images",
         action="store_true",
         help="Also save the downloaded page images (out/<name>_pages/)",
@@ -160,8 +165,16 @@ async def run(args: argparse.Namespace) -> int:
             return rc
 
         out_dir.mkdir(parents=True, exist_ok=True)
+        strategies = None
+        if getattr(args, "browser", False):
+            from .browser import BrowserStrategy
+            from .fetch import JsonpPagesStrategy
+
+            strategies = [BrowserStrategy(), JsonpPagesStrategy()]
+            console.print("[dim]using the Chromium route (--browser)[/dim]")
         scraper = ScribdScraper(
             fetcher,
+            strategies=strategies,
             markdown=args.markdown,
             want_images=args.images,
             keep_images=args.keep_images,

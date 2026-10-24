@@ -240,13 +240,25 @@ renders exactly what your logged-in account sees — including pages that are
 lazy-loaded by JavaScript — then captures the text of every page and prints
 the document to PDF:
 
+Scribd's viewer is **lazy-loaded**: page images for later pages are injected
+into the DOM as you scroll, so *no* static request can see them. The browser
+route therefore scrolls every scrollable pane of the viewer first, then
+collects each page's text and image URLs from the live DOM:
+
 ```bash
 pip install playwright
 playwright install chromium
 
+# force it (skips the HTTP strategies)
 python -m scribd "https://www.scribd.com/document/REAL_ID/Title" \
-    -o out -f pdf --cookies-file cookies.txt --no-cache
+    -o out -f pdf,txt --cookies-file cookies.txt --no-cache --browser
 ```
+
+Expect `browser: scrolled N steps, 95 page containers, 95 images in DOM` and
+`browser: PDF assembled from page images`.
+
+Scribd's viewer is lazy-loaded: page images for later pages only exist in the
+DOM after scrolling, so the strategy scrolls first and collects afterwards.
 
 Watch for `browser: N pages via 'div.outer_page', + PDF`. If Playwright is
 not installed the strategy says so and the rest of the chain is unaffected.

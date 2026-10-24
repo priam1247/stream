@@ -1014,3 +1014,121 @@ def test_browser_strategy_is_last_and_degrades_quietly(monkeypatch):
     pages = clean_pages(["  page one  ", "", "x", "page two "], min_words=2)
     assert [p.number for p in pages] == [1, 2]
     assert pages[0].text == "page one"
+
+
+# ---------------------------------------------------------------------------
+# Browser route: lazy-loaded pages only appear after scrolling
+# ---------------------------------------------------------------------------
+def test_dom_items_to_pages_numbers_and_filters():
+    from scribd.browser import dom_items_to_pages
+
+    items = [
+        {"text": "page one", "images": ["https://x/1.jpg"]},
+        {"text": "", "images": ["https://x/2.jpg"]},      # image-only page kept
+        {"text": " ", "images": []},                       # empty -> dropped
+        {"text": "third page here", "images": []},
+    ]
+    pages = dom_items_to_pages(items)
+    assert [p.number for p in pages] == [1, 2, 3]
+    assert pages[1].text == "" and pages[1].image_url == "https://x/2.jpg"
+    assert pages[2].text == "third page here"
+    assert pages[2].image_url is None
+
+
+def test_browser_strategy_builds_pdf_from_scrolled_images(monkeypatch):
+    """Simulates the reported behaviour: images exist only after scrolling."""
+    import sys
+    import types
+
+    from scribd.browser import BrowserStrategy
+
+    captured = {"scrolled": False}
+
+    class FakePage:
+        async def goto(self, *a, **kw):
+            return None
+
+        async def wait_for_selector(self, *a, **kw):
+            return None
+
+        async def evaluate(self, script, arg=None):
+            if script == __import__("scribd.browser", fromlist=["SCROLL_JS"]).SCROLL_JS:
+                captured["scrolled"] = True
+                return {"steps": 12, "height": 90000, "pages": 4, "images": 4}
+            # COLLECT_JS: every page now has an image because we scrolled
+            return {
+                "selector": "div.outer_page",
+                "items": [
+                    {"text": f"page {n} text", "images": [f"https://html.scribdassets.com/u/images/{n}-a.jpg"]}
+                    for n in range(1, 5)
+                ],
+            }
+
+        async def pdf(self, **kw):
+            return b"%PDF-printed"
+
+    class FakeContext:
+        async def add_cookies(self, cookies):
+            captured["cookies"] = cookies
+
+        async def new_page(self):
+            return FakePage()
+
+    class FakeBrowser:
+        async def new_context(self, **kw):
+            return FakeContext()
+
+        async def close(self):
+            return None
+
+    class FakePlaywright:
+        class chromium:
+            @staticmethod
+            async def launch(headless=True):
+                return FakeBrowser()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    fake = types.ModuleType("playwright.async_api")
+    fake.async_playwright = lambda: FakePlaywright()
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake)
+
+    class Fetcher:
+        cookies = {"_scribd_session": "SECRET"}
+
+        async def get(self, url, **kw):
+            if "oembed" in url:
+                class R:
+                    status_code = 200
+
+                    def json(self):
+                        return {"title": "Real Title", "author_name": "someone"}
+
+                return R()
+
+            class R:
+                status_code = 200
+                content = _fake_png("white")
+                headers = {"content-type": "image/png"}
+                text = ""
+
+            return R()
+
+    from scribd.fetch import ScrapeContext
+
+    logs: list[str] = []
+    ctx = ScrapeContext(doc_id="9", url="https://www.scribd.com/document/9/X", log=logs.append)
+    doc = asyncio.run(BrowserStrategy().run(ctx, Fetcher()))
+
+    assert captured["scrolled"], "the strategy must scroll before collecting"
+    assert captured["cookies"][0]["name"] == "_scribd_session"
+    assert doc is not None and doc.pdf and doc.pdf.startswith(b"%PDF")
+    assert len(doc.pages) == 4
+    assert doc.strategy == "browser"
+    assert doc.meta.title == "Real Title"
+    assert any("scrolled" in m for m in logs)

@@ -5,3 +5,5 @@ rich>=13.7
 curl_cffi>=0.7     # browser TLS fingerprint — needed for Scribd anti-bot
 ebooklib>=0.18     # optional, for EPUB export
 Pillow>=10         # merge page images into a PDF
+# Optional: browser route for lazy-loaded pages (then: playwright install chromium)
+# playwright>=1.44
