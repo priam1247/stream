@@ -302,26 +302,52 @@ in the next section. `--no-embed` skips it on purpose.
 python -m scribd --search "excel" --limit 5 -o out -f pdf --cookies-file cookies.txt --no-cache --browser
 ```
 
-`--search` replaces the URL argument: the CLI queries
-`https://www.scribd.com/search?query=excel&page=1` (same cookies and TLS
-fingerprint as the download), reads the result page, prints every hit with its
-URL, and hands those URLs to the normal download chain — so the five files land
-in `out/` without you pasting a single link.
+`--search` replaces the URL argument: type a keyword, get five documents — no
+link needed, and no login either (Scribd search is public; your cookies are
+used when present).
 
-Title parsing per result: the anchor's `title` / `aria-label`, else its text,
-else the thumbnail's `img alt`, else the slug. The same document appears as a
-thumbnail link, a title link and a "Save" link on one page; those collapse into
-one hit (the longest real title wins). If a result page ships the data only as
-inline JSON, `"documentId": <id>` paired with the nearest `"title": "..."` is
-used instead. Documents order is Scribd's order.
+**Scribd's search page is a JavaScript app.** The HTTP response is a shell with
+zero document links in it — that is why the first version reported
+`0 result(s)` on a page that shows twenty results in Chrome. The search now
+runs in two steps:
 
-Knobs: `--limit 5` (how many to download), `--search-pages 3` (how many result
-pages to read while filling the limit), `--jobs 3` (documents in parallel —
-default 3 for `--search`, 1 otherwise). Repeat `--search` for several queries:
+1. **HTTP first** (fast, uses the same cookies/TLS fingerprint as the
+   download). If it does carry links, they are used.
+2. **A real browser** otherwise: headless Chromium opens
+   `https://www.scribd.com/search?query=excel`, closes the cookie banner, waits
+   for the result cards, scrolls to the bottom until the card count stops
+   growing (the grid is lazy), and reads the document links out of the live
+   DOM. It tries the known search URL shapes
+   (`/search?query=…`, `…&content_type=documents`, `/search/documents?query=…`)
+   and keeps the first that renders results. `--search-pages N` (default 3)
+   also walks the result pages with `&page=2,3,…` when the first page does not
+   fill `--limit`.
+
+Titles are scored so real ones beat junk: `title` attribute → `aria-label` →
+card text → thumbnail `alt` → slug. Duplicates (thumbnail link, title link,
+"Save" link for the same document) collapse into one hit with the best title.
+
+Then every hit is printed with its URL and handed to the download chain, so
+`out/` ends up with five PDFs.
+
+Knobs: `--limit 5` (how many), `--search-pages 3` (how deep), `--jobs 3`
+(documents in parallel — default 3 for `--search`), `--search-only` (list the
+matches and download nothing — the quickest way to check the search itself):
+
+```bash
+python -m scribd --search "excel" --limit 5 --search-only --browser --no-cache
+```
+
+Repeat `--search` for several queries:
 
 ```bash
 python -m scribd --search "excel" --search "pivot tables" --limit 5 -o out -f pdf --cookies-file cookies.txt --no-cache --browser
 ```
+
+If nothing is found, the CLI does not pretend it worked: it writes what the
+browser saw to `.debug/search-<query>-browser.html` and `.png` (the HTTP page,
+when empty, goes to `.debug/search-<query>-p<N>.html`) and says so. Those two
+files are enough to fix a changed result layout.
 
 ### Speed
 

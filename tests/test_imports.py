@@ -2304,3 +2304,288 @@ def test_find_documents_dumps_unparsable_page(tmp_path):
     assert dumped and dumped[0].name == "search-excel-formulas-p1.html", dumped
     assert "nothing here" in dumped[0].read_text()
     assert any("no usable results" in m for m in logs), logs
+
+
+# ---------------------------------------------------------------------------
+# Search in a real browser: Scribd's search page is client-rendered, so the
+# HTTP response has no result links (the "0 result(s)" report).
+# ---------------------------------------------------------------------------
+def test_browser_extract_js_reads_a_result_grid():
+    """The live-DOM extractor keeps order, dedupes and prefers real titles."""
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - sandbox without node
+        pytest.skip("node not available")
+    from scribd.search import BROWSER_EXTRACT_JS
+
+    script = pathlib.Path(__file__).with_name("mock_search_dom.js")
+    proc = subprocess.run(
+        [node, str(script)],
+        input=json.dumps({"extract": BROWSER_EXTRACT_JS}),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
+def _fake_search_browser(monkeypatch, *, links_per_url, hits, viewed):
+    import sys
+    import types
+
+    from scribd import search as search_mod
+
+    class Page:
+        async def goto(self, url, **kw):
+            viewed.append(url)
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+        async def title(self):
+            return "Scribd Search"
+
+        async def content(self):
+            return "<html><body>search shell</body></html>"
+
+        async def screenshot(self, path=None, **kw):
+            if path:
+                pathlib.Path(path).write_bytes(_fake_png("white", size=(20, 20)))
+            return b""
+
+        async def evaluate(self, script, arg=None):
+            if script == search_mod.COUNT_LINKS_JS:
+                for marker, count in links_per_url.items():
+                    if marker in (viewed[-1] if viewed else ""):
+                        return count
+                return 0
+            if script == search_mod.BROWSER_EXTRACT_JS:
+                return list(hits)
+            if script == search_mod.BROWSER_SCROLL_JS:
+                return {"links": len(hits)}
+            return 0
+
+    class Context:
+        async def add_cookies(self, cookies):
+            return None
+
+        async def new_page(self):
+            return Page()
+
+    class Browser:
+        async def new_context(self, **kw):
+            return Context()
+
+        async def close(self):
+            return None
+
+    class PW:
+        class chromium:
+            @staticmethod
+            async def launch(headless=True, args=None):
+                return Browser()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    fake = types.ModuleType("playwright.async_api")
+    fake.async_playwright = lambda: PW()
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake)
+
+
+def test_browser_search_uses_the_url_shape_that_renders(monkeypatch, tmp_path):
+    """The first URL renders nothing; the next one yields the cards."""
+    import asyncio as _asyncio
+
+    from scribd.search import SEARCH_VARIANTS, browser_search
+
+    raw = [
+        {"doc_id": "1001", "kind": "document", "slug": "Excel-One", "title": "Excel One"},
+        {"doc_id": "1002", "kind": "document", "slug": "Excel-Two", "title": "Excel Two"},
+        {"doc_id": "1003", "kind": "presentation", "slug": "Excel-Three", "title": ""},
+    ]
+    viewed: list[str] = []
+    second = SEARCH_VARIANTS[1].split("?")[0] + "?query=excel&content_type"
+    _fake_search_browser(
+        monkeypatch, links_per_url={second: 12, SEARCH_VARIANTS[2]: 12}, hits=raw,
+        viewed=viewed,
+    )
+
+    logs: list[str] = []
+    hits = _asyncio.run(
+        browser_search(
+            {"_scribd_session": "x"},
+            "excel",
+            limit=5,
+            pages=1,
+            debug_dir=tmp_path,
+            log=logs.append,
+        )
+    )
+
+    assert [h.doc_id for h in hits] == ["1001", "1002", "1003"], hits
+    # the slug-only card still gets a usable title
+    assert hits[2].title == "Excel Three"
+    assert len(viewed) >= 2, viewed
+    assert "query=excel" in viewed[0]
+    assert any("browser found 3 document(s)" in m for m in logs), logs
+    # nothing was dumped: results were found
+    assert list(tmp_path.glob("search-*")) == []
+
+
+def test_browser_search_dumps_the_page_when_nothing_renders(monkeypatch, tmp_path):
+    """All URL shapes empty → save HTML + screenshot and say so."""
+    import asyncio as _asyncio
+
+    from scribd.search import browser_search
+
+    viewed: list[str] = []
+    _fake_search_browser(monkeypatch, links_per_url={}, hits=[], viewed=viewed)
+
+    logs: list[str] = []
+    hits = _asyncio.run(
+        browser_search(None, "excel", limit=5, pages=1, debug_dir=tmp_path, log=logs.append)
+    )
+
+    assert hits == []
+    dumped_html = list(tmp_path.glob("search-excel-browser.html"))
+    dumped_png = list(tmp_path.glob("search-excel-browser.png"))
+    assert dumped_html and dumped_png, list(tmp_path.iterdir())
+    assert "search shell" in dumped_html[0].read_text()
+    assert any("saved the page" in m for m in logs), logs
+
+
+def test_cli_searches_in_a_browser_when_the_http_page_has_no_links(monkeypatch, tmp_path):
+    """End to end: HTTP search empty -> browser search -> 5 downloads, no URL."""
+    import asyncio as _asyncio
+
+    import scribd.cli as cli
+    import scribd.search as search_mod
+    from scribd.models import DocumentMeta, Page, ScrapedDocument
+
+    class Response:
+        status_code = 200
+        text = "<html><body>search shell, no links</body></html>"
+
+    class FakeFetcher:
+        backend = "fake"
+        cookies = {}
+
+        def __init__(self, **kw):
+            self.requested: list[str] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def get(self, url, **kw):
+            self.requested.append(url)
+            return Response()
+
+    class FakeScraper:
+        attempted: list[str] = []
+
+        def __init__(self, *a, **kw):
+            pass
+
+        async def scrape(self, url):
+            FakeScraper.attempted.append(url)
+            doc_id = url.split("/")[4]
+            return ScrapedDocument(
+                meta=DocumentMeta(
+                    doc_id=doc_id, url=url, title=f"Excel Doc {doc_id}", page_count=1
+                ),
+                pages=[Page(number=1, text="x")],
+                strategy="embed-print",
+                pdf=_one_page_pdf(300, 400),
+                complete=True,
+            )
+
+    async def fake_browser_search(cookies, query, *, limit=5, pages=3, debug_dir=None, log=print):
+        return [
+            search_mod.SearchHit(
+                doc_id=str(2000 + n), kind="document", slug=f"Excel-{n}",
+                title=f"Excel Browser {n}",
+            )
+            for n in range(1, limit + 1)
+        ]
+
+    monkeypatch.setattr(cli, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(cli, "ScribdScraper", FakeScraper)
+    monkeypatch.setattr(search_mod, "browser_search", fake_browser_search)
+
+    args = cli.build_parser().parse_args(
+        ["--search", "excel", "--limit", "5", "--jobs", "1", "-o", str(tmp_path), "-f", "pdf"]
+    )
+    rc = _asyncio.run(cli.run(args))
+
+    assert rc == 0
+    assert len(FakeScraper.attempted) == 5, FakeScraper.attempted
+    assert sorted(u.rsplit("/", 2)[-2] for u in FakeScraper.attempted) == [
+        "2001", "2002", "2003", "2004", "2005",
+    ]
+    assert len(list(tmp_path.glob("*.pdf"))) == 5
+
+
+def test_cli_search_only_lists_without_downloading(monkeypatch, tmp_path):
+    """`--search-only` proves the search works and downloads nothing."""
+    import asyncio as _asyncio
+
+    import scribd.cli as cli
+    import scribd.search as search_mod
+
+    class Response:
+        status_code = 200
+        text = "<html><body>shell</body></html>"
+
+    class FakeFetcher:
+        backend = "fake"
+        cookies = {}
+
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def get(self, url, **kw):
+            return Response()
+
+    class FakeScraper:
+        attempted: list[str] = []
+
+        def __init__(self, *a, **kw):
+            pass
+
+        async def scrape(self, url):  # pragma: no cover - must not be called
+            FakeScraper.attempted.append(url)
+            raise AssertionError("--search-only must not download anything")
+
+    async def fake_browser_search(cookies, query, *, limit=5, pages=3, debug_dir=None, log=print):
+        return [
+            search_mod.SearchHit(doc_id="3001", title="Excel One"),
+            search_mod.SearchHit(doc_id="3002", title="Excel Two"),
+        ]
+
+    monkeypatch.setattr(cli, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(cli, "ScribdScraper", FakeScraper)
+    monkeypatch.setattr(search_mod, "browser_search", fake_browser_search)
+
+    args = cli.build_parser().parse_args(
+        ["--search", "excel", "--limit", "5", "--search-only", "-o", str(tmp_path), "-f", "pdf"]
+    )
+    assert _asyncio.run(cli.run(args)) == 0
+    assert FakeScraper.attempted == []
+    assert list(tmp_path.glob("*.pdf")) == []
