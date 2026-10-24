@@ -4548,3 +4548,41 @@ def test_the_workflow_does_not_upload_debug_dumps():
                if line.strip() and not line.strip().startswith("#")]
     assert "path: out/" in setting
     assert not [line for line in setting if ".debug/" in line]
+
+
+# ---------------------------------------------------------------------------
+# download_check.py — "can this host download a link without a browser?"
+# ---------------------------------------------------------------------------
+def test_download_check_verdict_rules():
+    import download_check as dc
+
+    assert dc.clean("\x1b[31mFAILED\x1b[0m x") == "FAILED x"
+    assert dc.verdict(None, [], ["working"])[0] == "RUNNING"
+    assert dc.verdict(0, [], ["ok"])[0] == "NO PDF"
+    assert dc.verdict(0, [{"name": "a.pdf", "size": 5000, "mtime": 0}], [])[0] == "PDF BUILT"
+    assert dc.verdict(0, [{"name": "a.pdf", "size": 10, "mtime": 0}], [])[0] == "NO PDF"
+    assert dc.verdict(1, [], ["FAILED HTTP 403"]) == ("NO PDF", "FAILED HTTP 403")
+    assert "no cookies" in dc.cookie_summary("")
+
+
+def test_download_check_reads_the_cookie_path_without_printing_values(tmp_path):
+    import download_check as dc
+
+    jar = tmp_path / "cookies.txt"
+    jar.write_text(
+        "# Netscape HTTP Cookie File\n"
+        ".scribd.com\tTRUE\t/\tFALSE\t0\t_scribd_session\tsecret-value\n",
+        encoding="utf-8",
+    )
+    assert dc.find_cookies(str(jar)) == str(jar)
+    summary = dc.cookie_summary(str(jar))
+    assert "_scribd_session" in summary
+    assert "secret-value" not in summary
+
+
+def test_download_check_runs_the_project_cli():
+    """It must exercise the real downloader, not a reimplementation of it."""
+    source = pathlib.Path("download_check.py").read_text(encoding="utf-8")
+    assert '"-m", "scribd"' in source
+    assert '"--file"' in source and '"--cookies-file"' in source
+    assert '"--browser"' in source and '"--require-public"' in source
