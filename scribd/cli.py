@@ -117,6 +117,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--search-only",
+        action="store_true",
+        help="With --search: only list the matches (verify the search), download nothing",
+    )
+    p.add_argument(
         "--limit",
         type=int,
         default=5,
@@ -243,13 +248,14 @@ async def run(args: argparse.Namespace) -> int:
 
         # --- search: keyword -> document URLs (no link needed) -----------
         if queries:
-            from .search import find_documents
+            from .search import browser_search, find_documents
 
             limit = max(1, int(getattr(args, "limit", 5) or 5))
             pages = max(1, int(getattr(args, "search_pages", 3) or 3))
             found_any = 0
             for query in queries:
                 console.print(f"\n[bold]search:[/bold] {query!r} (limit {limit})")
+                hits = []
                 try:
                     hits = await find_documents(
                         fetcher,
@@ -261,14 +267,44 @@ async def run(args: argparse.Namespace) -> int:
                     )
                 except Exception as exc:
                     console.print(
-                        f"[red]search failed: {type(exc).__name__}: {exc}[/red]"[:300]
+                        f"[red]  http search failed: {type(exc).__name__}: {exc}[/red]"[:300]
                     )
-                    continue
+
+                if len(hits) < limit:
+                    # Scribd's search page is client-rendered: when the HTTP
+                    # response has no links (it usually has none), read the
+                    # results in a real browser — no login needed.
+                    if not hits:
+                        console.print(
+                            "[dim]  the HTTP page had no result links — "
+                            "reading the results in a real browser…[/dim]"
+                        )
+                    try:
+                        browser_hits = await browser_search(
+                            cookies,
+                            query,
+                            limit=limit,
+                            pages=pages,
+                            debug_dir=".debug",
+                            log=lambda m: console.print(f"[dim]  {m}[/dim]"),
+                        )
+                    except Exception as exc:
+                        browser_hits = []
+                        console.print(
+                            f"[yellow]  browser search failed: "
+                            f"{type(exc).__name__}: {exc}[/yellow]"[:300]
+                        )
+                    seen = {hit.doc_id for hit in hits}
+                    for hit in browser_hits:
+                        if len(hits) >= limit:
+                            break
+                        if hit.doc_id in seen:
+                            continue
+                        seen.add(hit.doc_id)
+                        hits.append(hit)
+
                 if not hits:
-                    console.print(
-                        "[yellow]  no matching documents "
-                        "(Scribd returned no parsable results)[/yellow]"
-                    )
+                    console.print("[yellow]  no matching documents[/yellow]")
                     continue
                 for number, hit in enumerate(hits, start=1):
                     console.print(
@@ -280,6 +316,11 @@ async def run(args: argparse.Namespace) -> int:
                 console.print("[red]Nothing found to download.[/red]")
                 return 1
             console.print(f"[dim]found {found_any} document(s) to download[/dim]")
+            if getattr(args, "search_only", False):
+                console.print(
+                    "[dim]--search-only: nothing downloaded[/dim]"
+                )
+                return 0 if found_any else 1
 
         out_dir.mkdir(parents=True, exist_ok=True)
         fast = bool(getattr(args, "fast", False))
