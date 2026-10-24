@@ -11,6 +11,9 @@ from .blockers import CHALLENGE_HINT, ChallengeError, looks_challenged
 from .config import DOWNLOAD_PDF_URL, EMBED_URL, RENDER_META_URL
 from .extractors import (
     build_page_template,
+    build_screenshot_template,
+    extract_page_image_urls,
+    extract_screenshot_urls,
     extract_content_urls,
     extract_image_urls,
     extract_meta,
@@ -29,6 +32,8 @@ class ScrapeContext:
     markdown: bool = False
     want_images: bool = False
     max_pages: int = 5000
+    keep_images: bool = False
+    images_dir: str = ""
     log: object = print
     _probe_cache: dict = field(default_factory=dict)
 
@@ -235,13 +240,18 @@ class PdfDownloadStrategy(Strategy):
             return None
         ctype = resp.headers.get("content-type", "").lower()
         if resp.status_code != 200 or "pdf" not in ctype or len(resp.content) < 5000:
+            ctx.note(
+                f"pdf-download: HTTP {resp.status_code}, {len(resp.content):,} bytes, "
+                f"type {ctype or 'unknown'} — usually needs a subscriber download credit"
+            )
             return None
         title = "document"
         cd = resp.headers.get("content-disposition", "")
         if "filename=" in cd:
             title = unquote(cd.split("filename=")[-1].strip().strip('";'))
         meta = DocumentMeta(doc_id=ctx.doc_id, url=ctx.url, title=title, kind=ctx.kind)
-        ctx.note("got PDF via download endpoint")
+        await _fill_meta_from_oembed(ctx, fetcher, ScrapedDocument(meta=meta))
+        ctx.note(f"pdf-download: got PDF ({len(resp.content):,} bytes)")
         return ScrapedDocument(meta=meta, strategy=self.name, pdf=resp.content)
 
 
@@ -278,7 +288,16 @@ class EmbedTextStrategy(Strategy):
         if len(resp.text) < 500:
             ctx.note(f"embed -> {len(resp.text)} bytes, too small")
             return None
-        return build_from_embed(ctx, resp.text)
+        doc = build_from_embed(ctx, resp.text)
+        if doc is None:
+            return None
+        await _fill_meta_from_oembed(ctx, fetcher, doc)
+        if not doc.complete:
+            ctx.note(
+                f"embed-text: PARTIAL {len(doc.pages)}/{doc.meta.page_count} pages "
+                "(the rest is lazy-loaded) — trying fuller strategies"
+            )
+        return doc
 
 
 # Page containers, most specific first. Scribd's embed markup is
@@ -344,13 +363,158 @@ def build_from_embed(ctx: ScrapeContext, html: str) -> ScrapedDocument | None:
         ctx.note(f"embed-text: only {len(total_text.split())} words — not a document")
         return None
 
-    meta.page_count = meta.page_count or len(pages)
-    return ScrapedDocument(meta=meta, pages=pages, strategy=EmbedTextStrategy.name)
+    expected = meta.page_count or len(pages)
+    complete = len(pages) >= expected * 0.9
+    if not meta.page_count:
+        meta.page_count = len(pages)
+    return ScrapedDocument(
+        meta=meta, pages=pages, strategy=EmbedTextStrategy.name, complete=complete
+    )
+
+
+async def _fill_meta_from_oembed(ctx: ScrapeContext, fetcher, doc: ScrapedDocument) -> None:
+    """og:title on embed markup is often the literal "Scribd"; oEmbed isn't."""
+    placeholder = doc.meta.title in ("", f"scribd_{ctx.doc_id}") or (
+        doc.meta.title.strip().lower() == "scribd"
+    )
+    if not placeholder and doc.meta.author:
+        return
+    oembed = await fetch_oembed(fetcher, ctx.url)
+    if placeholder and oembed.get("title"):
+        doc.meta.title = str(oembed["title"])
+    if not doc.meta.author and oembed.get("author_name"):
+        doc.meta.author = str(oembed["author_name"])
+
+
+class PageImagesPdfStrategy(Strategy):
+    """Rebuild the whole document as a PDF from its page images.
+
+    Modern Scribd documents are image-backed: each page is a JPEG/PNG. The
+    embed endpoint only ships the first few pages of HTML, but the page
+    image URLs cover every page — ``images/<n>-<hash>.jpg`` for pages that
+    appear in the HTML, and the uniform
+    ``screenshots.scribd.com/.../<doc_id>/<n>.jpeg`` pattern (only the
+    number changes) for the rest. Download them all and merge into a PDF,
+    which is what "download the whole file" actually means here.
+    """
+
+    name = "page-images-pdf"
+
+    async def run(self, ctx: ScrapeContext, fetcher) -> ScrapedDocument | None:
+        html = await _asset_html(ctx, fetcher)
+        if not html:
+            return None
+        meta = extract_meta(html, ctx.url, ctx.doc_id, ctx.kind)
+        urls = extract_page_image_urls(html)
+        shot = build_screenshot_template(extract_screenshot_urls(html))
+        if not urls and not shot:
+            ctx.note("page-images: no page image URLs found")
+            return None
+
+        total = meta.page_count or (max(urls) if urls else 0)
+        if total <= 0:
+            return None
+        total = min(total, ctx.max_pages)
+
+        def url_for(n: int) -> str | None:
+            return urls.get(n) or (shot.format(n=n) if shot else None)
+
+        sem = asyncio.Semaphore(6)
+        ctx.note(f"page-images: fetching {total} page images")
+
+        async def fetch_image(n: int) -> tuple[int, bytes] | None:
+            u = url_for(n)
+            if not u:
+                return None
+            async with sem:
+                try:
+                    r = await fetcher.get(u, headers={"Referer": ctx.url})
+                except Exception:
+                    return None
+            if r.status_code != 200 or not r.content:
+                return None
+            if looks_challenged(r.text if b"<html" in r.content[:200] else ""):
+                return None
+            return n, r.content
+
+        results = [x for x in await asyncio.gather(*(fetch_image(n) for n in range(1, total + 1))) if x]
+        if len(results) < 2:
+            ctx.note(f"page-images: only {len(results)} images downloaded")
+            return None
+        got = len(results)
+        ctx.note(f"page-images: {got}/{total} images downloaded")
+
+        if ctx.keep_images and ctx.images_dir:
+            from pathlib import Path as _Path
+
+            d = _Path(ctx.images_dir)
+            d.mkdir(parents=True, exist_ok=True)
+            for n, data in results:
+                ext = "jpg" if data[:3] == b"\xff\xd8\xff" else "png"
+                (d / f"page-{n:03d}.{ext}").write_bytes(data)
+            ctx.note(f"page-images: saved images to {d}")
+
+        pdf = _images_to_pdf([data for _, data in results])
+        if not pdf:
+            ctx.note("page-images: PDF assembly failed (is Pillow installed?)")
+            return None
+
+        pages = [
+            Page(number=n, image_url=url_for(n) or "", text="")
+            for n, _ in results
+        ]
+        await _fill_meta_from_oembed(ctx, fetcher, ScrapedDocument(meta=meta, pages=pages))
+        if not meta.page_count:
+            meta.page_count = got
+        return ScrapedDocument(
+            meta=meta,
+            pages=pages,
+            strategy=self.name,
+            pdf=pdf,
+            complete=got >= total * 0.9,
+        )
+
+
+def _images_to_pdf(blobs: list[bytes]) -> bytes | None:
+    """Merge page images into a single PDF (needs Pillow)."""
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+    except Exception:
+        return None
+    frames = []
+    try:
+        for b in blobs:
+            try:
+                im = Image.open(BytesIO(b))
+                im.load()
+            except Exception:
+                continue
+            frames.append(im.convert("RGB"))
+        if not frames:
+            return None
+        out = BytesIO()
+        frames[0].save(
+            out,
+            format="PDF",
+            save_all=True,
+            append_images=frames[1:],
+            resolution=150.0,
+        )
+        return out.getvalue()
+    finally:
+        for f in frames:
+            try:
+                f.close()
+            except Exception:
+                pass
 
 
 DEFAULT_STRATEGIES: list[Strategy] = [
     EmbedTextStrategy(),
+    PdfDownloadStrategy(),
+    PageImagesPdfStrategy(),
     JsonpPagesStrategy(),
     RenderMetadataStrategy(),
-    PdfDownloadStrategy(),
 ]

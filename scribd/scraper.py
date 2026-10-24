@@ -28,12 +28,16 @@ class ScribdScraper:
         strategies: list[Strategy] | None = None,
         markdown: bool = False,
         want_images: bool = False,
+        keep_images: bool = False,
+        images_dir: str = "",
         log: Callable[[str], None] = print,
     ) -> None:
         self.fetcher = fetcher
         self.strategies = strategies or DEFAULT_STRATEGIES
         self.markdown = markdown
         self.want_images = want_images
+        self.keep_images = keep_images
+        self.images_dir = images_dir
         self.log = log
 
     async def scrape(self, url: str) -> ScrapedDocument:
@@ -44,9 +48,12 @@ class ScribdScraper:
             kind=kind,
             markdown=self.markdown,
             want_images=self.want_images,
+            keep_images=self.keep_images,
+            images_dir=self.images_dir,
             log=self.log,
         )
         errors: list[str] = []
+        best: ScrapedDocument | None = None
         for strategy in self.strategies:
             self.log(f"[{doc_id}] strategy: {strategy.name}")
             try:
@@ -54,10 +61,25 @@ class ScribdScraper:
             except Exception as exc:
                 errors.append(f"{strategy.name}: {type(exc).__name__}: {exc}")
                 continue
-            if doc and (doc.pages or doc.pdf):
+            if not doc or not (doc.pages or doc.pdf):
+                errors.append(f"{strategy.name}: no result")
+                continue
+            if best is None or doc.quality() > best.quality():
+                best = doc
+            if doc.complete:
                 self.log(f"[{doc_id}] OK via {strategy.name}")
                 return doc
-            errors.append(f"{strategy.name}: no result")
+            # Partial: keep it, but let a fuller strategy (the PDF
+            # download, or page images merged into a PDF) try to do better.
+            errors.append(
+                f"{strategy.name}: partial ({len(doc.pages)}/{doc.meta.page_count} pages)"
+            )
+        if best is not None:
+            self.log(
+                f"[{doc_id}] best available via {best.strategy} "
+                f"({len(best.pages)} pages{' + pdf' if best.pdf else ''}, partial)"
+            )
+            return best
         raise ScrapeError(f"{url} — all strategies failed: " + "; ".join(errors))
 
     async def scrape_many(self, urls: list[str]) -> list[ScrapedDocument | Exception]:

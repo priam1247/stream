@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-f",
         "--format",
         dest="format",
-        default="txt,md,json",
+        default="txt,md,json,pdf",
         help="Comma list: txt,md,json,html,epub,pdf",
     )
     p.add_argument("--markdown", action="store_true", help="Keep bold/italic in output")
@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cookie", help='Raw cookie string: "k=v; k2=v2"')
     p.add_argument("--cookies-file", help="Netscape cookies.txt export")
     p.add_argument("--proxy", help="e.g. http://127.0.0.1:8080")
+    p.add_argument(
+        "--keep-images",
+        action="store_true",
+        help="Also save the downloaded page images (out/<name>_pages/)",
+    )
     p.add_argument(
         "--impersonate",
         default="chrome",
@@ -154,10 +159,13 @@ async def run(args: argparse.Namespace) -> int:
                 rc = max(rc, await diagnose(fetcher, url))
             return rc
 
+        out_dir.mkdir(parents=True, exist_ok=True)
         scraper = ScribdScraper(
             fetcher,
             markdown=args.markdown,
             want_images=args.images,
+            keep_images=args.keep_images,
+            images_dir=str(out_dir / "_pages"),
             log=lambda m: console.print(f"[dim]{m}[/dim]"),
         )
         ok = 0
@@ -179,11 +187,31 @@ async def run(args: argparse.Namespace) -> int:
             written = write_all(doc, out_dir, formats)
             ok += 1
             label = doc.meta.title[:70]
+            what = (
+                f"PDF {len(doc.pdf):,} bytes"
+                if doc.pdf
+                else f"{len(doc.pages)} pages"
+            )
+            partial = ""
+            if not doc.complete:
+                partial = (
+                    f" [yellow](PARTIAL {len(doc.pages)}/{doc.meta.page_count})[/yellow]"
+                )
             console.print(
-                f"[green]OK[/green] {label} — {len(doc.pages)} pages via {doc.strategy}"
+                f"[green]OK[/green] {label} — {what} via {doc.strategy}{partial}"
             )
             for w in written:
                 console.print(f"  [dim]→ {w}[/dim]")
+            if doc.pdf and "pdf" not in formats:
+                console.print(
+                    "  [yellow]the full document is in the PDF — add pdf to -f "
+                    "(e.g. -f txt,md,pdf)[/yellow]"
+                )
+            elif doc.pdf and not doc.text.strip():
+                console.print(
+                    "  [dim]text export is empty (image-only document); the PDF "
+                    "holds all pages[/dim]"
+                )
 
         console.print(f"\n[bold]{ok}/{len(urls)} succeeded[/bold] → {out_dir.resolve()}")
         return 0 if ok else 1
