@@ -3,23 +3,30 @@ name: probe — can a cloud chromium search Scribd?
 # TEMPORARY probe, asked for during the "put the search on chromium" discussion.
 # It answers three questions with real numbers from GitHub's own machines:
 #   1. does Scribd's /search/query answer a datacenter IP over plain HTTPS?
-#   2. does plain HTTPS reach DuckDuckGo / Bing from here? (status only)
+#   2. does plain HTTPS reach DuckDuckGo / Bing / Mojeek from here? (status only)
 #   3. does a real chromium (Playwright) get results where plain HTTPS failed?
-# Run it by hand: Actions -> probe -> Run workflow. Nothing is downloaded.
+# It downloads nothing. Results are written to probe-results.txt on this branch
+# (the run logs are not readable from the session, so the job commits them).
 
 on:
   push:
     branches: [arena/3f9eb913-stream]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - uses: actions/checkout@v4
+
       - name: 1 + 2 · plain HTTPS, no browser
         run: |
-          python3 - <<'PY'
+          echo "## runner: $(uname -sr) · $(python3 -V) · $(date -u +%FT%TZ)" >> probe-results.txt
+          python3 - <<'PY' 2>&1 | tee -a probe-results.txt
           import json, urllib.parse, urllib.request
 
           UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -52,9 +59,9 @@ jobs:
               ("mojeek",
                "https://www.mojeek.com/search?q=site%3Ascribd.com+" + words, "html"),
           ]
+          print("-- plain HTTPS, no browser --")
           for label, url, kind in targets:
               status, body = get(url)
-              note = ""
               if kind == "json":
                   try:
                       data = json.loads(body.decode("utf-8", "replace"))
@@ -68,14 +75,15 @@ jobs:
               else:
                   note = (f"{body.count(b'/document/')} '/document/' hits, "
                           f"{len(body)} bytes, starts {repr(body[:60])}")
-              print(f"  {label}: HTTP {status} — {note}", flush=True)
+              print(f"  {label}: HTTP {status} — {note}")
           PY
 
       - name: 3 · real chromium (Playwright)
         run: |
           python3 -m pip install --quiet --disable-pip-version-check playwright
-          python3 -m playwright install --with-deps chromium
-          python3 - <<'PY'
+          python3 -m playwright install --with-deps chromium > /tmp/pw.log 2>&1
+          echo "-- chromium $(python3 -m playwright --version) --" >> probe-results.txt
+          python3 - <<'PY' 2>&1 | tee -a probe-results.txt
           import urllib.parse
           from playwright.sync_api import sync_playwright
 
@@ -108,18 +116,24 @@ jobs:
                           "a[href*='/document/']",
                           "els => [...new Set(els.map(e => e.href.split('?')[0]))]")
                       title = page.title()[:70]
-                      body = page.inner_text("body")[:160].replace("\n", " ")
+                      text = page.inner_text("body")[:160].replace("\n", " ")
                       print(f"  {label}: title={title!r} · "
                             f"{len(links)} document link(s) in the live DOM · "
-                            f"http {answers} · text {body!r}", flush=True)
-                      for link in links[:3]:
-                          print(f"      {link}", flush=True)
+                            f"http {answers} · text {text!r}")
+                      for link in links[:4]:
+                          print(f"      {link}")
                   except Exception as exc:                    # noqa: BLE001
-                      print(f"  {label}: FAILED — {repr(exc)[:200]}", flush=True)
+                      print(f"  {label}: FAILED — {repr(exc)[:200]}")
                   answers.clear()
               browser.close()
           PY
 
-      - name: summary
+      - name: publish results to the branch
         if: always()
-        run: echo "probe finished — read the step logs above" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          git config user.name "probe"
+          git config user.email "probe@users.noreply.github.com"
+          git add probe-results.txt || exit 0
+          git diff --cached --quiet && echo "nothing to publish" && exit 0
+          git commit -m "probe results [skip ci]"
+          git push
