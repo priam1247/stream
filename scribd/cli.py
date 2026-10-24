@@ -256,6 +256,7 @@ async def run(args: argparse.Namespace) -> int:
                         query,
                         limit=limit,
                         pages=pages,
+                        debug_dir=".debug",
                         log=lambda m: console.print(f"[dim]  {m}[/dim]"),
                     )
                 except Exception as exc:
