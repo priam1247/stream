@@ -88,12 +88,23 @@ def ensure_libraries() -> None:
         print(f"libraries: check skipped ({type(exc).__name__}: {exc})", flush=True)
 
 
+def run_diagnostics() -> None:
+    """SCRIBD_DIAG=1 -> one-boot report: libc, ldd, egress, search, doc chain."""
+    try:
+        from diag import run_diag
+
+        run_diag()  # no-op unless SCRIBD_DIAG is set
+    except Exception as exc:  # never stop the server from booting
+        print(f"diag skipped: {type(exc).__name__}: {exc}", flush=True)
+
+
 def main() -> None:
     os.chdir(ROOT)  # so ./webdata and ./out land next to the code
     print(f"starting from {ROOT}", flush=True)
     load_settings()
     ensure_browser()
-    ensure_libraries()
+    ensure_libraries()          # sysroot first: diag's ldd must see the fix
+    run_diagnostics()
     from scribd.webapp import main as web_main
 
     host = os.environ.get("SCRIBD_WEB_HOST", "0.0.0.0")  # the panel proxies to us

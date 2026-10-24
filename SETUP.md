@@ -132,6 +132,78 @@ page.
 
 ---
 
+### The one-boot diagnostic (what to run when the panel misbehaves)
+
+Guessing from a job log costs hours. `diag.py` answers every open question in a
+single boot, standard library only — no pip, no shell:
+
+```ini
+# .env on the panel
+SCRIBD_DIAG=1
+SCRIBD_DIAG_COOKIES=/home/container/cookies.txt   # optional
+SCRIBD_DIAG_DOC=https://www.scribd.com/document/<id>/<slug>   # optional
+```
+
+`bot.py` runs it **after** the sysroot step, so `ldd` sees the repaired
+libraries, and then the server starts normally. Or run it by hand:
+`python diag.py`, and `python diag.py selftest` offline.
+
+What each line settles:
+
+| line | question | if it fails |
+| --- | --- | --- |
+| `libc` | glibc or musl, and which suite its libraries match | musl → Chromium is impossible on that image, stop |
+| `ldd <binary>` | does the loader resolve every `.so` | the missing names are listed; the sysroot step should fetch them |
+| `chromium launch` | does it actually start, not just link | the real stderr, plus `libXXX.so` or `GLIBC_x.yy` |
+| `dns …` | is it a resolver problem | DNS broken → nothing works |
+| `egress deb.debian.org` | can the sysroot download at all | HTTP-only panel; the library route is dormant |
+| `scribd /search` | wall or benign JS shell | `challenge=True` means the IP is walled |
+| `search ddg-html / ddg-lite / bing` | can a keyword become URLs without a browser | all three fail → search elsewhere, feed URLs |
+| `doc page / embed content` anon **and** with cookies | can this IP actually download | `challenge=True` → walled; `URLError` → no route |
+
+Every failing body is saved as `.debug/diag-*.html`, so a FAIL arrives with its
+own evidence. Cookie values are never printed — only the count.
+
+Reading the verdict:
+
+```
+every line PASS              -> the panel is a complete downloader
+chromium lines FAIL          -> HTTP route only (SCRIBD_WEB_BROWSER=off)
+doc page FAIL, challenge=True -> the container's IP is walled; download elsewhere
+doc page FAIL, URLError/HTTP  -> the container cannot reach Scribd at all
+```
+
+If the search engines all fail but Scribd serves the assets, split the work:
+search from GitHub Actions or your PC, then paste the URLs into the panel's
+`urls` box. Turn `SCRIBD_DIAG` off once the verdict is known — it is a
+diagnostic, not a feature.
+
+### Library matching: two traps this handles
+
+`sysroot` does not assume anything about the image:
+
+* **musl (Alpine) can never load Debian `.so` files.** The suite is refused
+  outright instead of downloading 40 packages that cannot work.
+* **A library that loads but rejects the binary** — `version 'GLIBC_2.36' not
+  found (required by libnss3.so)` — is a *suite mismatch*, not a missing file.
+  The suite now follows the container's own glibc (`ldd --version`):
+
+  | container glibc | suite pulled | note |
+  | --- | --- | --- |
+  | < 2.31 | bullseye | too old: expect symbol errors |
+  | 2.31 – 2.35 | bullseye | |
+  | 2.36 – 2.40 | bookworm | |
+  | ≥ 2.41 | trixie | |
+
+  If a launch still reports a `GLIBC_x.yy` mismatch, the launch path steps one
+  suite down (bookworm → bullseye) and retries once, automatically.
+* **Unknown sonames are looked up, not guessed.** When the built-in table has
+  no entry, the suite's `Contents-amd64.gz` index (~40 MB, downloaded once and
+  cached) maps the file to its package. Only if that also fails does the log say
+  what is missing.
+* Every directory holding unpacked `.so` files goes on `LD_LIBRARY_PATH`, and
+  all checks run with the same environment the browser gets.
+
 ## 6. Path C — the panel (xsystemshosting / Pterodactyl)
 
 It will work **only if Chromium can start there**. In order:

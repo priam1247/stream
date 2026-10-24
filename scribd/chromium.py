@@ -229,12 +229,14 @@ _REPAIRED = False
 
 def _looks_like_missing_libs(messages: list[str]) -> bool:
     return any(
-        "shared librar" in message.lower() or "cannot open shared object" in message.lower()
+        "shared librar" in message.lower()
+        or "cannot open shared object" in message.lower()
+        or "glibc_" in message.lower()          # version 'GLIBC_2.36' not found
         for message in messages
     )
 
 
-def repair_libraries(log: Callable[[str], None] | None = None) -> bool:
+def repair_libraries(log: Callable[[str], None] | None = None, message: str = "") -> bool:
     """Fetch Chromium's missing system libraries, once per process.
 
     Called automatically when a launch dies on a missing soname, so a plain
@@ -251,10 +253,19 @@ def repair_libraries(log: Callable[[str], None] | None = None) -> bool:
         return False
     if log:
         log("  browser: missing system libraries — fetching them (no root needed)…")
+    if message:
+        from .sysroot import glibc_complaint
+
+        wanted = glibc_complaint(message)
+        if wanted and log:
+            log(f"  browser: a library wants GLIBC_{wanted} — will step one suite down if needed")
     try:
-        from .sysroot import ensure
+        from .sysroot import downgrade, ensure, glibc_complaint
 
         ok, packages = ensure(binary, log=log or print)
+        if not ok and message and glibc_complaint(message) and downgrade(log or print):
+            ok, more = ensure(binary, log=log or print)
+            packages = packages + [name for name in more if name not in packages]
     except Exception as exc:  # network / mirror / zstd: report, never crash
         if log:
             log(f"  browser: could not fetch libraries ({type(exc).__name__}: {exc})")
@@ -301,7 +312,7 @@ async def launch_async(
 
         # first failure round: if the loader is complaining, fix it and retry
         if attempt == 0 and _looks_like_missing_libs([m for _, m in errors]):
-            if repair_libraries(log):
+            if repair_libraries(log, "\n".join(m for _, m in errors)):
                 continue
         raise BrowserLaunchError(_collect(errors, len(tries), log))
     raise BrowserLaunchError("unreachable")
@@ -340,7 +351,7 @@ def launch_sync(
             return browser, mode
 
         if attempt == 0 and _looks_like_missing_libs([m for _, m in errors]):
-            if repair_libraries(log):
+            if repair_libraries(log, "\n".join(m for _, m in errors)):
                 continue
         raise BrowserLaunchError(_collect(errors, len(tries), log))
     raise BrowserLaunchError("unreachable")
