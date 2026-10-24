@@ -21,15 +21,14 @@ from pathlib import Path
 
 MISSING_LIB_HINT = """\
 Chromium was downloaded but cannot start. The lines above name the missing
-shared libraries (libnss3, libatk-1.0, libgbm, libxkbcommon, …).
+shared libraries (libnspr4, libnss3, libatk-1.0, libgbm, …).
 
-Those belong to the operating system, not to Python, and cannot be installed
-without root. Options, best first:
-  1. find the full "error while loading shared libraries" line in this log;
-  2. ask your host to use an image with Chromium's dependencies, or to run
-     `playwright install-deps chromium` once;
-  3. run the web UI on your own PC instead — same page, same code, working
-     browser:  python -m scribd.webapp
+No root is needed for those: they are ordinary files inside Debian packages.
+`_fix_missing_libraries` above already tries to fetch them; if that failed:
+  1. retry the button (the download resumes);
+  2. `python -m scribd.sysroot` from a shell shows every soname and package;
+  3. ask your host for an image with Chromium's dependencies;
+  4. or run the web UI on your own PC — python -m scribd.webapp
 """
 
 
@@ -71,8 +70,9 @@ def install() -> int:
 def check() -> int:
     """Actually launch headless Chromium — the only honest test.
 
-    Tries every launch variant (headless shell, full Chrome, explicit binary),
-    because on containers the shell often dies while the full build works.
+    Tries every launch variant (headless shell, full Chrome, explicit binary).
+    When the browser dies because a library is missing, it is fetched into
+    `webdata/sysroot` and the launch is retried once — no root required.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -88,37 +88,67 @@ def check() -> int:
         with sync_playwright() as pw:
             try:
                 browser, mode = launch_sync(pw, headless=True, log=_say)
-            except BrowserLaunchError:
-                # launch_sync printed the per-variant reasons; give the verdict
-                _say("FAILED: Chromium cannot start on this machine (reasons above)")
-                return 1
-            try:
-                version = browser.version
-                page = browser.new_page(viewport={"width": 800, "height": 600})
-                page.set_content("<h1 id=x>ok</h1>")
-                page.inner_text("#x")
-                page.pdf(prefer_css_page_size=True)
-            finally:
-                browser.close()
-    except Exception as exc:
-        message = str(exc)
-        first = message.strip().splitlines()[0] if message.strip() else type(exc).__name__
-        _say(f"FAILED: {first}")
-        lowered = message.lower()
-        for line in message.splitlines():
-            if "shared librar" in line.lower() or "cannot open shared object" in line.lower():
-                _say(f"    {line.strip()}")
-                break
-        if "shared librar" in lowered or "cannot open shared object" in lowered:
-            _say("\n" + MISSING_LIB_HINT)
+            except BrowserLaunchError as exc:
+                if not _fix_missing_libraries(str(exc)):
+                    _say("FAILED: Chromium cannot start on this machine (reasons above)")
+                    return 1
+                _say("retrying the launch with the fetched libraries…")
+                try:
+                    browser, mode = launch_sync(pw, headless=True, log=_say)
+                except BrowserLaunchError:
+                    _say("FAILED: Chromium still cannot start (reasons above)")
+                    return 1
+                return _verify(browser, mode)
+
+            return _verify(browser, mode)
+    except Exception as exc:  # pragma: no cover - defensive
+        _say(f"FAILED: {type(exc).__name__}: {exc}")
         return 1
 
+
+def _verify(browser, mode: str) -> int:
+    """Prove the browser renders and prints, not just that it started."""
+    version = browser.version
+    try:
+        page = browser.new_page(viewport={"width": 800, "height": 600})
+        page.set_content("<h1 id=x>ok</h1>")
+        page.inner_text("#x")
+        page.pdf(prefer_css_page_size=True)
+    finally:
+        browser.close()
     _say(f"OK: Chromium {version} launches, renders and prints PDFs")
     _say(f"    mode: {mode}  (remembered for later jobs)")
     path = chromium_path()
     if path:
         _say(f"    binary: {path}")
     return 0
+
+
+def _fix_missing_libraries(message: str) -> bool:
+    """Fetch the shared libraries Chromium lacks — no root needed."""
+    lowered = message.lower()
+    if "shared librar" not in lowered and "cannot open shared object" not in lowered:
+        return False
+    if os.environ.get("SCRIBD_SYSROOT_AUTO", "1").strip().lower() in ("0", "false", "no"):
+        _say("library auto-install disabled (SCRIBD_SYSROOT_AUTO=0)")
+        return False
+    from scribd.chromium import find_chromium
+    from scribd.sysroot import ensure
+
+    binary = find_chromium()  # the shell works for ldd too
+    if not binary:
+        return False
+    _say("")
+    _say("fetching the missing libraries into the app folder (no root needed)…")
+    try:
+        ok, packages = ensure(binary, log=_say)
+    except Exception as exc:  # network, mirror, zstd … report, do not crash
+        _say(f"could not fetch libraries: {type(exc).__name__}: {exc}")
+        return False
+    if not ok:
+        return False
+    _say(f"fetched {len(packages)} package(s): " + ", ".join(packages))
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:

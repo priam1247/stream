@@ -3286,7 +3286,7 @@ def test_browsersetup_reports_missing_browser_honestly(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "FAILED" in out
     assert "libnss3" in out
-    assert "without root" in out
+    assert "scribd.sysroot" in out          # how to get the libraries, no root
 
 
 # ---------------------------------------------------------------------------
@@ -3391,3 +3391,252 @@ def test_every_browser_entry_point_uses_the_fallback_launcher():
         if "chromium.launch(" in text and path.name != "chromium.py":
             offenders.append(path.name)
     assert offenders == [], offenders
+
+
+# ---------------------------------------------------------------------------
+# No root: unpack Chromium's missing libraries out of .deb packages
+# ---------------------------------------------------------------------------
+def _make_deb(tmp_path, members: dict[str, bytes]) -> pathlib.Path:
+    """Build a real .deb (ar + data.tar.xz) the way Debian does."""
+    import tarfile as _tarfile
+
+    buffer = io.BytesIO()
+    with _tarfile.open(fileobj=buffer, mode="w:xz") as archive:
+        for name, payload in members.items():
+            info = _tarfile.TarInfo(name)
+            info.size = len(payload)
+            info.mode = 0o755
+            archive.addfile(info, io.BytesIO(payload))
+    data = buffer.getvalue()
+
+    def member(name: str, payload: bytes) -> bytes:
+        header = (
+            f"{name:<16}{0:<12}{0:<6}{0:<6}{100644:<8}{len(payload):<10}`\n"
+        ).encode("ascii")
+        return header + payload + (b"\n" if len(payload) % 2 else b"")
+
+    deb = tmp_path / "libtest_1.0_amd64.deb"
+    deb.write_bytes(
+        b"!<arch>\n"
+        + member("debian-binary", b"2.0\n")
+        + member("control.tar.xz", data)
+        + member("data.tar.xz", data)
+    )
+    return deb
+
+
+def test_extract_deb_does_not_need_dpkg(tmp_path, monkeypatch):
+    import scribd.sysroot as sysroot
+
+    monkeypatch.setattr(sysroot.shutil, "which", lambda name: None)  # force pure Python
+    deb = _make_deb(
+        tmp_path,
+        {
+            "usr/lib/x86_64-linux-gnu/libnspr4.so.0d": b"\x7fELF fake nspr",
+            "usr/lib/x86_64-linux-gnu/libnss3.so": b"\x7fELF fake nss",
+        },
+    )
+    destination = tmp_path / "root"
+    written = sysroot.extract_deb(deb, destination)
+
+    assert len(written) == 2
+    assert (destination / "usr/lib/x86_64-linux-gnu/libnspr4.so.0d").read_bytes().startswith(b"\x7fELF")
+    assert (destination / "usr/lib/x86_64-linux-gnu/libnss3.so").is_file()
+
+
+def test_parse_ldd_finds_the_sonames(tmp_path):
+    import scribd.sysroot as sysroot
+
+    output = """
+\tlinux-vdso.so.1 (0x00007ffd)
+\tlibnspr4.so => not found
+\tlibnss3.so => not found
+\tlibnssutil3.so => not found
+\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f)
+\tlibpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0
+"""
+    assert sysroot.parse_ldd(output) == ["libnspr4.so", "libnss3.so", "libnssutil3.so"]
+
+
+def test_package_for_maps_sonames_and_gives_up_honestly():
+    import scribd.sysroot as sysroot
+
+    assert sysroot.package_for("libnspr4.so") == "libnspr4"
+    assert sysroot.package_for("libnss3.so") == "libnss3"
+    assert sysroot.package_for("libnssutil3.so") == "libnss3"
+    assert sysroot.package_for("libatk-1.0.so.0") == "libatk1.0-0"
+    assert sysroot.package_for("libxcb-shm.so.0") == "libxcb-shm0"
+    assert sysroot.package_for("libwho_knows.so.9") == ""
+
+
+def test_ensure_downloads_only_the_missing_packages(tmp_path, monkeypatch):
+    import scribd.sysroot as sysroot
+
+    monkeypatch.setenv("SCRIBD_SYSROOT", str(tmp_path / "sysroot"))
+    # ldd: first pass misses nspr/nss, then only nspr, then nothing
+    passes = iter(
+        [
+            ["libnspr4.so", "libnss3.so"],
+            ["libnspr4.so"],
+            [],
+        ]
+    )
+    monkeypatch.setattr(sysroot, "missing_sonames", lambda binary: next(passes, []))
+    monkeypatch.setattr(
+        sysroot,
+        "build_index",
+        lambda codename=None, log=print: {
+            "libnspr4": {"file": "pool/main/n/nspr/libnspr4_1_amd64.deb", "depends": ""},
+            "libnss3": {"file": "pool/main/n/nss/libnss3_1_amd64.deb", "depends": ""},
+        },
+    )
+    downloaded: list[str] = []
+
+    def fake_download(url, destination, timeout=120):
+        downloaded.append(url)
+        deb = _make_deb(tmp_path, {
+            f"usr/lib/x86_64-linux-gnu/{pathlib.Path(url).name[:-4]}.so": b"\x7fELF",
+        })
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(deb.read_bytes())
+        return destination
+
+    monkeypatch.setattr(sysroot, "_download", fake_download)
+    logs: list[str] = []
+    ok, packages = sysroot.ensure("/fake/chrome", log=logs.append)
+
+    assert ok is True
+    assert packages == ["libnspr4", "libnss3"]
+    assert all(url.startswith("https://deb.debian.org/debian/pool/") for url in downloaded)
+    assert any("libnspr4" in line for line in logs)
+
+
+def test_apply_env_prepends_the_sysroot_and_is_idempotent(tmp_path, monkeypatch):
+    import scribd.sysroot as sysroot
+
+    monkeypatch.setenv("SCRIBD_SYSROOT", str(tmp_path))
+    libdir = tmp_path / "usr" / "lib" / "x86_64-linux-gnu"
+    libdir.mkdir(parents=True)
+    (libdir / "libnspr4.so").write_bytes(b"\x7fELF")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/already/there")
+
+    first = sysroot.apply_env()
+    second = sysroot.apply_env()
+
+    assert first == second == f"{libdir}:/already/there"
+    assert sysroot.lib_dirs() == [str(libdir)]
+
+
+def test_chromium_applies_the_sysroot_before_launching(tmp_path, monkeypatch):
+    import scribd.chromium as chromium
+
+    monkeypatch.setenv("SCRIBD_SYSROOT", str(tmp_path))
+    libdir = tmp_path / "usr" / "lib" / "x86_64-linux-gnu"
+    libdir.mkdir(parents=True)
+    (libdir / "libnspr4.so").write_bytes(b"\x7fELF")
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    monkeypatch.setenv("SCRIBD_BROWSER_CACHE", str(tmp_path / "browser.json"))
+
+    chromium.candidates(headless=True)  # what a launch does first
+    assert str(libdir) in os.environ.get("LD_LIBRARY_PATH", "")
+
+
+def test_browsersetup_fetches_libraries_then_relaunches(capsys, monkeypatch):
+    """The real panel case: launch dies on libnspr4, sysroot fixes it, retry wins."""
+    import types as _types
+
+    import scribd.browsersetup as setup
+    import scribd.chromium as chromium
+    import scribd.sysroot as sysroot
+
+    missing = (
+        "BrowserType.launch: Target page, context or browser has been closed\n"
+        "/home/container/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome: "
+        "error while loading shared libraries: libnspr4.so: cannot open shared object file"
+    )
+    state = {"fixed": False}
+
+    class Page:
+        def set_content(self, html): pass
+
+        def inner_text(self, selector): return "ok"
+
+        def pdf(self, **kwargs): return b"%PDF-1.4"
+
+    class Browser:
+        version = "156.0.8078.4"
+
+        def new_page(self, **kwargs): return Page()
+
+        def close(self): pass
+
+    class Chrome:
+        def launch(self, **kwargs):
+            if not state["fixed"]:
+                raise RuntimeError(missing)
+            return Browser()
+
+    class PW:
+        chromium = Chrome()
+
+        def __enter__(self): return self
+
+        def __exit__(self, *exc): return False
+
+    monkeypatch.setitem(
+        sys.modules, "playwright.sync_api", _types.SimpleNamespace(sync_playwright=lambda: PW())
+    )
+    monkeypatch.setattr(chromium, "find_chromium", lambda: "/cache/chromium-1248/chrome-linux64/chrome")
+    monkeypatch.setattr(chromium, "chromium_binary", lambda: "/cache/chromium-1248/chrome-linux64/chrome")
+    monkeypatch.setattr(chromium, "save_winner", lambda mode: None)
+    monkeypatch.setattr(setup, "chromium_path", lambda: "/cache/chromium-1248/chrome-linux64/chrome")
+    monkeypatch.setenv("SCRIBD_BROWSER_CACHE", "/tmp/not-written.json")
+    monkeypatch.delenv("SCRIBD_SYSROOT_AUTO", raising=False)
+
+    fetched: list[str] = []
+
+    def fake_ensure(binary, log=print):
+        fetched.append(str(binary))
+        log("  libnspr4.so: libnspr4")
+        state["fixed"] = True
+        return True, ["libnspr4"]
+
+    monkeypatch.setattr(sysroot, "ensure", fake_ensure)
+
+    assert setup.check() == 0
+    out = capsys.readouterr().out
+    assert fetched == ["/cache/chromium-1248/chrome-linux64/chrome"]
+    assert "fetching the missing libraries" in out
+    assert "retrying the launch" in out
+    assert "OK: Chromium 156.0.8078.4 launches" in out
+
+
+def test_browsersetup_does_not_fetch_when_disabled(capsys, monkeypatch):
+    import types as _types
+
+    import scribd.browsersetup as setup
+    import scribd.chromium as chromium
+    import scribd.sysroot as sysroot
+
+    class Chrome:
+        def launch(self, **kwargs):
+            raise RuntimeError("error while loading shared libraries: libnspr4.so: cannot open shared object file")
+
+    class PW:
+        chromium = Chrome()
+
+        def __enter__(self): return self
+
+        def __exit__(self, *exc): return False
+
+    monkeypatch.setitem(
+        sys.modules, "playwright.sync_api", _types.SimpleNamespace(sync_playwright=lambda: PW())
+    )
+    monkeypatch.setattr(chromium, "find_chromium", lambda: "/cache/chrome")
+    monkeypatch.setattr(chromium, "chromium_binary", lambda: "")
+    monkeypatch.setenv("SCRIBD_SYSROOT_AUTO", "0")
+    monkeypatch.setenv("SCRIBD_BROWSER_CACHE", "/tmp/not-written-2.json")
+    monkeypatch.setattr(sysroot, "ensure", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch")))
+
+    assert setup.check() == 1
+    assert "auto-install disabled" in capsys.readouterr().out
