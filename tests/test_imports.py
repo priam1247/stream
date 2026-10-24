@@ -3984,3 +3984,29 @@ def test_setup_guide_covers_every_path():
     assert "Artifacts" in text
     assert "manifest.jsonl" in text
     assert "docker run" in text
+
+
+def test_start_here_is_four_steps_and_matches_the_workflow():
+    """The beginner path must stay short, literal and linked from the README."""
+    root = pathlib.Path(__file__).resolve().parent.parent
+    text = (root / "START-HERE.md").read_text()
+
+    assert text.count("## Step ") == 4
+    # every click is spelled out, with the real URLs
+    assert "https://github.com/priam1247/stream/settings/secrets/actions/new" in text
+    assert "https://github.com/priam1247/stream/actions/workflows/scribd.yml" in text
+    assert "base64 -w0 cookies.txt | clip" in text
+    assert "SCRIBD_COOKIES_B64" in text
+    assert "Artifacts" in text
+
+    # the input names it tells people to type must exist in the workflow
+    workflow = (root / ".github/workflows/scribd.yml").read_text()
+    for field in ("query", "limit", "picks", "urls", "search_only"):
+        assert ("\n      " + field + ":") in workflow, field
+        assert field in text, field
+
+    # and the README points at it first (before any section heading)
+    readme = (root / "README.md").read_text()
+    first_section = readme.find("\n## ")
+    assert first_section != -1
+    assert "START-HERE.md" in readme[:first_section]
