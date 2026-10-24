@@ -355,6 +355,99 @@ If all three fail, the log tells you exactly why — look for these lines:
 | `Executable doesn't exist at …` | Chromium is not downloaded | press *Install & test Chromium* |
 | `Failed to download … ECONNRESET` | `cdn.playwright.dev` is blocked | retry, or point `PLAYWRIGHT_DOWNLOAD_HOST` at a mirror |
 
+### Why it works in Zed but not on the panel
+
+Nothing in the code path differs — the difference is the machine under Chromium.
+
+| | your PC (Zed) | the panel container |
+| --- | --- | --- |
+| Chromium binary | Windows `.exe` | Linux ELF |
+| its DLL/.so dependencies | installed with Chrome, or by Windows | **not in the image** |
+| result | starts | `libnspr4.so: cannot open shared object file` |
+
+Scribd search *needs* a real browser (the results page is JavaScript), and the
+PDF route does too (`printToPDF`). No browser on the host → no search, no PDF.
+Every failure in the panel log is that one sentence repeated three times, once
+per launch variant.
+
+There are four ways out. They are in order of least effort.
+
+**1. Let the app fetch the libraries (automatic, no root).**
+Since 2.0 the launch path repairs itself: the loader names the sonames, they are
+pulled out of Debian packages into `webdata/sysroot`, and the launch is retried
+once. `bot.py` also runs the check at boot, so a restart with the browser already
+downloaded finishes the job:
+
+```
+libraries: Chromium is missing libnspr4.so, libnss3.so
+  libnspr4.so: libnspr4
+  libnss3.so: libnss3
+  ok: all libraries found (2 package(s) unpacked into webdata/sysroot)
+```
+
+Nothing else to press. If it says `no Debian package known for: …`, paste that
+line — it is one entry in `scribd/sysroot.py`.
+
+**2. Drive a browser that already works (remote CDP).**
+The panel keeps the web page, the queue and the PDFs; Chromium runs on your PC
+or a free browser service. Nothing needs to be installed in the container.
+
+On your PC (Windows, Chrome installed) — one line in Git Bash:
+
+```bash
+"/c/Program Files/Google/Chrome/Application/chrome.exe" --remote-debugging-port=9222 --headless=new --disable-gpu
+```
+
+Make that port reachable from the panel (e.g. `cloudflared tunnel --url http://localhost:9222`,
+or your router), then in the panel's `.env`:
+
+```
+SCRIBD_BROWSER_CDP=http://<public-host>:9222
+```
+
+The log then says `browser: connected to the remote browser at …` and every
+search/download runs in *that* browser. If the endpoint stops answering, the app
+falls back to a local Chromium instead of failing.
+
+**3. Run the whole app on your PC, publish the page.**
+The panel then only hosts nothing — you browse to your own machine:
+
+```bash
+cd ~/Documents/stream && source .venv/Scripts/activate && python -m scribd.webapp --host 127.0.0.1 --port 8000
+cloudflared tunnel --url http://localhost:8000     # prints https://something.trycloudflare.com
+```
+
+That URL works from anywhere, with your local Chromium, your cookies, and no
+RAM limits. Close the two windows and it is gone.
+
+**4. Ask the host for a Chromium-capable image.**
+`playwright install-deps chromium`, or any image that already has
+`libnspr4`, `libnss3`, `libatk-1.0`, `libgbm`, `libxkbcommon`, `libcups`,
+`libdrm`, `libxkbcommon` and the X libraries. Some eggs offer a Docker image
+choice in the panel; picking one with a desktop stack fixes it permanently.
+
+### Would Vercel (or Netlify, or any static host) work?
+
+No, and it is worth being precise about why, so the search does not continue:
+
+* they run **serverless functions** — no long-lived process, no local disk, no
+  job queue; a request is capped at seconds to a minute, and a textbook print is
+  minutes;
+* the function bundle is a few hundred MB at most — Playwright's Chromium alone
+  is ~300 MB unpacked, plus its shared libraries;
+* nothing you upload to Vercel can run `chrome`; their runtime is not a
+  container you control;
+* the PDFs would have nowhere to live between requests.
+
+A *static* Vercel page could only be a front-end pointing at a backend that has
+a browser — which is the panel or your PC anyway. Same for Netlify, Cloudflare
+Pages, GitHub Pages.
+
+What does work if you want a paid host that runs Chromium: a small VPS
+(Hetzner/Fly/Railway/Render with a Docker image), because there you get root and
+can `playwright install-deps`. The current app deploys there unchanged:
+`python -m scribd.webapp --host 0.0.0.0 --port $PORT`.
+
 ### Missing system libraries, without root
 
 The panel can have Chromium downloaded and still refuse to start it:

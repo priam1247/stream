@@ -2903,6 +2903,8 @@ def _webapp(tmp_path, monkeypatch):
 
     import scribd.webapp as webapp
 
+    # a developer's own .env must not leak into the tests
+    monkeypatch.setenv("SCRIBD_WEB_ENV_FILE", str(tmp_path / "absent.env"))
     importlib.reload(webapp)  # reset JOBS/QUEUE between tests
     monkeypatch.setattr(webapp, "DATA_DIR", tmp_path)
     monkeypatch.setattr(webapp, "JOBS_DIR", tmp_path / "jobs")
@@ -3640,3 +3642,173 @@ def test_browsersetup_does_not_fetch_when_disabled(capsys, monkeypatch):
 
     assert setup.check() == 1
     assert "auto-install disabled" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Self-healing at launch time (no setup button needed)
+# ---------------------------------------------------------------------------
+def _reset_repair(monkeypatch):
+    import scribd.chromium as chromium
+
+    monkeypatch.setattr(chromium, "_REPAIRED", False)
+
+
+def test_search_launch_repairs_missing_libs_and_retries(tmp_path, monkeypatch):
+    """The panel case for a plain --search job: no setup button involved."""
+    import scribd.chromium as chromium
+    import scribd.sysroot as sysroot
+
+    _reset_repair(monkeypatch)
+    monkeypatch.setenv("SCRIBD_BROWSER_CACHE", str(tmp_path / "browser.json"))
+    monkeypatch.delenv("SCRIBD_BROWSER_MODE", raising=False)
+    monkeypatch.delenv("SCRIBD_SYSROOT_AUTO", raising=False)
+
+    state = {"fixed": False}
+
+    class Chrome:
+        async def launch(self, **kwargs):
+            if not state["fixed"]:
+                raise RuntimeError(
+                    "BrowserType.launch: Target page, context or browser has been closed\n"
+                    "chrome: error while loading shared libraries: libnspr4.so: "
+                    "cannot open shared object file"
+                )
+            return "browser-ok"
+
+    repaired: list[str] = []
+
+    def fake_ensure(binary, log=print):
+        repaired.append(str(binary))
+        state["fixed"] = True
+        return True, ["libnspr4"]
+
+    monkeypatch.setattr(chromium, "find_chromium", lambda: "/cache/chrome")
+    monkeypatch.setattr(chromium, "chromium_binary", lambda: "/cache/chrome")
+    monkeypatch.setattr(sysroot, "ensure", fake_ensure)
+
+    notes: list[str] = []
+    import types as _types
+
+    browser = asyncio.run(
+        chromium.launch_async(_types.SimpleNamespace(chromium=Chrome()), log=notes.append)
+    )
+
+    assert browser == "browser-ok"
+    assert repaired == ["/cache/chrome"]
+    assert any("missing system libraries" in note for note in notes)
+    assert any("retrying the launch" in note for note in notes)
+
+
+def test_repair_runs_once_per_process(tmp_path, monkeypatch):
+    import scribd.chromium as chromium
+
+    _reset_repair(monkeypatch)
+    monkeypatch.delenv("SCRIBD_SYSROOT_AUTO", raising=False)
+    monkeypatch.setattr(chromium, "find_chromium", lambda: "/cache/chrome")
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "scribd.sysroot.ensure", lambda binary, log=print: (calls.append(binary), (True, ["x"]))[1]
+    )
+
+    assert chromium.repair_libraries() is True
+    assert chromium.repair_libraries() is False   # second time: no download again
+    assert calls == ["/cache/chrome"]
+
+
+def test_repair_is_off_when_disabled(monkeypatch):
+    import scribd.chromium as chromium
+
+    _reset_repair(monkeypatch)
+    monkeypatch.setenv("SCRIBD_SYSROOT_AUTO", "0")
+    monkeypatch.setattr(chromium, "find_chromium", lambda: "/cache/chrome")
+    monkeypatch.setattr(
+        "scribd.sysroot.ensure", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not run"))
+    )
+    assert chromium.repair_libraries() is False
+
+
+def test_boot_preflight_fetches_only_when_something_is_missing(tmp_path, monkeypatch):
+    import scribd.chromium as chromium
+    import scribd.sysroot as sysroot
+
+    monkeypatch.delenv("SCRIBD_SYSROOT_AUTO", raising=False)
+    monkeypatch.setattr(chromium, "find_chromium", lambda: "/cache/chrome")
+    monkeypatch.setattr(sysroot, "apply_env", lambda root=None: "")
+
+    # nothing missing: no download
+    monkeypatch.setattr(sysroot, "missing_sonames", lambda binary: [])
+    monkeypatch.setattr(
+        sysroot, "ensure", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch"))
+    )
+    assert sysroot.preflight(log=lambda line: None) is True
+
+    # something missing: fetched once, logged, and the server still boots
+    lines: list[str] = []
+    monkeypatch.setattr(sysroot, "missing_sonames", lambda binary: ["libnspr4.so", "libnss3.so"])
+    monkeypatch.setattr(sysroot, "ensure", lambda binary, log=print: (True, ["libnspr4", "libnss3"]))
+    assert sysroot.preflight(log=lines.append) is True
+    assert any("libnspr4.so" in line for line in lines)
+
+    # a network failure must not stop the server
+    monkeypatch.setattr(
+        sysroot, "ensure", lambda *a, **k: (_ for _ in ()).throw(OSError("no route"))
+    )
+    assert sysroot.preflight(log=lines.append) is False
+
+
+def test_remote_browser_over_cdp(tmp_path, monkeypatch):
+    """A container with no libraries at all can drive a browser elsewhere."""
+    import types as _types
+
+    import scribd.chromium as chromium
+
+    monkeypatch.setattr(chromium, "_REPAIRED", True)  # no library fetching in this test
+    monkeypatch.setenv("SCRIBD_BROWSER_CDP", "http://192.168.1.10:9222")
+    monkeypatch.setenv("SCRIBD_BROWSER_CACHE", str(tmp_path / "b.json"))
+
+    class Chrome:
+        def __init__(self):
+            self.local_calls = 0
+            self.cdp_calls = []
+
+        async def connect_over_cdp(self, endpoint):
+            self.cdp_calls.append(endpoint)
+            return "remote-browser"
+
+        async def launch(self, **kwargs):
+            self.local_calls += 1
+            raise AssertionError("must not start a local browser when CDP works")
+
+    chrome = Chrome()
+    notes: list[str] = []
+    browser = asyncio.run(chromium.launch_async(_types.SimpleNamespace(chromium=chrome), log=notes.append))
+
+    assert browser == "remote-browser"
+    assert chrome.cdp_calls == ["http://192.168.1.10:9222"]
+    assert chrome.local_calls == 0
+    assert any("connected to the remote browser" in note for note in notes)
+
+
+def test_remote_browser_falls_back_to_local_when_unreachable(tmp_path, monkeypatch):
+    import types as _types
+
+    import scribd.chromium as chromium
+
+    monkeypatch.setattr(chromium, "_REPAIRED", True)
+    monkeypatch.setenv("SCRIBD_BROWSER_CDP", "http://10.0.0.1:9222")
+    monkeypatch.setenv("SCRIBD_BROWSER_CACHE", str(tmp_path / "b.json"))
+    monkeypatch.delenv("SCRIBD_BROWSER_MODE", raising=False)
+    monkeypatch.setattr(chromium, "chromium_binary", lambda: "")
+
+    class Chrome:
+        async def connect_over_cdp(self, endpoint):
+            raise RuntimeError("net::ERR_CONNECTION_REFUSED")
+
+        async def launch(self, **kwargs):
+            return "local-browser"
+
+    notes: list[str] = []
+    browser = asyncio.run(chromium.launch_async(_types.SimpleNamespace(chromium=Chrome()), log=notes.append))
+    assert browser == "local-browser"
+    assert any("cannot reach the remote browser" in note for note in notes)
