@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
@@ -134,7 +137,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=5,
-        help="With --search: how many documents to download (default 5)",
+        help=(
+            "With --search: how many documents to download (default 5; "
+            "0 = everything the search found)"
+        ),
+    )
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Re-download documents whose PDF is already in the output folder "
+            "(default: skip them, so a long batch can be re-run safely)"
+        ),
     )
     p.add_argument(
         "--search-pages",
@@ -189,6 +203,47 @@ def collect_urls(args: argparse.Namespace) -> list[str]:
             if line and not line.startswith("#"):
                 urls.append(line)
     return urls
+
+
+DOC_ID_RE = re.compile(r"/(?:document|doc|presentation|spreadsheet|ebook|audiobook|magazine)/(\d+)")
+_MANIFEST_LOCK = threading.Lock()
+
+
+def doc_id_of(url: str) -> str:
+    match = DOC_ID_RE.search(url or "")
+    return match.group(1) if match else ""
+
+
+def existing_pdf(out_dir: Path, url: str) -> Path | None:
+    """The PDF already written for this document, if any (resume support)."""
+    doc_id = doc_id_of(url)
+    if not doc_id:
+        return None
+    for path in out_dir.glob(f"{doc_id}_*.pdf"):
+        try:
+            if path.stat().st_size <= 0:
+                continue
+            # A truncated/failed write is not a downloaded document.
+            with path.open("rb") as handle:
+                if handle.read(5) != b"%PDF-":
+                    continue
+            return path
+        except OSError:
+            continue
+    return None
+
+
+def append_manifest(out_dir: Path, entry: dict) -> None:
+    """Append one JSON line to out/manifest.jsonl (batch audit trail)."""
+    record = dict(entry)
+    record.setdefault("at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with _MANIFEST_LOCK:
+            with (out_dir / "manifest.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def parse_picks(value: str | None) -> set[int]:
@@ -276,14 +331,27 @@ async def run(args: argparse.Namespace) -> int:
             from .utils import slugify
 
             out_dir.mkdir(parents=True, exist_ok=True)
-            limit = max(1, int(getattr(args, "limit", 5) or 5))
+            # 0 means "everything the search found".
+            limit = max(0, int(getattr(args, "limit", 5) or 0))
             pages = max(1, int(getattr(args, "search_pages", 3) or 3))
             picks = parse_picks(getattr(args, "pick", None))
-            # --pick 47 must be able to reach result 47, so read that far.
-            want = max(limit, max(picks)) if picks else limit
+            if limit == 0:
+                want = 0  # read every result page there is
+            elif picks:
+                # --pick 47 must be able to reach result 47, so read that far.
+                want = max(limit, max(picks))
+            else:
+                want = limit
+            if limit == 0 and pages < 10:
+                pages = 10  # "everything" needs more result pages
+            if want == 0:
+                console.print(
+                    "[dim]  --limit 0: downloading everything the search finds[/dim]"
+                )
             found_any = 0
             for query in queries:
-                console.print(f"\n[bold]search:[/bold] {query!r} (limit {limit})")
+                shown = "all" if limit == 0 else limit
+                console.print(f"\n[bold]search:[/bold] {query!r} (limit {shown})")
                 hits = []
                 try:
                     hits = await find_documents(
@@ -299,7 +367,8 @@ async def run(args: argparse.Namespace) -> int:
                         f"[red]  http search failed: {type(exc).__name__}: {exc}[/red]"[:300]
                     )
 
-                if len(hits) < want:
+                # want == 0 means "everything", so never stop early on it
+                if want == 0 or len(hits) < want:
                     # Scribd's search page is client-rendered: when the HTTP
                     # response has no links (it usually has none), read the
                     # results in a real browser — no login needed.
@@ -325,7 +394,7 @@ async def run(args: argparse.Namespace) -> int:
                         )
                     seen = {hit.doc_id for hit in hits}
                     for hit in browser_hits:
-                        if len(hits) >= want:
+                        if want and len(hits) >= want:
                             break
                         if hit.doc_id in seen:
                             continue
@@ -443,21 +512,43 @@ async def run(args: argparse.Namespace) -> int:
         )
 
         ok = 0
+        skipped = 0
+        failed = 0
         done = 0
         counter_lock = asyncio.Lock()
+        skip_existing = not bool(getattr(args, "overwrite", False))
 
         async def download_one(url: str) -> None:
-            nonlocal ok, done
+            nonlocal ok, skipped, failed, done
             async with counter_lock:
                 done += 1
                 position = done
-            console.print(
-                f"\n[bold cyan]{url}[/bold cyan] "
-                f"[dim]({position}/{len(urls)})[/dim]"
-            )
+            label_url = f"\n[bold cyan]{url}[/bold cyan] [dim]({position}/{len(urls)})[/dim]"
+
+            if skip_existing:
+                already = existing_pdf(out_dir, url)
+                if already is not None:
+                    async with counter_lock:
+                        skipped += 1
+                    console.print(f"{label_url} [dim]already there: {already.name}[/dim]")
+                    append_manifest(
+                        out_dir,
+                        {"url": url, "doc_id": doc_id_of(url), "status": "skipped",
+                         "file": already.name},
+                    )
+                    return
+
+            console.print(label_url)
             try:
                 doc = await scraper.scrape(url)
             except ScrapeError as exc:
+                async with counter_lock:
+                    failed += 1
+                append_manifest(
+                    out_dir,
+                    {"url": url, "doc_id": doc_id_of(url), "status": "failed",
+                     "error": str(exc)[:300]},
+                )
                 console.print(f"[red]FAILED[/red] {exc}")
                 if "anti-bot" in str(exc) or "Client Challenge" in str(exc):
                     console.print(
@@ -469,6 +560,13 @@ async def run(args: argparse.Namespace) -> int:
                     )
                 return
             except Exception as exc:  # one document must not kill the batch
+                async with counter_lock:
+                    failed += 1
+                append_manifest(
+                    out_dir,
+                    {"url": url, "doc_id": doc_id_of(url), "status": "failed",
+                     "error": f"{type(exc).__name__}: {exc}"[:300]},
+                )
                 console.print(
                     f"[red]FAILED[/red] {url} — {type(exc).__name__}: {exc}"[:300]
                 )
@@ -477,6 +575,13 @@ async def run(args: argparse.Namespace) -> int:
             if not written:
                 # e.g. "-f pdf" on a text-only result: nothing was saved,
                 # so do NOT count this as a success.
+                async with counter_lock:
+                    failed += 1
+                append_manifest(
+                    out_dir,
+                    {"url": url, "doc_id": doc_id_of(url), "status": "failed",
+                     "error": f"nothing written for formats {args.format}"},
+                )
                 console.print(
                     f"[red]FAILED[/red] {url} — nothing written for formats "
                     f"{args.format}"
@@ -490,6 +595,20 @@ async def run(args: argparse.Namespace) -> int:
                 return
             async with counter_lock:
                 ok += 1
+            append_manifest(
+                out_dir,
+                {
+                    "url": url,
+                    "doc_id": doc.meta.doc_id or doc_id_of(url),
+                    "title": doc.meta.title,
+                    "status": "ok",
+                    "strategy": doc.strategy,
+                    "complete": doc.complete,
+                    "pages": len(doc.pages),
+                    "pdf_bytes": len(doc.pdf) if doc.pdf else 0,
+                    "files": [p.name for p in written],
+                },
+            )
             label = doc.meta.title[:70]
             what = (
                 f"PDF {len(doc.pdf):,} bytes"
@@ -536,8 +655,16 @@ async def run(args: argparse.Namespace) -> int:
             for url in urls:
                 await download_one(url)
 
-        console.print(f"\n[bold]{ok}/{len(urls)} succeeded[/bold] → {out_dir.resolve()}")
-        return 0 if ok else 1
+        summary = f"[bold]{ok} downloaded[/bold]"
+        if skipped:
+            summary += f", {skipped} already present"
+        if failed:
+            summary += f", [red]{failed} failed[/red]"
+        summary += f" / {len(urls)} → {out_dir.resolve()}"
+        console.print("\n" + summary)
+        if (ok + skipped) and not failed:
+            console.print("[dim]manifest: manifest.jsonl[/dim]")
+        return 0 if (ok + skipped) and not failed else 1
 
 
 def main() -> None:

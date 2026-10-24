@@ -1,8 +1,10 @@
 """Offline tests — no network. Guards the screenshot's ImportError and
 the core parsing insights (brace matcher, JSONP strip, page template)."""
 import asyncio
+import io
 import json
 import pathlib
+import zipfile
 
 import pytest
 
@@ -2645,7 +2647,8 @@ def _cli_search_env(monkeypatch, hits, *, scraped):
             )
 
     async def fake_browser_search(cookies, query, *, limit=5, pages=3, debug_dir=None, log=print):
-        return list(hits)[:limit]
+        # limit 0 means "everything" everywhere in this project
+        return list(hits)[:limit] if limit else list(hits)
 
     monkeypatch.setattr(cli, "Fetcher", FakeFetcher)
     monkeypatch.setattr(cli, "ScribdScraper", FakeScraper)
@@ -2717,3 +2720,343 @@ def test_cli_search_only_saves_the_url_list(monkeypatch, tmp_path):
     assert payload["query"] == "excel and succeed"
     assert payload["count"] == 2
     assert [item["doc_id"] for item in payload["results"]] == ["5001", "5002"]
+
+
+# ---------------------------------------------------------------------------
+# Bulk downloads: --limit 0 (everything), resume/skip, manifest, exit codes.
+# ---------------------------------------------------------------------------
+def test_existing_pdf_and_manifest_helpers(tmp_path):
+    from scribd.cli import append_manifest, doc_id_of, existing_pdf
+
+    assert doc_id_of("https://www.scribd.com/document/599073587/Std-5-8") == "599073587"
+    assert doc_id_of("https://www.scribd.com/doc/123/Title") == "123"
+    assert doc_id_of("https://www.scribd.com/presentation/555/X") == "555"
+    assert doc_id_of("https://example.com/nope") == ""
+
+    target = tmp_path / "599073587_Std_5_8.pdf"
+    target.write_bytes(b"%PDF-1.4" + b"0" * 2048)
+    assert existing_pdf(tmp_path, "https://www.scribd.com/document/599073587/x") == target
+
+    empty = tmp_path / "777_Empty.pdf"
+    empty.write_bytes(b"")
+    assert existing_pdf(tmp_path, "https://www.scribd.com/document/777/x") is None
+    truncated = tmp_path / "777_Truncated.pdf"
+    truncated.write_bytes(b"<html>not a pdf</html>")
+    assert existing_pdf(tmp_path, "https://www.scribd.com/document/777/x") is None
+    assert existing_pdf(tmp_path, "https://example.com/nope") is None
+
+    append_manifest(tmp_path, {"url": "u1", "status": "ok", "pages": 3})
+    append_manifest(tmp_path, {"url": "u2", "status": "failed", "error": "boom"})
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / "manifest.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert [line["url"] for line in lines] == ["u1", "u2"]
+    assert lines[1]["status"] == "failed" and lines[1]["error"] == "boom"
+    assert all("at" in line for line in lines)
+
+
+def test_cli_limit_zero_downloads_everything_found(monkeypatch, tmp_path):
+    import asyncio as _asyncio
+
+    import scribd.search as search_mod
+
+    hits = [
+        search_mod.SearchHit(doc_id=str(6000 + n), title=f"Doc {n}", slug=f"Doc-{n}")
+        for n in range(1, 5)
+    ]
+    scraped: list[str] = []
+    seen_limits: list[int] = []
+    cli, _ = _cli_search_env(monkeypatch, hits, scraped=scraped)
+
+    original = search_mod.browser_search
+
+    async def spy(cookies, query, *, limit=5, pages=3, debug_dir=None, log=print):
+        seen_limits.append(limit)
+        return await original(cookies, query, limit=limit, pages=pages, debug_dir=debug_dir, log=log)
+
+    monkeypatch.setattr(search_mod, "browser_search", spy)
+
+    args = cli.build_parser().parse_args(
+        ["--search", "excel", "--limit", "0", "--jobs", "1", "-o", str(tmp_path), "-f", "pdf"]
+    )
+    assert _asyncio.run(cli.run(args)) == 0
+
+    assert seen_limits == [0], seen_limits  # "all", not the default 5
+    assert len(scraped) == len(hits), scraped
+    assert len(list(tmp_path.glob("*.pdf"))) == len(hits)
+
+
+def test_cli_skips_existing_and_overwrite_redownloads(monkeypatch, tmp_path):
+    import asyncio as _asyncio
+
+    import scribd.search as search_mod
+
+    hits = [
+        search_mod.SearchHit(doc_id=str(7000 + n), title=f"Doc {n}", slug=f"Doc-{n}")
+        for n in range(1, 3)
+    ]
+    scraped: list[str] = []
+    cli, _ = _cli_search_env(monkeypatch, hits, scraped=scraped)
+    argv = ["--search", "excel", "--limit", "2", "--jobs", "1", "-o", str(tmp_path), "-f", "pdf"]
+
+    assert _asyncio.run(cli.run(cli.build_parser().parse_args(argv))) == 0
+    assert len(scraped) == 2
+
+    # second run: everything is already there, nothing is fetched again
+    scraped.clear()
+    assert _asyncio.run(cli.run(cli.build_parser().parse_args(argv))) == 0
+    assert scraped == []
+    assert len(list(tmp_path.glob("*.pdf"))) == 2
+
+    entries = [
+        json.loads(line)
+        for line in (tmp_path / "manifest.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert [e["status"] for e in entries] == ["ok", "ok", "skipped", "skipped"], entries
+
+    # --overwrite forces a fresh download
+    scraped.clear()
+    overwrite = argv + ["--overwrite"]
+    assert _asyncio.run(cli.run(cli.build_parser().parse_args(overwrite))) == 0
+    assert len(scraped) == 2
+
+
+def test_cli_exit_code_is_nonzero_when_something_failed(monkeypatch, tmp_path):
+    import asyncio as _asyncio
+
+    import scribd.cli as cli
+    import scribd.search as search_mod
+    from scribd.models import DocumentMeta, Page, ScrapedDocument
+
+    hits = [
+        search_mod.SearchHit(doc_id="8001", title="Good", slug="Good"),
+        search_mod.SearchHit(doc_id="8002", title="Bad", slug="Bad"),
+    ]
+
+    class Response:
+        status_code = 200
+        text = "<html><body>shell</body></html>"
+
+    class FakeFetcher:
+        backend = "fake"
+        cookies = {}
+
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def get(self, url, **kw):
+            return Response()
+
+    class FakeScraper:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def scrape(self, url):
+            if "8002" in url:
+                raise RuntimeError("boom")
+            return ScrapedDocument(
+                meta=DocumentMeta(doc_id="8001", url=url, title="Good", page_count=1),
+                pages=[Page(number=1, text="x")],
+                strategy="embed-print",
+                pdf=_one_page_pdf(300, 400),
+                complete=True,
+            )
+
+    async def fake_browser_search(cookies, query, *, limit=5, pages=3, debug_dir=None, log=print):
+        return hits
+
+    monkeypatch.setattr(cli, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(cli, "ScribdScraper", FakeScraper)
+    monkeypatch.setattr(search_mod, "browser_search", fake_browser_search)
+
+    args = cli.build_parser().parse_args(
+        ["--search", "excel", "--limit", "2", "--jobs", "1", "-o", str(tmp_path), "-f", "pdf"]
+    )
+    assert _asyncio.run(cli.run(args)) == 1
+    entries = [
+        json.loads(line)
+        for line in (tmp_path / "manifest.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    statuses = sorted(entry["status"] for entry in entries)
+    assert statuses == ["failed", "ok"], entries
+
+
+# ---------------------------------------------------------------------------
+# Web front-end: search -> pick -> batch download, as jobs.
+# ---------------------------------------------------------------------------
+def _webapp(tmp_path, monkeypatch):
+    """Fresh webapp module state, pointed at tmp_path, no worker threads."""
+    import importlib
+    import importlib.util
+
+    import scribd.webapp as webapp
+
+    importlib.reload(webapp)  # reset JOBS/QUEUE between tests
+    monkeypatch.setattr(webapp, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(webapp, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(webapp, "OUT_DIR", tmp_path / "out")
+    monkeypatch.setattr(webapp, "ensure_workers", lambda: None)
+    (tmp_path / "out").mkdir(parents=True, exist_ok=True)
+    webapp.app.config.update(TESTING=True)
+    return webapp
+
+
+def test_webapp_health_and_page(tmp_path, monkeypatch):
+    webapp = _webapp(tmp_path, monkeypatch)
+    client = webapp.app.test_client()
+
+    health = client.get("/api/health")
+    assert health.status_code == 200
+    assert health.get_json()["ok"] is True
+
+    page = client.get("/")
+    assert page.status_code == 200
+    assert b"Scribd search" in page.data
+    assert b"/api/jobs" in page.data
+
+
+def test_webapp_auth_when_configured(tmp_path, monkeypatch):
+    webapp = _webapp(tmp_path, monkeypatch)
+    monkeypatch.setenv("SCRIBD_WEB_USER", "me")
+    monkeypatch.setenv("SCRIBD_WEB_PASS", "secret")
+    client = webapp.app.test_client()
+
+    assert client.get("/api/jobs").status_code == 401
+    assert client.get("/api/health").status_code == 200  # health stays open
+
+    import base64
+
+    token = base64.b64encode(b"me:secret").decode()
+    ok = client.get("/api/jobs", headers={"Authorization": f"Basic {token}"})
+    assert ok.status_code == 200
+
+
+def test_webapp_search_job_returns_hits(tmp_path, monkeypatch):
+    import json as _json
+
+    webapp = _webapp(tmp_path, monkeypatch)
+
+    def fake_process(job):
+        job.status = "running"
+        job.started_at = webapp._now()
+        (webapp.OUT_DIR / f"search-{webapp._slug(job.query)}.json").write_text(
+            _json.dumps(
+                {
+                    "query": job.query,
+                    "count": 2,
+                    "results": [
+                        {"doc_id": "111", "title": "Excel One",
+                         "url": "https://www.scribd.com/document/111/Excel-One",
+                         "kind": "document"},
+                        {"doc_id": "222", "title": "Excel Two",
+                         "url": "https://www.scribd.com/document/222/Excel-Two",
+                         "kind": "document"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        job.status = "done"
+        job.returncode = 0
+        job.finished_at = webapp._now()
+
+    monkeypatch.setattr(webapp, "process_job", fake_process)
+    client = webapp.app.test_client()
+
+    created = client.post("/api/jobs", json={"mode": "search", "query": "excel", "limit": 50})
+    assert created.status_code == 202, created.data
+    job = created.get_json()
+
+    # run the queued job synchronously instead of waiting on a thread
+    webapp.process_job(webapp.JOBS[job["id"]])
+
+    status = client.get(f"/api/jobs/{job['id']}").get_json()
+    assert status["status"] == "done"
+    assert [hit["doc_id"] for hit in status["results"]] == ["111", "222"]
+    assert status["pdf_count"] == 0
+
+
+def test_webapp_download_job_files_and_zip(tmp_path, monkeypatch):
+    import json as _json
+
+    webapp = _webapp(tmp_path, monkeypatch)
+    captured: dict = {}
+
+    def fake_process(job):
+        captured["command"] = webapp.build_command(job)
+        pdf = webapp.OUT_DIR / "111_Excel_One.pdf"
+        pdf.write_bytes(_one_page_pdf(300, 400))
+        (webapp.OUT_DIR / "manifest.jsonl").write_text(
+            _json.dumps(
+                {
+                    "url": "https://www.scribd.com/document/111/Excel-One",
+                    "doc_id": "111",
+                    "status": "ok",
+                    "files": [pdf.name],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        job.status = "done"
+        job.returncode = 0
+        job.finished_at = webapp._now()
+
+    monkeypatch.setattr(webapp, "process_job", fake_process)
+    client = webapp.app.test_client()
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "download",
+            "query": "excel",
+            "urls": ["https://www.scribd.com/document/111/Excel-One"],
+        },
+    )
+    assert created.status_code == 202, created.data
+    job = created.get_json()
+    webapp.process_job(webapp.JOBS[job["id"]])
+
+    # the CLI is called with the URL list, not a live search
+    command = captured["command"]
+    assert "--file" in command, command
+    listing = pathlib.Path(command[command.index("--file") + 1])
+    assert listing.read_text().strip() == "https://www.scribd.com/document/111/Excel-One"
+
+    status = client.get(f"/api/jobs/{job['id']}").get_json()
+    assert status["pdf_count"] == 1
+    assert status["files"] == ["111_Excel_One.pdf"]
+    assert status["manifest"]["counts"]["ok"] == 1
+
+    file_response = client.get(f"/api/jobs/{job['id']}/file/111_Excel_One.pdf")
+    assert file_response.status_code == 200
+    assert file_response.data.startswith(b"%PDF")
+
+    # traversal must not escape the output folder
+    assert client.get(f"/api/jobs/{job['id']}/file/..%2F..%2Fetc%2Fpasswd").status_code in (400, 404)
+
+    archive = client.get(f"/api/jobs/{job['id']}/zip")
+    assert archive.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(archive.data)) as bundle:
+        assert "111_Excel_One.pdf" in bundle.namelist()
+
+
+def test_webapp_rejects_bad_requests(tmp_path, monkeypatch):
+    webapp = _webapp(tmp_path, monkeypatch)
+    client = webapp.app.test_client()
+
+    assert client.post("/api/jobs", json={"mode": "search"}).status_code == 400
+    assert client.post("/api/jobs", json={"mode": "download"}).status_code == 400
+    assert client.post("/api/jobs", json={"mode": "nope"}).status_code == 400
+    assert client.get("/api/jobs/doesnotexist").status_code == 404
+    assert client.get("/api/jobs/doesnotexist/zip").status_code == 404
