@@ -1,0 +1,14 @@
+.git
+.venv
+venv
+webdata
+out
+.debug
+.scribd-cache
+cookies.txt
+*cookies*.txt
+.env
+.cache
+__pycache__
+*.pyc
+.pytest_cache

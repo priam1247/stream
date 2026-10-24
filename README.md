@@ -355,6 +355,97 @@ If all three fail, the log tells you exactly why — look for these lines:
 | `Executable doesn't exist at …` | Chromium is not downloaded | press *Install & test Chromium* |
 | `Failed to download … ECONNRESET` | `cdn.playwright.dev` is blocked | retry, or point `PLAYWRIGHT_DOWNLOAD_HOST` at a mirror |
 
+## Where to run it so it does not eat your data
+
+Rendering one Scribd document pulls **every page image, font and script** of
+that document — often 50-200 MB of traffic for a 60 MB PDF. Whose connection
+carries that matters:
+
+| Where it runs | who fetches the document | what you download |
+| --- | --- | --- |
+| your PC (local web UI) | **your bundle** | everything, then the PDF again |
+| a panel / VPS / Docker host | the host | only the finished PDF |
+| **GitHub Actions** | GitHub's runner (free) | only the finished PDF |
+| a browser on your PC via CDP | **your bundle** | only the finished PDF |
+
+So on a metered connection the browser must live somewhere else. Two hosted
+routes need no server of your own and no root fights.
+
+### 1. GitHub Actions — free, and it cannot run out of libraries
+
+GitHub's `ubuntu-latest` runners are complete Ubuntu machines: `sudo` works, so
+`playwright install --with-deps chromium` installs `libnspr4`, `libnss3`,
+`libatk`, `libgbm` and the rest **properly and permanently**. Nothing to debug.
+Private repos get 2,000 free minutes a month; public repos are unlimited.
+
+`.github/workflows/scribd.yml` in this repo does the whole job:
+
+1. **Once:** Settings → Secrets and variables → Actions → *New repository
+   secret* → name `SCRIBD_COOKIES_B64`, value = base64 of your `cookies.txt`.
+   On Windows, in Git Bash:
+   ```bash
+   base64 -w0 cookies.txt        # copy the output, paste it as the secret
+   ```
+   (Without the secret, only public documents work.)
+2. **Actions** tab → **scribd** → **Run workflow**, and fill the boxes:
+   search text, `limit` (`0` = everything found), `picks` (`1,3,7`), pages, or
+   paste document URLs to skip the search.
+3. When it finishes, open the run → **Artifacts** → `scribd-out-<n>.zip`:
+   the PDFs, `search-<query>.txt/.json` and `manifest.jsonl`.
+
+The runner fetches Scribd; your bundle carries only that zip. A 95-page book
+takes a few minutes of runner time, not hours of yours. Artifacts are kept 14
+days (set in the workflow).
+
+Limits worth knowing: one run may last 6 hours, an artifact may be 500 MB
+(use `--pick` or a smaller `limit` for very large batches), and the workflow is
+queued behind nothing else because it has its own concurrency group.
+
+### 2. A container host with root — the app, 24/7
+
+`Dockerfile` in this repo builds an image that already contains Chromium **and
+its system libraries**, so the web UI works exactly like it does on your PC:
+
+```bash
+docker build -t scribd .
+docker run -p 8000:8000 -v "$PWD/data:/data" -e SCRIBD_WEB_USER=me -e SCRIBD_WEB_PASS=secret scribd
+```
+
+The same image runs unchanged on hosts that give you root in a container:
+
+* **Hugging Face Spaces** (free CPU, 16 GB RAM) — new *Docker* space, push this
+  repo, set the port to `8000` in the space's `README.md` metadata
+  (`app_port: 8000`), and add the variables there. The space sleeps after a
+  while, which is fine: the queue and the PDFs are on its disk.
+* **Fly.io / Render / Railway / any VPS** — same image, same variables,
+  `SCRIBD_WEB_DATA` on a mounted volume so the PDFs outlive a restart.
+
+On all of them the document is fetched by the host and you download only the
+PDF from the web page.
+
+### 3. If you must use the panel
+
+It can only work if Chromium can start there. In order of likelihood:
+
+1. let the app fetch the missing sonames (`python -m scribd.sysroot`, run
+   automatically at boot and at launch — see above);
+2. `SCRIBD_BROWSER_CDP=https://…` to drive a browser that runs elsewhere — but
+   that browser's traffic is *your* connection again, so it saves nothing;
+3. ask the host for an image with Chromium's dependencies.
+
+If none of those hold, the panel can still serve as a **queue and storage**:
+run the searches and downloads in GitHub Actions and keep the PDFs where you
+like. The app itself has nothing more to debug — the missing piece is the
+container's operating system, not the code.
+
+### What will not work, and why
+
+* **Vercel / Netlify / Cloudflare Pages** — serverless functions have seconds of
+  lifetime, no disk and no Chromium; a PDF job takes minutes and needs both.
+  A static page there could only be a front-end to somewhere else.
+* **Google Colab** — works (root, real Ubuntu), but the session ends when the
+  tab closes; fine for a one-off batch, not for a 24/7 page.
+
 ### Why it works in Zed but not on the panel
 
 Nothing in the code path differs — the difference is the machine under Chromium.

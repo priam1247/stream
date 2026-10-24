@@ -939,13 +939,24 @@ def main(host: str | None = None, port: int | None = None) -> None:
     parser.add_argument("--port", type=int, default=None,
                         help="default: SCRIBD_WEB_PORT, SERVER_PORT (panels), PORT, else 8000")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument(
+        "--tunnel",
+        action="store_true",
+        help="publish this page on a temporary https URL (cloudflared/ngrok)",
+    )
     args = parser.parse_args()
     host, port = resolve_bind(args.host or host, args.port or port)
+
+    if args.tunnel or os.environ.get("SCRIBD_WEB_TUNNEL", "").strip() in ("1", "true", "yes"):
+        # a tunnel exposes the port to the internet: never let it be open
+        host = "127.0.0.1"
+        os.environ.setdefault("SCRIBD_WEB_PUBLIC", "1")
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ensure_workers()
-    auth = ensure_auth(host)
+    # a tunnel means the world can reach this port, so treat it as public
+    auth = ensure_auth("0.0.0.0" if os.environ.get("SCRIBD_WEB_PUBLIC") else host)
     if auth == "configured":
         print("auth: configured (SCRIBD_WEB_USER/SCRIBD_WEB_PASS or SCRIBD_WEB_TOKEN)", flush=True)
     elif auth == "open-loopback":
@@ -971,7 +982,22 @@ def main(host: str | None = None, port: int | None = None) -> None:
 
     os.environ.setdefault("FLASK_SKIP_DOTENV", "1")  # we load .env ourselves
     print(f"data: {DATA_DIR}\nlistening on http://{host}:{port}", flush=True)
-    app.run(host=host, port=port, debug=args.debug, threaded=True)
+
+    tunnel = None
+    if os.environ.get("SCRIBD_WEB_PUBLIC"):
+        from .tunnel import start as start_tunnel
+
+        tunnel = start_tunnel(port)
+        if tunnel is None:
+            print(
+                "tunnel: not started — this page is only reachable from this machine",
+                flush=True,
+            )
+    try:
+        app.run(host=host, port=port, debug=args.debug, threaded=True)
+    finally:
+        if tunnel is not None:
+            tunnel.stop()
 
 
 if __name__ == "__main__":
