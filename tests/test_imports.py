@@ -955,3 +955,62 @@ def test_image_strategy_isolates_fetch_failures():
     assert doc is not None and doc.pdf, "a single failed page must not abort the build"
     assert len(doc.pages) == 3, f"expected 3 of 4 pages, got {len(doc.pages)}"
     assert any("failures" in m for m in logs), logs
+
+
+# ---------------------------------------------------------------------------
+# The 403 cause: signed page-asset URLs were truncated at ".jsonp",
+# dropping "?token=..." — every fetch was then unauthorised.
+# ---------------------------------------------------------------------------
+def test_jsonp_urls_keep_their_token_query():
+    from scribd.extractors import build_page_template, extract_content_urls
+
+    html = (
+        '<img src="https://html.scribdassets.com/6ysb4bcr7kdognn0/pages/1-10b1c7.jsonp'
+        '?token=eyJhbGciOiJIUzI1NiJ9.eyJwYWdlX21heCI6OTV9.sig123">'
+    )
+    urls = extract_content_urls(html)
+    assert urls[1].endswith("?token=eyJhbGciOiJIUzI1NiJ9.eyJwYWdlX21heCI6OTV9.sig123")
+    assert "?token=" in build_page_template(urls)
+
+
+def test_wildcard_cdn_subdomains_and_webp():
+    from scribd.extractors import extract_content_urls, extract_page_image_urls
+
+    html = (
+        '<img src="https://html1.scribdassets.com/u/pages/2-abc.jsonp">'
+        '<img src="https://html.scribdassets.com/u/images/1-x.webp">'
+        '<img src="https://imgv2-1.scribdassets.com/u/images/2-y.jpg?x=1">'
+    )
+    assert 2 in extract_content_urls(html)
+    assert set(extract_page_image_urls(html)) == {1, 2}
+
+
+def test_screenshot_regex_stays_on_its_own_host():
+    """A *.scribd.com wildcard would match unrelated URLs as 'pages'."""
+    from scribd.extractors import extract_page_image_urls
+
+    html = (
+        '<img src="https://screenshots.scribd.com/Scribd/a_b_c/d/9/7.jpeg">'
+        '<a href="https://www.scribd.com/document/123/Some-3">x</a>'
+    )
+    assert set(extract_page_image_urls(html)) == {7}
+
+
+def test_browser_strategy_is_last_and_degrades_quietly(monkeypatch):
+    import sys
+
+    from scribd.fetch import DEFAULT_STRATEGIES, ScrapeContext
+    from scribd.browser import BrowserStrategy, clean_pages
+
+    assert DEFAULT_STRATEGIES[-1].name == "browser"
+
+    logs: list[str] = []
+    ctx = ScrapeContext(doc_id="1", url="https://www.scribd.com/document/1/X", log=logs.append)
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.async_api", None)
+    assert asyncio.run(BrowserStrategy().run(ctx, object())) is None
+    assert any("playwright not installed" in m for m in logs), logs
+
+    pages = clean_pages(["  page one  ", "", "x", "page two "], min_words=2)
+    assert [p.number for p in pages] == [1, 2]
+    assert pages[0].text == "page one"

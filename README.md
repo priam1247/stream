@@ -233,6 +233,27 @@ cached, so a re-run is instant. `--keep-images` also saves
 `PARTIAL` in the output means fewer than 90% of pages were captured — never
 assume it is the whole book.
 
+## If the HTTP routes are refused: the browser route
+
+As a last resort the chain ends with a **real Chromium** (Playwright), which
+renders exactly what your logged-in account sees — including pages that are
+lazy-loaded by JavaScript — then captures the text of every page and prints
+the document to PDF:
+
+```bash
+pip install playwright
+playwright install chromium
+
+python -m scribd "https://www.scribd.com/document/REAL_ID/Title" \
+    -o out -f pdf --cookies-file cookies.txt --no-cache
+```
+
+Watch for `browser: N pages via 'div.outer_page', + PDF`. If Playwright is
+not installed the strategy says so and the rest of the chain is unaffected.
+
+Note on signed assets: per-page \`?token=...\` query strings are part of the
+URL and are preserved now. Dropping them turned every fetch into a 403.
+
 ## When a document fails: `--diagnose`
 
 If a real document reports `all strategies failed: no result`, the page

@@ -145,6 +145,11 @@ class Fetcher:
             return True
         return False
 
+    @property
+    def cookies(self) -> dict[str, str]:
+        """The cookie jar (used by the browser strategy)."""
+        return dict(self._cookies)
+
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         h = dict(BASE_HEADERS)
         h["User-Agent"] = USER_AGENTS[self._ua % len(USER_AGENTS)]

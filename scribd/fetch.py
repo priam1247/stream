@@ -20,6 +20,7 @@ from .extractors import (
     extract_meta,
     fetch_oembed,
 )
+from .browser import BrowserStrategy
 from .models import DocumentMeta, Page, ScrapedDocument
 from .render import html_to_markdown, html_to_text
 from .utils import extract_json_after
@@ -645,4 +646,5 @@ DEFAULT_STRATEGIES: list[Strategy] = [
     PdfDownloadStrategy(),
     PageImagesPdfStrategy(),
     RenderMetadataStrategy(),
+    BrowserStrategy(),
 ]
