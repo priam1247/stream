@@ -89,6 +89,15 @@ def search_url(query: str, page: int = 1) -> str:
     )
 
 
+def _cap(limit: int | None) -> int | None:
+    """``0``/``None`` mean "no limit" everywhere in this module."""
+    try:
+        value = int(limit or 0)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def _slug_title(slug: str, doc_id: str) -> str:
     if not slug:
         return f"scribd_{doc_id}"
@@ -340,6 +349,7 @@ async def browser_search(
     query_text = (query or "").strip()
     if not query_text:
         return []
+    cap = _cap(limit)
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
@@ -380,11 +390,11 @@ async def browser_search(
                     pass
 
                 hits = await _collect_results(
-                    page, query_text, variant, limit=limit, pages=pages, log=log
+                    page, query_text, variant, limit=cap, pages=pages, log=log
                 )
                 if hits:
                     log(f"search: browser found {len(hits)} document(s)")
-                    return hits[:limit]
+                    return hits[:cap] if cap else hits
 
                 title = ""
                 try:
@@ -404,7 +414,7 @@ async def _collect_results(
     query_text: str,
     variant: str,
     *,
-    limit: int,
+    limit: int | None,
     pages: int,
     log,
 ) -> list[SearchHit]:
@@ -428,7 +438,7 @@ async def _collect_results(
         pass
 
     hits = _hits_from_raw(await page.evaluate(BROWSER_EXTRACT_JS) or [])
-    if len(hits) < limit and pages > 1:
+    if pages > 1 and (limit is None or len(hits) < limit):
         for page_number in range(2, pages + 1):
             url = variant.format(query=quote_plus(query_text), page=page_number)
             log(f"search: browser → page {page_number}")
@@ -447,9 +457,9 @@ async def _collect_results(
             if not fresh:
                 break
             hits.extend(fresh)
-            if len(hits) >= limit:
+            if limit is not None and len(hits) >= limit:
                 break
-    return hits[:limit]
+    return hits[:limit] if limit else hits
 
 
 async def _dump_search_page(page, query_text: str, debug_dir, log) -> None:
@@ -486,10 +496,11 @@ async def find_documents(
     are collected. Raises whatever the fetcher raises (e.g. a bot-wall); the
     caller reports it — an empty list means "Scribd returned nothing usable".
     """
+    cap = _cap(limit)
     found: list[SearchHit] = []
     seen: set[str] = set()
     for page_number in range(1, max(1, int(pages)) + 1):
-        if len(found) >= limit:
+        if cap is not None and len(found) >= cap:
             break
         url = search_url(query, page_number)
         response = await fetcher.get(url)
@@ -514,7 +525,7 @@ async def find_documents(
                         f"saved the raw page to {path}"
                     )
             break
-    return found[:limit]
+    return found[:cap] if cap else found
 
 
 def _dump_static_search_page(debug_dir, query: str, page: int, html: str):

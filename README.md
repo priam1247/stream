@@ -142,6 +142,104 @@ async def main():
 asyncio.run(main())
 ```
 
+## Run it as a web app (search → tick → download)
+
+`python -m scribd.webapp` puts the whole flow behind a page: type a search,
+wait, tick the results you want (or "Download all found"), watch the log, then
+download the PDFs one by one or as a zip.
+
+```bash
+pip install flask
+python -m scribd.webapp --host 0.0.0.0 --port 8000
+# then open http://127.0.0.1:8000/
+```
+
+On Windows (Git Bash), one line:
+
+```bash
+cd ~/Documents/stream && source .venv/Scripts/activate && python -m pip install flask && python -m scribd.webapp --host 127.0.0.1 --port 8000
+```
+
+Why there is a job queue instead of one request per download: a search is a
+20–40 s browser session, and printing a 300-page textbook takes minutes. No
+reverse proxy or shared host will hold such a request open. So:
+
+* every action is a **job** (a subprocess: `python -m scribd …`), queued and run
+  one at a time (`SCRIBD_WEB_CONCURRENCY`);
+* the page polls `/api/jobs/<id>/log?offset=` and shows the CLI's own output —
+  the same lines you see in the terminal;
+* the search job writes `search-<query>.json`, and the page renders it as a
+  tick-list; ticking rows and pressing *Download selected* starts a second job
+  with those URLs written to `urls.txt` and passed as `--file`;
+* *Download all found* runs `--search <query> --limit 0`, i.e. everything;
+* files are served from the shared `out/` folder, and `/api/jobs/<id>/zip`
+  bundles that job's PDFs plus `manifest.jsonl`.
+
+State lives in `./webdata` (`jobs/<id>/job.log`, `state.json`, `out/`), so a
+restart does not lose the PDFs — and because the CLI skips PDFs it already has,
+re-running a failed job only fetches the missing ones.
+
+### Security
+
+Set a password before exposing the port; otherwise anyone who reaches it can
+start downloads (and burn your Scribd account's limits):
+
+```bash
+export SCRIBD_WEB_USER=me
+export SCRIBD_WEB_PASS='something-long'
+export SCRIBD_WEB_COOKIES=/home/you/stream/cookies.txt   # your Scribd session, kept out of git
+python -m scribd.webapp --host 127.0.0.1 --port 8000
+```
+
+All endpoints except `/api/health` then require HTTP Basic auth (or
+`SCRIBD_WEB_TOKEN`, sent as `X-Token` or `?token=`). The cookie file is only
+ever read by the CLI subprocess — it is never served, logged or echoed.
+
+### Hosting it on xsystemshosting.com
+
+The app is a normal WSGI app (`scribd.webapp:app`), so cPanel's **Setup Python
+App** works: create the app with application root = the checkout, application
+startup file = `passenger_wsgi.py`, and the entry point `application`:
+
+```python
+# passenger_wsgi.py, next to the scratch checkout
+from scribd.webapp import app as application
+```
+
+Then, in the virtualenv cPanel created for that app:
+
+```bash
+pip install -r requirements.txt
+pip install playwright && python -m playwright install chromium
+```
+
+and add the environment variables (`SCRIBD_WEB_USER`, `SCRIBD_WEB_PASS`,
+`SCRIBD_WEB_COOKIES`, optional `SCRIBD_WEB_DATA=$HOME/webdata`,
+`SCRIBD_WEB_CONCURRENCY=1`).
+
+Two honest caveats about shared Python hosting:
+
+1. **Chromium must run.** Every download goes through headless Chromium
+   (`--browser`); search and PDF printing both need it. Shared plans often lack
+   the shared libraries Chromium wants (`libnss3`, `libatk`, …). Test it first:
+   `python -m playwright install --with-deps chromium` or simply run one small
+   document through the CLI. If Chromium cannot start there, the web page will
+   load but every job will fail in the log — in that case run the web app on
+   your own machine (or a small VPS) and use it from the browser instead.
+2. **Long jobs vs. idle timeouts.** Passenger recycles idle workers, and a job
+   that prints nothing for minutes can be killed. The queue survives that (the
+   PDFs are on disk and the CLI resumes), but for real bulk runs prefer
+   `screen`/systemd:
+
+```bash
+python -m scribd.webapp --host 127.0.0.1 --port 8000
+```
+
+with the host's proxy (or an `.htaccess` `ProxyPass`) pointing
+`https://xsystemshosting.com/scribd/` at `127.0.0.1:8000`. Keep
+`SCRIBD_WEB_CONCURRENCY=1` on a small plan: each concurrent job is its own
+Chromium.
+
 ## Tests (offline, no Scribd traffic)
 
 ```bash
@@ -363,6 +461,54 @@ If nothing is found, the CLI does not pretend it worked: it writes what the
 browser saw to `.debug/search-<query>-browser.html` and `.png` (the HTTP page,
 when empty, goes to `.debug/search-<query>-p<N>.html`) and says so. Those two
 files are enough to fix a changed result layout.
+
+### Bulk: "download as many as it finds"
+
+`--limit 0` removes the cap. Nothing else changes — the search walks
+`--search-pages` result pages, collects every document it sees, and each one is
+downloaded:
+
+```bash
+python -m scribd --search "malawi" --limit 0 --search-pages 10 -o out -f pdf --cookies-file cookies.txt --no-cache --browser
+```
+
+Raising `--search-pages` (default 3, allowed up to 50) is what makes the list
+long — `.debug`/`out/search-<query>.txt` shows the collected URLs.
+
+A batch that runs for an hour gets interrupted. So a run is **resumable**:
+
+* A PDF that already exists in `out/` and starts with `%PDF-` is **skipped**,
+  not re-downloaded (a 0-byte or HTML "PDF" is treated as broken and redone).
+  `--overwrite` forces a re-download.
+* Every document gets one row in `out/manifest.jsonl` —
+  `{"status":"ok|failed|skipped","url":…,"doc_id":…,"title":…,"pages":…,"pdf_bytes":…,"files":[…],"at":…}`
+  so you can see exactly what worked without opening 200 PDFs.
+* The last line is a real summary, and the exit code is honest:
+
+```
+50 downloaded, 12 already present, 2 failed / 64
+```
+
+`0` only if at least one PDF exists (downloaded or already there) **and nothing
+failed**; a run where 2 of 64 failed exits non-zero, so a `&&` chain or cron job
+does not silently report success.
+
+Re-running the exact same command after a failure therefore only fetches the
+missing ones. That is also how you "download a lot": start it, stop it, start it
+again.
+
+### Picking from a long list
+
+```bash
+python -m scribd --search "excel and succeed" --limit 0 --search-only        # see the list, save it
+python -m scribd --search "excel and succeed" --pick 1,4,9,12 -o out -f pdf --browser
+```
+
+or edit `out/search-excel_and_succeed.txt` down to the lines you want and:
+
+```bash
+python -m scribd --file out/search-excel_and_succeed.txt -o out -f pdf --browser
+```
 
 ### Speed
 
