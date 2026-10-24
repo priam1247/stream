@@ -388,10 +388,19 @@ async def run(args: argparse.Namespace) -> int:
                         )
                     except Exception as exc:
                         browser_hits = []
-                        console.print(
-                            f"[yellow]  browser search failed: "
-                            f"{type(exc).__name__}: {exc}[/yellow]"[:300]
-                        )
+                        from .chromium import BrowserLaunchError
+
+                        if isinstance(exc, BrowserLaunchError):
+                            # the reasons and the hints were already printed
+                            console.print(
+                                "[yellow]  browser search failed: Chromium cannot "
+                                "start on this machine — see the reasons above[/yellow]"
+                            )
+                        else:
+                            console.print(
+                                f"[yellow]  browser search failed: "
+                                f"{type(exc).__name__}: {exc}[/yellow]"
+                            )
                     seen = {hit.doc_id for hit in hits}
                     for hit in browser_hits:
                         if want and len(hits) >= want:

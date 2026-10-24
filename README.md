@@ -331,6 +331,47 @@ library is missing (`libnss3`, `libatk-1.0`, …). That is the one thing you
 cannot fix from inside this container — it needs the host image to have them, or
 a different host.
 
+### "TargetClosedError: Target page, context or browser has been closed"
+
+That is Chromium dying at startup, not a Scribd problem. Playwright runs
+`chrome-headless-shell` for headless work, and on shared containers that binary
+very often fails while the full Chrome build next to it still works. The app now
+**tries the variants in order and remembers the one that worked**:
+
+1. headless shell (playwright's default)
+2. the full Chrome build (`channel="chromium"`)
+3. the full Chrome build by explicit path
+
+The winner is cached in `webdata/browser.json` (or `SCRIBD_BROWSER_CACHE`), so
+later searches and downloads start with it. `/api/health` reports it as
+`browser.mode` (`shell` / `chrome` / `path`).
+
+If all three fail, the log tells you exactly why — look for these lines:
+
+| Log line | Meaning | What to do |
+| --- | --- | --- |
+| `error while loading shared libraries: libnss3.so` (or `libatk-1.0`, `libgbm`, `libxkbcommon`) | the image lacks Chromium's system packages | ask the host to run `playwright install-deps chromium` once, or run the UI locally |
+| `No usable sandbox` / `Failed to move to new namespace` | the container blocks user namespaces | already handled: `--no-sandbox` is passed by default |
+| `Executable doesn't exist at …` | Chromium is not downloaded | press *Install & test Chromium* |
+| `Failed to download … ECONNRESET` | `cdn.playwright.dev` is blocked | retry, or point `PLAYWRIGHT_DOWNLOAD_HOST` at a mirror |
+
+Force one variant (e.g. skip the shell entirely) by adding to `.env`:
+
+```
+SCRIBD_BROWSER_MODE=chrome
+```
+
+Other knobs: `SCRIBD_BROWSER_ARGS="--foo --bar"` (extra Chromium flags),
+`SCRIBD_BROWSER_SANDBOX=1` (keep the sandbox, drops `--no-sandbox`),
+`SCRIBD_BROWSER_CACHE=/path/browser.json`.
+
+You can reproduce the whole check without the web page:
+
+```bash
+python -m scribd.browsersetup --check    # test only
+python -m scribd.browsersetup --force    # re-download, then test
+```
+
 ### Caveats on a panel
 
 * The panel's RAM/CPU limit applies: one Chromium print job wants ~4 GB during

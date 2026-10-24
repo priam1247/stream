@@ -77,47 +77,24 @@ def _playwright_installed() -> bool:
     return importlib.util.find_spec("playwright") is not None
 
 
-# playwright changed its layout over the years: chrome-linux (old),
-# chrome-linux64 (current "Chrome for Testing") and the headless shell.
-_CHROME_LAYOUTS = (
-    "*/chrome-linux/chrome",
-    "*/chrome-linux64/chrome",
-    "*/chrome-linux/headless_shell",
-    "*/chrome-headless-shell-linux64/chrome-headless-shell",
-    "*/chrome-linux64/headless_shell",
-)
-
-
-def _playwright_bases() -> list[Path]:
-    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
-    bases: list[Path] = []
-    if root:
-        bases.append(Path(root))
-    bases += [
-        Path.home() / ".cache" / "ms-playwright",
-        REPO_ROOT / ".cache" / "ms-playwright",
-        DATA_DIR / "ms-playwright",
-    ]
-    return [base for base in bases if base.is_dir()]
-
-
 def _chromium_path() -> str:
     """Where playwright keeps Chromium, if any build was downloaded."""
-    for base in _playwright_bases():
-        for layout in _CHROME_LAYOUTS:
-            for match in base.glob(layout):
-                if match.is_file():
-                    return str(match)
-    return ""
+    from .chromium import find_chromium
+
+    return find_chromium()
 
 
 def browser_status() -> dict:
     """What the panel needs to know: is a browser even usable here?"""
+    from .chromium import _read_cache
+
     chromium = _chromium_path()
     return {
         "playwright": _playwright_installed(),
         "chromium": bool(chromium),
         "chromium_path": chromium,
+        # which launch variant worked last time ("shell" / "chrome" / "path")
+        "mode": str(_read_cache().get("mode") or ""),
     }
 
 
