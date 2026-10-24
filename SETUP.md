@@ -178,6 +178,25 @@ search from GitHub Actions or your PC, then paste the URLs into the panel's
 `urls` box. Turn `SCRIBD_DIAG` off once the verdict is known — it is a
 diagnostic, not a feature.
 
+### Test the download itself: `download_check.py`
+
+`check_deployment.py` answers *can this host run a browser*. This one answers
+the other half: **can it download a link and build a PDF without one**. It is
+also one file, also nothing to install, and it gives you a page because a panel
+usually has no shell.
+
+1. Set `PY_FILE=download_check.py`, restart, open the server URL.
+2. Paste a document link, press **Test download**.
+3. Read the box: `PDF BUILT` means the panel works; `NO PDF` prints the exact
+   line that stopped it, and the log stays on the page.
+4. Finished PDFs are listed under the log — click one to download it.
+
+It runs `python -m scribd --file … -o out -f pdf --no-cache`, i.e. exactly what
+the app runs, with whatever `cookies.txt` it finds. Tick **also try --browser**
+to run the same job through Chromium and see both results side by side. With a
+shell: `python download_check.py --url <link>` (add `--browser` to test the
+browser, `--selftest` to check the file itself offline).
+
 ### Library matching: two traps this handles
 
 `sysroot` does not assume anything about the image:
@@ -316,6 +335,7 @@ The CLI flags that matter:
 | `Dockerfile` | the image for a 24/7 hosted page |
 | `bot.py` | entry point a panel runs |
 | `check_deployment.py` | one-file test of a host, before deploying anything |
+| `download_check.py` | one-file test: can this host download a link without a browser |
 | `SETUP.md` | this file |
 
 ---
