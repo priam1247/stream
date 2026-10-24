@@ -153,6 +153,39 @@ def test_netscape_loader_keeps_httponly_session_cookies(tmp_path):
     assert jar["locale"] == "en"
 
 
+def test_escaped_json_slashes_are_extracted():
+    # Live Scribd embeds the config as JSON, which escapes slashes:
+    # "https:\/\/html.scribdassets.com\/…". The old regexes matched
+    # nothing here, and every strategy reported "no result" on documents
+    # that had loaded fine — the exact failure seen on a real doc.
+    from scribd.extractors import build_page_template, extract_content_urls
+
+    html = (
+        '<script>window.__PRELOADED_STATE__ = {"pageParams": {'
+        '"contentUrl":"https:\\/\\/html.scribdassets.com\\/8l4pg2od2i5wj2e\\/pages\\/1-abc123def456.jsonp",'
+        '"pageCount": 95}};</script>'
+    )
+    urls = extract_content_urls(html)
+    assert urls, "escaped-slash content URL was not found"
+    tmpl = build_page_template(urls)
+    assert tmpl == "https://html.scribdassets.com/8l4pg2od2i5wj2e/pages/{n}-abc123def456.jsonp"
+
+
+def test_alternative_asset_host_is_extracted():
+    from scribd.extractors import build_page_template, extract_content_urls
+
+    html = '<a href="https://html1.scribdassets.com/xyz/pages/1-q9w8e7.jsonp">p1</a>'
+    tmpl = build_page_template(extract_content_urls(html))
+    assert tmpl == "https://html1.scribdassets.com/xyz/pages/{n}-q9w8e7.jsonp"
+
+
+def test_html_escaped_slashes_are_extracted():
+    from scribd.extractors import extract_content_urls
+
+    html = "https:&#x2F;&#x2F;html.scribdassets.com&#x2F;abc&#x2F;pages&#x2F;1-h4sh.jsonp"
+    assert 1 in extract_content_urls(html)
+
+
 def test_scrape_error_raised_when_all_strategies_fail():
     from scribd import ScrapeError, ScribdScraper
 

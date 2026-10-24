@@ -16,6 +16,13 @@ DOC_URL_RE = re.compile(
 CONTENT_URL_RE = re.compile(
     r"https://html\.scribdassets\.com/[A-Za-z0-9_\-./]+?/pages/[A-Za-z0-9_\-]+\.(?:jsonp|json)"
 )
+# Live pages embed the config as JSON, where slashes are escaped
+# ("https:\/\/html.scribdassets.com\/..."), and some hosts differ
+# (html1.scribdassets.com). This loose pattern catches those after
+# _normalise() has unescaped the document.
+LOOSE_CONTENT_URL_RE = re.compile(
+    r"https?://[A-Za-z0-9_.-]*scribdassets\.com/[^\"'\s<>\\]*?/pages/\d+-[^\"'\s<>\\?]+\.(?:jsonp|json)"
+)
 PAGE_IN_PATH_RE = re.compile(r"/pages/(\d+)-")
 IMAGE_URL_RE = re.compile(
     r"https://(?:imgv2[^/\"]*|html[^/\"]*)\.scribdassets\.com/"
@@ -49,7 +56,24 @@ def parse_doc_url(url: str) -> tuple[str, str]:
     return kind, m.group(1)
 
 
+def _normalise(html: str) -> str:
+    """Undo the two escapes Scribd uses around asset URLs.
+
+    JSON-embedded config writes "https:\\/\\/host\\/path", and some
+    templates HTML-escape the slashes ("&#x2F;", "&#47;"). Without this
+    the URL regexes below silently match nothing — which surfaced as
+    "all strategies failed: no result" on real documents even though
+    the page had loaded fine (HTTP 200).
+    """
+    if "\\/" in html:
+        html = html.replace("\\/", "/")
+    if "&#x2F;" in html or "&#47;" in html or "&#x2f;" in html:
+        html = html.replace("&#x2F;", "/").replace("&#x2f;", "/").replace("&#47;", "/")
+    return html
+
+
 def extract_state(html: str) -> dict[str, Any]:
+    html = _normalise(html)
     for marker in STATE_MARKERS:
         idx = html.find(marker)
         if idx == -1:
@@ -101,6 +125,7 @@ def extract_meta(html: str, url: str, doc_id: str, kind: str = "document") -> Do
 def extract_content_urls(html: str) -> dict[int, str]:
     """Map page number -> asset URL, from raw HTML and any embedded JSON."""
     found: dict[int, str] = {}
+    html = _normalise(html)
 
     def consider(u: str) -> None:
         m = PAGE_IN_PATH_RE.search(u)
@@ -111,10 +136,16 @@ def extract_content_urls(html: str) -> dict[int, str]:
 
     for u in CONTENT_URL_RE.findall(html):
         consider(u)
+    if not found:
+        # Escaped/alternate-host form (see _normalise / LOOSE_CONTENT_URL_RE).
+        for u in LOOSE_CONTENT_URL_RE.findall(html):
+            consider(u)
 
     state = extract_state(html)
     if state:
-        for u in CONTENT_URL_RE.findall(json.dumps(state)):
+        for u in CONTENT_URL_RE.findall(json.dumps(state)) + LOOSE_CONTENT_URL_RE.findall(
+            json.dumps(state)
+        ):
             consider(u)
 
     return found
@@ -133,7 +164,7 @@ def build_page_template(urls: dict[int, str]) -> str | None:
 
 def extract_image_urls(html: str) -> dict[int, str]:
     out: dict[int, str] = {}
-    for u in IMAGE_URL_RE.findall(html):
+    for u in IMAGE_URL_RE.findall(_normalise(html)):
         u = u.replace("\\/", "/")
         m = PAGE_IN_PATH_RE.search(u) or re.search(r"/(\d+)-", u)
         if m:
