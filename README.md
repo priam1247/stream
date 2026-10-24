@@ -233,6 +233,30 @@ cached, so a re-run is instant. `--keep-images` also saves
 `PARTIAL` in the output means fewer than 90% of pages were captured — never
 assume it is the whole book.
 
+## One book page per PDF sheet
+
+Earlier browser output contained the whole browser viewport (toolbars,
+sidebars, the viewer chrome). The fix, ported from the two projects below:
+
+1. **Isolate** — hide every top-level `<body>` element that does not contain
+   the document, flatten the page's ancestors, and drop Scribd's decorative
+   frame (`.b_tl … .highlighter_canvas`).
+2. **Mark one page** — `data-export-target` on the page being printed; all
+   other pages are `display:none`.
+3. **Size the sheet to the page** — `@page { size: <page>px <page>px; margin: 0 }`
+   and `page.pdf(width=page/96 in, height=page/96 in, margin=0)`.
+4. **Verify and merge** — each print must yield exactly one sheet; the parts
+   are merged with `pypdf`, preserving per-page sizes.
+
+```bash
+python -m scribd "URL" -o out -f pdf --cookies-file cookies.txt --no-cache --browser
+# → browser: printing 95 pages, one sheet each
+# → browser: merged 95 page PDFs -> 95 sheets
+```
+
+`--no-print-pages` falls back to a single whole-document print;
+`--screenshots` additionally screenshots each page (only for text-free scans).
+
 ## Credits / what these approaches are based on
 
 - **[Phoenix124/scribd-downloader](https://github.com/Phoenix124/scribd-downloader)**
@@ -241,6 +265,12 @@ assume it is the whole book.
   `<img class="absimg" orig="...">` (the `src` is a lazy placeholder), and
   deriving page images from asset URLs (`/pages/N-hash.jsonp` →
   `/images/N-hash.jpg`).
+- **[themrsami/scribd-downloader](https://github.com/themrsami/scribd-downloader)**
+  — print each page alone with `@page` sized to that page, assert exactly one
+  sheet per document page, and merge with `pypdf`.
+- **[xDatx/Studocu-Scribd-Helper](https://github.com/xDatx/Studocu-Scribd-Helper)**
+  — isolate the viewer (hide every other body child, flatten ancestors, hide
+  the decorative corner classes) so only the document prints.
 - **[youngpiu/scribd-pdf-downloader](https://github.com/youngpiu/scribd-pdf-downloader)**
   — scroll each page into view until the container count stabilises
   (`scrollIntoView`, not `scrollBy`), then inject print CSS (hide toolbars,
