@@ -1,5 +1,10 @@
 # scribd-scraper
 
+> **Lost? Read [`SETUP.md`](SETUP.md) first.** It explains the whole thing in one
+> page: what the two programs are, why a browser is required, and the three
+> places you can run it (GitHub Actions = free and saves your data bundle, a
+> Docker host = 24/7 page, the panel = only if Chromium can start there).
+
 Scrape text (and, when available, the original PDF) from Scribd documents,
 with a strategy chain and graceful degradation instead of one brittle path.
 
