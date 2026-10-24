@@ -4314,3 +4314,173 @@ def test_bot_runs_the_diagnostic_after_the_sysroot_step():
     diagnostics = text.index("run_diagnostics()")
     assert libraries < diagnostics, "diag's ldd must run after the libraries are fixed"
     assert "SCRIBD_DIAG" in text
+
+
+# ---------------------------------------------------------------------------
+# oEmbed: the one public Scribd endpoint we can rely on
+# ---------------------------------------------------------------------------
+OEMBED_SAMPLE = {
+    "version": 1.0,
+    "type": "rich",
+    "provider_name": "Scribd",
+    "provider_url": "https://www.scribd.com/",
+    "title": "2K Data",
+    "author_name": "Some Publisher",
+    "author_url": "https://www.scribd.com/someone",
+    "thumbnail_url": "https://imgv2-2-f.scribdassets.com/img/document/751945245/229x300/token/1?v=1",
+    "thumbnail_width": 229,
+    "thumbnail_height": 300,
+    "width": 710,
+    "height": 400,
+    "html": (
+        '<iframe class="scribd_iframe_embed" src="https://www.scribd.com/embeds/'
+        '751945245/content?start_page=1" data-auto-height="true"></iframe>'
+    ),
+}
+
+
+def test_oembed_urls_and_ids_for_every_url_shape():
+    from scribd import oembed
+
+    for value in (
+        "https://www.scribd.com/document/751945245/2k-data-2",
+        "https://www.scribd.com/doc/751945245/2k-data-2",
+        "http://www.scribd.com/presentation/751945245/x",
+        "751945245",
+    ):
+        assert oembed.doc_id_of(value) == "751945245", value
+        assert oembed.canonical_url(value) == "https://www.scribd.com/document/751945245"
+
+    url = oembed.oembed_url("https://www.scribd.com/document/751945245/2k-data-2")
+    assert url.startswith("https://www.scribd.com/services/oembed?url=")
+    assert url.endswith("&format=json")
+    assert "%3A%2F%2Fwww.scribd.com%2Fdocument%2F751945245" in url
+    assert oembed.embed_url("751945245").endswith("/embeds/751945245/content")
+
+
+def test_oembed_payload_becomes_title_author_and_embed():
+    from scribd import oembed
+
+    meta = oembed.parse_oembed(OEMBED_SAMPLE, "https://www.scribd.com/document/751945245/2k-data-2")
+
+    assert meta.ok is True
+    assert meta.doc_id == "751945245"
+    assert meta.title == "2K Data"
+    assert meta.author_name == "Some Publisher"
+    assert meta.thumbnail_url.startswith("https://imgv2-2-f.scribdassets.com/")
+    assert meta.embed == "https://www.scribd.com/embeds/751945245/content"
+    assert meta.width == 710 and meta.height == 400
+
+
+def test_oembed_payload_edge_cases_never_raise():
+    from scribd import oembed
+
+    assert oembed.parse_oembed("not json", "751945245").ok is False
+    assert oembed.parse_oembed([], "751945245").ok is False
+    # a real 200 body without a title is "usable but empty" — not a success
+    meta = oembed.parse_oembed({"type": "rich"}, "751945245")
+    assert meta.ok is False and meta.reason
+
+
+def test_oembed_404_and_transport_errors_are_distinguished():
+    import asyncio as _asyncio
+
+    from scribd import oembed
+
+    class NotFound:
+        status_code = 404
+        text = "not found"
+
+        def json(self):
+            raise ValueError("no json")
+
+    class Boom:
+        async def get(self, url, **kw):
+            raise RuntimeError("network down")
+
+    class Return:
+        def __init__(self, response):
+            self.response = response
+
+        async def get(self, url, **kw):
+            return self.response
+
+    meta = _asyncio.run(oembed.fetch_metadata(Return(NotFound()), "751945245"))
+    assert meta is not None and meta.ok is False and meta.status == 404
+
+    # transport failure means "no metadata", not "document is private"
+    assert _asyncio.run(oembed.fetch_metadata(Boom(), "751945245")) is None
+
+
+def test_cli_require_public_skips_without_starting_a_browser(monkeypatch, tmp_path):
+    import asyncio as _asyncio
+
+    import scribd.cli as cli
+    import scribd.oembed as oembed_mod
+
+    scraped: list[str] = []
+    hits = []  # not a search run: one explicit URL
+    _cli_search_env(monkeypatch, hits, scraped=scraped)
+
+    class NotFound:
+        status_code = 404
+        text = ""
+
+        def json(self):
+            raise ValueError("no json")
+
+    async def fake_meta(fetcher, url, *, log=None):
+        return oembed_mod.DocumentMeta(
+            url=url, doc_id=oembed_mod.doc_id_of(url), status=404, ok=False,
+            reason="HTTP 404",
+        )
+
+    monkeypatch.setattr(oembed_mod, "fetch_metadata", fake_meta)
+
+    args = cli.build_parser().parse_args(
+        [
+            "https://www.scribd.com/document/999999/private",
+            "--require-public",
+            "-o", str(tmp_path),
+            "-f", "pdf",
+        ]
+    )
+    rc = _asyncio.run(cli.run(args))
+
+    assert scraped == [], "a non-public document must not start a download"
+    assert rc == 1, "nothing was downloaded, so the exit code must say so"
+    import json as _json
+
+    rows = [
+        _json.loads(line)
+        for line in (tmp_path / "manifest.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert rows[-1]["status"] == "failed"
+    assert "not public" in rows[-1]["error"]
+
+
+def test_cli_manifest_carries_oembed_title_and_author(monkeypatch, tmp_path):
+    import asyncio as _asyncio
+    import json as _json
+
+    import scribd.cli as cli
+    import scribd.oembed as oembed_mod
+
+    scraped: list[str] = []
+    _cli_search_env(monkeypatch, [], scraped=scraped)
+
+    async def fake_meta(fetcher, url, *, log=None):
+        return oembed_mod.parse_oembed(OEMBED_SAMPLE, url)
+
+    monkeypatch.setattr(oembed_mod, "fetch_metadata", fake_meta)
+
+    args = cli.build_parser().parse_args(
+        ["https://www.scribd.com/document/751945245/2k-data-2", "-o", str(tmp_path), "-f", "pdf"]
+    )
+    assert _asyncio.run(cli.run(args)) == 0
+
+    row = _json.loads((tmp_path / "manifest.jsonl").read_text().strip().splitlines()[-1])
+    assert row["status"] == "ok"
+    assert row["author"] == "Some Publisher"
+    assert row["oembed"]["title"] == "2K Data"

@@ -192,6 +192,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Report what the live page returns (no download); saves .debug/page-*.html",
     )
+    p.add_argument(
+        "--no-oembed",
+        action="store_true",
+        help=(
+            "Skip the oEmbed metadata request (title/author) made before each "
+            "download"
+        ),
+    )
+    p.add_argument(
+        "--require-public",
+        action="store_true",
+        help=(
+            "Skip a document whose oEmbed metadata is missing (HTTP 401/403/404) "
+            "instead of downloading it — saves a browser session on private files"
+        ),
+    )
     return p
 
 
@@ -534,6 +550,11 @@ async def run(args: argparse.Namespace) -> int:
             log=lambda m: console.print(f"[dim]{m}[/dim]"),
         )
 
+        from . import oembed
+
+        use_oembed = not bool(getattr(args, "no_oembed", False))
+        require_public = bool(getattr(args, "require_public", False))
+
         ok = 0
         skipped = 0
         failed = 0
@@ -562,6 +583,38 @@ async def run(args: argparse.Namespace) -> int:
                     return
 
             console.print(label_url)
+
+            # Cheap public metadata first: a real title/author, and an honest
+            # refusal for a URL that oEmbed cannot describe — saving a whole
+            # browser session on a document that is not public.
+            meta = None
+            if use_oembed:
+                meta = await oembed.fetch_metadata(
+                    fetcher, url, log=lambda m: console.print(f"[dim]  {m}[/dim]")
+                )
+                if (
+                    require_public
+                    and meta is not None
+                    and not meta.ok
+                    and meta.status in (401, 403, 404)
+                ):
+                    async with counter_lock:
+                        failed += 1
+                    append_manifest(
+                        out_dir,
+                        {
+                            "url": url,
+                            "doc_id": doc_id_of(url),
+                            "status": "failed",
+                            "error": f"not public: oEmbed said {meta.reason}",
+                            "oembed": meta.as_dict(),
+                        },
+                    )
+                    console.print(
+                        f"[yellow]SKIPPED[/yellow] {url} — oEmbed said {meta.reason} "
+                        "(not public; --require-public)"
+                    )
+                    return
             try:
                 doc = await scraper.scrape(url)
             except ScrapeError as exc:
@@ -623,7 +676,9 @@ async def run(args: argparse.Namespace) -> int:
                 {
                     "url": url,
                     "doc_id": doc.meta.doc_id or doc_id_of(url),
-                    "title": doc.meta.title,
+                    "title": (doc.meta.title or (meta.title if meta else "")),
+                    "author": meta.author_name if meta else "",
+                    "oembed": meta.as_dict() if meta else None,
                     "status": "ok",
                     "strategy": doc.strategy,
                     "complete": doc.complete,
@@ -632,7 +687,7 @@ async def run(args: argparse.Namespace) -> int:
                     "files": [p.name for p in written],
                 },
             )
-            label = doc.meta.title[:70]
+            label = (doc.meta.title or (meta.title if meta else "") or url)[:70]
             what = (
                 f"PDF {len(doc.pdf):,} bytes"
                 if doc.pdf
