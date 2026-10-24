@@ -1130,7 +1130,7 @@ def _fake_playwright(monkeypatch, *, containers=12, unique=8, fail_shots=0):
     class FakePW:
         class chromium:
             @staticmethod
-            async def launch(headless=True):
+            async def launch(headless=True, **kwargs):
                 return FakeBrowser()
 
         async def __aenter__(self):
@@ -1379,7 +1379,7 @@ def test_browser_scroll_pass_and_print_pdf(monkeypatch):
     class PW:
         class chromium:
             @staticmethod
-            async def launch(headless=True):
+            async def launch(headless=True, **kwargs):
                 return Browser()
 
         async def __aenter__(self):
@@ -1621,7 +1621,7 @@ def test_browser_prints_one_sheet_per_page(monkeypatch):
     class PW:
         class chromium:
             @staticmethod
-            async def launch(headless=True):
+            async def launch(headless=True, **kwargs):
                 return Browser()
 
         async def __aenter__(self):
@@ -1778,7 +1778,7 @@ def test_print_failure_falls_back_to_a_single_image_sheet(monkeypatch):
     class PW:
         class chromium:
             @staticmethod
-            async def launch(headless=True):
+            async def launch(headless=True, **kwargs):
                 return Browser()
 
         async def __aenter__(self):
@@ -1964,7 +1964,7 @@ def test_embedprint_exports_one_sheet_per_page(monkeypatch):
     class PW:
         class chromium:
             @staticmethod
-            async def launch(headless=True, args=None):
+            async def launch(headless=True, args=None, **kwargs):
                 return Browser()
 
         async def __aenter__(self):
@@ -2389,7 +2389,7 @@ def _fake_search_browser(monkeypatch, *, links_per_url, hits, viewed):
     class PW:
         class chromium:
             @staticmethod
-            async def launch(headless=True, args=None):
+            async def launch(headless=True, args=None, **kwargs):
                 return Browser()
 
         async def __aenter__(self):
@@ -3287,3 +3287,107 @@ def test_browsersetup_reports_missing_browser_honestly(capsys, monkeypatch):
     assert "FAILED" in out
     assert "libnss3" in out
     assert "without root" in out
+
+
+# ---------------------------------------------------------------------------
+# Chromium launch: containers kill the headless shell, the full build works
+# ---------------------------------------------------------------------------
+class _FakeChrome:
+    def __init__(self, failing: set[str], message: str = "Target page, context or browser has been closed"):
+        self.failing = failing
+        self.message = message
+        self.calls: list[str] = []
+
+    async def launch(self, **kwargs):
+        mode = "chrome" if kwargs.get("channel") else ("path" if kwargs.get("executable_path") else "shell")
+        self.calls.append(mode)
+        if mode in self.failing:
+            raise RuntimeError(self.message)
+        return f"browser-{mode}"
+
+
+def _fake_pw(chrome):
+    import types
+
+    return types.SimpleNamespace(chromium=chrome)
+
+
+def test_launch_async_falls_back_from_headless_shell(tmp_path, monkeypatch):
+    import scribd.chromium as chromium
+
+    monkeypatch.setenv("SCRIBD_BROWSER_CACHE", str(tmp_path / "browser.json"))
+    monkeypatch.delenv("SCRIBD_BROWSER_MODE", raising=False)
+    chrome = _FakeChrome(failing={"shell"})
+    notes: list[str] = []
+
+    browser = asyncio.run(chromium.launch_async(_fake_pw(chrome), log=notes.append))
+
+    assert browser == "browser-chrome"
+    assert chrome.calls == ["shell", "chrome"]
+    assert any("using full Chrome" in note for note in notes)
+    assert '"chrome"' in (tmp_path / "browser.json").read_text()
+
+
+def test_launch_async_prefers_the_mode_that_worked_last_time(tmp_path, monkeypatch):
+    import scribd.chromium as chromium
+
+    cache = tmp_path / "browser.json"
+    cache.write_text('{"mode": "chrome"}', encoding="utf-8")
+    monkeypatch.setenv("SCRIBD_BROWSER_CACHE", str(cache))
+    monkeypatch.delenv("SCRIBD_BROWSER_MODE", raising=False)
+
+    chrome = _FakeChrome(failing=set())
+    asyncio.run(chromium.launch_async(_fake_pw(chrome)))
+    assert chrome.calls == ["chrome"], "the cached winner must be tried first"
+
+
+def test_launch_async_explains_missing_system_libraries(tmp_path, monkeypatch):
+    import scribd.chromium as chromium
+
+    monkeypatch.setenv("SCRIBD_BROWSER_CACHE", str(tmp_path / "browser.json"))
+    monkeypatch.delenv("SCRIBD_BROWSER_MODE", raising=False)
+    chrome = _FakeChrome(
+        failing={"shell", "chrome", "path"},
+        message=(
+            "BrowserType.launch: Target page, context or browser has been closed\n"
+            "[pid][err] error while loading shared libraries: libnss3.so: "
+            "cannot open shared object file: No such file or directory"
+        ),
+    )
+
+    with pytest.raises(chromium.BrowserLaunchError) as caught:
+        asyncio.run(chromium.launch_async(_fake_pw(chrome)))
+
+    message = str(caught.value)
+    assert "libnss3.so" in message              # the real reason is quoted
+    assert "install-deps chromium" in message   # and what to do about it
+    assert not (tmp_path / "browser.json").exists()  # nothing cached on failure
+
+
+def test_browser_args_are_sandbox_friendly_and_overridable(monkeypatch):
+    import scribd.chromium as chromium
+
+    monkeypatch.delenv("SCRIBD_BROWSER_SANDBOX", raising=False)
+    monkeypatch.delenv("SCRIBD_BROWSER_ARGS", raising=False)
+    assert "--no-sandbox" in chromium.base_args()
+    assert "--disable-dev-shm-usage" in chromium.base_args()
+
+    monkeypatch.setenv("SCRIBD_BROWSER_SANDBOX", "1")
+    assert "--no-sandbox" not in chromium.base_args()
+
+    monkeypatch.setenv("SCRIBD_BROWSER_ARGS", "--font-render-hinting=none")
+    assert "--font-render-hinting=none" in chromium.base_args(["--hide-scrollbars"])
+    assert "--hide-scrollbars" in chromium.base_args(["--hide-scrollbars"])
+
+
+def test_every_browser_entry_point_uses_the_fallback_launcher():
+    """Anything that launches Chromium must go through chromium.launch_async."""
+    import pathlib as _pathlib
+
+    root = _pathlib.Path(__file__).resolve().parent.parent / "scribd"
+    offenders = []
+    for path in sorted(root.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "chromium.launch(" in text and path.name != "chromium.py":
+            offenders.append(path.name)
+    assert offenders == [], offenders

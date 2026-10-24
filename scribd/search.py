@@ -352,9 +352,13 @@ async def browser_search(
     cap = _cap(limit)
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
+        from .chromium import launch_async
+
+        browser = await launch_async(
+            pw,
             headless=headless,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--hide-scrollbars"],
+            extra_args=["--hide-scrollbars"],
+            log=log,
         )
         try:
             context = await browser.new_context(

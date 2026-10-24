@@ -46,9 +46,9 @@ def free_mb(path: Path) -> int:
 
 def chromium_path() -> str:
     """Same lookup the web UI uses (kept import-light for the CLI import cost)."""
-    from scribd.webapp import _chromium_path as find
+    from scribd.chromium import find_chromium
 
-    return find()
+    return find_chromium()
 
 
 def install() -> int:
@@ -69,7 +69,11 @@ def install() -> int:
 
 
 def check() -> int:
-    """Actually launch headless Chromium — the only honest test."""
+    """Actually launch headless Chromium — the only honest test.
+
+    Tries every launch variant (headless shell, full Chrome, explicit binary),
+    because on containers the shell often dies while the full build works.
+    """
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:  # pragma: no cover - depends on install state
@@ -77,15 +81,22 @@ def check() -> int:
         _say("add `playwright` to requirements.txt (or PY_PACKAGES) and restart")
         return 1
 
+    from scribd.chromium import BrowserLaunchError, launch_sync
+
     _say("launching headless Chromium…")
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            try:
+                browser, mode = launch_sync(pw, headless=True, log=_say)
+            except BrowserLaunchError:
+                # launch_sync printed the per-variant reasons; give the verdict
+                _say("FAILED: Chromium cannot start on this machine (reasons above)")
+                return 1
             try:
                 version = browser.version
                 page = browser.new_page(viewport={"width": 800, "height": 600})
                 page.set_content("<h1 id=x>ok</h1>")
-                text = page.inner_text("#x")
+                page.inner_text("#x")
                 page.pdf(prefer_css_page_size=True)
             finally:
                 browser.close()
@@ -94,19 +105,16 @@ def check() -> int:
         first = message.strip().splitlines()[0] if message.strip() else type(exc).__name__
         _say(f"FAILED: {first}")
         lowered = message.lower()
-        # the loader writes the real reason into the message (or into the log
-        # after that first line) — show it rather than only "launch failed"
         for line in message.splitlines():
             if "shared librar" in line.lower() or "cannot open shared object" in line.lower():
                 _say(f"    {line.strip()}")
                 break
-        if "shared librar" in lowered or "cannot open shared object" in lowered or "error while loading" in lowered:
+        if "shared librar" in lowered or "cannot open shared object" in lowered:
             _say("\n" + MISSING_LIB_HINT)
-        elif "executable doesn't exist" in lowered or "please run the following command" in lowered:
-            _say("\nChromium is not downloaded yet — run without --check to install it.")
         return 1
 
     _say(f"OK: Chromium {version} launches, renders and prints PDFs")
+    _say(f"    mode: {mode}  (remembered for later jobs)")
     path = chromium_path()
     if path:
         _say(f"    binary: {path}")

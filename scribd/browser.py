@@ -260,7 +260,9 @@ class BrowserStrategy:
 
         try:
             async with async_playwright() as pw:
-                browser = await pw.chromium.launch(headless=True)
+                from .chromium import launch_async
+
+                browser = await launch_async(pw, headless=True, log=ctx.note)
                 try:
                     context = await browser.new_context(
                         user_agent=(

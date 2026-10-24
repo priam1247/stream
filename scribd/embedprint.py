@@ -622,15 +622,13 @@ class EmbedPrintStrategy:
 
         try:
             async with async_playwright() as pw:
-                browser = await pw.chromium.launch(
+                from .chromium import launch_async
+
+                browser = await launch_async(
+                    pw,
                     headless=self.headless,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--hide-scrollbars",
-                        "--force-color-profile=srgb",
-                        "--disable-blink-features=AutomationControlled",
-                    ],
+                    extra_args=["--force-color-profile=srgb"],
+                    log=ctx.note,
                 )
                 try:
                     context = await browser.new_context(
@@ -736,7 +734,12 @@ class EmbedPrintStrategy:
                 finally:
                     await browser.close()
         except Exception as exc:  # pragma: no cover - browser/env failures
-            ctx.note(f"embed-print: failed ({type(exc).__name__}: {exc})"[:200])
+            message = f"embed-print: failed ({type(exc).__name__}: {exc})"
+            # launch failures carry the browser log and the fix instructions:
+            # keep the whole thing rather than a chopped first line
+            from .chromium import BrowserLaunchError
+
+            ctx.note(message if isinstance(exc, BrowserLaunchError) else message[:200])
             return None
 
     # -- tabs -------------------------------------------------------------
