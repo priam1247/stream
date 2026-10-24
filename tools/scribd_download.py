@@ -1,20 +1,34 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.4
+"""scribd_download.py — ONE file, standard library only.  Version 2.5
 
-Downloads a Scribd document as a PDF, one document page per sheet, with no
-browser and no pip install.
+Find Scribd documents by keyword, then download them as PDFs. No browser, no pip.
 
-    python scribd_download.py                       # serves the page (panel mode)
-    python scribd_download.py --url LINK            # one shot, whole document
-    python scribd_download.py --url LINK --limit 5  # first 5 pages only
-    python scribd_download.py --url LINK --probe 4  # every url and every answer
-    python scribd_download.py --verify FILE.pdf     # check a finished PDF
-    python scribd_download.py --selftest            # offline check of this file
+    python scribd_download.py                        # serves the page (panel mode)
+    python scribd_download.py --search "physics 12th"          # just list the links
+    python scribd_download.py --search "physics 12th" --download   # find + download
+    python scribd_download.py --url LINK             # one shot, whole document
+    python scribd_download.py --url LINK --limit 5   # first 5 pages only
+    python scribd_download.py --url LINK --probe 4   # every url and every answer
+    python scribd_download.py --verify FILE.pdf      # check a finished PDF
+    python scribd_download.py --selftest             # offline check of this file
 
-Panel mode: set PY_FILE to this file, restart, open the server address, paste a
-link, press Download. Everything lands in ./downloads/.
+Panel mode: set PY_FILE to this file, restart, open the server address. The page
+has three ways in:
+  1. type a keyword -> Find -> tick the results -> Download
+  2. paste a document link -> Download
+  3. from your own browser, click the bookmarklet on a Scribd search page: it
+     sends every document link on that page to /send, and the panel queues them
 
-What 2.4 fixes in the OUTPUT (2.3 is kept everywhere else)
+Nothing about the search needs Chromium. Scribd's own search page is a JS app
+and has no results in its HTML, so the keyword goes to the search engines that
+have already indexed scribd.com (`site:scribd.com <keyword>`): DuckDuckGo html,
+DuckDuckGo lite, Bing, Mojeek, then Scribd's own search page. Each engine's
+answer is reported in the log — "no results" can never be confused with "this
+address was blocked", and every engine is asked without your cookies. If the
+engines refuse this IP, the bookmarklet route still works, because then the
+search happens in your browser and only the links travel.
+
+What 2.4/2.5 fix in the OUTPUT (2.3 is kept everywhere else)
   1. PDF BROKEN was the checker, not the file: image streams were counted inside
      the "is this a page" branch, so the count was always 0. They are counted as
      their own objects now.
@@ -29,13 +43,14 @@ What 2.4 fixes in the OUTPUT (2.3 is kept everywhere else)
   5. Nothing re-fetches in bulk: if more than a fifth of the pages disagree on
      size, that is a mixed-size document and each sheet keeps its own size.
 
-What 2.4 fixes in your COOKIES
+What 2.4 fixed in your COOKIES
   2.3 sent every cookie in the file to scribd.com (on one export: 46 scribd
   cookies plus 3794 cookies for 479 other sites). Now only scribd.com and
   scribdassets.com are sent, expired ones are dropped, and the log says how many
   were kept and how many other sites were left out. Values are never printed.
+  Search engines are asked with no cookies at all.
 
-How it works, plain HTTPS with your cookies:
+How a document is downloaded, plain HTTPS with your cookies:
   1. read the document page and the embed viewer
   2. collect the per-page names: scans already named in the HTML, and the
      per-page descriptor  <hash>/pages/<n>-<token>.jsonp
@@ -48,9 +63,10 @@ A page that will not answer walks a short ladder: the name the document gave,
 the same name without the token, then the page's own descriptor, which names the
 real asset outright. Every url tried for a failed page is recorded.
 
-Options: --limit N, --out DIR, --cookies PATH, --base URL, --jobs N (default 12),
-         --refresh (ignore the cache), --name TITLE (override the file name),
-         --no-check (each sheet at its own size), --no-placeholder, --no-verify,
+Options: --search QUERY, --results N (default 10), --search-pages N (default 1),
+         --pick 1,3, --download (with --search), --limit N, --out DIR,
+         --cookies PATH, --base URL, --jobs N (default 12), --refresh,
+         --name TITLE, --no-check, --no-placeholder, --no-verify,
          --verify FILE, --probe N, --selftest
 
 Cookies are read, never printed. Files stay on this machine.
@@ -76,7 +92,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.4"
+VERSION = "2.5"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -312,11 +328,17 @@ def doc_id_of(url: str) -> str:
         return match.group(1)
     return url.strip() if (url or "").strip().isdigit() else ""
 
-def text_of(body: bytes) -> str:
+def text_of(body) -> str:
     """Scribd writes urls inside JS as https:\\/\\/… — sometimes with one backslash,
-    sometimes two, depending on how the string was nested. Strip them all."""
-    text = (body or b"").decode("utf-8", "replace").replace("&amp;", "&")
-    return re.sub(r"\\+/", "/", text)
+    sometimes two, depending on how the string was nested. Strip them all.
+
+    Accepts bytes or str: the search parsers hand it text they already decoded.
+    """
+    if isinstance(body, bytes):
+        text = body.decode("utf-8", "replace")
+    else:
+        text = str(body or "")
+    return re.sub(r"\\+/", "/", text.replace("&amp;", "&"))
 
 def describe(body: bytes) -> str:
     if any(m in body for m in DOC_MARKERS):
@@ -471,6 +493,259 @@ class Token:
     def get(self) -> str:
         with self.lock:
             return self.value
+
+# ---------------------------------------------------------------------------
+# search — a keyword to Scribd document links, no browser needed
+# ---------------------------------------------------------------------------
+# Scribd's own search page is a JavaScript app, so its HTML has no results in
+# it. What does answer over plain HTTP is the search engines, which have already
+# indexed scribd.com: `site:scribd.com <keyword>`. Each engine below is tried in
+# turn; the first that answers with links wins, and every engine's answer is
+# reported, so "no results" can never be confused with "we were blocked".
+SEARCH_ENGINES = (
+    # name, url, method, prefix the query with site:scribd.com ?
+    ("duckduckgo", "https://html.duckduckgo.com/html/", "POST", True),
+    ("duckduckgo-lite", "https://lite.duckduckgo.com/lite/", "POST", True),
+    ("bing", "https://www.bing.com/search?q={query}&count=50", "GET", True),
+    ("mojeek", "https://www.mojeek.com/search?q={query}", "GET", True),
+    ("scribd", "https://www.scribd.com/search?query={query}", "GET", False),
+)
+GENERIC_LABELS = {
+    "", "save", "download", "read more", "read", "scribd", "upload", "share",
+    "open", "view", "preview", "see all", "more", "add to library", "sign in",
+}
+ANCHOR_RE = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.I | re.S)
+HREF_ATTR_RE = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.I)
+TITLE_ATTR_RE = re.compile(r"""(?:title|aria-label)\s*=\s*["']([^"']{3,300})["']""", re.I)
+TAG_RE = re.compile(r"<[^>]+>")
+SPACE_RE = re.compile(r"\s+")
+DOC_IN_URL_RE = re.compile(
+    r"scribd\.com/(document|doc|presentation|spreadsheet|ebook|audiobook|magazine)"
+    r"/(\d{3,})(?:/([^/?#\"'&\s<>]*))?", re.I)
+BING_WRAP_RE = re.compile(r"[?&]u=a1([A-Za-z0-9_\-]+)", re.I)
+
+
+def _plain(text: str) -> str:
+    """Tags out, entities in, whitespace collapsed."""
+    raw = TAG_RE.sub(" ", text or "")
+    for a, b in (("&amp;", "&"), ("&quot;", '"'), ("&#39;", "'"), ("&#x27;", "'"),
+                 ("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", " ")):
+        raw = raw.replace(a, b)
+    return SPACE_RE.sub(" ", raw).strip()
+
+
+def html_escape(text) -> str:
+    raw = str(text if text is not None else "")
+    for a, b in (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"), ('"', "&quot;")):
+        raw = raw.replace(a, b)
+    return raw
+
+
+def unwrap_link(href: str) -> str:
+    """Turn a search engine's redirect into the url it points at.
+
+    DuckDuckGo wraps results as //duckduckgo.com/l/?uddg=<encoded>, and Bing as
+    /ck/a?...&u=a1<base64>. Both are decoded here; a plain url comes back as it
+    went in.
+    """
+    href = (href or "").strip().replace("&amp;", "&")
+    if href.startswith("//"):
+        href = "https:" + href
+    if "duckduckgo.com/l/" in href:
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(href).query)
+        href = (query.get("uddg") or [""])[0] or href
+    elif "/ck/a" in href:
+        match = BING_WRAP_RE.search(href)
+        if match:
+            raw = match.group(1).replace("-", "+").replace("_", "/")
+            try:
+                href = base64.b64decode(raw + "=" * (-len(raw) % 4)).decode(
+                    "utf-8", "replace")
+            except Exception:  # noqa: BLE001
+                pass
+    return urllib.parse.unquote(href)
+
+
+def _hit_from_url(url: str) -> tuple[str, str, str] | None:
+    match = DOC_IN_URL_RE.search(url or "")
+    if not match:
+        return None
+    kind = "document" if match.group(1).lower() == "doc" else match.group(1).lower()
+    slug = (match.group(3) or "").strip("/")
+    return kind, match.group(2), slug
+
+
+def parse_search_links(html: str, engine: str = "") -> list[dict]:
+    """Document links out of one search engine page, in page order, unique.
+
+    Two passes: anchors first (they carry titles), then any document url written
+    anywhere in the page — a `<cite>` line, a JSON blob, an escaped url — so a
+    page that renders links as text still counts. Titles never invent words: an
+    anchor's own text wins, then its title attribute, then the url slug.
+    """
+    hits: list[dict] = []
+    seen: dict[str, dict] = {}
+
+    def add(kind: str, doc_id: str, slug: str, title: str) -> None:
+        title = _plain(title)
+        if title.lower() in GENERIC_LABELS:
+            title = ""
+        if doc_id in seen:
+            if title and len(title) > len(seen[doc_id]["title"]):
+                seen[doc_id]["title"] = title
+            if slug and not seen[doc_id]["slug"]:
+                seen[doc_id]["slug"] = slug
+                seen[doc_id]["url"] = f"https://www.scribd.com/{kind}/{doc_id}/{slug}"
+            return
+        hit = {"doc_id": doc_id, "kind": kind, "slug": slug,
+               "title": title or _plain(slug.replace("-", " ").replace("_", " "))
+                        or f"scribd {doc_id}",
+               "url": f"https://www.scribd.com/{kind}/{doc_id}/{slug or 'doc'}",
+               "engine": engine}
+        seen[doc_id] = hit
+        hits.append(hit)
+
+    for anchor in ANCHOR_RE.finditer(html or ""):
+        attrs, body = anchor.group(1), anchor.group(2)
+        href_match = HREF_ATTR_RE.search(attrs)
+        if not href_match:
+            continue
+        found = _hit_from_url(unwrap_link(href_match.group(1)))
+        if not found:
+            continue
+        kind, doc_id, slug = found
+        title = ""
+        title_match = TITLE_ATTR_RE.search(attrs)
+        if title_match:
+            title = title_match.group(1)
+        if not title:
+            title = _plain(body)
+            if len(title) > 250:
+                title = ""
+        add(kind, doc_id, slug, title)
+
+    for match in DOC_IN_URL_RE.finditer(urllib.parse.unquote(text_of(html))):
+        kind = "document" if match.group(1).lower() == "doc" else match.group(1).lower()
+        add(kind, match.group(2), (match.group(3) or "").strip("/"), "")
+
+    return hits
+
+
+def post_form(url: str, fields: dict, timeout: float = 20.0) -> dict:
+    """A form POST with the same pool/redirect handling as fetch()."""
+    target = rebase(url)
+    body = urllib.parse.urlencode(fields).encode()
+    headers = {"User-Agent": UA,
+               "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+               "Accept-Language": "en-US,en;q=0.9",
+               "Accept-Encoding": "gzip, deflate",
+               "Content-Type": "application/x-www-form-urlencoded",
+               "Content-Length": str(len(body))}
+    for _hop in range(3):
+        parsed = urllib.parse.urlsplit(target)
+        scheme = parsed.scheme or "https"
+        netloc = parsed.netloc
+        path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+        for attempt in (0, 1):
+            connection = _connection(scheme, netloc, timeout)
+            try:
+                connection.request("POST", path, body=body, headers=headers)
+                response = connection.getresponse()
+                raw = response.read()
+                status = response.status
+                location = response.getheader("Location") or ""
+                answer = {k.lower(): v for k, v in response.getheaders()}
+                break
+            except Exception as exc:  # noqa: BLE001
+                _forget(scheme, netloc)
+                if attempt:
+                    return {"status": 0, "body": b"", "headers": {},
+                            "error": repr(exc)[:160]}
+                status, raw, location, answer = 0, b"", "", {}
+        if status in (301, 302, 303, 307, 308) and location:
+            target = urllib.parse.urljoin(target, location)
+            body = b""
+            headers.pop("Content-Length", None)
+            continue
+        return {"status": status,
+                "body": _decompress(raw, (answer.get("content-encoding") or "").lower()),
+                "headers": answer, "error": ""}
+    return {"status": 0, "body": b"", "headers": {}, "error": "too many redirects"}
+
+
+def engine_ask(name: str, url: str, method: str, site_only: bool, query: str,
+               page: int, timeout: float = 20.0) -> tuple[list[dict], str]:
+    """One engine, one page. Returns (hits, one honest line about the answer)."""
+    words = (f"site:scribd.com {query}" if site_only else query).strip()
+    if method == "POST":
+        fields = {"q": words}
+        if page > 1:
+            fields["s"] = str((page - 1) * 30)
+        got = post_form(url, fields, timeout=timeout)
+    else:
+        target = url.format(query=urllib.parse.quote_plus(words))
+        if page > 1:
+            target += ("&" if "?" in target else "?") + f"page={page}"
+        got = fetch(target, None, timeout=timeout)
+    if got.get("error"):
+        return [], f"{name}: {got['error'][:90]}"
+    if got["status"] != 200:
+        hint = ""
+        if got["status"] in (202, 403, 429, 503):
+            hint = " (blocked or throttled here)"
+        return [], f"{name}: HTTP {got['status']}{hint}"
+    hits = parse_search_links(got["body"].decode("utf-8", "replace"), engine=name)
+    if not hits:
+        shell = b"<script" in got["body"] and len(got["body"]) < 900_000
+        return [], (f"{name}: HTTP 200, {len(got['body']) / 1000:.0f} kB, no links"
+                    + (" (a JavaScript page — it needs no browser for the other engines)"
+                       if shell else ""))
+    return hits, f"{name}: {len(hits)} link(s)"
+
+
+def find_links(query: str, *, pages: int = 1, limit: int = 0, log=None,
+               engines=SEARCH_ENGINES) -> tuple[list[dict], list[str]]:
+    """Ask each search engine in turn until `limit` documents are found.
+
+    Returns the hits and one line per engine tried, in the order tried, so the
+    caller can show what answered and what refused.
+    """
+    text = (query or "").strip()
+    if not text:
+        return [], ["no query"]
+    notes: list[str] = []
+    found: list[dict] = []
+    seen: set[str] = set()
+    for name, url, method, site_only in engines:
+        if limit and len(found) >= limit:
+            break
+        for page in range(1, max(1, pages) + 1):
+            if limit and len(found) >= limit:
+                break
+            hits, note = engine_ask(name, url, method, site_only, text, page)
+            notes.append(note)
+            if log:
+                log(note)
+            fresh = [hit for hit in hits if hit["doc_id"] not in seen]
+            for hit in fresh:
+                seen.add(hit["doc_id"])
+                found.append(hit)
+            if not hits:
+                break
+    return (found[:limit] if limit else found), notes
+
+
+def search_sentence(hits: list[dict], notes: list[str]) -> str:
+    """One line for the verdict: what was found, and whether we were blocked."""
+    blocked = [n for n in notes if "HTTP 202" in n or "HTTP 403" in n
+               or "HTTP 429" in n or "HTTP 503" in n or "error" in n.lower()]
+    if hits:
+        text = f"{len(hits)} document(s) found"
+    else:
+        text = "no documents found"
+    if blocked:
+        text += f" · {len(blocked)} engine(s) blocked this address"
+    return text
 
 # ---------------------------------------------------------------------------
 # what the document is called
@@ -1625,10 +1900,13 @@ class Ctx:
         self.note(f"page {number}: {len(seen)} name(s) tried, all refused ({reason})")
         return number, None, f"page {number}: {reason}"
 
-def run_job(url: str, limit: int = 0, out: str = OUT, jobs: int = 12,
+def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12,
             refresh: bool = False, name: str = "", check: bool = True,
             placeholder: bool = True, probe_page: int = 0,
             verify: bool = True) -> None:
+    urls = [str(item).strip() for item in
+            (url if isinstance(url, (list, tuple)) else [url])
+            if str(item or "").strip()]
     with JOB.lock:
         JOB.state = "running"
         JOB.lines.clear()
@@ -1636,17 +1914,23 @@ def run_job(url: str, limit: int = 0, out: str = OUT, jobs: int = 12,
         JOB.detail = ""
         JOB.file = ""
         JOB.title = ""
-        JOB.url = url
+        JOB.url = urls[0] if urls else ""
         JOB.out = out
         JOB.started = time.time()
         JOB.ended = 0.0
         JOB.progress = {"page": 0, "of": 0, "ok": 0, "skipped": 0, "blank": 0}
     os.makedirs(out, exist_ok=True)
     try:
-        if probe_page:
-            _probe(url, probe_page)
+        if not urls:
+            with JOB.lock:
+                JOB.verdict = "BAD LINK"
+                JOB.detail = "no link given"
+        elif probe_page:
+            _probe(urls[0], probe_page)
+        elif len(urls) > 1:
+            _batch(urls, limit, out, jobs, refresh, check, placeholder, verify)
         else:
-            _download(url, limit, out, jobs, refresh, name, check, placeholder,
+            _download(urls[0], limit, out, jobs, refresh, name, check, placeholder,
                       verify)
     except Exception as exc:  # noqa: BLE001
         JOB.say(f"crashed: {exc!r}")
@@ -1659,6 +1943,58 @@ def run_job(url: str, limit: int = 0, out: str = OUT, jobs: int = 12,
             JOB.ended = time.time()
         JOB.say("")
         JOB.say(f"== {JOB.verdict} — {JOB.detail}")
+
+def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
+           refresh: bool = False, check: bool = True, placeholder: bool = True,
+           verify: bool = True) -> None:
+    """Several documents, one after another, with one honest verdict at the end.
+
+    Each link goes through exactly the same _download path as a single link, so
+    a batch can never behave differently from the one-document case.
+    """
+    total = len(urls)
+    built = partial = broken = 0
+    lines: list[str] = []
+    last_file = ""
+    for index, link in enumerate(urls, start=1):
+        JOB.say("")
+        JOB.say(f"=== document {index} of {total}: {link}")
+        with JOB.lock:
+            JOB.url = link
+        try:
+            _download(link, limit, out, jobs, refresh, "", check, placeholder,
+                      verify)
+        except Exception as exc:  # noqa: BLE001
+            JOB.say(f"crashed on {link}: {exc!r}")
+            broken += 1
+            lines.append(f"{index}. FAILED — {link}")
+            continue
+        verdict = JOB.verdict
+        if verdict == "PDF BUILT":
+            built += 1
+            last_file = JOB.file or last_file
+        elif verdict == "PDF PARTIAL":
+            partial += 1
+            last_file = JOB.file or last_file
+        else:
+            broken += 1
+        lines.append(f"{index}. {verdict} — {os.path.basename(JOB.file or '') or link}")
+        JOB.set_progress(page=index, of=total)
+    with JOB.lock:
+        if built == total:
+            JOB.verdict = "PDF BUILT"
+        elif built or partial:
+            JOB.verdict = "PDF PARTIAL"
+        else:
+            JOB.verdict = "FAILED"
+        JOB.file = last_file
+        JOB.detail = (f"{built} of {total} document(s) built"
+                      + (f", {partial} partial" if partial else "")
+                      + (f", {broken} failed" if broken else ""))
+    JOB.say("")
+    for line in lines:
+        JOB.say("  " + line)
+
 
 def _probe(url: str, number: int) -> None:
     ctx = Ctx(url)
@@ -1924,15 +2260,42 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
 # ---------------------------------------------------------------------------
 # page
 # ---------------------------------------------------------------------------
+SEND_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<title>links queued</title><style>
+body{font:15px/1.6 ui-monospace,Menlo,Consolas,monospace;background:#fbfbfa;
+ color:#1f2328;max-width:760px;margin:40px auto;padding:0 18px}
+li{margin:3px 0} a{color:#0969da} .muted{color:#57606a}
+</style></head><body>
+<h3>__HEADLINE__</h3>
+<ol>__ROWS__</ol>
+<p class="muted">__NOTE__</p>
+<p><a href="/">back to the panel</a></p>
+</body></html>"""
+
+
+def queue_links(urls: list[str], limit: int, out: str) -> tuple[bool, str]:
+    """Start a download of these links, unless a job is already running."""
+    with JOB.lock:
+        busy = JOB.state == "running"
+    if busy:
+        return False, "a download is already running — try again when it finishes"
+    if not urls:
+        return False, "no document links in that request"
+    threading.Thread(target=run_job, args=(list(urls), limit, out), daemon=True).start()
+    return True, f"queued {len(urls)} link(s)"
+
+
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>download a Scribd document</title>
+<title>find and download Scribd documents</title>
 <style>
  body{font:15px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   background:#fbfbfa;color:#1f2328;margin:0;padding:26px 18px 70px}
- .wrap{max-width:980px;margin:0 auto}
+ .wrap{max-width:1000px;margin:0 auto}
  h1{font-size:19px;margin:0 0 4px}
+ h2{font-size:14px;margin:22px 0 8px;color:#57606a;font-weight:600;
+  text-transform:uppercase;letter-spacing:.04em}
  .meta{color:#57606a;font-size:13px;margin-bottom:16px}
  input[type=text]{width:100%;box-sizing:border-box;font:inherit;padding:10px;
   border:1px solid #b8c0c8;border-radius:6px;background:#fff}
@@ -1941,32 +2304,85 @@ PAGE = """<!doctype html>
  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0}
  button{font:inherit;padding:9px 16px;border-radius:6px;border:1px solid #1f6feb;
   background:#1f6feb;color:#fff;cursor:pointer}
- button:disabled{opacity:.5}
+ button.ghost{background:#fff;color:#1f6feb}
+ button:disabled{opacity:.45;cursor:default}
  .verdict{background:#fff;border:1px solid #d0d7de;border-left:5px solid #9a6700;
   padding:13px 15px;margin:16px 0;white-space:pre-wrap;font-size:16px}
  .ok{border-left-color:#1a7f37} .bad{border-left-color:#b42318}
  pre{background:#0d1117;color:#e6edf3;padding:14px;border-radius:8px;
-  overflow:auto;max-height:460px;font-size:12.5px;line-height:1.45;margin:0}
+  overflow:auto;max-height:420px;font-size:12.5px;line-height:1.45;margin:0}
  .muted{color:#57606a;font-size:13px}
  a{color:#0969da}
+ #hits{background:#fff;border:1px solid #d0d7de;border-radius:8px;
+  max-height:380px;overflow:auto;margin:10px 0}
+ #hits:empty{display:none}
+ .hit{display:flex;gap:10px;align-items:baseline;padding:8px 12px;
+  border-bottom:1px solid #eaeef2;cursor:pointer}
+ .hit:last-child{border-bottom:0}
+ .hit .t{flex:1}
+ .hit .id{color:#8c959f;font-size:12px}
+ code.bookmarklet{display:block;background:#0d1117;color:#e6edf3;padding:10px;
+  border-radius:6px;font-size:11.5px;overflow:auto;white-space:nowrap}
 </style></head><body><div class="wrap">
-<h1>Download a Scribd document</h1>
+<h1>Find and download Scribd documents</h1>
 <div class="meta" id="meta">ready</div>
+
+<h2>1 · find documents by keyword</h2>
+<div class="row"><input type="text" id="q" placeholder="e.g. physics 12th question bank"></div>
+<div class="row">
+  <label class="muted">result pages <input type="number" id="pages" value="1" min="1" max="10"></label>
+  <button id="findbtn">Find</button>
+  <button id="dl" class="ghost" disabled>Download ticked</button>
+  <span class="muted" id="engines"></span>
+</div>
+<div id="hits"></div>
+
+<h2>2 · or paste a link yourself</h2>
 <div class="row"><input type="text" id="url" value="__SAMPLE__"></div>
 <div class="row">
   <label class="muted">pages <input type="number" id="limit" value="0" min="0" title="0 = the whole document"></label>
   <button id="go">Download</button>
   <span class="muted">0 = the whole document · try 5 first</span>
 </div>
+
+<h2>3 · or push links from your own browser</h2>
+<div class="muted">Open a Scribd search in Chrome, then click this bookmark. It sends
+every document link on the page here and starts the download:</div>
+<div class="row"><code class="bookmarklet" id="bm">…</code>
+  <button class="ghost" id="copybm">Copy</button></div>
+
 <div class="verdict" id="verdict">idle</div>
 <div id="file" class="muted"></div>
 <pre id="log">(no output yet)</pre>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
 let timer = null;
+let hits = [];
+
+function render() {
+  const box = $('hits');
+  box.innerHTML = hits.map((h, i) => `
+    <label class="hit">
+      <input type="checkbox" data-i="${i}" checked>
+      <span class="t">${esc(h.title)}</span>
+      <a href="${esc(h.url)}" target="_blank" rel="noreferrer">open</a>
+      <span class="id">${esc(h.doc_id)}</span>
+    </label>`).join('');
+  $('dl').disabled = !hits.length;
+  $('dl').textContent = hits.length ? `Download ticked (${hits.length})` : 'Download ticked';
+}
+
+function ticked() {
+  return [...document.querySelectorAll('#hits input:checked')]
+    .map((cb) => hits[+cb.dataset.i].url);
+}
+
 async function poll() {
-  const s = await (await fetch('/status', {cache:'no-store'})).json();
+  const s = await (await fetch('/status', {cache: 'no-store'})).json();
   $('log').textContent = s.log.length ? s.log.join('\\n') : '(no output yet)';
   const p = s.progress;
   $('meta').textContent = `${s.state} · ${s.seconds}s · page ${p.page}/${p.of}`
@@ -1978,21 +2394,63 @@ async function poll() {
   v.className = 'verdict' + (s.verdict === 'PDF BUILT' ? ' ok'
                  : (s.verdict && s.verdict !== 'idle' ? ' bad' : ''));
   $('file').innerHTML = s.file
-    ? `saved: <a href="/file">${s.file.split('/').pop()}</a>
+    ? `saved: <a href="/file">${esc(s.file.split('/').pop())}</a>
        · <a href="/logs">debug files</a>` : '';
   const running = s.state === 'running';
   $('go').disabled = running;
+  $('dl').disabled = running || !hits.length;
   if (!running && timer) { clearInterval(timer); timer = null; }
 }
-$('go').onclick = async () => {
-  const body = {url: $('url').value.trim(), limit: Number($('limit').value) || 0};
-  if (!body.url) return;
-  const r = await fetch('/run', {method:'POST', headers:{'Content-Type':'application/json'},
-                                body: JSON.stringify(body)});
+
+async function start(urls) {
+  if (!urls.length) return;
+  const r = await fetch('/run', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({urls, limit: Number($('limit').value) || 0}),
+  });
   if (!r.ok) { $('verdict').textContent = (await r.json()).error; return; }
   if (timer) clearInterval(timer);
   poll(); timer = setInterval(poll, 1500);
+}
+
+$('findbtn').onclick = async () => {
+  const query = $('q').value.trim();
+  if (!query) return;
+  $('findbtn').disabled = true;
+  $('engines').textContent = 'asking the search engines…';
+  try {
+    const r = await fetch('/find', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query, pages: Number($('pages').value) || 1}),
+    });
+    const data = await r.json();
+    hits = data.hits || [];
+    render();
+    $('engines').textContent = (data.notes || []).join(' · ') || data.error || '';
+    if (!hits.length) $('verdict').textContent = 'NO RESULTS — ' + (data.error || 'nothing answered with links');
+  } finally {
+    $('findbtn').disabled = false;
+  }
 };
+$('dl').onclick = () => start(ticked());
+$('go').onclick = () => {
+  const url = $('url').value.trim();
+  if (url) start([url]);
+};
+$('copybm').onclick = async () => {
+  try { await navigator.clipboard.writeText($('bm').textContent);
+        $('copybm').textContent = 'copied'; } catch (e) {}
+};
+
+// The bookmarklet: take every document link on the page you are looking at and
+// hand the links to this panel, which does the downloading.
+$('bm').textContent =
+  "javascript:(()=>{const o=location.origin+'/send?';"
+  + "const u=[...document.querySelectorAll('a[href*=\\\"/document/\\\"]')]"
+  + ".map(a=>a.href.split('?')[0]).filter((v,i,s)=>s.indexOf(v)===i).slice(0,40);"
+  + "if(!u.length){alert('no document links on this page');return}"
+  + "location.href=o+u.map(x=>'url='+encodeURIComponent(x)).join('&')})()";
+
 setTimeout(poll, 250);
 </script></body></html>"""
 
@@ -2033,6 +2491,18 @@ def serve(port: int, out: str) -> None:
                                  f'attachment; filename="{os.path.basename(target)}"')
                 self.end_headers()
                 self.wfile.write(body)
+            elif path == "/send":
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                urls = [item.strip() for item in query.get("url", []) if item.strip()]
+                ok, message = queue_links(urls, 0, out)
+                rows = "".join(f"<li>{html_escape(url)}</li>" for url in urls[:40])
+                body = (SEND_PAGE
+                        .replace("__HEADLINE__", html_escape(message))
+                        .replace("__ROWS__", rows or "<li>nothing</li>")
+                        .replace("__NOTE__", "the download is running — this "
+                                 "page can be closed" if ok
+                                 else "nothing started")).encode()
+                self._send(body, "text/html; charset=utf-8", 200 if ok else 409)
             elif path == "/logs" or path.startswith("/logs/"):
                 folder = os.path.join(out, "debug")
                 if path == "/logs":
@@ -2054,16 +2524,46 @@ def serve(port: int, out: str) -> None:
                            "text/html; charset=utf-8")
 
         def do_POST(self) -> None:  # noqa: N802
-            if urllib.parse.urlparse(self.path).path != "/run":
-                self._send(b'{"error":"unknown endpoint"}', "application/json", 404)
-                return
+            path = urllib.parse.urlparse(self.path).path
             length = int(self.headers.get("Content-Length") or 0)
             try:
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except Exception:  # noqa: BLE001
                 payload = {}
-            url = str(payload.get("url") or "").strip()
-            if not url:
+            if path == "/find":
+                query = str(payload.get("query") or "").strip()
+                if not query:
+                    self._send(b'{"error":"no query"}', "application/json", 400)
+                    return
+                pages = max(1, min(int(payload.get("pages") or 1), 10))
+                try:
+                    hits, notes = find_links(
+                        query, pages=pages,
+                        log=lambda line: JOB.say("search: " + line))
+                except Exception as exc:  # noqa: BLE001
+                    self._send(json.dumps(
+                        {"hits": [], "notes": [],
+                         "error": f"{type(exc).__name__}: {exc}"[:200]}).encode(),
+                        "application/json; charset=utf-8", 500)
+                    return
+                with JOB.lock:
+                    JOB.verdict = "FOUND" if hits else "NO RESULTS"
+                    JOB.detail = search_sentence(hits, notes)
+                self._send(json.dumps(
+                    {"hits": hits, "notes": notes,
+                     "summary": search_sentence(hits, notes)}).encode(),
+                    "application/json; charset=utf-8")
+                return
+            if path != "/run":
+                self._send(b'{"error":"unknown endpoint"}', "application/json", 404)
+                return
+            urls = payload.get("urls")
+            if isinstance(urls, str):
+                urls = [urls]
+            if not isinstance(urls, list) or not urls:
+                urls = [payload.get("url")] if payload.get("url") else []
+            urls = [str(item).strip() for item in urls if str(item or "").strip()]
+            if not urls:
                 self._send(b'{"error":"no url"}', "application/json", 400)
                 return
             with JOB.lock:
@@ -2072,9 +2572,10 @@ def serve(port: int, out: str) -> None:
                 self._send(b'{"error":"already running"}', "application/json", 409)
                 return
             limit = int(payload.get("limit") or 0)
-            threading.Thread(target=run_job, args=(url, limit, out),
+            threading.Thread(target=run_job, args=(urls, limit, out),
                              daemon=True).start()
-            self._send(b'{"ok":true}', "application/json")
+            self._send(json.dumps({"ok": True, "queued": len(urls)}).encode(),
+                       "application/json")
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"open http://0.0.0.0:{port}/ — paste a link, press Download", flush=True)
@@ -2313,6 +2814,80 @@ def selftest() -> str:
     assert doc_id_of("https://www.scribd.com/document/704243478/Excel") == "704243478"
     assert doc_id_of("nonsense") == ""
 
+    # ---- search: keyword -> links, and never a silent "no results" ----
+    ddg_html = (
+        '<a class="result__a" href="//duckduckgo.com/l/?uddg='
+        'https%3A%2F%2Fwww.scribd.com%2Fdocument%2F750213011%2FPhysics-12th">'
+        "Physics 12th question bank</a>"
+        '<a class="result__a" href="//duckduckgo.com/l/?uddg='
+        'https%3A%2F%2Fwww.scribd.com%2Fdocument%2F750213011%2FPhysics-12th">'
+        "Save</a>"
+        '<a class="result__a" href="https://www.scribd.com/presentation/804179430/'
+        'Book-List">CBSE book list 2024</a>'
+        '<a href="https://www.scribd.com/about">About</a>')
+    hits = parse_search_links(ddg_html, engine="duckduckgo")
+    assert [hit["doc_id"] for hit in hits] == ["750213011", "804179430"], hits
+    assert hits[0]["title"] == "Physics 12th question bank", hits[0]
+    assert hits[0]["url"] == ("https://www.scribd.com/document/750213011/Physics-12th")
+    assert hits[1]["kind"] == "presentation" and hits[1]["doc_id"] == "804179430"
+
+    wrapped = base64.urlsafe_b64encode(
+        b"https://www.scribd.com/document/123456789/Some-Book").decode().rstrip("=")
+    bing_html = ('<li><a href="https://www.bing.com/ck/a?!&&p=abc&u=a1'
+                 + wrapped + '&ntb=1">Some Book &amp; Notes</a></li>')
+    bing_hits = parse_search_links(bing_html, engine="bing")
+    assert len(bing_hits) == 1 and bing_hits[0]["doc_id"] == "123456789", bing_hits
+    assert bing_hits[0]["title"] == "Some Book & Notes", bing_hits[0]
+
+    # a page that only writes the url as text still counts (cite lines, JSON)
+    cite_only = ('<div><cite>https://www.scribd.com/document/999999/ExceL-Formulas'
+                 '</cite></div>')
+    assert parse_search_links(cite_only)[0]["doc_id"] == "999999"
+    # and an escaped url, the way Scribd writes them inside its own scripts
+    assert parse_search_links('<script>var u="https:\\/\\/www.scribd.com'
+                              '\\/document\\/123123\\/x";</script>')[0]["doc_id"] == "123123"
+    assert parse_search_links("<a href='/about'>About</a>") == []
+    assert parse_search_links("") == []
+    assert unwrap_link("https://www.scribd.com/document/1/x").endswith("/document/1/x")
+    assert unwrap_link("//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa") == (
+        "https://example.com/a")
+    assert html_escape('<a href="x">&') == "&lt;a href=&quot;x&quot;&gt;&amp;"
+
+    # engines are tried in order and every answer is reported, so "nothing
+    # found" can be told apart from "every engine refused this address"
+    real_ask = globals()["engine_ask"]
+    calls: list[str] = []
+
+    def stub_ask(name, url, method, site_only, query, page, timeout=20.0):
+        calls.append(name)
+        if name == "duckduckgo":
+            return [], "duckduckgo: HTTP 202 (blocked or throttled here)"
+        if name == "bing":
+            return ([{"doc_id": "555", "kind": "document", "slug": "found",
+                      "title": "Found it",
+                      "url": "https://www.scribd.com/document/555/found",
+                      "engine": name}], "bing: 1 link(s)")
+        return [], f"{name}: HTTP 200, 3 kB, no links"
+
+    globals()["engine_ask"] = stub_ask
+    try:
+        found, notes = find_links("physics", pages=1, limit=5)
+        ordered = list(calls)
+        calls.clear()
+        one, _ = find_links("physics", pages=1, limit=1)
+    finally:
+        globals()["engine_ask"] = real_ask
+    assert [hit["doc_id"] for hit in found] == ["555"], found
+    assert ordered[:3] == ["duckduckgo", "duckduckgo-lite", "bing"], ordered
+    assert [hit["doc_id"] for hit in one] == ["555"]
+    assert calls[:3] == ["duckduckgo", "duckduckgo-lite", "bing"], calls
+    assert "mojeek" not in calls, calls            # stops once it has what it needs
+    assert any("202" in note for note in notes), notes
+    assert search_sentence(found, notes).startswith("1 document(s) found")
+    blocked_only = search_sentence([], ["duckduckgo: HTTP 403 (blocked)"])
+    assert "no documents found" in blocked_only and "blocked" in blocked_only
+    assert find_links("   ") == ([], ["no query"])
+
     gate = Gate(rate=24.0, floor=8.0, ceiling=60.0)
     for _ in range(40):
         gate.complaint(403)
@@ -2323,7 +2898,7 @@ def selftest() -> str:
     assert abs(hard.rate - 8.0) < 0.01, hard.rate
 
     return ("selftest: every check passed — sheet maths, EXIF rotation, "
-            "jpeg size traps, pdf verify, cookies, token, names")
+            "jpeg size traps, pdf verify, cookies, token, names, search parsing")
 
 def main(argv: list[str]) -> int:
     global BASE
@@ -2338,13 +2913,27 @@ def main(argv: list[str]) -> int:
     placeholder = True
     verify = True
     probe = 0
+    search = ""
+    results = 10
+    search_pages = 1
+    pick = ""
+    download_after = False
     index = 0
     while index < len(argv):
         arg = argv[index]
         if arg in ("--url", "--limit", "--out", "--cookies", "--base",
-                   "--jobs", "--name", "--probe") and index + 1 < len(argv):
+                   "--jobs", "--name", "--probe", "--search", "--results",
+                   "--search-pages", "--pick") and index + 1 < len(argv):
             value = argv[index + 1]
-            if arg == "--url":
+            if arg == "--search":
+                search = value
+            elif arg == "--results":
+                results = max(1, int(value))
+            elif arg == "--search-pages":
+                search_pages = max(1, int(value))
+            elif arg == "--pick":
+                pick = value
+            elif arg == "--url":
                 url = value
             elif arg == "--limit":
                 limit = int(value)
@@ -2370,6 +2959,8 @@ def main(argv: list[str]) -> int:
             placeholder = False
         elif arg == "--no-verify":
             verify = False
+        elif arg == "--download":
+            download_after = True
         elif arg == "--selftest":
             print(selftest())
             return 0
@@ -2383,6 +2974,38 @@ def main(argv: list[str]) -> int:
         index += 1
     if cookies:
         os.environ["COOKIES"] = cookies
+    if search:
+        hits, notes = find_links(search, pages=search_pages, limit=results,
+                                 log=lambda line: print("search: " + line, flush=True))
+        if not hits:
+            print(f"NO RESULTS — {search_sentence(hits, notes)}", flush=True)
+            return 1
+        for number, hit in enumerate(hits, start=1):
+            print(f"{number:3d}. {hit['title'][:84]}")
+            print(f"     {hit['url']}")
+        wanted = hits
+        if pick:
+            numbers = {int(part) for part in re.findall(r"\d+", pick)}
+            wanted = [hit for number, hit in enumerate(hits, start=1)
+                      if number in numbers]
+            if not wanted:
+                print(f"--pick selected nothing (results 1-{len(hits)})", flush=True)
+                return 1
+        stem = safe_name(search, "search").replace(" ", "-").lower()
+        os.makedirs(out, exist_ok=True)
+        listing = os.path.join(out, f"search-{stem}.txt")
+        with open(listing, "w", encoding="utf-8") as handle:
+            for hit in wanted:
+                handle.write(hit["url"] + "\n")
+        print(f"{len(wanted)} link(s) saved to {listing}", flush=True)
+        if not download_after:
+            print("nothing downloaded — add --download to fetch them", flush=True)
+            return 0
+        if len(wanted) > 1 and not name:
+            name = stem
+        run_job([hit["url"] for hit in wanted], limit, out, jobs, refresh, "",
+                check, placeholder, 0, verify)
+        return 0 if JOB.verdict in ("PDF BUILT", "PDF PARTIAL") else 1
     if url:
         run_job(url, limit, out, jobs, refresh, name, check, placeholder, probe,
                 verify)
