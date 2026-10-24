@@ -186,6 +186,79 @@ def test_html_escaped_slashes_are_extracted():
     assert 1 in extract_content_urls(html)
 
 
+EMBED_HTML = """
+<html><body>
+<div id="document_scroller">
+  <div class="newpage" id="page1">
+    <img class="absimg" src="https://html.scribdassets.com/6ysb4bcr7kdognn0/images/1-abc.png">
+    <div class="text_layer"><div class="text">1 | P a g e</div>
+      <div class="text">UPDATED BOOK LIST</div></div>
+  </div>
+  <div class="newpage" id="page2">
+    <img class="absimg" src="https://html.scribdassets.com/6ysb4bcr7kdognn0/images/2-def.jpg">
+    <div class="text_layer"><div class="text">Table of Contents</div></div>
+  </div>
+  <div class="newpage" id="page3">
+    <div class="text_layer"><div class="text">AGRICULTURE</div></div>
+  </div>
+</div></body></html>
+"""
+
+
+def test_embed_strategy_extracts_pages():
+    # Modern Scribd docs render pages as images and expose no
+    # /pages/1-*.jsonp asset — the embed page carries the text layer.
+    from scribd.fetch import ScrapeContext, build_from_embed
+
+    ctx = ScrapeContext(doc_id="804179430", url="https://www.scribd.com/document/804179430/X")
+    doc = build_from_embed(ctx, EMBED_HTML)
+    assert doc is not None
+    assert doc.strategy == "embed-text"
+    assert len(doc.pages) == 3
+    assert "UPDATED BOOK LIST" in doc.pages[0].text
+    assert "Table of Contents" in doc.pages[1].text
+    assert doc.pages[0].image_url.endswith("/images/1-abc.png")
+    assert doc.pages[2].image_url is None
+
+
+def test_embed_strategy_falls_back_to_merged_page():
+    from scribd.fetch import ScrapeContext, build_from_embed
+
+    ctx = ScrapeContext(doc_id="1", url="https://www.scribd.com/document/1/X")
+    doc = build_from_embed(ctx, "<html><body><p>only text, no page divs</p></body></html>")
+    assert doc is not None and len(doc.pages) == 1
+    assert "only text" in doc.pages[0].text
+
+
+def test_embed_strategy_is_first_and_scrape_succeeds_with_it():
+    from scribd import ScribdScraper
+    from scribd.fetch import DEFAULT_STRATEGIES
+
+    assert DEFAULT_STRATEGIES[0].name == "embed-text"
+
+    class F:
+        async def get(self, url, **kw):
+            class R:
+                status_code = 200
+                headers = {"content-type": "text/html"}
+                text = EMBED_HTML
+                content = EMBED_HTML.encode()
+
+                def json(self):
+                    return {}
+
+            return R()
+
+    async def go():
+        return await ScribdScraper(F(), log=lambda m: None).scrape(
+            "https://www.scribd.com/document/804179430/X"
+        )
+
+    doc = asyncio.run(go())
+    assert len(doc.pages) == 3
+    assert "AGRICULTURE" in doc.text
+
+
 def test_scrape_error_raised_when_all_strategies_fail():
     from scribd import ScrapeError, ScribdScraper
 

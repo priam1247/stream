@@ -5,6 +5,8 @@ import json
 from dataclasses import dataclass, field
 from urllib.parse import unquote
 
+from bs4 import BeautifulSoup
+
 from .config import DOWNLOAD_PDF_URL, EMBED_URL, RENDER_META_URL
 from .extractors import (
     build_page_template,
@@ -240,7 +242,99 @@ class PdfDownloadStrategy(Strategy):
         return ScrapedDocument(meta=meta, strategy=self.name, pdf=resp.content)
 
 
+class EmbedTextStrategy(Strategy):
+    """Primary strategy on today's Scribd: the embed page ships the whole
+    document's text layer in one HTML response.
+
+    Why this comes first: modern documents render each page as an *image*
+    (``.../images/1-abc.jpg``) and expose no ``/pages/1-*.jsonp`` asset at
+    all, so the JSONP strategy cannot work on them. The embed endpoint
+    (``/embeds/<id>/content?start_page=1&view_mode=scroll``) returns every
+    page as ``div.newpage`` -> ``div.text_layer`` alongside those images —
+    verified against a live 95-page document.
+    """
+
+    name = "embed-text"
+
+    async def run(self, ctx: ScrapeContext, fetcher) -> ScrapedDocument | None:
+        url = EMBED_URL.format(doc_id=ctx.doc_id)
+        try:
+            resp = await fetcher.get(url, headers={"Referer": ctx.url})
+        except Exception as exc:
+            ctx.note(f"embed -> {type(exc).__name__}")
+            return None
+        if resp.status_code != 200:
+            ctx.note(f"embed -> HTTP {resp.status_code}")
+            return None
+        if len(resp.text) < 500:
+            ctx.note(f"embed -> {len(resp.text)} bytes, too small")
+            return None
+        return build_from_embed(ctx, resp.text)
+
+
+# Page containers, most specific first. Scribd's embed markup is
+# ``div.newpage`` per page containing a ``div.text_layer``; the others are
+# defensive fallbacks in case the class names change.
+PAGE_SELECTORS = (
+    "div.newpage",
+    "div.page",
+    "div[id^='page']",
+    "div.text_layer",
+)
+
+
+def _page_containers(soup: BeautifulSoup) -> list:
+    for sel in PAGE_SELECTORS:
+        try:
+            found = soup.select(sel)
+        except Exception:
+            continue
+        found = [el for el in found if el.find("img") or el.get_text(strip=True)]
+        if found:
+            return found
+    return []
+
+
+def build_from_embed(ctx: ScrapeContext, html: str) -> ScrapedDocument | None:
+    """Turn embed HTML into pages. Falls back to one merged page."""
+    soup = BeautifulSoup(html, "lxml")
+    for bad in soup(["script", "style", "noscript"]):
+        bad.decompose()
+
+    meta = extract_meta(html, ctx.url, ctx.doc_id, ctx.kind)
+    containers = _page_containers(soup)
+    pages: list[Page] = []
+
+    if containers:
+        for i, el in enumerate(containers, start=1):
+            raw = str(el)
+            text = html_to_markdown(raw) if ctx.markdown else html_to_text(raw)
+            page = Page(number=i, html=raw, text=text)
+            img = el.find("img", src=True)
+            if img and "scribdassets.com" in str(img["src"]):
+                page.image_url = str(img["src"])
+            pages.append(page)
+        ctx.note(f"embed-text: {len(pages)} page containers")
+    else:
+        body = soup.body or soup
+        text = html_to_markdown(str(body)) if ctx.markdown else html_to_text(str(body))
+        if not text.strip():
+            return None
+        pages = [Page(number=1, text=text)]
+        ctx.note("embed-text: page structure not detected, merged into one page")
+
+    # Drop empty trailing chunks (embed pages often carry spacer divs).
+    while pages and not pages[-1].text.strip():
+        pages.pop()
+    if not pages or not any(p.text.strip() for p in pages):
+        return None
+
+    meta.page_count = meta.page_count or len(pages)
+    return ScrapedDocument(meta=meta, pages=pages, strategy=EmbedTextStrategy.name)
+
+
 DEFAULT_STRATEGIES: list[Strategy] = [
+    EmbedTextStrategy(),
     JsonpPagesStrategy(),
     RenderMetadataStrategy(),
     PdfDownloadStrategy(),

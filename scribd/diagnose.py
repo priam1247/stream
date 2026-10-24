@@ -9,6 +9,7 @@ raw page for offline inspection.
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from pathlib import Path
 
 from .config import DOWNLOAD_PDF_URL, EMBED_URL, OEMBED_URL, RENDER_META_URL
@@ -31,7 +32,33 @@ MARKERS = (
     "isLoggedIn",
     '"user"',
     "og:title",
+    # embed-page structure
+    "newpage",
+    "text_layer",
+    "/images/1-",
 )
+
+
+def _embed_structure(html: str) -> str:
+    """Compact class census of the embed HTML — enough to fix selectors."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "lxml")
+    counts: dict[str, int] = defaultdict(int)
+    for el in soup.find_all(True):
+        for cls in el.get("class") or []:
+            counts[cls] += 1
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:15]
+    lines = [f"  {c:>5}x  .{cls}" for cls, c in top]
+    imgs = [
+        str(i["src"])
+        for i in soup.find_all("img", src=True)
+        if "scribdassets.com" in str(i["src"])
+    ]
+    lines.append(f"  page images: {len(imgs)}")
+    if imgs:
+        lines.append(f"  first image: {_mask(imgs[0])}")
+    return "\n".join(lines)
 
 
 def _mask(u: str) -> str:
@@ -103,6 +130,24 @@ async def diagnose(fetcher, url: str, *, save_dir: str | Path = ".debug") -> int
         print(f"  {_mask(s)}")
     if not shapes:
         print("  none — the page may be a JS shell; the HTML above is what we need.")
+
+    # The embed endpoint is the strategy that works on modern documents,
+    # so report its structure too.
+    try:
+        emb = await fetcher.get(
+            EMBED_URL.format(doc_id=doc_id), headers={"Referer": url}, use_cache=False
+        )
+    except Exception as exc:
+        print(f"\nembed: ERROR {type(exc).__name__}")
+    else:
+        print(
+            f"\nembed page: HTTP {emb.status_code}, {len(emb.content or b''):,} bytes"
+        )
+        if emb.status_code == 200 and emb.text:
+            (out / f"embed-{doc_id}.html").write_text(emb.text, encoding="utf-8")
+            print("embed class census (top 15):")
+            print(_embed_structure(emb.text))
+            print(f"  saved to: {out / f'embed-{doc_id}.html'}")
 
     print(
         "\nSend this report back. If the counts above are zero, also share the "
