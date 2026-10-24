@@ -185,6 +185,41 @@ async def diagnose(fetcher, url: str, *, save_dir: str | Path = ".debug") -> int
             f"{r.headers.get('content-type','?')[:24]}  {kind}"
         )
 
+    # --- JSONP page-asset probe: the route that should give every page ---
+    from .extractors import extract_content_urls
+
+    jurls = extract_content_urls(page_html)
+    print(f"\njsonp page assets found: {len(jurls)}")
+    if jurls:
+        from .fetch import _parse_payload
+
+        picks = [n for n in (1, max(jurls) // 2, max(jurls)) if n in jurls and n > 0]
+        for n in dict.fromkeys(picks):
+            u = jurls[n]
+            try:
+                r = await fetcher.get(u, headers={"Referer": url}, use_cache=False)
+            except Exception as exc:
+                print(f"  page {n:>3}: ERROR {type(exc).__name__}")
+                continue
+            body = r.text or ""
+            ctype = str(r.headers.get("content-type", "?"))[:28]
+            print(
+                f"  page {n:>3}: HTTP {r.status_code}  {len(r.content or b''):>8,} bytes  {ctype}"
+            )
+            print(f"            head: {body[:110].replace(chr(10), ' ')!r}")
+            payload = _parse_payload(body)
+            if payload:
+                keys = sorted(payload)[:8]
+                body_field = ""
+                for k in ("content", "html", "body", "text", "pageContent"):
+                    v = payload.get(k)
+                    if isinstance(v, str) and v.strip():
+                        body_field = f"{k}: {len(v)} chars"
+                        break
+                print(f"            parsed OK, keys={keys}, {body_field or 'NO text field'}")
+            else:
+                print("            NOT parseable as JSON")
+
     print(
         "\nSend this report back. If the counts above are zero, also share the "
         "saved page HTML (it is the public document page, but it can contain "
