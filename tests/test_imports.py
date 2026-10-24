@@ -3961,3 +3961,26 @@ def test_dockerfile_installs_chromium_with_its_libraries():
     assert "scribd.webapp" in text
     assert "VOLUME" in text          # PDFs survive a restart
     assert "EXPOSE 8000" in text
+
+
+def test_setup_guide_covers_every_path():
+    """SETUP.md is the map: if a path exists in the repo, it must be described."""
+    text = (pathlib.Path(__file__).resolve().parent.parent / "SETUP.md").read_text()
+
+    for heading in (
+        "What this repo actually contains",
+        "The one hard requirement: a browser",
+        "whose machine runs Chromium",
+        "Path A — GitHub Actions",
+        "Path B — the page, 24/7, on a host with root",
+        "Path C — the panel",
+        "When something goes wrong",
+    ):
+        assert heading in text, heading
+
+    # the concrete steps someone follows
+    assert "SCRIBD_COOKIES_B64" in text
+    assert "base64 -w0 cookies.txt" in text
+    assert "Artifacts" in text
+    assert "manifest.jsonl" in text
+    assert "docker run" in text
