@@ -36,10 +36,42 @@ that can break on a host.
 3. Start it: `PY_FILE=scribd_download.py`, restart.
 4. Open the server address. The line under the title must read **v2.6**.
 
-## 2. Send it links from your browser
+## 2. Find links: two ways
 
-The page shows a bookmarklet — one long `javascript:` line built from the
-address you opened the panel on, so it always comes back to *your* panel.
+### a) the search helper on your PC (recommended)
+
+`tools/scribd_search.py` is a second small file — search there, tick what you
+want, send it to the panel.
+
+```bash
+python tools/scribd_search.py --panel http://YOUR-PANEL:25811
+# open http://127.0.0.1:8095/ , type a keyword, tick, press "Send ticked"
+```
+
+Why it runs on your PC and not on the panel: Scribd's own search page is a
+JavaScript app with no results in its HTML, so the keyword goes to the search
+engines that have already indexed scribd.com — and a hosting provider's IP is
+very often refused by them, while a home connection is not. The helper asks
+DuckDuckGo, DuckDuckGo lite, Bing, Mojeek and Scribd in turn and prints what
+each one answered, so "nothing found" never hides "this address was blocked".
+
+It also works from the terminal:
+
+```bash
+python tools/scribd_search.py "physics 12th"                      # just list the links
+python tools/scribd_search.py "physics 12th" --pick 1,3 \
+    --panel http://YOUR-PANEL:25811                               # list, then send 1 and 3
+```
+
+The panel address is remembered in the page; `?panel=http://…` pre-fills it.
+The panel's answer is shown as it comes back — `queued 3 link(s)`, or
+"the panel is already downloading something".
+
+### b) the bookmarklet on the panel page
+
+If you would rather search on Scribd itself, the panel page shows a
+bookmarklet — one long `javascript:` line built from the address you opened the
+panel on, so it always comes back to *your* panel.
 
 1. `Ctrl+Shift+B` shows your bookmarks bar.
 2. Drag the blue **“Send links to this panel”** button onto it. If dragging does
@@ -51,9 +83,10 @@ address you opened the panel on, so it always comes back to *your* panel.
 It collects `/document/`, `/presentation/`, `/spreadsheet/` and `/ebook/` links
 (up to 40 on a page), merges duplicates, and ignores everything else.
 
-**Or paste links instead:** one per line in the box on the panel. Anything that
-is not a Scribd document link is ignored, duplicates dropped, `?utm=…` and
-`#page=3` stripped.
+### c) paste links
+
+The panel page also has a box: one link per line, anything that is not a Scribd
+document link ignored, duplicates dropped, `?utm=…` and `#page=3` stripped.
 
 ## 3. Read the verdict
 
