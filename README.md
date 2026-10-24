@@ -13,6 +13,22 @@ with a strategy chain and graceful degradation instead of one brittle path.
 > own machine, compare your `scraper.py` against this repo's — the class
 > must exist at module level, and stale `__pycache__` should be deleted.
 
+## Strategy chain (order matters)
+
+1. **`embed-text`** — fetches `/embeds/<id>/content?start_page=1&view_mode=scroll`,
+   which returns **every page's text layer in one HTML response**, grouped as
+   `div.newpage` → `div.text_layer`. This is what works on documents uploaded
+   today: their pages are *images* (`…/images/1-abc.jpg`), and there is no
+   `/pages/1-*.jsonp` asset at all. If the page containers can't be found, the
+   whole body is captured as a single page rather than failing.
+2. **`jsonp-pages`** — older uploaded documents: page HTML → `contentUrl` →
+   synthesise page N → fetch → strip the JSONP wrapper. Requires the asset
+   URLs to be unescaped first (`\/` → `/`).
+3. **`render-metadata`** — `/doc-page/download-render-metadata/<id>` sometimes
+   exposes asset URLs when the doc page is JS-only.
+4. **`pdf-download`** — `/document_downloads/<id>?extension=pdf`: full fidelity,
+   often works without login, sometimes subscriber-only.
+
 ## Why the typical attempt dies
 
 1. `requests.get(url)` + regex on the visible HTML → you get page 1 only. The
