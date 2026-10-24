@@ -206,41 +206,39 @@ All endpoints except `/api/health` then require HTTP Basic auth (or
 `SCRIBD_WEB_TOKEN`, sent as `X-Token` or `?token=`). The cookie file is only
 ever read by the CLI subprocess — it is never served, logged or echoed.
 
-## Search without a browser (`tools/scribd_download.py`)
+## Search in your browser, download on the panel (`tools/scribd_download.py`)
 
-The single-file tool (standard library only) does search *and* download. Scribd's
-own search page is a JavaScript app whose HTML contains no results, so the keyword
-goes to the search engines that already index scribd.com, in this order:
+The panel **cannot** search, and this is measured rather than assumed:
 
-1. DuckDuckGo html (`html.duckduckgo.com/html/`)
-2. DuckDuckGo lite (`lite.duckduckgo.com/lite/`)
-3. Bing (`www.bing.com/search?q=site:scribd.com …`)
-4. Mojeek
-5. Scribd's own search page (kept last: it usually answers with a JS shell)
+* Scribd's own search page is a JavaScript app — its HTML contains no results.
+* The search engines block the panel's address. `check_deployment.py` says it
+  plainly: *"Search engines are blocked from this IP as well, so searches must
+  run elsewhere too"*, and `SETUP.md` already recommended splitting the work:
+  search elsewhere, paste the URLs into the panel.
 
-Every engine's answer is printed, e.g. `duckduckgo: HTTP 202 (blocked or
-throttled here)` next to `bing: 12 link(s)`, so "no documents found" can always
-be told apart from "this address was blocked". Search engines are asked with
-**no cookies**; only scribd.com and scribdassets.com ever see them.
+So the one-file tool does not search at all. Searching happens in your own
+browser; only the links travel:
+
+1. Panel page → copy the bookmarklet shown at the top (or drag the blue button
+   onto your bookmarks bar). It is built from the address you opened the panel
+   on, so it always points back at *this* panel.
+2. Search Scribd normally in your browser.
+3. Click the bookmark. Every document link on that page
+   (`/document/`, `/presentation/`, `/spreadsheet/`, `/ebook/`, up to 40) is
+   handed to the panel's `/send` endpoint, which queues the downloads.
+
+The same panel page also takes a pasted list — one link per line; anything that
+is not a Scribd document link is ignored and duplicates are dropped. From the
+CLI:
 
 ```bash
-python tools/scribd_download.py --search "physics 12th"            # list links only
-python tools/scribd_download.py --search "physics 12th" --results 20
-python tools/scribd_download.py --search "physics 12th" --pick 1,4 --download
+python tools/scribd_download.py --url LINK                 # one document
+python tools/scribd_download.py --url A --url B            # several
+python tools/scribd_download.py --links "$(cat urls.txt)"  # a pasted list
 ```
 
-The panel page has the same thing as a form: type a keyword → **Find** → tick
-the rows → **Download ticked**. Each ticked link goes through exactly the same
-download path as a pasted link, one document after another, and the verdict at
-the end counts them (`PDF BUILT — 3 of 3 document(s) built`).
-
-**If the engines block the panel's IP** (datacenter addresses often are), the
-panel page shows a bookmarklet. Open a Scribd search in your own browser and
-click it: it collects every document link on that page and sends them to the
-panel's `/send` endpoint, which queues the downloads and does the fetching. The
-search then happens in your browser, and only the links travel — which is the
-same division of labour the rest of this repo uses: the browser never has to run
-on the panel.
+Each link then runs through exactly the same download path as before, and a
+batch ends with a count: `PDF BUILT — 3 of 3 document(s) built`.
 
 ## Hand in hand: the panel does the downloading
 
