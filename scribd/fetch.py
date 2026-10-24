@@ -146,22 +146,24 @@ async def _build_from_html(
     ctx: ScrapeContext, fetcher, html: str, *, meta_html: str
 ) -> ScrapedDocument | None:
     meta = extract_meta(meta_html, ctx.url, ctx.doc_id, ctx.kind)
-    oembed = await fetch_oembed(fetcher, ctx.url)
-    if oembed:
-        # extract_meta() falls back to "scribd_<id>", so only let oEmbed
-        # fill/replace when we don't already have a real title.
-        if not meta.title or meta.title == f"scribd_{ctx.doc_id}":
-            meta.title = str(oembed.get("title") or meta.title)
-        meta.author = meta.author or str(oembed.get("author_name") or "")
-        meta.thumbnail = meta.thumbnail or str(oembed.get("thumbnail_url") or "")
 
     urls = extract_content_urls(html)
     template = build_page_template(urls)
-    if not template:
+    if not urls and not template:
         return None
+    # Every page asset has its OWN hash (/pages/1-10b1c, /pages/10-23ec), so
+    # a single "{n}-<hash>" template is only a fallback for page numbers
+    # missing from the map. Using the template for all pages made every
+    # page but the first 404 — the reason this strategy looked broken.
+    ctx.note(f"jsonp-pages: {len(urls)} explicit page URLs")
 
-    total = meta.page_count or (max(urls) if urls else 0)
-    if total <= 0:
+    def page_url(n: int) -> str | None:
+        if n in urls:
+            return urls[n]
+        return template.format(n=n) if template else None
+
+    total = extract_page_count(html) or meta.page_count or (max(urls) if urls else 0)
+    if total <= 0 and template:
         total = await _probe_total(ctx, fetcher, template)
     if total <= 0:
         return None
@@ -171,9 +173,12 @@ async def _build_from_html(
     sem = asyncio.Semaphore(8)
 
     async def get_page(n: int) -> Page | None:
+        url = page_url(n)
+        if not url:
+            return None
         async with sem:
             try:
-                resp = await fetcher.get(template.format(n=n))
+                resp = await fetcher.get(url)
             except Exception:
                 return None
         if resp.status_code != 200:
@@ -199,7 +204,15 @@ async def _build_from_html(
         for p in pages:
             p.image_url = p.image_url or imgs.get(p.number)
 
-    doc = ScrapedDocument(meta=meta, pages=pages, strategy=JsonpPagesStrategy.name)
+    complete = len(pages) >= total * 0.98
+    doc = ScrapedDocument(
+        meta=meta, pages=pages, strategy=JsonpPagesStrategy.name, complete=complete
+    )
+    # The document page's og:title can be the literal "Scribd" when logged
+    # in; oEmbed carries the real title/author.
+    await _fill_meta_from_oembed(ctx, fetcher, doc)
+    if not complete:
+        ctx.note(f"jsonp-pages: PARTIAL {len(pages)}/{total} pages")
     if not any(p.text.strip() for p in doc.pages):
         ctx.note("pages returned but no text layer (likely scanned)")
     return doc
@@ -306,6 +319,7 @@ class EmbedTextStrategy(Strategy):
 # ``div.newpage`` per page containing a ``div.text_layer``; the others are
 # defensive fallbacks in case the class names change.
 PAGE_SELECTORS = (
+    "div.outer_page",   # verified: 95 of these on a 95-page document
     "div.newpage",
     "div.page",
     "div[id^='page']",
@@ -366,7 +380,7 @@ def build_from_embed(ctx: ScrapeContext, html: str) -> ScrapedDocument | None:
         return None
 
     expected = meta.page_count or len(pages)
-    complete = len(pages) >= expected * 0.9
+    complete = len(pages) >= expected * 0.98
     if not meta.page_count:
         meta.page_count = len(pages)
     return ScrapedDocument(
@@ -549,9 +563,12 @@ def _images_to_pdf(blobs: list[bytes]) -> bytes | None:
 
 
 DEFAULT_STRATEGIES: list[Strategy] = [
+    # Order matters: jsonp-pages recovers every page (verified: 95 explicit
+    # /pages/N-<hash>.jsonp URLs on the document page), the embed markup only
+    # ships the pages it rendered, and the PDF download needs credits.
+    JsonpPagesStrategy(),
     EmbedTextStrategy(),
     PdfDownloadStrategy(),
     PageImagesPdfStrategy(),
-    JsonpPagesStrategy(),
     RenderMetadataStrategy(),
 ]

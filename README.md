@@ -15,6 +15,10 @@ with a strategy chain and graceful degradation instead of one brittle path.
 
 ## Strategy chain (order matters)
 
+0. **`jsonp-pages`** (first) — the document page lists **every** page asset
+   `/pages/N-<hash>.jsonp`, each page with its *own hash*. Fetching those
+   95 URLs is what produces a complete text extraction. (Earlier versions
+   synthesised all pages from page 1's hash, so only page 1 resolved.)
 1. **`embed-text`** — fetches `/embeds/<id>/content?start_page=1&view_mode=scroll`,
    which returns **every page's text layer in one HTML response**, grouped as
    `div.newpage` → `div.text_layer`. This is what works on documents uploaded

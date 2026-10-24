@@ -235,7 +235,10 @@ def test_embed_strategy_is_first_and_scrape_succeeds_with_it():
     from scribd import ScribdScraper
     from scribd.fetch import DEFAULT_STRATEGIES
 
-    assert DEFAULT_STRATEGIES[0].name == "embed-text"
+    names = [s.name for s in DEFAULT_STRATEGIES]
+    # jsonp-pages first: it is the only route that returns EVERY page
+    assert names[0] == "jsonp-pages"
+    assert "embed-text" in names and "pdf-download" in names
 
     class F:
         async def get(self, url, **kw):
@@ -657,3 +660,116 @@ def test_image_strategy_uses_document_total_not_visible_pages():
     assert doc is not None and doc.pdf
     assert len(doc.pages) == 60, f"expected 60 pages, got {len(doc.pages)}"
     assert doc.complete
+
+
+# ---------------------------------------------------------------------------
+# Verified against a real diagnostic dump (2024 Updated Book List, 95 pages):
+# the document page lists all 95 /pages/N-<hash>.jsonp URLs, each page with
+# its OWN hash — so a single template built from page 1 404s for the rest.
+# ---------------------------------------------------------------------------
+def _real_doc_html(pages: int = 95) -> str:
+    imgs = "".join(
+        f'<img src="https://html.scribdassets.com/6ysb4bcr7kdognn0/pages/{n}-{1000 + n:x}.jsonp">'
+        for n in range(1, pages + 1)
+    )
+    return (
+        '<html><head><meta property="og:title" content="Malawi Secondary School Textbooks Guide">'
+        '<script>window.docManager = {"id": 804179430};</script></head>'
+        f"<body><span>1K views</span> <span>{pages} pages</span>{imgs}</body></html>"
+    )
+
+
+class _RealDocFetcher:
+    """Serves the doc page, every per-page JSONP asset, and oEmbed."""
+
+    def __init__(self, pages: int = 95, fail: tuple[int, ...] = ()):
+        self.pages = pages
+        self.fail = set(fail)
+        self.fetched: list[str] = []
+
+    async def get(self, url: str, **kw):
+        self.fetched.append(url)
+
+        class R:
+            def __init__(self, text: str, ctype="text/html", status=200):
+                self.text = text
+                self.content = text.encode()
+                self.status_code = status
+                self.headers = {"content-type": ctype}
+
+            def json(self):
+                import json as _j
+
+                return _j.loads(self.text)
+
+        if "oembed" in url:
+            return R('{"title":"Malawi Secondary School Textbooks Guide",'
+                     '"author_name":"cherished568"}', "application/json")
+        m = __import__("re").search(r"/pages/(\d+)-", url)
+        if m:
+            n = int(m.group(1))
+            if n in self.fail:
+                return R("nope", status=404)
+            if n > self.pages:
+                return R("nope", status=404)
+            return R(
+                f'window.page{n} = {{"content": "<p>page {n} content</p>"}};',
+                "application/javascript",
+            )
+        return R(_real_doc_html(self.pages))
+
+
+def test_jsonp_pages_uses_each_pages_own_hash():
+    from scribd.fetch import JsonpPagesStrategy, ScrapeContext
+
+    f = _RealDocFetcher()
+    ctx = ScrapeContext(doc_id="804179430", url="https://www.scribd.com/document/804179430/X")
+    doc = asyncio.run(JsonpPagesStrategy().run(ctx, f))
+    assert doc is not None, "jsonp-pages must work on the real page shape"
+    assert len(doc.pages) == 95, f"expected 95 pages, got {len(doc.pages)}"
+    assert doc.complete
+    assert doc.meta.page_count == 95
+    assert doc.meta.title == "Malawi Secondary School Textbooks Guide"
+    assert "page 47 content" in doc.pages[46].text
+    # every page URL carried its own hash (no template synthesis)
+    got = [u for u in f.fetched if "/pages/" in u]
+    assert len(set(got)) == 95
+
+
+def test_scraper_picks_jsonp_first_and_returns_full_text():
+    from scribd import ScribdScraper
+
+    f = _RealDocFetcher()
+    doc = asyncio.run(
+        ScribdScraper(f, log=lambda m: None).scrape(
+            "https://www.scribd.com/document/804179430/X"
+        )
+    )
+    assert doc.strategy == "jsonp-pages"
+    assert len(doc.pages) == 95
+    assert doc.complete
+    assert "page 95 content" in doc.text
+
+
+def test_jsonp_partial_when_some_pages_fail():
+    from scribd.fetch import JsonpPagesStrategy, ScrapeContext
+
+    f = _RealDocFetcher(fail=(2, 3, 4, 5))
+    ctx = ScrapeContext(doc_id="1", url="https://www.scribd.com/document/1/X")
+    doc = asyncio.run(JsonpPagesStrategy().run(ctx, f))
+    assert doc is not None and len(doc.pages) == 91
+    assert doc.complete is False, "91 of 95 pages must be flagged partial"
+
+
+def test_embed_uses_outer_page_containers():
+    """The real embed markup uses div.outer_page (95x), not div.newpage."""
+    from scribd.fetch import ScrapeContext, build_from_embed
+
+    html = "<html><body><span>95 pages</span>" + "".join(
+        f'<div class="outer_page"><div class="text_layer">'
+        f'<div class="text">page {n} text</div></div></div>'
+        for n in range(1, 96)
+    ) + "</body></html>"
+    ctx = ScrapeContext(doc_id="1", url="https://www.scribd.com/document/1/X")
+    doc = build_from_embed(ctx, html)
+    assert doc is not None and len(doc.pages) == 95
