@@ -3812,3 +3812,152 @@ def test_remote_browser_falls_back_to_local_when_unreachable(tmp_path, monkeypat
     browser = asyncio.run(chromium.launch_async(_types.SimpleNamespace(chromium=Chrome()), log=notes.append))
     assert browser == "local-browser"
     assert any("cannot reach the remote browser" in note for note in notes)
+
+
+# ---------------------------------------------------------------------------
+# Local mode: run where the browser works, publish it with a tunnel
+# ---------------------------------------------------------------------------
+def test_tunnel_url_parsing_for_cloudflared_and_ngrok():
+    from scribd.tunnel import parse_url
+
+    cloudflared = (
+        "2026-10-24T09:01:00Z INF Thank you for trying Cloudflare Tunnel.\n"
+        "2026-10-24T09:01:03Z INF |  https://silly-otter-seven.trycloudflare.com  |\n"
+        "2026-10-24T09:01:03Z INF Requesting new quick Tunnel on trycloudflare.com...\n"
+    )
+    assert parse_url(cloudflared) == "https://silly-otter-seven.trycloudflare.com"
+
+    ngrok = 't=2026-10-24 lvl=info msg="started tunnel" url=https://abcd-12-34.ngrok-free.app'
+    assert parse_url(ngrok) == "https://abcd-12-34.ngrok-free.app"
+
+    # nothing that looks like a tunnel in unrelated output
+    assert parse_url("INF starting metrics server on 127.0.0.1:20241") == ""
+
+
+def test_tunnel_command_for_each_tool():
+    from scribd.tunnel import command
+
+    assert command("cloudflared", "/usr/bin/cloudflared", 8000) == [
+        "/usr/bin/cloudflared", "tunnel", "--url", "http://127.0.0.1:8000", "--no-autoupdate",
+    ]
+    ngrok = command("ngrok", "ngrok.exe", 8123)
+    assert ngrok[:3] == ["ngrok.exe", "http", "8123"]
+
+
+def test_tunnel_binary_discovery(monkeypatch, tmp_path):
+    import scribd.tunnel as tunnel
+
+    fake = tmp_path / "cloudflared"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("SCRIBD_TUNNEL_BIN", str(fake))
+    monkeypatch.delenv("SCRIBD_TUNNEL", raising=False)
+    assert tunnel.find_binary() == ("cloudflared", str(fake))
+
+    monkeypatch.setenv("SCRIBD_TUNNEL", "none")
+    assert tunnel.find_binary() == ("", "")
+
+
+def test_tunnel_start_reports_a_missing_program(monkeypatch):
+    import scribd.tunnel as tunnel
+
+    monkeypatch.setattr(tunnel, "find_binary", lambda: ("", ""))
+    lines: list[str] = []
+    assert tunnel.start(8000, log=lines.append) is None
+    assert any("winget install" in line for line in lines)
+
+
+def test_tunnel_start_reads_the_url_from_a_slow_program(monkeypatch):
+    """cloudflared prints the URL a few seconds in; start() must wait for it."""
+    import scribd.tunnel as tunnel
+
+    monkeypatch.setattr(tunnel, "find_binary", lambda: ("cloudflared", "/fake/cloudflared"))
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = iter(
+                [
+                    "INF Thank you for trying Cloudflare Tunnel.\n",
+                    "INF |  https://brave-lion-nine.trycloudflare.com  |\n",
+                ]
+            )
+            self.terminated = False
+
+        def terminate(self): self.terminated = True
+
+        def wait(self, timeout=None): return 0
+
+        def kill(self): pass
+
+    process = FakeProcess()
+    monkeypatch.setattr(tunnel.subprocess, "Popen", lambda *a, **k: process)
+
+    lines: list[str] = []
+    started = tunnel.start(8000, log=lines.append)
+
+    assert started is not None
+    assert started.url == "https://brave-lion-nine.trycloudflare.com"
+    assert any("that address is public" in line for line in lines)
+    started.stop()
+    assert process.terminated is True
+
+
+def test_tunnel_mode_forces_a_password(monkeypatch):
+    """--tunnel exposes a loopback-bound port: auth must switch itself on."""
+    import importlib
+
+    import scribd.webapp as webapp
+
+    monkeypatch.setenv("SCRIBD_WEB_ENV_FILE", "/nonexistent.env")
+    for name in ("SCRIBD_WEB_USER", "SCRIBD_WEB_PASS", "SCRIBD_WEB_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SCRIBD_WEB_PUBLIC", "1")
+    try:
+        importlib.reload(webapp)
+        assert webapp.ensure_auth("0.0.0.0") == "generated"
+        assert os.environ["SCRIBD_WEB_USER"] == "admin"
+    finally:
+        for name in ("SCRIBD_WEB_USER", "SCRIBD_WEB_PASS", "SCRIBD_WEB_TOKEN", "SCRIBD_WEB_PUBLIC"):
+            os.environ.pop(name, None)
+        importlib.reload(webapp)
+
+
+# ---------------------------------------------------------------------------
+# Hosted run: GitHub Actions does the work, your bundle only carries the PDFs
+# ---------------------------------------------------------------------------
+def test_actions_workflow_is_dispatchable_and_uploads_the_pdfs():
+    """The workflow is the data-friendly path: the runner does the fetching."""
+    text = (pathlib.Path(__file__).resolve().parent.parent / ".github/workflows/scribd.yml").read_text()
+
+    assert "workflow_dispatch" in text
+    for field in ("query", "limit", "picks", "pages", "urls", "search_only"):
+        assert f"\n      {field}:" in text, field
+    assert "playwright install --with-deps chromium" in text
+    assert "secrets.SCRIBD_COOKIES_B64" in text   # cookies come from a secret
+    assert "actions/upload-artifact@v4" in text
+    assert "out/" in text and ".debug/" in text
+    # the CLI is the same one you run locally, not a fork of it
+    assert "python -m scribd" in text
+    assert "--search-only" in text and "--pick" in text and "--file" in text
+
+
+def test_workflow_yaml_parses_when_pyyaml_is_available():
+    pytest.importorskip("yaml")
+    import yaml
+
+    path = pathlib.Path(__file__).resolve().parent.parent / ".github/workflows/scribd.yml"
+    data = yaml.safe_load(path.read_text())
+    trigger = data.get("on", data.get(True))
+    assert "workflow_dispatch" in trigger
+    steps = data["jobs"]["run"]["steps"]
+    names = " ".join(str(step.get("name") or step.get("uses")) for step in steps)
+    assert "Chromium" in names and "Upload" in names
+
+
+def test_dockerfile_installs_chromium_with_its_libraries():
+    """A real image (root) is the only hosting that does not need workarounds."""
+    text = (pathlib.Path(__file__).resolve().parent.parent / "Dockerfile").read_text()
+    assert "playwright install --with-deps chromium" in text
+    assert "SCRIBD_WEB_DATA=/data" in text
+    assert "scribd.webapp" in text
+    assert "VOLUME" in text          # PDFs survive a restart
+    assert "EXPOSE 8000" in text
