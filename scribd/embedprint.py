@@ -40,6 +40,7 @@ collected for the .txt/.md/.epub outputs, and the PDFs are merged in memory.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import re
@@ -434,6 +435,22 @@ async (budgetMs) => {
 }
 """
 
+# How many pages does the viewer know about? No page is loaded by this call —
+# the batch loader fetches only the pages we are about to print.
+COUNT_PAGES_JS = r"""
+() => {
+  const manager = window.docManager;
+  const fromManager = manager && manager.pages ? Object.keys(manager.pages).length : 0;
+  const fromDom = document.querySelectorAll('.outer_page').length;
+  return {
+    supported: Boolean(manager && manager.pages),
+    fromManager,
+    fromDom,
+    count: Math.max(fromManager, fromDom),
+  };
+}
+"""
+
 MEASURE_PAPER_JS = r"""
 () => {
   const candidates = ['.outer_page', '.newpage', '.outer_page_container', "[class*='page']"];
@@ -549,7 +566,13 @@ class EmbedPageResult:
 
 
 class EmbedPrintStrategy:
-    """themrsami/scribd-downloader's export path, driven by Playwright."""
+    """themrsami/scribd-downloader's export path, driven by Playwright.
+
+    Speed: the print work is split across ``workers`` tabs (each with its own
+    CDP session) and each tab loads only the pages it prints, so the network
+    cost is the same as a sequential run while ``Page.printToPDF`` — the slow
+    part — happens in parallel.
+    """
 
     name = "embed-print"
 
@@ -557,21 +580,26 @@ class EmbedPrintStrategy:
         self,
         *,
         max_pages: int = 5000,
+        workers: int = 2,
         settle_timeout: int = DEFAULT_RENDER_SETTLE_TIMEOUT,
         page_load_concurrency: int = DEFAULT_PAGE_LOAD_CONCURRENCY,
         page_load_timeout: int = DEFAULT_PAGE_LOAD_TIMEOUT,
         batch_size: int = DEFAULT_EXPORT_BATCH_SIZE,
+        preload_all: bool = False,
         timeout: float = 90_000,
         headless: bool = True,
     ) -> None:
         self.max_pages = max_pages
+        self.workers = max(1, int(workers))
         self.settle_timeout = settle_timeout
         self.page_load_concurrency = page_load_concurrency
         self.page_load_timeout = page_load_timeout
         self.batch_size = max(1, batch_size)
+        self.preload_all = preload_all
         self.timeout = timeout
         self.headless = headless
 
+    # -- entry point ------------------------------------------------------
     async def run(self, ctx, fetcher) -> ScrapedDocument | None:
         try:
             from playwright.async_api import async_playwright  # type: ignore
@@ -626,76 +654,62 @@ class EmbedPrintStrategy:
                                 for k, v in cookies.items()
                             ]
                         )
-                    page = await context.new_page()
+
                     ctx.note(f"embed-print: {target_url}")
-                    await page.goto(target_url, wait_until="domcontentloaded", timeout=self.timeout)
-                    try:
-                        await page.wait_for_selector(".outer_page", timeout=45_000)
-                    except Exception:
-                        ctx.note("embed-print: no .outer_page appeared")
+                    first = await self._open_tab(context, target_url, ctx, 1)
+                    if first is None:
                         return None
 
-                    loaded = await self._load_all_pages(page, ctx)
-                    if not loaded:
-                        return None
-                    total = int(loaded.get("total") or 0)
-                    if loaded.get("failed"):
-                        failed_nums = ", ".join(
-                            str(item.get("pageNum")) for item in loaded["failed"][:20]
-                        )
-                        ctx.note(f"embed-print: pages that did not load: {failed_nums}")
-
-                    # strip chrome, flatten scrollers, hide cookie banners
-                    prep = await page.evaluate(PREPARE_JS) or {}
-                    ctx.note(
-                        "embed-print: toolbars removed "
-                        f"({int(bool(prep.get('toolbarTop')))} top, "
-                        f"{int(bool(prep.get('toolbarBottom')))} bottom), "
-                        f"{prep.get('containers', 0)} scroll container(s) flattened"
-                    )
-                    try:
-                        hidden = await page.evaluate(HIDE_COOKIES_JS)
-                        if hidden:
-                            ctx.note(f"embed-print: removed {hidden} cookie/consent element(s)")
-                    except Exception:
-                        pass
-                    await page.evaluate(PRINT_CSS_JS)
-
-                    settle = await page.evaluate(
-                        WAIT_SETTLE_JS, int(self.settle_timeout * 1000)
-                    ) or {}
-                    ctx.note(
-                        "embed-print: render settled"
-                        if not settle.get("timedOut")
-                        else "embed-print: render settle hit its budget (continuing)"
-                    )
-
-                    paper = await page.evaluate(MEASURE_PAPER_JS) or {}
-                    ctx.note(
-                        "embed-print: paper from "
-                        f"{paper.get('selector', 'default')} "
-                        f"{float(paper.get('widthInches') or DEFAULT_PAPER_WIDTH_INCHES):.2f}"
-                        "x"
-                        f"{float(paper.get('heightInches') or DEFAULT_PAPER_HEIGHT_INCHES):.2f} in"
-                    )
-
-                    count = await page.locator(".outer_page").count()
-                    count = min(count, self.max_pages)
+                    info = await first.evaluate(COUNT_PAGES_JS) or {}
+                    if self.preload_all:
+                        await self._load_all_pages(first, ctx)
+                    count = int(info.get("count") or 0)
+                    if not count:
+                        count = await first.locator(".outer_page").count()
                     if count <= 0:
-                        ctx.note("embed-print: no .outer_page elements to export")
+                        ctx.note("embed-print: the viewer reports no pages")
                         return None
+                    count = min(count, self.max_pages)
+                    ctx.note(
+                        f"embed-print: viewer knows {count} pages "
+                        f"(docManager {info.get('fromManager', '?')}, "
+                        f"DOM {info.get('fromDom', '?')})"
+                    )
 
-                    cdp = await context.new_cdp_session(page)
-                    results, exported = await self._export_pages(
-                        page, cdp, ctx, count
+                    pages = [first]
+                    workers = max(1, min(self.workers, count))
+                    for number in range(2, workers + 1):
+                        extra = await self._open_tab(context, target_url, ctx, number)
+                        if extra is not None:
+                            pages.append(extra)
+                    workers = len(pages)
+                    if workers > 1:
+                        ctx.note(
+                            f"embed-print: printing with {workers} tabs in parallel"
+                        )
+
+                    chunks = _split_range(count, workers)
+                    cdps = [await context.new_cdp_session(p) for p in pages]
+                    gathered = await asyncio.gather(
+                        *[
+                            self._export_range(
+                                pages[i], cdps[i], ctx, chunks[i], i + 1, workers
+                            )
+                            for i in range(workers)
+                        ]
+                    )
+                    results = sorted(
+                        [item for chunk in gathered for item in chunk],
+                        key=lambda item: item.index,
                     )
 
                     page_html = ""
                     try:
-                        page_html = await page.content()
+                        page_html = await first.content()
                     except Exception:
                         pass
 
+                    exported = len(results)
                     pdf: bytes | None = None
                     if exported:
                         from .pdfprint import count_pages, merge_pdfs
@@ -717,7 +731,7 @@ class EmbedPrintStrategy:
                         return None
 
                     return await self._build_document(
-                        ctx, fetcher, page_html, results, total, pdf
+                        ctx, fetcher, page_html, results, count, pdf
                     )
                 finally:
                     await browser.close()
@@ -725,8 +739,45 @@ class EmbedPrintStrategy:
             ctx.note(f"embed-print: failed ({type(exc).__name__}: {exc})"[:200])
             return None
 
-    # -- steps ------------------------------------------------------------
-    async def _load_all_pages(self, page, ctx) -> dict | None:
+    # -- tabs -------------------------------------------------------------
+    async def _open_tab(self, context, url: str, ctx, number: int):
+        """Open the embed viewer, strip its chrome and wait for it to settle."""
+        label = f"embed-print[w{number}]" if number > 1 else "embed-print"
+        try:
+            page = await context.new_page()
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout)
+            await page.wait_for_selector(".outer_page", timeout=45_000)
+            prep = await page.evaluate(PREPARE_JS) or {}
+            try:
+                hidden = await page.evaluate(HIDE_COOKIES_JS)
+                if hidden:
+                    ctx.note(f"{label}: removed {hidden} cookie/consent element(s)")
+            except Exception:
+                pass
+            await page.evaluate(PRINT_CSS_JS)
+            if number == 1:
+                ctx.note(
+                    "embed-print: toolbars removed "
+                    f"({int(bool(prep.get('toolbarTop')))} top, "
+                    f"{int(bool(prep.get('toolbarBottom')))} bottom), "
+                    f"{prep.get('containers', 0)} scroll container(s) flattened"
+                )
+            settle = await page.evaluate(
+                WAIT_SETTLE_JS, int(self.settle_timeout * 1000)
+            ) or {}
+            if number == 1:
+                ctx.note(
+                    "embed-print: render settled"
+                    if not settle.get("timedOut")
+                    else "embed-print: render settle hit its budget (continuing)"
+                )
+            return page
+        except Exception as exc:
+            ctx.note(f"{label}: could not open the viewer ({type(exc).__name__})")
+            return None
+
+    async def _load_all_pages(self, page, ctx) -> None:
+        """Upstream's optional preload (``--preload-all``)."""
         try:
             loaded = await page.evaluate(
                 LOAD_ALL_PAGES_JS,
@@ -735,112 +786,121 @@ class EmbedPrintStrategy:
                     "pageTimeoutMs": self.page_load_timeout * 1000,
                     "documentTimeoutMs": self.page_load_timeout * 1000 * 4,
                 },
-            )
+            ) or {}
         except Exception as exc:
-            ctx.note(f"embed-print: direct page loading failed ({type(exc).__name__})")
-            return None
-        loaded = loaded or {}
+            ctx.note(f"embed-print: preload failed ({type(exc).__name__})")
+            return
         if not loaded.get("supported"):
-            ctx.note(
-                "embed-print: window.docManager is unavailable — "
-                "this viewer cannot be loaded directly"
-            )
-            return None
-        elapsed = int(loaded.get("elapsedMs") or 0) / 1000.0
+            ctx.note("embed-print: window.docManager is unavailable")
+            return
         ctx.note(
-            f"embed-print: loaded {loaded.get('loaded', 0)}/{loaded.get('total', 0)} "
-            f"pages directly in {elapsed:.2f}s "
-            f"(concurrency {self.page_load_concurrency})"
+            f"embed-print: preloaded {loaded.get('loaded', 0)}/"
+            f"{loaded.get('total', 0)} pages"
         )
-        return loaded
+        if loaded.get("failed"):
+            nums = ", ".join(
+                str(item.get("pageNum")) for item in loaded["failed"][:20]
+            )
+            ctx.note(f"embed-print: pages that did not load: {nums}")
 
-    async def _export_pages(self, page, cdp, ctx, count: int):
+    # -- printing ---------------------------------------------------------
+    async def _export_range(
+        self,
+        page,
+        cdp,
+        ctx,
+        indices: list[int],
+        worker: int,
+        workers: int,
+    ) -> list["EmbedPageResult"]:
+        """Print the pages assigned to this tab, one sheet each."""
+        import time
+
         from .pdfprint import count_pages
 
-        results: list[EmbedPageResult] = []
-        exported = 0
-        bad = 0
+        if not indices:
+            return []
+        label = f"embed-print[w{worker}]" if workers > 1 else "embed-print"
         ctx.note(
-            f"embed-print: exporting {count} pages in batches of {self.batch_size}"
+            f"{label}: pages {indices[0] + 1}-{indices[-1] + 1} "
+            f"({len(indices)} of them)"
         )
+        started = time.monotonic()
+        results: list[EmbedPageResult] = []
+        bad = 0
 
-        index = 0
-        while index < count:
-            batch = list(range(index + 1, min(count, index + self.batch_size) + 1))
+        for start in range(0, len(indices), self.batch_size):
+            batch = indices[start : start + self.batch_size]
+            page_numbers = [i + 1 for i in batch]
             try:
                 loaded = await page.evaluate(
                     LOAD_PAGE_BATCH_JS,
-                    {"pageNumbers": batch, "timeoutMs": self.page_load_timeout * 1000},
+                    {
+                        "pageNumbers": page_numbers,
+                        "timeoutMs": self.page_load_timeout * 1000,
+                    },
                 ) or {}
                 if loaded.get("failed"):
                     nums = ", ".join(
                         str(item.get("pageNum")) for item in loaded["failed"][:10]
                     )
-                    ctx.note(f"embed-print: batch {batch[0]}-{batch[-1]} issues: {nums}")
+                    ctx.note(
+                        f"{label}: batch {page_numbers[0]}-{page_numbers[-1]} "
+                        f"issues: {nums}"
+                    )
             except Exception as exc:
                 ctx.note(
-                    f"embed-print: batch {batch[0]}-{batch[-1]} load failed "
-                    f"({type(exc).__name__})"
+                    f"{label}: batch {page_numbers[0]}-{page_numbers[-1]} "
+                    f"load failed ({type(exc).__name__})"
                 )
 
-            for offset in range(len(batch)):
-                current = index + offset
+            for index in batch:
                 info = None
                 try:
-                    info = await page.evaluate(ISOLATE_PAGE_JS, current)
+                    info = await page.evaluate(ISOLATE_PAGE_JS, index)
                 except Exception as exc:
                     ctx.note(
-                        f"embed-print: page {current + 1} isolate failed "
+                        f"{label}: page {index + 1} isolate failed "
                         f"({type(exc).__name__})"
                     )
                 if not info or not info.get("width") or not info.get("height"):
                     bad += 1
-                    ctx.note(f"embed-print: page {current + 1} skipped (no geometry)")
+                    ctx.note(f"{label}: page {index + 1} skipped (no geometry)")
                     continue
 
                 width_px = int(info["width"])
                 height_px = int(info["height"])
-                width_in = width_px / 96.0
-                height_in = height_px / 96.0
-
                 blob = None
                 try:
-                    blob = await self._print_one(cdp, width_in, height_in)
+                    blob = await self._print_one(
+                        cdp, width_px / 96.0, height_px / 96.0
+                    )
                 except Exception as exc:
                     ctx.note(
-                        f"embed-print: page {current + 1} printToPDF failed "
+                        f"{label}: page {index + 1} printToPDF failed "
                         f"({type(exc).__name__}: {exc})"[:160]
                     )
 
-                sheets = count_pages(blob) if blob else 0
-                if sheets == 1:
-                    exported += 1
+                if blob and count_pages(blob) == 1:
                     results.append(
                         EmbedPageResult(
-                            index=current,
+                            index=index,
                             width_px=width_px,
                             height_px=height_px,
                             text=str(info.get("text") or ""),
                             pdf=blob,
                         )
                     )
-                    if exported == 1:
-                        ctx.note(
-                            f"embed-print: page 1 {width_px}x{height_px}px "
-                            f"-> 1 sheet"
-                        )
                 else:
+                    sheets = count_pages(blob) if blob else 0
                     bad += 1
                     ctx.note(
-                        f"embed-print: page {current + 1} produced {sheets} sheets "
+                        f"{label}: page {index + 1} produced {sheets} sheets "
                         "(expected 1)"
                     )
 
-                if (current + 1) % 25 == 0:
-                    ctx.note(f"embed-print: exported {exported}/{count} pages…")
-
             try:
-                await page.evaluate(RELEASE_PAGE_BATCH_JS, batch)
+                await page.evaluate(RELEASE_PAGE_BATCH_JS, page_numbers)
             except Exception:
                 pass
             try:
@@ -848,11 +908,14 @@ class EmbedPrintStrategy:
             except Exception:
                 pass
 
-            index += len(batch)
-
-        if bad:
-            ctx.note(f"embed-print: {bad} page(s) failed")
-        return results, exported
+        elapsed = time.monotonic() - started
+        rate = (len(results) / elapsed) if elapsed > 0 else 0.0
+        ctx.note(
+            f"{label}: done — {len(results)}/{len(indices)} pages in "
+            f"{elapsed:.1f}s ({rate:.1f} pages/s)"
+            + (f", {bad} failed" if bad else "")
+        )
+        return results
 
     @staticmethod
     async def _print_one(cdp, width_in: float, height_in: float) -> bytes:
@@ -914,3 +977,18 @@ class EmbedPrintStrategy:
             pdf=pdf,
             complete=complete,
         )
+
+
+def _split_range(count: int, workers: int) -> list[list[int]]:
+    """Contiguous 0-based page indices, one list per worker."""
+    workers = max(1, min(workers, count))
+    base, extra = divmod(count, workers)
+    chunks: list[list[int]] = []
+    start = 0
+    for worker in range(workers):
+        size = base + (1 if worker < extra else 0)
+        if not size:
+            continue
+        chunks.append(list(range(start, start + size)))
+        start += size
+    return chunks

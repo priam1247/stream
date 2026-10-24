@@ -1887,6 +1887,7 @@ def test_embedprint_exports_one_sheet_per_page(monkeypatch):
     batches: list[list[int]] = []
     released: list[list[int]] = []
     visited: list[str] = []
+    tabs: list[object] = []
 
     class CDP:
         async def send(self, method, params=None):
@@ -1894,8 +1895,7 @@ def test_embedprint_exports_one_sheet_per_page(monkeypatch):
                 printed.append(params or {})
                 w = float(params["paperWidth"]) * 72
                 h = float(params["paperHeight"]) * 72
-                blob = _one_page_pdf(w, h)
-                return {"data": base64.b64encode(blob).decode("ascii")}
+                return {"data": base64.b64encode(_one_page_pdf(w, h)).decode("ascii")}
             return {}
 
     class Page:
@@ -1916,9 +1916,8 @@ def test_embedprint_exports_one_sheet_per_page(monkeypatch):
             return "<html><head><title>Embed Title</title></head><body></body></html>"
 
         async def evaluate(self, script, arg=None):
-            if script == embedprint.LOAD_ALL_PAGES_JS:
-                return {"supported": True, "total": 3, "loaded": 3,
-                        "failed": [], "elapsedMs": 1200}
+            if script == embedprint.COUNT_PAGES_JS:
+                return {"supported": True, "fromManager": 3, "fromDom": 3, "count": 3}
             if script == embedprint.PREPARE_JS:
                 return {"toolbarTop": True, "toolbarBottom": True, "containers": 1}
             if script == embedprint.HIDE_COOKIES_JS:
@@ -1927,9 +1926,6 @@ def test_embedprint_exports_one_sheet_per_page(monkeypatch):
                 return True
             if script == embedprint.WAIT_SETTLE_JS:
                 return {"timedOut": False}
-            if script == embedprint.MEASURE_PAPER_JS:
-                return {"widthInches": 8.5, "heightInches": 11.0,
-                        "selector": ".outer_page"}
             if script == embedprint.LOAD_PAGE_BATCH_JS:
                 batches.append(list(arg["pageNumbers"]))
                 return {"supported": True, "failed": []}
@@ -1947,7 +1943,9 @@ def test_embedprint_exports_one_sheet_per_page(monkeypatch):
             return None
 
         async def new_page(self):
-            return Page()
+            page = Page()
+            tabs.append(page)
+            return page
 
         async def new_cdp_session(self, page):
             return CDP()
@@ -1994,10 +1992,15 @@ def test_embedprint_exports_one_sheet_per_page(monkeypatch):
         url="https://www.scribd.com/document/804179430/Title",
         log=logs.append,
     )
-    doc = asyncio.run(embedprint.EmbedPrintStrategy(batch_size=2).run(ctx, Fetcher()))
+    doc = asyncio.run(
+        embedprint.EmbedPrintStrategy(batch_size=2, workers=2).run(ctx, Fetcher())
+    )
 
-    # the bare embed viewer, not the full document page
-    assert visited == ["https://www.scribd.com/embeds/804179430/content"], visited
+    # the bare embed viewer, not the full document page (one tab per worker)
+    assert visited and set(visited) == {
+        "https://www.scribd.com/embeds/804179430/content"
+    }, visited
+    assert len(tabs) == 2, len(tabs)
 
     # one CDP print per document page, each capped to a single sheet
     assert len(printed) == 3, printed
@@ -2010,12 +2013,12 @@ def test_embedprint_exports_one_sheet_per_page(monkeypatch):
         for p in printed
     )
     # paper size = measured px / 96, exactly like the upstream script
-    assert abs(printed[0]["paperWidth"] - 816 / 96) < 1e-6
-    assert abs(printed[0]["paperHeight"] - 1056 / 96) < 1e-6
+    widths = sorted(round(p["paperWidth"] * 96) for p in printed)
+    assert widths == [612, 700, 816], widths
 
-    # pages are loaded and released in bounded batches
-    assert batches == [[1, 2], [3]], batches
-    assert released == [[1, 2], [3]], released
+    # pages are loaded and released in bounded batches, split between tabs
+    assert sorted(batches) == [[1, 2], [3]], batches
+    assert sorted(released) == [[1, 2], [3]], released
 
     assert doc is not None and doc.pdf
     assert count_pages(doc.pdf) == 3, count_pages(doc.pdf)
@@ -2025,5 +2028,247 @@ def test_embedprint_exports_one_sheet_per_page(monkeypatch):
     assert doc.meta.title == "Embed Title"
     assert doc.meta.page_count == 3
     assert doc.complete is True
-    assert any("loaded 3/3 pages directly" in m for m in logs), logs
+    assert any("viewer knows 3 pages" in m for m in logs), logs
+    assert any("printing with 2 tabs in parallel" in m for m in logs), logs
+    assert any("pages/s" in m for m in logs), logs
     assert any("merged 3 page PDFs -> 3 sheets" in m for m in logs), logs
+
+
+def test_split_range_covers_every_page_once():
+    from scribd.embedprint import _split_range
+
+    for count, workers in ((95, 1), (95, 2), (95, 4), (7, 3), (3, 8), (1, 2)):
+        chunks = _split_range(count, workers)
+        flat = [i for chunk in chunks for i in chunk]
+        assert flat == list(range(count)), (count, workers, chunks)
+        # contiguous, in order, and no worker is empty
+        assert all(chunk for chunk in chunks)
+        assert len(chunks) == min(workers, count)
+
+
+# ---------------------------------------------------------------------------
+# Search without a link: keyword -> document URLs -> downloads.
+# ---------------------------------------------------------------------------
+SEARCH_HTML = """
+<html><body>
+  <nav><a href="/about">About</a><a href="/search?query=excel">Search</a></nav>
+  <div class="search_result_item">
+    <a href="/document/1234567/Excel-Basics"><img alt="Excel Basics" src="x.jpg"></a>
+    <a href="/document/1234567/Excel-Basics" title="Excel Basics for Beginners">
+      Excel Basics for Beginners
+    </a>
+    <a href="/document/1234567/Excel-Basics" aria-label="Save">Save</a>
+  </div>
+  <div class="search_result_item">
+    <a href="https://www.scribd.com/presentation/7654321/Excel-Dashboard">Excel Dashboard</a>
+  </div>
+  <a href="/doc/999/Excel-Legacy">Excel Legacy Doc</a>
+  <a href="/spreadsheet/555/Excel-Template"></a>
+  <a href="/document/1234567/Excel-Basics">Excel Basics for Beginners</a>
+</body></html>
+"""
+
+
+def test_search_url_encoding():
+    from scribd.search import search_url
+
+    assert search_url("excel") == (
+        "https://www.scribd.com/search?query=excel&page=1"
+    )
+    assert search_url("excel formulas", page=2) == (
+        "https://www.scribd.com/search?query=excel+formulas&page=2"
+    )
+    assert search_url("  pivot tables ").endswith("query=pivot+tables&page=1")
+
+
+def test_parse_search_results_orders_and_dedupes():
+    from scribd.search import parse_search_results
+
+    hits = parse_search_results(SEARCH_HTML)
+    ids = [h.doc_id for h in hits]
+    assert ids == ["1234567", "7654321", "999", "555"], hits
+    assert hits[0].kind == "document"
+    assert hits[1].kind == "presentation"
+    assert hits[2].kind == "document"  # legacy /doc/ alias
+    assert hits[3].kind == "spreadsheet"
+
+    # the thumbnail anchor is upgraded to the real title
+    assert hits[0].title == "Excel Basics for Beginners"
+    assert hits[1].title == "Excel Dashboard"
+    assert hits[3].title == "Excel Template"  # from the slug
+    # a usable canonical URL for the download chain
+    assert hits[0].url == (
+        "https://www.scribd.com/document/1234567/Excel-Basics"
+    )
+    # no nav links, no duplicates
+    assert len(hits) == 4
+
+
+def test_parse_search_results_respects_limit():
+    from scribd.search import parse_search_results
+
+    assert [h.doc_id for h in parse_search_results(SEARCH_HTML, limit=2)] == [
+        "1234567",
+        "7654321",
+    ]
+
+
+def test_parse_search_results_from_inline_json():
+    """Some views ship the results as JSON only."""
+    from scribd.search import parse_search_results
+
+    html = (
+        "<html><body><script>window.__DATA__ = "
+        '{"results":[{"documentId":1111111,"title":"Excel Pivot Tables"},'
+        '{"documentId":2222222,"title":"Excel Formulas"}]}'
+        "</script></body></html>"
+    )
+    hits = parse_search_results(html)
+    assert [(h.doc_id, h.title) for h in hits] == [
+        ("1111111", "Excel Pivot Tables"),
+        ("2222222", "Excel Formulas"),
+    ]
+    assert hits[0].url.startswith("https://www.scribd.com/document/1111111/")
+
+
+def test_parse_search_results_ignores_non_documents():
+    from scribd.search import parse_search_results
+
+    assert parse_search_results("<a href='/about'>About</a>") == []
+    assert parse_search_results("") == []
+
+
+def test_find_documents_walks_pages_until_limit():
+    import asyncio as _asyncio
+
+    from scribd.search import find_documents, search_url
+
+    page1 = """
+      <a href="/document/111/Excel-1">Excel One</a>
+      <a href="/document/222/Excel-2">Excel Two</a>
+      <a href="/document/111/Excel-1">Excel One again</a>
+    """
+    page2 = """
+      <a href="/document/333/Excel-3">Excel Three</a>
+      <a href="/document/444/Excel-4">Excel Four</a>
+    """
+
+    class Response:
+        def __init__(self, text):
+            self.text = text
+            self.status_code = 200
+
+    class Fetcher:
+        def __init__(self):
+            self.urls = []
+
+        async def get(self, url, **kw):
+            self.urls.append(url)
+            if url == search_url("excel", 1):
+                return Response(page1)
+            if url == search_url("excel", 2):
+                return Response(page2)
+            return Response("")
+
+    logs: list[str] = []
+    fetcher = Fetcher()
+    hits = _asyncio.run(
+        find_documents(fetcher, "excel", limit=3, pages=5, log=logs.append)
+    )
+
+    assert [h.doc_id for h in hits] == ["111", "222", "333"], hits
+    assert fetcher.urls == [search_url("excel", 1), search_url("excel", 2)]
+    assert any("page 1" in m and "2 new" in m for m in logs), logs
+
+
+def test_cli_search_downloads_five_without_any_link(monkeypatch, tmp_path):
+    """`--search "excel"` with no URL argument downloads 5 documents."""
+    import asyncio as _asyncio
+
+    import scribd.cli as cli
+    from scribd.models import DocumentMeta, Page, ScrapedDocument
+    from scribd.search import search_url
+
+    html = "".join(
+        f'<a href="/document/{1000 + n}/Excel-Doc-{n}">Excel Document {n}</a>'
+        for n in range(1, 6)
+    )
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, text):
+            self.text = text
+
+    class FakeFetcher:
+        backend = "fake"
+        cookies = {}
+
+        def __init__(self, **kw):
+            self.kw = kw
+            self.requested: list[str] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def get(self, url, **kw):
+            self.requested.append(url)
+            return Response(html if "search" in url else "")
+
+    class FakeScraper:
+        attempted: list[str] = []
+
+        def __init__(self, *a, **kw):
+            pass
+
+        async def scrape(self, url):
+            FakeScraper.attempted.append(url)
+            doc_id = url.split("/")[4]
+            return ScrapedDocument(
+                meta=DocumentMeta(
+                    doc_id=doc_id, url=url, title=f"Excel Document {doc_id}",
+                    page_count=1,
+                ),
+                pages=[Page(number=1, text="hello")],
+                strategy="embed-print",
+                pdf=_one_page_pdf(300, 400),
+                complete=True,
+            )
+
+    monkeypatch.setattr(cli, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(cli, "ScribdScraper", FakeScraper)
+
+    args = cli.build_parser().parse_args(
+        [
+            "--search", "excel",
+            "--limit", "5",
+            "-o", str(tmp_path),
+            "-f", "pdf",
+        ]
+    )
+    rc = _asyncio.run(cli.run(args))
+
+    assert rc == 0
+    assert len(FakeScraper.attempted) == 5, FakeScraper.attempted
+    # every download came from the search result, not from the command line
+    assert all(u.startswith("https://www.scribd.com/document/") for u in FakeScraper.attempted)
+    assert sorted(
+        u.rsplit("/", 2)[-2] for u in FakeScraper.attempted
+    ) == ["1001", "1002", "1003", "1004", "1005"]
+    files = sorted(p.name for p in tmp_path.glob("*.pdf"))
+    assert len(files) == 5, files
+    assert any("1001_" in name for name in files), files
+
+
+def test_cli_without_urls_or_search_exits_2(capsys):
+    import asyncio as _asyncio
+
+    import scribd.cli as cli
+
+    args = cli.build_parser().parse_args([])
+    assert _asyncio.run(cli.run(args)) == 2
+    out = capsys.readouterr().out
+    assert "--search" in out
