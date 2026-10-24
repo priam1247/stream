@@ -162,6 +162,36 @@ python -m scribd --help
   strategy: render the page, grab `page.content()`, and feed that string
   straight into `_build_from_html` — no other code changes needed.
 
+## "Client Challenge" — the anti-bot page
+
+Scribd sits behind Akamai bot protection. When it distrusts a request it
+still replies **HTTP 200** with a small page titled *Client Challenge* and
+the text *"A required part of this site couldn't load"*. Valid cookies do
+not help: what it fingerprints is the **TLS/HTTP2 handshake**, which plain
+`httpx` cannot disguise.
+
+This build handles it two ways:
+
+1. **`curl_cffi` impersonation** (default `--impersonate chrome`) — the
+   request is performed with a real Chrome fingerprint. It is in
+   `requirements.txt`, so `pip install -r requirements.txt` is enough.
+2. **Challenge detection** (`scribd/blockers.py`) — a challenge page is
+   retried, then raised as an error. It is *never* cached and *never*
+   written out as a document. (Before this, a challenge page produced a
+   3-line `.txt` and a cheerful `1/1 succeeded`.)
+
+Check which backend you got — the CLI prints it at startup:
+
+```
+http backend: curl_cffi (chrome)          # good
+http backend: httpx (curl_cffi not installed)   # you will be challenged
+```
+
+If you still get challenged with `curl_cffi` active: wait a few minutes
+(rate-limited IP), keep `--rate` low, and use `--no-cache` so no earlier
+challenge page is reused. A residential IP works far better than a VPN or
+datacentre IP; `--proxy` can point at your own proxy.
+
 ## When a document fails: `--diagnose`
 
 If a real document reports `all strategies failed: no result`, the page

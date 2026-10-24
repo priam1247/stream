@@ -72,6 +72,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cookies-file", help="Netscape cookies.txt export")
     p.add_argument("--proxy", help="e.g. http://127.0.0.1:8080")
     p.add_argument(
+        "--impersonate",
+        default="chrome",
+        help="Browser TLS fingerprint via curl_cffi (default: chrome; 'none' to disable)",
+    )
+    p.add_argument(
         "--diagnose",
         action="store_true",
         help="Report what the live page returns (no download); saves .debug/page-*.html",
@@ -132,7 +137,14 @@ async def run(args: argparse.Namespace) -> int:
         cache_dir=None if args.no_cache else args.cache_dir,
         cookies=cookies,
         proxy=args.proxy,
+        impersonate=None if str(args.impersonate).lower() in ("none", "off", "0") else args.impersonate,
     ) as fetcher:
+        console.print(f"[dim]http backend: {fetcher.backend}[/dim]")
+        if "not installed" in fetcher.backend:
+            console.print(
+                "[yellow]curl_cffi is missing — Scribd's anti-bot will likely serve "
+                "a 'Client Challenge' page. Fix: pip install curl_cffi[/yellow]"
+            )
         if args.diagnose:
             from .diagnose import diagnose
 
@@ -155,6 +167,14 @@ async def run(args: argparse.Namespace) -> int:
                 doc = await scraper.scrape(url)
             except ScrapeError as exc:
                 console.print(f"[red]FAILED[/red] {exc}")
+                if "anti-bot" in str(exc) or "Client Challenge" in str(exc):
+                    console.print(
+                        "[yellow]Blocked by Scribd's bot protection. Try:\n"
+                        "  pip install curl_cffi\n"
+                        "  re-run with --impersonate chrome --no-cache\n"
+                        "If it persists, your IP may be rate-limited — wait a "
+                        "while, or use --proxy with your own proxy.[/yellow]"
+                    )
                 continue
             written = write_all(doc, out_dir, formats)
             ok += 1

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 
+from .blockers import CHALLENGE_HINT, ChallengeError, looks_challenged
 from .config import BASE_HEADERS, RETRY_STATUS, RETRY_WITH_UA_ROTATION, USER_AGENTS
 
 
@@ -68,6 +69,7 @@ class Fetcher:
         cookies: dict[str, str] | None = None,
         proxy: str | None = None,
         rotate_ua: bool = True,
+        impersonate: str | None = "chrome",
     ) -> None:
         self.retries = retries
         self.cache = DiskCache(cache_dir) if cache_dir else None
@@ -75,10 +77,16 @@ class Fetcher:
         self._limiter = RateLimiter(rate, burst=max(2, concurrency))
         self._sem = asyncio.Semaphore(concurrency)
         self._client: httpx.AsyncClient | None = None
+        self._cffi = None
         self._ua = 0
         self._cookies = cookies or {}
         self._proxy = proxy
         self._timeout = timeout
+        # Anti-bot bypass: Akamai fingerprints the TLS/HTTP2 handshake, so
+        # a perfectly valid cookie jar still gets a "Client Challenge" page
+        # from plain httpx. curl_cffi reproduces a real Chrome handshake.
+        self.impersonate = impersonate
+        self.backend = "httpx"
 
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         h = dict(BASE_HEADERS)
@@ -88,7 +96,26 @@ class Fetcher:
         return h
 
     async def __aenter__(self) -> "Fetcher":
-        kwargs: dict = dict(
+        if self.impersonate:
+            try:
+                from curl_cffi.requests import AsyncSession  # type: ignore
+            except Exception:
+                self.backend = "httpx (curl_cffi not installed)"
+            else:
+                kwargs: dict = dict(
+                    impersonate=self.impersonate,
+                    timeout=self._timeout,
+                    cookies=self._cookies,
+                    headers=self._headers(),
+                    allow_redirects=True,
+                )
+                if self._proxy:
+                    kwargs["proxies"] = {"http": self._proxy, "https": self._proxy}
+                self._cffi = AsyncSession(**kwargs)
+                self.backend = f"curl_cffi ({self.impersonate})"
+                return self
+
+        kwargs = dict(
             timeout=httpx.Timeout(self._timeout),
             follow_redirects=True,
             cookies=self._cookies,
@@ -102,6 +129,11 @@ class Fetcher:
     async def __aexit__(self, *exc: object) -> None:
         if self._client:
             await self._client.aclose()
+        if self._cffi is not None:
+            try:
+                await self._cffi.close()
+            except Exception:
+                pass
 
     async def get(
         self,
@@ -116,27 +148,47 @@ class Fetcher:
             if cached is not None:
                 return httpx.Response(200, content=cached, request=httpx.Request("GET", url))
 
-        assert self._client is not None, "use Fetcher as an async context manager"
+        assert self._client is not None or self._cffi is not None, (
+            "use Fetcher as an async context manager"
+        )
         last_exc: Exception | None = None
+        challenged = False
 
         for attempt in range(self.retries + 1):
             delay = 0.0
             async with self._sem:
                 await self._limiter.acquire()
                 try:
-                    resp = await self._client.get(url, headers=self._headers(headers))
-                except (httpx.TransportError, httpx.TimeoutException) as exc:
+                    hdrs = self._headers(headers)
+                    if self._cffi is not None:
+                        resp = await self._cffi.get(url, headers=hdrs)
+                    else:
+                        resp = await self._client.get(url, headers=hdrs)  # type: ignore[union-attr]
+                except Exception as exc:  # transport errors, both backends
                     last_exc = exc
                 else:
                     if resp.status_code == 200 or resp.status_code in allow_status:
-                        if use_cache and self.cache and resp.status_code == 200:
-                            self.cache.put(url, resp.content)
-                        return resp
+                        body = resp.text or ""
+                        ctype = str(resp.headers.get("content-type", "")).lower()
+                        # HTTP 200 + "Client Challenge" is a bot-wall, not a
+                        # document. Never cache it, never return it as content.
+                        if "html" in ctype and looks_challenged(body):
+                            challenged = True
+                            last_exc = ChallengeError(CHALLENGE_HINT)
+                            if self.rotate_ua:
+                                self._ua += 1
+                            delay = 1.5 * (attempt + 1)
+                        else:
+                            if use_cache and self.cache and resp.status_code == 200:
+                                self.cache.put(url, resp.content)
+                            return resp
                     # FIX (vs. original listing): 403 was checked for
                     # UA-rotation inside the RETRY_STATUS branch, but 403
                     # was not in RETRY_STATUS — so that code was dead and
                     # a bot-wall 403 was returned immediately, unretried.
-                    if resp.status_code in RETRY_STATUS or (
+                    if challenged:
+                        pass  # already staged for retry above
+                    elif resp.status_code in RETRY_STATUS or (
                         resp.status_code in RETRY_WITH_UA_ROTATION
                     ):
                         last_exc = httpx.HTTPStatusError(

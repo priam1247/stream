@@ -225,9 +225,10 @@ def test_embed_strategy_falls_back_to_merged_page():
     from scribd.fetch import ScrapeContext, build_from_embed
 
     ctx = ScrapeContext(doc_id="1", url="https://www.scribd.com/document/1/X")
-    doc = build_from_embed(ctx, "<html><body><p>only text, no page divs</p></body></html>")
+    body = "<p>" + ("real document text in one block " * 20) + "</p>"
+    doc = build_from_embed(ctx, f"<html><body>{body}</body></html>")
     assert doc is not None and len(doc.pages) == 1
-    assert "only text" in doc.pages[0].text
+    assert "real document text" in doc.pages[0].text
 
 
 def test_embed_strategy_is_first_and_scrape_succeeds_with_it():
@@ -257,6 +258,88 @@ def test_embed_strategy_is_first_and_scrape_succeeds_with_it():
     doc = asyncio.run(go())
     assert len(doc.pages) == 3
     assert "AGRICULTURE" in doc.text
+
+
+CHALLENGE_HTML = """
+<!DOCTYPE html><html><head><title>Client Challenge</title></head>
+<body><div><h1>Client Challenge</h1>
+<p>A required part of this site couldn’t load. This may be due to a browser
+extension, network issues, or browser settings. Please check your connection,
+disable any ad blockers, or try using a different browser.</p></div></body></html>
+"""
+
+
+def test_challenge_page_is_detected():
+    from scribd.blockers import is_substantive, looks_challenged
+
+    assert looks_challenged(CHALLENGE_HTML)
+    assert not is_substantive(CHALLENGE_HTML)
+    assert not looks_challenged("<html><body><p>real document text</p></body></html>")
+
+
+def test_embed_strategy_rejects_challenge_page():
+    # The reported bug: a challenge page was saved as a 1-page "document"
+    # and reported as success ("OK Client Challenge — 1 pages").
+    from scribd.blockers import ChallengeError
+    from scribd.fetch import ScrapeContext, build_from_embed
+
+    ctx = ScrapeContext(doc_id="1", url="https://www.scribd.com/document/1/X")
+
+    async def go():
+        from scribd.fetch import EmbedTextStrategy
+
+        class F:
+            async def get(self, url, **kw):
+                class R:
+                    status_code = 200
+                    headers = {"content-type": "text/html"}
+                    text = CHALLENGE_HTML
+                    content = CHALLENGE_HTML.encode()
+
+                return R()
+
+        return await EmbedTextStrategy().run(ctx, F())
+
+    with pytest.raises(ChallengeError):
+        asyncio.run(go())
+
+
+def test_short_error_page_is_not_a_document():
+    from scribd.fetch import ScrapeContext, build_from_embed
+
+    ctx = ScrapeContext(doc_id="1", url="https://www.scribd.com/document/1/X")
+    assert build_from_embed(ctx, "<html><body><p>Not found</p></body></html>") is None
+
+
+def test_fetcher_retries_then_raises_on_challenge():
+    from scribd.blockers import ChallengeError
+    from scribd.http import Fetcher
+
+    class Resp:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        text = CHALLENGE_HTML
+        content = CHALLENGE_HTML.encode()
+        request = None
+
+    class Client:
+        calls = 0
+
+        async def get(self, url, headers=None):
+            Client.calls += 1
+            return Resp()
+
+    async def go():
+        f = Fetcher(cache_dir=None, retries=2, impersonate=None)
+        f._client = Client()
+        try:
+            await f.get("https://www.scribd.com/document/1/X")
+        finally:
+            pass
+
+    with pytest.raises(ChallengeError):
+        asyncio.run(go())
+    assert Client.calls == 3  # 1 try + 2 retries, never treated as success
 
 
 def test_scrape_error_raised_when_all_strategies_fail():
