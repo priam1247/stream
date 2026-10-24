@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from urllib.parse import unquote
 
@@ -11,6 +12,7 @@ from .blockers import CHALLENGE_HINT, ChallengeError, looks_challenged
 from .config import DOWNLOAD_PDF_URL, EMBED_URL, RENDER_META_URL
 from .extractors import (
     build_page_template,
+    jsonp_to_image_url,
     extract_page_count,
     build_screenshot_template,
     extract_page_image_urls,
@@ -23,6 +25,7 @@ from .extractors import (
 from .browser import BrowserStrategy
 from .models import DocumentMeta, Page, ScrapedDocument
 from .render import html_to_markdown, html_to_text
+from .extractors import ORIG_ATTR_RE
 from .utils import extract_json_after
 
 
@@ -46,25 +49,90 @@ class ScrapeContext:
             pass
 
 
-def _parse_payload(text: str) -> dict | None:
-    idx = text.find("{")
-    if idx == -1:
+# Page assets come in several shapes. Verified against Phoenix124's
+# scribd-downloader, which targets the callback form:
+#     window.page12_callback(["<div class='newpage'>...</div>"]);
+# Older documents use:
+#     window.page12 = {"content": "<div ...>"};
+JSONP_PREFIX_RE = re.compile(
+    r"^\s*(?:window\.)?page\d+[\w]*(?:_callback)?\s*[=(]\s*", re.I
+)
+
+
+def _strip_jsonp(text: str) -> str:
+    """Remove the JS wrapper, leaving just the JSON value."""
+    body = (text or "").strip()
+    body = JSONP_PREFIX_RE.sub("", body, count=1).strip()
+    if body.endswith(";"):
+        body = body[:-1].rstrip()
+    # ..._callback([...]);  ->  [...]
+    if body.startswith("(") and body.endswith(")"):
+        body = body[1:-1].strip()
+    if body.endswith(");"):
+        body = body[:-2].rstrip()
+    return body
+
+
+def _parse_payload(text: str) -> dict | list | None:
+    """Parse an asset payload in either the object or the callback/array form."""
+    body = _strip_jsonp(text)
+    if not body:
         return None
-    blob = extract_json_after(text, idx)
-    if not blob:
-        return None
+    opener = body[:1]
+    if opener not in "{[":
+        # The wrapper may still sit in front of the JSON; find it.
+        idx = min(
+            [i for i in (body.find("{"), body.find("[")) if i != -1], default=-1
+        )
+        if idx == -1:
+            return None
+        body = body[idx:]
     try:
-        return json.loads(blob)
+        return json.loads(body)
     except json.JSONDecodeError:
-        return None
+        # Trailing junk after the value (e.g. "]);") is common.
+        end = max(body.rfind("}"), body.rfind("]"))
+        if end == -1:
+            return None
+        try:
+            return json.loads(body[: end + 1])
+        except json.JSONDecodeError:
+            return None
 
 
-def _payload_body(payload: dict) -> str:
-    for key in ("content", "html", "body", "text", "pageContent"):
-        v = payload.get(key)
-        if isinstance(v, str) and v.strip():
-            return v
+def _payload_body(payload: dict | list | None) -> str:
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, list):
+        parts = [p for p in payload if isinstance(p, str) and p.strip()]
+        if parts:
+            return "".join(parts)
+        for item in payload:
+            if isinstance(item, dict):
+                inner = _payload_body(item)
+                if inner:
+                    return inner
+        return ""
+    if isinstance(payload, dict):
+        for key in ("content", "html", "body", "text", "pageContent"):
+            v = payload.get(key)
+            if isinstance(v, str) and v.strip():
+                return v
     return ""
+
+
+def _text_spans(html: str) -> str:
+    """Scribd's text layer is a run of <span class="a"> elements.
+
+    Phoenix124's downloader extracts exactly these; using them keeps page
+    text clean instead of trusting the outer container markup.
+    """
+    if not html:
+        return ""
+    soup = BeautifulSoup(html, "lxml")
+    spans = [s.get_text(" ", strip=True) for s in soup.find_all("span", {"class": "a"})]
+    spans = [s for s in spans if s]
+    return "\n".join(spans)
 
 
 class Strategy:
@@ -200,11 +268,27 @@ async def _build_from_html(
             fail("unparsed-payload", (resp.text or "")[:160].replace("\n", " "))
             return None
         raw = _payload_body(payload)
+        if not raw:
+            fail("empty-payload")
+            return None
         page = Page(number=n, html=raw)
-        page.text = html_to_markdown(raw) if ctx.markdown else html_to_text(raw)
-        img = payload.get("imageUrl") or payload.get("image_url")
-        if isinstance(img, str):
-            page.image_url = img.replace("\\/", "/")
+        # Prefer Scribd's own text spans (<span class="a">) — cleaner than
+        # rendering the whole container markup.
+        spans = _text_spans(raw)
+        if spans.strip():
+            page.text = spans
+        else:
+            page.text = html_to_markdown(raw) if ctx.markdown else html_to_text(raw)
+        img = ""
+        if isinstance(payload, dict):
+            img = str(payload.get("imageUrl") or payload.get("image_url") or "")
+        if not img:
+            m = ORIG_ATTR_RE.search(raw)
+            if m:
+                img = m.group(1)
+        if not img:
+            img = jsonp_to_image_url(url) or ""
+        page.image_url = img.replace("\\/", "/") or None
         return page
 
     pages = [p for p in await asyncio.gather(*(get_page(n) for n in range(1, total + 1))) if p]

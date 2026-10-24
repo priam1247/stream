@@ -35,6 +35,98 @@ from .models import Page, ScrapedDocument
 # removed by content in `dedupe_entries`.
 PAGE_SELECTORS = ("div.outer_page", "div.newpage", "div.page", "div.text_layer")
 
+# Scroll every page into view until the number of page containers stops
+# growing. Adapted from youngpiu/scribd-pdf-downloader, which scrolls with
+# scrollIntoView (block: center) rather than window.scrollBy — Scribd's
+# viewer is virtualised, so scrollHeight never changes and a height-based
+# stop fires after a few steps (observed: "scrolled 4 steps", 15/95 pages).
+SCROLL_PAGES_JS = """
+async (args) => {
+  const {selectors, delayMs} = args;
+  const pick = () => {
+    for (const sel of selectors) {
+      if (document.querySelector(sel)) return sel;
+    }
+    return null;
+  };
+  let sel = pick();
+  if (!sel) return {selector: null, pages: 0, rounds: 0};
+  let seen = 0, stable = 0, rounds = 0;
+  while (stable < 2 && rounds < 200) {
+    rounds++;
+    const els = Array.from(document.querySelectorAll(sel));
+    if (!els.length) break;
+    for (let i = seen; i < els.length; i++) {
+      els[i].scrollIntoView({behavior: 'instant', block: 'center'});
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+    seen = els.length;
+    const now = document.querySelectorAll(sel).length;
+    stable = (now === seen) ? stable + 1 : 0;
+  }
+  return {selector: sel, pages: document.querySelectorAll(sel).length, rounds};
+}
+"""
+
+# 2) Print preparation + CSS (ported from youngpiu/scribd-pdf-downloader):
+#    hide toolbars, flatten the scroller, @page sized to the paper.
+PRINT_JS = """
+(config) => {
+  const {widthIn, heightIn} = config;
+  const styleId = 'scribd-print-styles';
+  const existing = document.getElementById(styleId);
+  if (existing) existing.remove();
+
+  document.querySelectorAll('.toolbar_top, .toolbar_bottom').forEach(el => {
+    el.style.display = 'none';
+  });
+  document.querySelectorAll('.document_scroller').forEach(el => {
+    el.setAttribute('data-scribd-print-root', 'true');
+  });
+
+  const style = document.createElement('style');
+  style.id = styleId;
+  style.textContent = `
+    @media print {
+      @page { size: ${widthIn.toFixed(3)}in ${heightIn.toFixed(3)}in; margin: 0; }
+      html, body { margin: 0 !important; padding: 0 !important;
+                   -webkit-print-color-adjust: exact !important;
+                   print-color-adjust: exact !important; }
+      .toolbar_top, .toolbar_bottom { display: none !important; }
+      .document_scroller, [data-scribd-print-root="true"] {
+        position: static !important; overflow: visible !important;
+        height: auto !important; max-height: none !important; margin: 0 !important;
+      }
+      .outer_page_container, .newpage_container {
+        margin: 0 !important; padding: 0 !important; height: auto !important;
+      }
+      .outer_page_container > *:not(.outer_page),
+      .newpage_container > *:not(.newpage) { display: none !important; }
+      .outer_page, .newpage {
+        margin: 0 !important; break-inside: avoid !important;
+        page-break-inside: avoid !important; break-after: page !important;
+      }
+      [class*="cookie"], [class*="consent"], [id*="osano"], [class*="osano"] {
+        display: none !important;
+      }
+    }
+  `;
+  document.head.appendChild(style);
+
+  // Measure the paper (96 CSS px per inch).
+  const candidates = ['.outer_page', '.newpage', 'div.page'];
+  for (const sel of candidates) {
+    const el = document.querySelector(sel);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width > 50 && r.height > 50) {
+      return {widthIn: r.width / 96, heightIn: (r.height / 96) + 0.04};
+    }
+  }
+  return {widthIn: widthIn, heightIn: heightIn};
+}
+"""
+
 # Read one container: its text and its best image URL / readiness.
 PAGE_INFO_JS = """
 (el) => {
@@ -133,7 +225,10 @@ class BrowserStrategy:
         settle_ms: int = 150,
         image_wait_ms: int = 4000,
         timeout: float = 60_000,
-        screenshot: bool = True,
+        screenshot: bool = False,
+        # Print-to-PDF gives a vector PDF with selectable text and is far
+        # faster than screenshotting every page; screenshots remain a
+        # fallback for when printing is unavailable.
     ) -> None:
         self.max_pages = max_pages
         self.settle_ms = settle_ms
@@ -198,20 +293,67 @@ class BrowserStrategy:
                         ctx.note("browser: no page containers appeared")
                         return None
 
-                    selector = await self._pick_selector(page, ctx)
+                    # 1) Force every page into the DOM by scrolling each one
+                    #    into view until the container count stabilises.
+                    try:
+                        stats = await page.evaluate(
+                            SCROLL_PAGES_JS,
+                            {
+                                "selectors": list(PAGE_SELECTORS),
+                                "delayMs": self.settle_ms,
+                            },
+                        ) or {}
+                        ctx.note(
+                            f"browser: scroll pass done — "
+                            f"{stats.get('pages', '?')} containers "
+                            f"({stats.get('rounds', '?')} rounds)"
+                        )
+                        if stats.get("selector"):
+                            selector = str(stats["selector"])
+                    except Exception as exc:
+                        ctx.note(f"browser: scroll pass failed ({type(exc).__name__})")
+
+                    if not selector:
+                        selector = await self._pick_selector(page, ctx)
                     if not selector:
                         return None
 
                     entries = await self._capture_pages(page, ctx, selector)
                     page_html = await page.content()
 
-                    # Print-to-PDF of the whole viewer, as a last resort.
+                    # 2) Prepare print CSS and print the whole document. This
+                    #    yields a real PDF with selectable text, sized to the
+                    #    document's own page, instead of stitched screenshots.
                     try:
+                        paper = await page.evaluate(
+                            PRINT_JS,
+                            {
+                                "widthIn": 8.5,
+                                "heightIn": 11.0,
+                            },
+                        ) or {}
+                        width = float(paper.get("widthIn") or 8.5)
+                        height = float(paper.get("heightIn") or 11.0)
                         printed_pdf = await page.pdf(
-                            format="A4", print_background=True
+                            print_background=True,
+                            prefer_css_page_size=True,
+                            width=f"{width:.3f}in",
+                            height=f"{height:.3f}in",
+                            margin={
+                                "top": "0",
+                                "bottom": "0",
+                                "left": "0",
+                                "right": "0",
+                            },
                         )
                     except Exception as exc:
                         ctx.note(f"browser: print-to-PDF failed ({type(exc).__name__})")
+                        try:
+                            printed_pdf = await page.pdf(
+                                format="A4", print_background=True
+                            )
+                        except Exception:
+                            printed_pdf = None
                 finally:
                     await browser.close()
         except Exception as exc:
@@ -252,7 +394,10 @@ class BrowserStrategy:
             meta.author = str(oembed["author_name"])
 
         pdf: bytes | None = None
-        if len(shots) >= 2:
+        if printed_pdf and printed_pdf.startswith(b"%PDF"):
+            pdf = printed_pdf
+            ctx.note(f"browser: PDF from browser print ({len(printed_pdf):,} bytes)")
+        if not pdf and len(shots) >= 2:
             from .fetch import _images_to_pdf
 
             skipped: list[int] = []
@@ -261,9 +406,7 @@ class BrowserStrategy:
                 ctx.note(f"browser: skipped {len(skipped)} unreadable screenshot(s)")
             if pdf:
                 ctx.note(f"browser: PDF from {len(shots)} page screenshots")
-        if not pdf and printed_pdf:
-            pdf = printed_pdf
-            ctx.note("browser: PDF from browser print (no usable screenshots)")
+
 
         complete = bool(meta.page_count) and len(pages) >= meta.page_count * 0.9
         if not complete:

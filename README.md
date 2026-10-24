@@ -233,6 +233,19 @@ cached, so a re-run is instant. `--keep-images` also saves
 `PARTIAL` in the output means fewer than 90% of pages were captured — never
 assume it is the whole book.
 
+## Credits / what these approaches are based on
+
+- **[Phoenix124/scribd-downloader](https://github.com/Phoenix124/scribd-downloader)**
+  — the page-asset payload format (`window.pageN_callback(["<html>"])`), text
+  extraction from `<span class="a">`, real image URLs from
+  `<img class="absimg" orig="...">` (the `src` is a lazy placeholder), and
+  deriving page images from asset URLs (`/pages/N-hash.jsonp` →
+  `/images/N-hash.jpg`).
+- **[youngpiu/scribd-pdf-downloader](https://github.com/youngpiu/scribd-pdf-downloader)**
+  — scroll each page into view until the container count stabilises
+  (`scrollIntoView`, not `scrollBy`), then inject print CSS (hide toolbars,
+  flatten `.document_scroller`, `@page` sized to the document) and print.
+
 ## If the HTTP routes are refused: the browser route
 
 As a last resort the chain ends with a **real Chromium** (Playwright), which

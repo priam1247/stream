@@ -1200,3 +1200,211 @@ def test_browser_survives_failed_screenshots(monkeypatch):
     assert doc is not None
     assert doc.pages, "text is still captured when a screenshot fails"
     assert doc.pdf is not None  # falls back to the browser print
+
+
+# ---------------------------------------------------------------------------
+# Ported from Phoenix124/scribd-downloader and youngpiu/scribd-pdf-downloader
+# ---------------------------------------------------------------------------
+def test_callback_array_payload_form():
+    """Scribd's page assets use window.pageN_callback(["<html>"]).
+
+    Our parser only understood window.pageN = {...}, so real pages came back
+    as 'unparsed-payload' and every page failed.
+    """
+    from scribd.fetch import _parse_payload, _payload_body
+
+    text = 'window.page12_callback(["<div><span class=\'a\'>Hello</span></div>"]);'
+    payload = _parse_payload(text)
+    assert isinstance(payload, list)
+    assert "Hello" in _payload_body(payload)
+
+    # the object form must keep working too
+    assert _payload_body(_parse_payload('window.page3 = {"content": "<p>x</p>"};')) == "<p>x</p>"
+
+
+def test_text_spans_extraction():
+    from scribd.fetch import _text_spans
+
+    html = (
+        '<div class="text_layer">'
+        '<span class="a">line one</span><span class="a">line two</span>'
+        '<span class="b">ignore</span></div>'
+    )
+    assert _text_spans(html) == "line one\nline two"
+
+
+def test_jsonp_to_image_url():
+    from scribd.extractors import jsonp_to_image_url
+
+    assert jsonp_to_image_url(
+        "https://html.scribdassets.com/u/pages/12-abc.jsonp?token=T"
+    ) == "https://html.scribdassets.com/u/images/12-abc.jpg?token=T"
+    assert jsonp_to_image_url("https://example.com/nope") is None
+
+
+def test_orig_attribute_beats_lazy_src():
+    """src is a placeholder (answers with HTML); orig is the real asset."""
+    from scribd.extractors import extract_page_image_urls
+
+    html = (
+        '<img class="absimg" src="/static/placeholder.gif" '
+        'orig="https://imgv2-1-f.scribdassets.com/u/pages/5-x.jpg">'
+    )
+    urls = extract_page_image_urls(html)
+    assert urls[5] == "https://imgv2-1-f.scribdassets.com/u/pages/5-x.jpg"
+
+
+def test_jsonp_strategy_uses_spans_and_derives_image():
+    from scribd.fetch import JsonpPagesStrategy, ScrapeContext
+
+    html = (
+        '<html><body><span>2 pages</span>'
+        '<img src="https://html.scribdassets.com/u/pages/1-aaa.jsonp">'
+        '<img src="https://html.scribdassets.com/u/pages/2-bbb.jsonp"></body></html>'
+    )
+
+    class R:
+        def __init__(self, t, st=200, ct="text/html"):
+            self.text = t
+            self.content = t.encode()
+            self.status_code = st
+            self.headers = {"content-type": ct}
+
+        def json(self):
+            return {}
+
+    class F:
+        async def get(self, url, **kw):
+            if "/pages/1-" in url:
+                return R('window.page1_callback(["<span class=\'a\'>alpha</span>"]);')
+            if "/pages/2-" in url:
+                return R('window.page2_callback(["<span class=\'a\'>beta</span>"]);')
+            if "oembed" in url:
+                return R('{"title":"T"}', 200, "application/json")
+            return R(html)
+
+    ctx = ScrapeContext(doc_id="9", url="https://www.scribd.com/document/9/X")
+    doc = asyncio.run(JsonpPagesStrategy().run(ctx, F()))
+    assert doc is not None
+    assert [p.text for p in doc.pages] == ["alpha", "beta"]
+    assert doc.pages[0].image_url and "/images/1-aaa.jpg" in doc.pages[0].image_url
+
+
+def test_browser_scroll_pass_and_print_pdf(monkeypatch):
+    """Scroll pass forces pages into the DOM; print gives a real PDF."""
+    from scribd.browser import BrowserStrategy, PRINT_JS, SCROLL_PAGES_JS
+    from scribd.fetch import ScrapeContext
+
+    seen = {"scroll": False, "print_css": False, "pdf_kwargs": None}
+
+    class Locator:
+        def __init__(self, i):
+            self.i = i
+
+        async def scroll_into_view_if_needed(self, timeout=None):
+            return None
+
+        def locator(self, sel):
+            return self
+
+        @property
+        def first(self):
+            return self
+
+        async def evaluate(self, script, arg=None):
+            return {"text": f"page {self.i} text", "image": ""}
+
+        async def screenshot(self, **kw):
+            return b""
+
+    class Locators:
+        def __init__(self, n):
+            self.n = n
+
+        async def count(self):
+            return self.n
+
+        def nth(self, i):
+            return Locator(i)
+
+    class Page:
+        async def goto(self, *a, **kw):
+            return None
+
+        async def wait_for_selector(self, *a, **kw):
+            return None
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+        def locator(self, sel):
+            return Locators(3)
+
+        async def evaluate(self, script, arg=None):
+            if script == SCROLL_PAGES_JS:
+                seen["scroll"] = True
+                return {"selector": "div.outer_page", "pages": 3, "rounds": 2}
+            if script == PRINT_JS:
+                seen["print_css"] = True
+                return {"widthIn": 7.5, "heightIn": 10.0}
+            return {}
+
+        async def content(self):
+            return "<html><body><span>3 pages</span></body></html>"
+
+        async def pdf(self, **kw):
+            seen["pdf_kwargs"] = kw
+            return b"%PDF-official"
+
+    class Context:
+        async def add_cookies(self, c):
+            return None
+
+        async def new_page(self):
+            return Page()
+
+    class Browser:
+        async def new_context(self, **kw):
+            return Context()
+
+        async def close(self):
+            return None
+
+    class PW:
+        class chromium:
+            @staticmethod
+            async def launch(headless=True):
+                return Browser()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    import sys, types
+    fake = types.ModuleType("playwright.async_api")
+    fake.async_playwright = lambda: PW()
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.async_api", fake)
+
+    class Fetcher:
+        cookies = {}
+
+        async def get(self, url, **kw):
+            class R:
+                status_code = 200
+
+                def json(self):
+                    return {"title": "Printed Doc"}
+
+            return R()
+
+    ctx = ScrapeContext(doc_id="9", url="https://www.scribd.com/document/9/X")
+    doc = asyncio.run(BrowserStrategy(screenshot=False).run(ctx, Fetcher()))
+
+    assert seen["scroll"], "the scroll pass must run before capture"
+    assert seen["print_css"], "print CSS must be injected"
+    assert seen["pdf_kwargs"]["prefer_css_page_size"] is True
+    assert doc is not None and doc.pdf == b"%PDF-official"
+    assert len(doc.pages) == 3

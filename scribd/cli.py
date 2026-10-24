@@ -77,6 +77,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Force the Chromium route (auto-scrolls the viewer; needs playwright)",
     )
     p.add_argument(
+        "--screenshots",
+        action="store_true",
+        help="With --browser: also screenshot each page (slower, fallback PDF)",
+    )
+    p.add_argument(
         "--keep-images",
         action="store_true",
         help="Also save the downloaded page images (out/<name>_pages/)",
@@ -170,7 +175,10 @@ async def run(args: argparse.Namespace) -> int:
             from .browser import BrowserStrategy
             from .fetch import JsonpPagesStrategy
 
-            strategies = [BrowserStrategy(), JsonpPagesStrategy()]
+            strategies = [
+                BrowserStrategy(screenshot=bool(getattr(args, "screenshots", False))),
+                JsonpPagesStrategy(),
+            ]
             console.print("[dim]using the Chromium route (--browser)[/dim]")
         scraper = ScribdScraper(
             fetcher,
