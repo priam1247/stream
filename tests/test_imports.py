@@ -5,6 +5,7 @@ import io
 import json
 import os
 import pathlib
+import sys
 import zipfile
 
 import pytest
@@ -3128,7 +3129,7 @@ def test_setup_job_runs_playwright_install(tmp_path, monkeypatch):
     assert created.status_code == 202, created.data
     job = webapp.JOBS[created.get_json()["id"]]
     command = webapp.build_command(job)
-    assert command[1:] == ["-m", "playwright", "install", "chromium"], command
+    assert command[1:] == ["-m", "scribd.browsersetup"], command
 
 
 def test_bot_entry_point_is_importable(monkeypatch):
@@ -3224,3 +3225,65 @@ def test_webapp_reads_dotenv_and_finds_cookies(tmp_path, monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(webapp)  # leave clean globals for the other tests
+
+
+def test_chromium_path_finds_current_and_old_layouts(tmp_path, monkeypatch):
+    import scribd.webapp as webapp
+
+    base = tmp_path / "ms-playwright"
+    modern = base / "chromium-1248" / "chrome-linux64" / "chrome"
+    modern.parent.mkdir(parents=True)
+    modern.write_text("x")
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(base))
+    assert webapp._chromium_path() == str(modern)
+    assert webapp.browser_status()["chromium"] is True
+
+    modern.unlink()
+    shell = base / "chromium_headless_shell-1248" / "chrome-headless-shell-linux64" / "chrome-headless-shell"
+    shell.parent.mkdir(parents=True)
+    shell.write_text("x")
+    assert webapp._chromium_path() == str(shell)
+
+    shell.unlink()
+    old = base / "chromium-1000" / "chrome-linux" / "chrome"
+    old.parent.mkdir(parents=True)
+    old.write_text("x")
+    assert webapp._chromium_path() == str(old)
+
+
+def test_browsersetup_reports_missing_browser_honestly(capsys, monkeypatch):
+    import scribd.browsersetup as setup
+
+    monkeypatch.setattr(setup, "chromium_path", lambda: "")
+    monkeypatch.setattr(setup, "free_mb", lambda path: 512)
+
+    # a fake playwright that refuses to launch, exactly like a container
+    class FakeBrowser:
+        pass
+
+    class FakeType:
+        def launch(self, **kwargs):
+            raise RuntimeError(
+                "BrowserType.launch: Target page, context or browser has been closed\n"
+                "error while loading shared libraries: libnss3.so: cannot open shared object file"
+            )
+
+    class FakePW:
+        chromium = FakeType()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    import types
+
+    fake = types.SimpleNamespace(sync_playwright=lambda: FakePW())
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake)
+
+    assert setup.check() == 1
+    out = capsys.readouterr().out
+    assert "FAILED" in out
+    assert "libnss3" in out
+    assert "without root" in out

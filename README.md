@@ -296,15 +296,34 @@ browser: playwright is installed but Chromium is not downloaded yet.
 
 There is no shell in the panel, so either
 
-* press **Install Chromium** in the page (it starts a normal job and streams the
-  download, ~150 MB, once), or
+* press **Install & test Chromium** in the page (it starts a normal job and
+  streams the download, ~150 MB, once), or
 * set `SCRIBD_WEB_AUTO_BROWSER=1` so `bot.py` downloads it on boot.
+
+The job does not stop at "downloaded". It **launches Chromium, renders a page
+and prints a test PDF**, because a successful download proves nothing about a
+shared container. The log ends with one of:
+
+```
+OK: Chromium 156.0.8078.4 launches, renders and prints PDFs
+FAILED: BrowserType.launch: ... error while loading shared libraries: libnss3.so
+```
+
+Same check from a shell (`--check` skips the download):
+
+```bash
+python -m scribd.browsersetup          # install if needed, then test
+python -m scribd.browsersetup --check  # test only
+```
+
+Exit code is `0` only when the browser really started.
 
 `/api/health` always reports the truth:
 
 ```json
-{"ok": true, "version": "1.5.0",
- "browser": {"playwright": true, "chromium": false, "chromium_path": ""}}
+{"ok": true, "version": "1.8.0", "env_file": "/home/container/.env",
+ "cookies": true,
+ "browser": {"playwright": true, "chromium": true, "chromium_path": ".../chrome"}}
 ```
 
 If Playwright itself cannot launch Chromium, the console/log says which system

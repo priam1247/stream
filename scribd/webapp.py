@@ -77,19 +77,35 @@ def _playwright_installed() -> bool:
     return importlib.util.find_spec("playwright") is not None
 
 
+# playwright changed its layout over the years: chrome-linux (old),
+# chrome-linux64 (current "Chrome for Testing") and the headless shell.
+_CHROME_LAYOUTS = (
+    "*/chrome-linux/chrome",
+    "*/chrome-linux64/chrome",
+    "*/chrome-linux/headless_shell",
+    "*/chrome-headless-shell-linux64/chrome-headless-shell",
+    "*/chrome-linux64/headless_shell",
+)
+
+
+def _playwright_bases() -> list[Path]:
+    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    bases: list[Path] = []
+    if root:
+        bases.append(Path(root))
+    bases += [
+        Path.home() / ".cache" / "ms-playwright",
+        REPO_ROOT / ".cache" / "ms-playwright",
+        DATA_DIR / "ms-playwright",
+    ]
+    return [base for base in bases if base.is_dir()]
+
+
 def _chromium_path() -> str:
     """Where playwright keeps Chromium, if any build was downloaded."""
-    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
-    if root and Path(root).is_dir():
-        bases = [Path(root)]
-    else:
-        bases = [Path.home() / ".cache" / "ms-playwright", REPO_ROOT / ".cache" / "ms-playwright"]
-    for base in bases:
-        if not base.is_dir():
-            continue
-        for name in ("chrome-linux/chrome", "chrome-linux/headless_shell",
-                     "chrome-headless-shell-linux64/chrome-headless-shell"):
-            for match in base.glob(f"chromium*/{name}"):
+    for base in _playwright_bases():
+        for layout in _CHROME_LAYOUTS:
+            for match in base.glob(layout):
                 if match.is_file():
                     return str(match)
     return ""
@@ -362,8 +378,8 @@ def _formats() -> str:
 
 def build_command(job: Job) -> list[str]:
     if job.mode == "setup":
-        # no shell on most panels: downloading Chromium is itself a job
-        return [sys.executable, "-m", "playwright", "install", "chromium"]
+        # no shell on most panels: download *and* launch-test Chromium as a job
+        return [sys.executable, "-m", "scribd.browsersetup"]
 
     command = [
         sys.executable, "-m", "scribd",
@@ -719,7 +735,7 @@ PAGE = """<!doctype html>
   <p><strong>This server has no browser yet.</strong>
      Searches and downloads run in Chromium — nothing works until it is installed.</p>
   <p class="muted" id="setupmsg"></p>
-  <button class="primary" id="installbrowser">Install Chromium (about 150 MB)</button>
+  <button class="primary" id="installbrowser">Install &amp; test Chromium (~150 MB)</button>
 </div>
 
 <form id="search">
@@ -889,7 +905,7 @@ async function checkBrowser() {
 
 $('installbrowser').onclick = async () => {
   $('installbrowser').disabled = true;
-  $('setupmsg').textContent = 'downloading Chromium… the log below shows the progress';
+  $('setupmsg').textContent = 'downloading Chromium, then launching it to be sure it works… the log below shows both';
   const job = await api('/api/jobs', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({mode: 'setup'})
@@ -898,9 +914,12 @@ $('installbrowser').onclick = async () => {
   const finished = await waitFor(job.id);
   $('installbrowser').disabled = false;
   await checkBrowser();
-  $('setupmsg').textContent = finished.returncode === 0
-    ? 'Chromium installed. Reload the page and search.'
-    : 'install failed — the log says why (missing system libraries cannot be fixed from here).';
+  if (finished.returncode === 0) {
+    $('setupmsg').textContent = 'Chromium downloaded, launched and printed a test PDF. You can search now.';
+    $('setup').hidden = true;
+  } else {
+    $('setupmsg').textContent = 'Chromium does not work on this server yet — the last lines of the log say exactly why.';
+  }
 };
 
 checkBrowser();
@@ -965,6 +984,7 @@ def main(host: str | None = None, port: int | None = None) -> None:
     else:
         print(f"browser: chromium at {status['chromium_path']}", flush=True)
 
+    os.environ.setdefault("FLASK_SKIP_DOTENV", "1")  # we load .env ourselves
     print(f"data: {DATA_DIR}\nlistening on http://{host}:{port}", flush=True)
     app.run(host=host, port=port, debug=args.debug, threaded=True)
 
