@@ -185,6 +185,20 @@ async def run(args: argparse.Namespace) -> int:
                     )
                 continue
             written = write_all(doc, out_dir, formats)
+            if not written:
+                # e.g. "-f pdf" on a text-only result: nothing was saved,
+                # so do NOT count this as a success.
+                console.print(
+                    f"[red]FAILED[/red] {url} — nothing written for formats "
+                    f"{args.format}"
+                    + (
+                        " (no PDF available: the download endpoint refused and "
+                        "page images could not be assembled — see the notes above)"
+                        if "pdf" in formats
+                        else ""
+                    )
+                )
+                continue
             ok += 1
             label = doc.meta.title[:70]
             what = (
