@@ -545,3 +545,111 @@ def _dump_static_search_page(debug_dir, query: str, page: int, html: str):
         return path
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Search without a browser
+# ---------------------------------------------------------------------------
+# Scribd's own search page needs JavaScript, but the documents are indexed by
+# every search engine. DuckDuckGo's HTML endpoint answers over plain HTTP with
+# `site:scribd.com`, which means a server without Chromium (a shared container,
+# a $5 VPS, a CI runner) can still turn a keyword into document URLs.
+DDG_URL = "https://html.duckduckgo.com/html/?q={query}"
+DDG_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+DOC_PATH = re.compile(
+    r"^https?://(?:www\.)?scribd\.com/"
+    r"(document|presentation|spreadsheet|ebook|audiobook|magazine)/(\d+)(?:/([^?#]*))?",
+    re.I,
+)
+
+
+def parse_ddg_results(html: str) -> list[SearchHit]:
+    """Document hits out of DuckDuckGo's HTML results page.
+
+    Handles both shapes DDG serves: `result__a` anchors whose href is a
+    `//duckduckgo.com/l/?uddg=<encoded>` redirect, and direct links.
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    hits: list[SearchHit] = []
+    seen: set[str] = set()
+
+    def consider(href: str, label: str) -> None:
+        href = (href or "").strip()
+        if not href:
+            return
+        if href.startswith("//"):
+            href = "https:" + href
+        if "duckduckgo.com/l/" in href:
+            from urllib.parse import parse_qs, urlparse
+
+            query = parse_qs(urlparse(href).query)
+            href = (query.get("uddg") or [""])[0] or href
+        match = DOC_PATH.match(href)
+        if not match:
+            return
+        kind = match.group(1).lower()
+        doc_id = match.group(2)
+        if doc_id in seen:
+            return
+        seen.add(doc_id)
+        slug = (match.group(3) or "").strip("/")
+        title = " ".join((label or "").split())
+        hits.append(
+            SearchHit(
+                doc_id=doc_id,
+                kind=kind,
+                slug=slug,
+                title=title or _slug_title(slug, doc_id),
+            )
+        )
+
+    for anchor in soup.select("a.result__a"):
+        consider(anchor.get("href", ""), anchor.get_text(" ", strip=True))
+    if not hits:  # different markup: take any anchor pointing at a document
+        for anchor in soup.find_all("a", href=True):
+            consider(anchor["href"], anchor.get_text(" ", strip=True))
+    return hits
+
+
+async def web_search(
+    query: str,
+    *,
+    limit: int = 0,
+    log=print,
+    endpoint: str = "",
+) -> list[SearchHit]:
+    """`site:scribd.com <query>` through DuckDuckGo — no browser, no cookies."""
+    query_text = (query or "").strip()
+    if not query_text:
+        return []
+    cap = _cap(limit)
+    url = (endpoint or DDG_URL).format(query=quote_plus(f"site:scribd.com {query_text}"))
+
+    try:
+        import httpx  # dependency of the project already
+    except Exception:  # pragma: no cover
+        log("web search: httpx is not available")
+        return []
+
+    log(f"web search: {query_text!r} via DuckDuckGo (site:scribd.com)")
+    try:
+        async with httpx.AsyncClient(
+            timeout=30.0, follow_redirects=True, headers={"User-Agent": DDG_UA}
+        ) as client:
+            response = await client.post(
+                url, data={"q": f"site:scribd.com {query_text}"}
+            )
+            response.raise_for_status()
+            html = response.text
+    except Exception as exc:
+        log(f"web search failed: {type(exc).__name__}: {exc}")
+        return []
+
+    hits = parse_ddg_results(html)
+    if cap is not None:
+        hits = hits[:cap]
+    log(f"web search: {len(hits)} document(s) found")
+    return hits
