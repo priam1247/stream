@@ -219,19 +219,149 @@ def package_for(soname: str) -> str:
 # ---------------------------------------------------------------------------
 # the package index
 # ---------------------------------------------------------------------------
+SUITE_ORDER = ("trixie", "bookworm", "bullseye")
+
+
+def libc_info() -> tuple[str, tuple[int, int] | None]:
+    """`("glibc", (2, 36))`, `("musl", None)` or `("unknown", None)`.
+
+    This decides everything about the sysroot: Debian `.so` files cannot load on
+    musl at all, and a glibc older than the package suite refuses them with
+    `version 'GLIBC_2.36' not found`. Asking `ldd` (part of libc itself) is the
+    only reliable answer; `python -V` says nothing about the base image.
+    """
+    try:
+        result = subprocess.run(
+            ["ldd", "--version"], capture_output=True, text=True, timeout=15
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown", None
+    text = (result.stdout or "") + (result.stderr or "")
+    first = (text.strip().splitlines() or [""])[0].lower()
+    if "musl" in text.lower()[:400]:
+        return "musl", None
+    match = re.search(r"(\d+)\.(\d+)", first or text)
+    if not match:
+        return "unknown", None
+    return "glibc", (int(match.group(1)), int(match.group(2)))
+
+
+def suite_for_glibc(version: tuple[int, int] | None) -> str:
+    """Newest Debian suite whose libraries that glibc can actually load."""
+    if not version:
+        return "bookworm"
+    major, minor = version
+    if (major, minor) >= (2, 41):
+        return "trixie"
+    if (major, minor) >= (2, 36):
+        return "bookworm"
+    return "bullseye"
+
+
 def suite() -> str:
     configured = os.environ.get("SCRIBD_DEB_SUITE", "").strip()
     if configured:
         return configured
+    kind, version = libc_info()
+    if kind == "glibc" and version:
+        return suite_for_glibc(version)
     try:
         text = Path("/etc/os-release").read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return "bookworm"
-    match = re.search(r"^VERSION_CODENAME=\"?([a-z]+)\"?", text, re.M)
-    if match:
+    match = re.search(r'^VERSION_CODENAME="?([a-z]+)"?', text, re.M)
+    if match and match.group(1) in SUITE_ORDER:
         return match.group(1)
-    match = re.search(r"^UBUNTU_CODENAME=\"?([a-z]+)\"?", text, re.M)
-    return match.group(1) if match else "bookworm"
+    match = re.search(r'^UBUNTU_CODENAME="?([a-z]+)"?', text, re.M)
+    if match:
+        # Ubuntu codenames map onto the Debian suite they are built from
+        return {"jammy": "bullseye", "noble": "bookworm", "mantic": "bookworm"}.get(
+            match.group(1), "bookworm"
+        )
+    return "bookworm"
+
+
+def older_suite(current: str) -> str:
+    """The next suite down — the answer to a GLIBC_x.yy mismatch."""
+    if current not in SUITE_ORDER:
+        return "bookworm"
+    index = SUITE_ORDER.index(current)
+    return SUITE_ORDER[index + 1] if index + 1 < len(SUITE_ORDER) else ""
+
+
+def downgrade(log=print) -> str:
+    """Step one suite down after a `GLIBC_x.yy not found`. Returns the new suite."""
+    current = suite()
+    older = older_suite(current)
+    if not older:
+        log(f"libraries: {current} is the oldest suite; nothing older to try")
+        return ""
+    os.environ["SCRIBD_DEB_SUITE"] = older
+    log(
+        f"libraries: these libraries need a newer glibc than this image has — "
+        f"retrying with {older} packages"
+    )
+    return older
+
+
+def glibc_complaint(message: str) -> str:
+    """The version a binary asked for, when it died on a symbol mismatch."""
+    match = re.search(r"GLIBC_(\d+\.\d+)\s*'?\s*not found", message or "", re.I)
+    return match.group(1) if match else ""
+
+
+def contents_path(codename: str) -> Path:
+    return sysroot().parent / f"contents-{codename}.json"
+
+
+def build_contents(codename: str | None = None, log=print) -> dict[str, str]:
+    """soname -> package, from the suite's Contents index (~40 MB, cached).
+
+    The hardcoded table covers what Chromium normally needs; this resolves the
+    rest instead of telling the user "no Debian package known for …".
+    """
+    codename = codename or suite()
+    cached = contents_path(codename)
+    if cached.is_file():
+        try:
+            return json.loads(cached.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    url = f"{MIRROR}/dists/{codename}/main/binary-amd64/Contents-amd64.gz"
+    log(f"contents: downloading {url} (one-off, ~40 MB)")
+    blob = sysroot().parent / f"Contents-{codename}.gz"
+    try:
+        _download(url, blob, timeout=300)
+    except Exception as exc:  # noqa: BLE001 - fall back to the table
+        log(f"contents: unavailable ({type(exc).__name__}: {exc})")
+        return {}
+
+    mapping: dict[str, str] = {}
+    try:
+        with gzip.open(blob, "rb") as handle:
+            for raw in handle:
+                line = raw.decode("utf-8", "replace")
+                path, _, packages = line.partition("  ") if "  " in line else line.partition("\t")
+                if not packages or "/lib" not in path:
+                    continue
+                name = path.rsplit("/", 1)[-1]
+                if ".so" not in name:
+                    continue
+                package = packages.strip().split(",")[0].strip()
+                if package and name not in mapping:
+                    mapping[name] = package
+    except OSError as exc:
+        log(f"contents: could not read the index ({type(exc).__name__}: {exc})")
+        return {}
+
+    try:
+        cached.write_text(json.dumps(mapping), encoding="utf-8")
+        blob.unlink(missing_ok=True)
+    except OSError:
+        pass
+    log(f"contents: {len(mapping)} libraries mapped")
+    return mapping
 
 
 def _download(url: str, destination: Path, timeout: int = 120) -> Path:
@@ -367,6 +497,20 @@ def ensure(
     limit: int = 40,
 ) -> tuple[bool, list[str]]:
     """Fetch every library `binary` lacks. Returns `(ok, packages)`."""
+    kind, version = libc_info()
+    if kind == "musl":
+        log(
+            "libraries: this image uses musl (Alpine), so Debian libraries can "
+            "never load into Chromium — the browser route is impossible here.\n"
+            "  use the HTTP route (SCRIBD_WEB_BROWSER=off) or another host."
+        )
+        return False, []
+    if kind == "glibc" and version and version < (2, 31):
+        log(
+            f"libraries: glibc {version[0]}.{version[1]} is older than bullseye's; "
+            "expect 'GLIBC_x.yy not found' even after fetching."
+        )
+
     root = sysroot()
     root.mkdir(parents=True, exist_ok=True)
     apply_env(root)  # anything already unpacked counts as present
@@ -375,6 +519,7 @@ def ensure(
     packages: list[str] = []
     seen: set[str] = set()
     index: dict[str, dict] | None = None
+    contents: dict[str, str] | None = None
 
     for _ in range(4):  # a few ldd rounds: libs have their own needs
         missing = [name for name in missing_sonames(binary) if name not in seen]
@@ -386,8 +531,12 @@ def ensure(
             seen.add(soname)
             package = package_for(soname)
             if not package:
-                log(f"  {soname}: no known Debian package — skipping")
-                continue
+                if contents is None and os.environ.get("SCRIBD_DEB_CONTENTS", "1").strip() not in ("0", "false", "no"):
+                    contents = build_contents(log=log)
+                package = (contents or {}).get(soname, "")
+                if not package:
+                    log(f"  {soname}: no Debian package known for it — skipping")
+                    continue
             entry = index.get(package)
             if not entry:
                 log(f"  {soname}: {package} is not in the {suite()} index")

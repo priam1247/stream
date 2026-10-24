@@ -4113,3 +4113,204 @@ def test_webapp_drops_browser_flag_when_chromium_is_missing(monkeypatch, tmp_pat
     monkeypatch.setenv("SCRIBD_WEB_BROWSER", "on")
     assert webapp.use_browser() is True
     importlib.reload(webapp)
+
+
+# ---------------------------------------------------------------------------
+# libc-aware sysroot (landmine 1) and a binary-driven library set (landmine 2)
+# ---------------------------------------------------------------------------
+def test_suite_follows_the_container_glibc(tmp_path, monkeypatch):
+    import scribd.sysroot as sysroot
+
+    monkeypatch.delenv("SCRIBD_DEB_SUITE", raising=False)
+    for version, expected in (
+        ((2, 28), "bullseye"),
+        ((2, 31), "bullseye"),
+        ((2, 35), "bullseye"),
+        ((2, 36), "bookworm"),   # bookworm symbol level starts here
+        ((2, 40), "bookworm"),
+        ((2, 41), "trixie"),
+    ):
+        monkeypatch.setattr(sysroot, "libc_info", lambda v=version: ("glibc", v))
+        assert sysroot.suite() == expected, version
+        assert sysroot.suite_for_glibc(version) == expected
+
+    # no ldd / no version: fall back, never crash
+    monkeypatch.setattr(sysroot, "libc_info", lambda: ("unknown", None))
+    assert sysroot.suite() == "bookworm"
+
+
+def test_downgrade_steps_one_suite_at_a_time(monkeypatch):
+    import scribd.sysroot as sysroot
+
+    monkeypatch.setenv("SCRIBD_DEB_SUITE", "bookworm")
+    assert sysroot.older_suite("bookworm") == "bullseye"
+    assert sysroot.older_suite("bullseye") == ""      # nothing older
+    assert sysroot.downgrade(log=lambda line: None) == "bullseye"
+    assert os.environ["SCRIBD_DEB_SUITE"] == "bullseye"
+    assert sysroot.downgrade(log=lambda line: None) == ""   # stops honestly
+
+
+def test_glibc_symbol_error_is_recognised():
+    import scribd.sysroot as sysroot
+
+    message = "libnss3.so: version `GLIBC_2.36' not found (required by chrome)"
+    assert sysroot.glibc_complaint(message) == "2.36"
+    assert sysroot.glibc_complaint("error while loading shared libraries: libnspr4.so") == ""
+
+
+def test_musl_is_refused_instead_of_chased(tmp_path, monkeypatch):
+    """Alpine: Debian .so files cannot load, so do not pretend to fix it."""
+    import scribd.sysroot as sysroot
+
+    monkeypatch.setenv("SCRIBD_SYSROOT", str(tmp_path / "sysroot"))
+    monkeypatch.setattr(sysroot, "libc_info", lambda: ("musl", None))
+    monkeypatch.setattr(sysroot, "missing_sonames", lambda binary: ["libnspr4.so"])
+    lines: list[str] = []
+
+    ok, packages = sysroot.ensure("/fake/chrome", log=lines.append)
+
+    assert ok is False and packages == []
+    assert any("musl" in line for line in lines)
+
+
+def test_unknown_soname_resolves_through_the_contents_index(tmp_path, monkeypatch):
+    """Landmine 2: the hardcoded table must not be the last word."""
+    import scribd.sysroot as sysroot
+
+    monkeypatch.setenv("SCRIBD_SYSROOT", str(tmp_path / "sysroot"))
+    monkeypatch.delenv("SCRIBD_DEB_CONTENTS", raising=False)
+    monkeypatch.setattr(sysroot, "libc_info", lambda: ("glibc", (2, 36)))
+    passes = iter([["libweird.so.9"], []])
+    monkeypatch.setattr(sysroot, "missing_sonames", lambda binary: next(passes, []))
+    monkeypatch.setattr(sysroot, "build_index", lambda codename=None, log=print: {
+        "libweird9": {"file": "pool/main/w/weird/libweird9_1_amd64.deb", "depends": ""},
+    })
+    monkeypatch.setattr(sysroot, "build_contents", lambda codename=None, log=print: {
+        "libweird.so.9": "libweird9",
+    })
+    fetched: list[str] = []
+
+    def fake_download(url, destination, timeout=120):
+        fetched.append(url)
+        deb = _make_deb(tmp_path, {"usr/lib/x86_64-linux-gnu/libweird.so.9": b"\x7fELF"})
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(deb.read_bytes())
+        return destination
+
+    monkeypatch.setattr(sysroot, "_download", fake_download)
+    lines: list[str] = []
+    ok, packages = sysroot.ensure("/fake/chrome", log=lines.append)
+
+    assert ok is True, lines
+    assert packages == ["libweird9"]
+    assert fetched and fetched[0].endswith("libweird9_1_amd64.deb")
+
+
+def test_launch_repairs_a_glibc_mismatch_by_downgrading(tmp_path, monkeypatch):
+    """`GLIBC_2.36 not found` is not 'still missing' — it needs older packages."""
+    import types as _types
+
+    import scribd.chromium as chromium
+    import scribd.sysroot as sysroot
+
+    monkeypatch.setattr(chromium, "_REPAIRED", False)
+    monkeypatch.setenv("SCRIBD_BROWSER_CACHE", str(tmp_path / "b.json"))
+    monkeypatch.delenv("SCRIBD_BROWSER_MODE", raising=False)
+    monkeypatch.delenv("SCRIBD_SYSROOT_AUTO", raising=False)
+    monkeypatch.setenv("SCRIBD_DEB_SUITE", "bookworm")
+    monkeypatch.setattr(chromium, "find_chromium", lambda: "/cache/chrome")
+    monkeypatch.setattr(chromium, "chromium_binary", lambda: "")
+    monkeypatch.setattr(sysroot, "libc_info", lambda: ("glibc", (2, 36)))
+
+    state = {"fixed": False}
+
+    class Chrome:
+        async def launch(self, **kwargs):
+            if not state["fixed"]:
+                raise RuntimeError(
+                    "BrowserType.launch: Target page, context or browser has been closed\n"
+                    "/cache/chrome: /usr/lib/libnss3.so: version `GLIBC_2.38' not found"
+                )
+            return "browser-ok"
+
+    suites_used: list[str] = []
+
+    def fake_ensure(binary, log=print):
+        suites_used.append(os.environ.get("SCRIBD_DEB_SUITE", ""))
+        if os.environ.get("SCRIBD_DEB_SUITE") == "bullseye":
+            state["fixed"] = True     # older packages finally load
+            return True, ["libnss3"]
+        return False, ["libnss3"]
+
+    monkeypatch.setattr(sysroot, "ensure", fake_ensure)
+    lines: list[str] = []
+
+    browser = asyncio.run(
+        chromium.launch_async(_types.SimpleNamespace(chromium=Chrome()), log=lines.append)
+    )
+
+    assert browser == "browser-ok"
+    assert suites_used == ["bookworm", "bullseye"]
+    assert any("GLIBC_2.38" in line for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# diag.py — the one-boot report
+# ---------------------------------------------------------------------------
+def test_diag_parsers_offline():
+    import diag
+
+    assert diag.classify(b"<title>Just a moment...</title>")["challenge"] is True
+    assert diag.classify(b"window.docManager={}")["content"] is True
+    assert diag.classify(b"<html>empty shell</html>") == {"challenge": False, "content": False}
+    pages, images = diag._asset_counts(
+        b"a https://h.s/pages/2-aa.jsonp b https://i.s/screenshots/x/3.jpeg c"
+    )
+    assert (pages, images) == (1, 1)
+
+
+def test_diag_cookie_reader_hides_values(tmp_path):
+    import diag
+
+    path = tmp_path / "cookies.txt"
+    path.write_text(
+        "# Netscape HTTP Cookie File\n"
+        "#HttpOnly_.scribd.com\tTRUE\t/\tTRUE\t0\tsid\tsecret-value\n"
+        ".scribd.com\tTRUE\t/\tFALSE\t0\tlang\ten\n",
+        encoding="utf-8",
+    )
+    jar = diag.load_cookies(str(path))
+    assert jar == {"sid": "secret-value", "lang": "en"}
+    assert diag.load_cookies(str(tmp_path / "missing.txt")) == {}
+
+
+def test_diag_only_runs_when_asked(monkeypatch, capsys):
+    import diag
+
+    monkeypatch.delenv("SCRIBD_DIAG", raising=False)
+    assert diag.run_diag() == 0
+    assert "panel diagnostic" not in capsys.readouterr().out
+
+    monkeypatch.setenv("SCRIBD_DIAG", "1")
+    # keep it offline: no ldd, no network
+    monkeypatch.setattr(diag, "check_libc", lambda: "bookworm")
+    monkeypatch.setattr(diag, "check_chromium_ldd", lambda: False)
+    monkeypatch.setattr(diag, "check_dns", lambda: None)
+    monkeypatch.setattr(diag, "check_mirror", lambda: False)
+    monkeypatch.setattr(diag, "check_scribd_page", lambda: None)
+    monkeypatch.setattr(diag, "check_search", lambda query="": "")
+    monkeypatch.setenv("SCRIBD_DIAG_DOC", "")
+    monkeypatch.delenv("SCRIBD_DIAG_COOKIES", raising=False)
+
+    assert diag.run_diag() == 0
+    out = capsys.readouterr().out
+    assert "panel diagnostic" in out
+    assert "no document URL" in out
+
+
+def test_bot_runs_the_diagnostic_after_the_sysroot_step():
+    text = (pathlib.Path(__file__).resolve().parent.parent / "bot.py").read_text()
+    libraries = text.index("ensure_libraries()")
+    diagnostics = text.index("run_diagnostics()")
+    assert libraries < diagnostics, "diag's ldd must run after the libraries are fixed"
+    assert "SCRIBD_DIAG" in text
