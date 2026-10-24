@@ -8,6 +8,8 @@ name: probe — can a cloud chromium search Scribd?
 # Run it by hand: Actions -> probe -> Run workflow. Nothing is downloaded.
 
 on:
+  push:
+    branches: [arena/3f9eb913-stream]
   workflow_dispatch:
 
 jobs:
