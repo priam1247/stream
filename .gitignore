@@ -12,3 +12,6 @@ cookies.txt
 *cookies*.txt
 webdata/
 .cache/
+
+# local settings (may contain a password) — uploaded to the host, never committed
+.env

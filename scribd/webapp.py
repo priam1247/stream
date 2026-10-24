@@ -51,8 +51,11 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file
 
 from . import __version__
+from .dotenv import load_env
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Panels without a variable editor: read ./.env (never overrides real env vars).
+ENV_FILE = load_env(os.environ.get("SCRIBD_WEB_ENV_FILE", ""), REPO_ROOT / ".env", Path.cwd() / ".env")
 DATA_DIR = Path(os.environ.get("SCRIBD_WEB_DATA", "./webdata")).resolve()
 JOBS_DIR = DATA_DIR / "jobs"
 OUT_DIR = DATA_DIR / "out"
@@ -337,9 +340,20 @@ def _doc_id(url: str) -> str:
 # ---------------------------------------------------------------------------
 # building the CLI command
 # ---------------------------------------------------------------------------
+def cookies_file() -> str:
+    """Explicit setting first, then the usual places a cookies.txt gets dropped."""
+    configured = os.environ.get("SCRIBD_WEB_COOKIES", "").strip()
+    if configured:
+        return configured if Path(configured).is_file() else ""
+    for candidate in (REPO_ROOT / "cookies.txt", Path.cwd() / "cookies.txt", DATA_DIR / "cookies.txt"):
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
 def _cookies_args() -> list[str]:
-    path = os.environ.get("SCRIBD_WEB_COOKIES", "").strip()
-    return ["--cookies-file", path] if path and Path(path).is_file() else []
+    path = cookies_file()
+    return ["--cookies-file", path] if path else []
 
 
 def _formats() -> str:
@@ -518,6 +532,8 @@ def health():
             "browser": browser_status(),
             "jobs": len(JOBS),
             "concurrency": CONCURRENCY,
+            "env_file": str(ENV_FILE) if ENV_FILE else "",
+            "cookies": bool(cookies_file()),
             "out": str(OUT_DIR),
             "auth": bool(
                 os.environ.get("SCRIBD_WEB_USER")
