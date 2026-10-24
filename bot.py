@@ -76,11 +76,24 @@ def ensure_browser() -> None:
         )
 
 
+def ensure_libraries() -> None:
+    """Fetch Chromium's system libraries before the first job needs them."""
+    try:
+        from scribd.sysroot import preflight
+
+        if preflight(log=print):
+            return
+        print("libraries: Chromium may still fail to start — see above", flush=True)
+    except Exception as exc:  # never stop the server from booting
+        print(f"libraries: check skipped ({type(exc).__name__}: {exc})", flush=True)
+
+
 def main() -> None:
     os.chdir(ROOT)  # so ./webdata and ./out land next to the code
     print(f"starting from {ROOT}", flush=True)
     load_settings()
     ensure_browser()
+    ensure_libraries()
     from scribd.webapp import main as web_main
 
     host = os.environ.get("SCRIBD_WEB_HOST", "0.0.0.0")  # the panel proxies to us

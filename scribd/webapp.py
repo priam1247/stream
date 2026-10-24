@@ -56,7 +56,12 @@ from .sysroot import lib_dirs
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # Panels without a variable editor: read ./.env (never overrides real env vars).
-ENV_FILE = load_env(os.environ.get("SCRIBD_WEB_ENV_FILE", ""), REPO_ROOT / ".env", Path.cwd() / ".env")
+# SCRIBD_WEB_ENV_FILE names a file explicitly; setting it to "" disables .env.
+if "SCRIBD_WEB_ENV_FILE" in os.environ:
+    _env_candidates = [os.environ["SCRIBD_WEB_ENV_FILE"]] if os.environ["SCRIBD_WEB_ENV_FILE"] else []
+else:
+    _env_candidates = [REPO_ROOT / ".env", Path.cwd() / ".env"]
+ENV_FILE = load_env(*_env_candidates)
 DATA_DIR = Path(os.environ.get("SCRIBD_WEB_DATA", "./webdata")).resolve()
 JOBS_DIR = DATA_DIR / "jobs"
 OUT_DIR = DATA_DIR / "out"
@@ -529,6 +534,7 @@ def health():
             "env_file": str(ENV_FILE) if ENV_FILE else "",
             "cookies": bool(cookies_file()),
             "sysroot_libs": len(lib_dirs()),
+            "remote_browser": bool(os.environ.get("SCRIBD_BROWSER_CDP", "").strip()),
             "out": str(OUT_DIR),
             "auth": bool(
                 os.environ.get("SCRIBD_WEB_USER")

@@ -24,6 +24,8 @@ without root.
 
 Environment knobs:
 
+    SCRIBD_BROWSER_CDP=<url>                     use a browser elsewhere (Chrome
+                                                 on your PC, browserless, …)
     SCRIBD_BROWSER_MODE=shell|chrome|path|auto   force one variant
     SCRIBD_BROWSER_ARGS="--foo --bar"            extra Chromium arguments
     SCRIBD_BROWSER_SANDBOX=1                     keep the sandbox (drops --no-sandbox)
@@ -185,6 +187,7 @@ def _describe(mode: str) -> str:
         "shell": "headless shell",
         "chrome": "full Chrome (channel=chromium)",
         "path": "full Chrome (explicit binary)",
+        "cdp": "remote browser (CDP)",
     }.get(mode, mode)
 
 
@@ -209,26 +212,99 @@ class BrowserLaunchError(RuntimeError):
     pass
 
 
+def cdp_endpoint() -> str:
+    """A browser running somewhere else, reached over the DevTools protocol.
+
+    `SCRIBD_BROWSER_CDP=http://192.168.1.10:9222` or a full
+    `ws://host:9222/devtools/browser/<id>`. The container then needs no
+    libraries at all: it drives a browser that already works.
+    """
+    return os.environ.get("SCRIBD_BROWSER_CDP", "").strip()
+
+
+# One repair attempt per process: fetching libraries costs a few MB and a
+# couple of seconds, doing it twice helps nobody.
+_REPAIRED = False
+
+
+def _looks_like_missing_libs(messages: list[str]) -> bool:
+    return any(
+        "shared librar" in message.lower() or "cannot open shared object" in message.lower()
+        for message in messages
+    )
+
+
+def repair_libraries(log: Callable[[str], None] | None = None) -> bool:
+    """Fetch Chromium's missing system libraries, once per process.
+
+    Called automatically when a launch dies on a missing soname, so a plain
+    `--search`/download job heals itself instead of needing the setup button.
+    """
+    global _REPAIRED
+    if _REPAIRED:
+        return False
+    _REPAIRED = True
+    if os.environ.get("SCRIBD_SYSROOT_AUTO", "1").strip().lower() in ("0", "false", "no"):
+        return False
+    binary = find_chromium()
+    if not binary:
+        return False
+    if log:
+        log("  browser: missing system libraries — fetching them (no root needed)…")
+    try:
+        from .sysroot import ensure
+
+        ok, packages = ensure(binary, log=log or print)
+    except Exception as exc:  # network / mirror / zstd: report, never crash
+        if log:
+            log(f"  browser: could not fetch libraries ({type(exc).__name__}: {exc})")
+        return False
+    if ok and packages and log:
+        log(f"  browser: fetched {', '.join(packages)} — retrying the launch")
+    return ok
+
+
 async def launch_async(
     playwright: Any,
     headless: bool = True,
     extra_args: list[str] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> Any:
-    errors: list[tuple[str, str]] = []
-    tries = candidates(headless, extra_args)
-    for mode, kwargs in tries:
+    endpoint = cdp_endpoint()
+    if endpoint:
         try:
-            browser = await playwright.chromium.launch(**kwargs)
-        except Exception as exc:  # noqa: BLE001 - every failure is retried once
-            errors.append((mode, str(exc)))
-            continue
-        if mode != (tries[0][0]):
+            browser = await playwright.chromium.connect_over_cdp(endpoint)
+        except Exception as exc:  # noqa: BLE001 - fall back to a local browser
             if log:
-                log(f"  browser: using {_describe(mode)}")
-        save_winner(mode)
-        return browser
-    raise BrowserLaunchError(_collect(errors, len(tries), log))
+                log(f"  browser: cannot reach the remote browser at {endpoint} "
+                    f"({str(exc).strip().splitlines()[0] if str(exc).strip() else 'no answer'}) — "
+                    "using the local one")
+        else:
+            if log:
+                log(f"  browser: connected to the remote browser at {endpoint}")
+            return browser
+
+    for attempt in range(2):
+        errors: list[tuple[str, str]] = []
+        tries = candidates(headless, extra_args)
+        for mode, kwargs in tries:
+            try:
+                browser = await playwright.chromium.launch(**kwargs)
+            except Exception as exc:  # noqa: BLE001 - every failure is retried once
+                errors.append((mode, str(exc)))
+                continue
+            if mode != (tries[0][0]):
+                if log:
+                    log(f"  browser: using {_describe(mode)}")
+            save_winner(mode)
+            return browser
+
+        # first failure round: if the loader is complaining, fix it and retry
+        if attempt == 0 and _looks_like_missing_libs([m for _, m in errors]):
+            if repair_libraries(log):
+                continue
+        raise BrowserLaunchError(_collect(errors, len(tries), log))
+    raise BrowserLaunchError("unreachable")
 
 
 def launch_sync(
@@ -238,14 +314,33 @@ def launch_sync(
     log: Callable[[str], None] | None = None,
 ) -> tuple[Any, str]:
     """Returns `(browser, mode)` so callers can report what worked."""
-    errors: list[tuple[str, str]] = []
-    tries = candidates(headless, extra_args)
-    for mode, kwargs in tries:
+    endpoint = cdp_endpoint()
+    if endpoint:
         try:
-            browser = playwright.chromium.launch(**kwargs)
+            browser = playwright.chromium.connect_over_cdp(endpoint)
         except Exception as exc:  # noqa: BLE001
-            errors.append((mode, str(exc)))
-            continue
-        save_winner(mode)
-        return browser, mode
-    raise BrowserLaunchError(_collect(errors, len(tries), log))
+            if log:
+                log(f"cannot reach the remote browser at {endpoint} "
+                    f"({str(exc).strip().splitlines()[0] if str(exc).strip() else 'no answer'})")
+        else:
+            if log:
+                log(f"connected to the remote browser at {endpoint}")
+            return browser, "cdp"
+
+    for attempt in range(2):
+        errors: list[tuple[str, str]] = []
+        tries = candidates(headless, extra_args)
+        for mode, kwargs in tries:
+            try:
+                browser = playwright.chromium.launch(**kwargs)
+            except Exception as exc:  # noqa: BLE001
+                errors.append((mode, str(exc)))
+                continue
+            save_winner(mode)
+            return browser, mode
+
+        if attempt == 0 and _looks_like_missing_libs([m for _, m in errors]):
+            if repair_libraries(log):
+                continue
+        raise BrowserLaunchError(_collect(errors, len(tries), log))
+    raise BrowserLaunchError("unreachable")

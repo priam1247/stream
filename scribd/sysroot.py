@@ -428,6 +428,33 @@ def ensure(
     return ok, packages
 
 
+def preflight(log=print) -> bool:
+    """Boot-time check: if Chromium lacks libraries, fetch them now.
+
+    Called from `bot.py`, so a panel restart heals the browser before the first
+    job instead of failing in the middle of a search.
+    """
+    from .chromium import find_chromium
+
+    if os.environ.get("SCRIBD_SYSROOT_AUTO", "1").strip().lower() in ("0", "false", "no"):
+        return True
+    binary = find_chromium()
+    if not binary:
+        return True  # nothing downloaded yet; the setup job handles that
+    apply_env()
+    missing = missing_sonames(binary)
+    if not missing:
+        return True
+    log(f"libraries: Chromium is missing {', '.join(missing[:6])}"
+        + (" …" if len(missing) > 6 else ""))
+    try:
+        ok, _ = ensure(binary, log=log)
+    except Exception as exc:  # noqa: BLE001 - never stop the server from booting
+        log(f"libraries: could not fetch them ({type(exc).__name__}: {exc})")
+        return False
+    return ok
+
+
 def clean(log=print) -> None:
     root = sysroot()
     for path in (root, root.parent / "debs"):
