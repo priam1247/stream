@@ -497,3 +497,163 @@ def test_pdf_is_exported_even_without_text_pages(tmp_path):
     written = write_all(doc, tmp_path, ["txt", "pdf"])
     pdfs = [p for p in written if p.suffix == ".pdf"]
     assert pdfs and pdfs[0].read_bytes().startswith(b"%PDF")
+
+
+# ---------------------------------------------------------------------------
+# Regressions from the run that reported "OK — 3 pages" for a 95-page book
+# ---------------------------------------------------------------------------
+def test_page_count_fallbacks():
+    from scribd.extractors import extract_page_count
+
+    assert extract_page_count('<script>{"pageCount": 95}</script>') == 95
+    assert extract_page_count("<span>1K views</span><span>95 pages</span>") == 95
+    # token payload on page images: {"page_min":1,"page_max":95}
+    assert extract_page_count('token=abc"page_max":95,"enforce":true') == 95
+    assert extract_page_count("<div>nothing</div>") == 0
+
+
+def test_embed_partial_detected_from_document_page():
+    """The embed page states no total; the document page does. Without
+    reading it, 3-of-95 looked complete and the PDF route never ran."""
+    from scribd.fetch import EmbedTextStrategy, ScrapeContext
+
+    class Resp:
+        def __init__(self, text, ctype="text/html"):
+            self.text = text
+            self.content = text.encode()
+            self.status_code = 200
+            self.headers = {"content-type": ctype}
+
+        def json(self):
+            import json as _j
+
+            return _j.loads(self.text)
+
+    class F:
+        async def get(self, url, **kw):
+            if "oembed" in url:
+                return Resp('{"title":"Malawi Book List"}', "application/json")
+            if "embeds" in url:
+                return Resp(EMBED_HTML)          # only 3 pages of markup
+            return Resp("<html><body><span>1K views</span> 95 pages</body></html>")
+
+    ctx = ScrapeContext(doc_id="804179430", url="https://www.scribd.com/document/804179430/X")
+    doc = asyncio.run(EmbedTextStrategy().run(ctx, F()))
+    assert doc is not None
+    assert doc.meta.page_count == 95
+    assert doc.complete is False, "3 of 95 pages must not be reported as complete"
+
+
+def test_no_output_files_is_not_a_success(tmp_path):
+    """`-f pdf` on a text-only result wrote nothing yet printed '1/1 succeeded'."""
+    import argparse
+
+    from scribd import cli
+
+    class FakeScraper:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def scrape(self, url):
+            from scribd.models import DocumentMeta, Page, ScrapedDocument
+
+            return ScrapedDocument(
+                meta=DocumentMeta(doc_id="1", url=url, title="T", page_count=95),
+                pages=[Page(number=1, text="x")],
+                strategy="embed-text",
+                complete=False,
+            )
+
+    args = argparse.Namespace(
+        urls=["https://www.scribd.com/document/1/X"],
+        file=None,
+        out=str(tmp_path),
+        format="pdf",
+        markdown=False,
+        images=False,
+        keep_images=False,
+        concurrency=1,
+        rate=1000,
+        timeout=1,
+        retries=0,
+        no_cache=True,
+        cache_dir=None,
+        cookie=None,
+        cookies_file=None,
+        proxy=None,
+        impersonate="none",
+        diagnose=False,
+    )
+    orig_scraper, orig_fetcher = cli.ScribdScraper, cli.Fetcher
+    cli.ScribdScraper = FakeScraper
+    cli.Fetcher = lambda *a, **kw: _NullFetcher()
+    try:
+        rc = asyncio.run(cli.run(args))
+    finally:
+        cli.ScribdScraper, cli.Fetcher = orig_scraper, orig_fetcher
+    assert rc == 1, "no files written must exit non-zero"
+    assert not list(tmp_path.glob("*.pdf"))
+
+
+class _NullFetcher:
+    backend = "test"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+
+def test_page_count_from_image_token_jwt():
+    """The token on page images hides {"page_max":95} in base64."""
+    from scribd.extractors import extract_page_count
+
+    tok = (
+        "eyJhbGciOiJIUzI1NiJ9."
+        "eyJleHAiOjE3OTUzOTkwMjMsInBhZ2VfbWluIjoxLCJwYWdlX21heCI6OTUsImVuZm9yY2UiOnRydWV9"
+        ".sig12345"
+    )
+    assert extract_page_count(f'<img src="https://html.scribdassets.com/x/images/1-a.jpg?token={tok}">') == 95
+
+
+def test_image_strategy_uses_document_total_not_visible_pages():
+    """Only 2 image URLs in the markup must not mean a 2-page document."""
+    from scribd.fetch import PageImagesPdfStrategy, ScrapeContext
+
+    tok = (
+        "eyJhbGciOiJIUzI1NiJ9."
+        "eyJwYWdlX21pbiI6MSwicGFnZV9tYXgiOjYwfQ"
+        ".sig12345"
+    )
+    embed = (
+        f'<html><body><img src="https://html.scribdassets.com/u/images/1-a.jpg?token={tok}">'
+        '<img src="https://screenshots.scribd.com/Scribd/a_b_c/d/9/1.jpeg"></body></html>'
+    )
+    doc_page = "<html><body><span>60 pages</span></body></html>"
+
+    class Resp:
+        def __init__(self, c=b"", ct="text/html", st=200):
+            self.content = c
+            self.status_code = st
+            self.headers = {"content-type": ct}
+            self.text = c.decode("latin-1", "ignore")
+
+        def json(self):
+            return {}
+
+    class F:
+        async def get(self, url, **kw):
+            if "embeds" in url:
+                return Resp(embed.encode())
+            if "oembed" in url:
+                return Resp(b"{}", "application/json")
+            if "screenshots.scribd.com" in url or "images/" in url:
+                return Resp(_fake_png("white"), "image/png")
+            return Resp(doc_page.encode())
+
+    ctx = ScrapeContext(doc_id="9", url="https://www.scribd.com/document/9/X")
+    doc = asyncio.run(PageImagesPdfStrategy().run(ctx, F()))
+    assert doc is not None and doc.pdf
+    assert len(doc.pages) == 60, f"expected 60 pages, got {len(doc.pages)}"
+    assert doc.complete

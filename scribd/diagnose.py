@@ -133,6 +133,7 @@ async def diagnose(fetcher, url: str, *, save_dir: str | Path = ".debug") -> int
 
     # The embed endpoint is the strategy that works on modern documents,
     # so report its structure too.
+    emb_text = ""
     try:
         emb = await fetcher.get(
             EMBED_URL.format(doc_id=doc_id), headers={"Referer": url}, use_cache=False
@@ -144,10 +145,45 @@ async def diagnose(fetcher, url: str, *, save_dir: str | Path = ".debug") -> int
             f"\nembed page: HTTP {emb.status_code}, {len(emb.content or b''):,} bytes"
         )
         if emb.status_code == 200 and emb.text:
+            emb_text = emb.text
             (out / f"embed-{doc_id}.html").write_text(emb.text, encoding="utf-8")
             print("embed class census (top 15):")
             print(_embed_structure(emb.text))
             print(f"  saved to: {out / f'embed-{doc_id}.html'}")
+
+    # --- page-image probe: does the "merge images into a PDF" route work? ---
+    from .extractors import (
+        build_screenshot_template,
+        extract_page_image_urls,
+        extract_page_count,
+        extract_screenshot_urls,
+    )
+
+    total = extract_page_count(page_html) or extract_page_count(emb_text)
+    imgs = extract_page_image_urls(page_html)
+    shot = build_screenshot_template(extract_screenshot_urls(page_html))
+    print(f"\npage count detected: {total or 'unknown'}")
+    print(f"page image URLs in HTML: {len(imgs)}; screenshot template: {shot or 'none'}")
+
+    def url_for(n: int) -> str | None:
+        return imgs.get(n) or (shot.format(n=n) if shot else None)
+
+    probes = [n for n in (1, 2, 3, max(1, (total or 4) // 2), total or 4) if url_for(n)]
+    if not probes:
+        print("no page image URLs found — the image route cannot work on this page")
+    for n in dict.fromkeys(probes):
+        u = url_for(n)
+        try:
+            r = await fetcher.get(u, headers={"Referer": url}, use_cache=False)
+        except Exception as exc:
+            print(f"  page {n:>3}: ERROR {type(exc).__name__}")
+            continue
+        head = (r.content or b"")[:4]
+        kind = "JPEG" if head[:3] == b"\xff\xd8\xff" else ("PNG" if head[:4] == b"\x89PNG" else "not an image")
+        print(
+            f"  page {n:>3}: HTTP {r.status_code}  {len(r.content or b''):>8,} bytes  "
+            f"{r.headers.get('content-type','?')[:24]}  {kind}"
+        )
 
     print(
         "\nSend this report back. If the counts above are zero, also share the "

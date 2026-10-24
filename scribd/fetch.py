@@ -11,6 +11,7 @@ from .blockers import CHALLENGE_HINT, ChallengeError, looks_challenged
 from .config import DOWNLOAD_PDF_URL, EMBED_URL, RENDER_META_URL
 from .extractors import (
     build_page_template,
+    extract_page_count,
     build_screenshot_template,
     extract_page_image_urls,
     extract_screenshot_urls,
@@ -292,6 +293,7 @@ class EmbedTextStrategy(Strategy):
         if doc is None:
             return None
         await _fill_meta_from_oembed(ctx, fetcher, doc)
+        await _resolve_page_count(ctx, fetcher, doc)
         if not doc.complete:
             ctx.note(
                 f"embed-text: PARTIAL {len(doc.pages)}/{doc.meta.page_count} pages "
@@ -372,6 +374,29 @@ def build_from_embed(ctx: ScrapeContext, html: str) -> ScrapedDocument | None:
     )
 
 
+async def _resolve_page_count(ctx: ScrapeContext, fetcher, doc: ScrapedDocument) -> None:
+    """Make sure meta.page_count is the *document's* total, not what we got.
+
+    The embed page states no page count, so a 3-of-95 capture looked
+    complete. Fetch the document page (cached, cheap) and read the total
+    from it before judging completeness.
+    """
+    if doc.meta.page_count and doc.meta.page_count > len(doc.pages):
+        return
+    try:
+        resp = await fetcher.get(ctx.url, headers={"Referer": ctx.url})
+    except Exception:
+        return
+    if resp.status_code != 200:
+        return
+    total = extract_page_count(resp.text)
+    if total:
+        doc.meta.page_count = total
+        ctx.note(f"page count from document page: {total}")
+    if doc.meta.page_count and len(doc.pages) < doc.meta.page_count * 0.9:
+        doc.complete = False
+
+
 async def _fill_meta_from_oembed(ctx: ScrapeContext, fetcher, doc: ScrapedDocument) -> None:
     """og:title on embed markup is often the literal "Scribd"; oEmbed isn't."""
     placeholder = doc.meta.title in ("", f"scribd_{ctx.doc_id}") or (
@@ -411,7 +436,19 @@ class PageImagesPdfStrategy(Strategy):
             ctx.note("page-images: no page image URLs found")
             return None
 
-        total = meta.page_count or (max(urls) if urls else 0)
+        total = extract_page_count(html) or meta.page_count
+        if total <= 1:
+            # The embed markup only lists the pages it rendered; ask the
+            # document page for the real total before assuming it's tiny.
+            try:
+                page = await fetcher.get(ctx.url, headers={"Referer": ctx.url})
+            except Exception:
+                page = None
+            if page is not None and page.status_code == 200:
+                total = extract_page_count(page.text) or total
+                meta.page_count = total or meta.page_count
+        if total <= 1:
+            total = max(urls) if urls else 0
         if total <= 0:
             return None
         total = min(total, ctx.max_pages)

@@ -100,6 +100,65 @@ def _og(html: str, prop: str) -> str:
     return ""
 
 
+PAGE_COUNT_PATTERNS = (
+    re.compile(r'"pageCount"\s*:\s*(\d+)'),
+    re.compile(r'"page_count"\s*:\s*(\d+)'),
+    re.compile(r'"numPages"\s*:\s*(\d+)'),
+    re.compile(r'"totalPages"\s*:\s*(\d+)'),
+    re.compile(r'"pageNumTotal"\s*:\s*(\d+)'),
+    # Download-token payload on page images: {"page_min":1,"page_max":95}
+    re.compile(r'"page_max"\s*:\s*(\d+)'),
+    # Visible label: "1K views 95 pages" / "95 pages"
+    re.compile(r'\b(\d{1,4})\s+pages?\b', re.I),
+)
+
+
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\b")
+
+
+def _decode_token_hints(html: str) -> int:
+    """Page total hidden inside the JWT on page-image URLs.
+
+    Page images carry ``?token=<JWT>`` and its payload includes
+    ``{"page_min":1,"page_max":95,"enforce":true}`` — base64, so a plain
+    regex over the HTML never sees it.
+    """
+    import base64
+    import json as _json
+
+    for tok in _JWT_RE.findall(html)[:5]:
+        payload = tok.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        try:
+            data = _json.loads(base64.urlsafe_b64decode(payload))
+        except Exception:
+            continue
+        for key in ("page_max", "pageMax", "pageCount"):
+            try:
+                n = int(data.get(key) or 0)
+            except (TypeError, ValueError):
+                continue
+            if 0 < n <= 5000:
+                return n
+    return 0
+
+
+def extract_page_count(html: str) -> int:
+    """Page total from any of the shapes Scribd puts it in.
+
+    Needed because the *embed* page carries no page count at all: without
+    it, "3 captured pages" looks complete and a partial download is
+    reported as success.
+    """
+    html = _normalise(html)
+    for pat in PAGE_COUNT_PATTERNS:
+        for m in pat.finditer(html):
+            n = int(m.group(1))
+            if 0 < n <= 5000:
+                return n
+    return _decode_token_hints(html)
+
+
 def extract_meta(html: str, url: str, doc_id: str, kind: str = "document") -> DocumentMeta:
     state = extract_state(html)
     title = (
@@ -116,7 +175,7 @@ def extract_meta(html: str, url: str, doc_id: str, kind: str = "document") -> Do
     meta.title = title or f"scribd_{doc_id}"
     meta.author = first_str(state, AUTHOR_KEYS) or _og(html, "og:author")
     meta.description = first_str(state, DESC_KEYS) or _og(html, "og:description")
-    meta.page_count = first_int(state, PAGE_COUNT_KEYS)
+    meta.page_count = first_int(state, PAGE_COUNT_KEYS) or extract_page_count(html)
     meta.language = first_str(state, LANG_KEYS) or _og(html, "og:locale")
     meta.thumbnail = first_str(state, THUMB_KEYS) or _og(html, "og:image")
     return meta
