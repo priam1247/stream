@@ -13,20 +13,27 @@ from .utils import extract_json_after, first_int, first_str
 DOC_URL_RE = re.compile(
     r"scribd\.com/(?:document|doc|book|presentation|read|embeds)/(\d+)", re.I
 )
+# NOTE: the query string is part of the URL. Page assets are often signed
+# (?token=eyJ...); stripping it makes every fetch 401/403, which looked like
+# "95 page URLs found, zero pages downloaded".
 CONTENT_URL_RE = re.compile(
-    r"https://html\.scribdassets\.com/[A-Za-z0-9_\-./]+?/pages/[A-Za-z0-9_\-]+\.(?:jsonp|json)"
+    r"https://(?:[A-Za-z0-9_-]+\.)*scribdassets\.com/[A-Za-z0-9_\-./]+?/pages/"
+    r"[A-Za-z0-9_\-]+\.(?:jsonp|json)(?:\?[^\"'\s<>\\]*)?",
+    re.I,
 )
 # Live pages embed the config as JSON, where slashes are escaped
 # ("https:\/\/html.scribdassets.com\/..."), and some hosts differ
 # (html1.scribdassets.com). This loose pattern catches those after
 # _normalise() has unescaped the document.
 LOOSE_CONTENT_URL_RE = re.compile(
-    r"https?://[A-Za-z0-9_.-]*scribdassets\.com/[^\"'\s<>\\]*?/pages/\d+-[^\"'\s<>\\?]+\.(?:jsonp|json)"
+    r"https?://[A-Za-z0-9_.-]*scribdassets\.com/[^\"'\s<>\\]*?/pages/\d+-[^\"'\s<>\\?]+"
+    r"\.(?:jsonp|json)(?:\?[^\"'\s<>\\]*)?",
+    re.I,
 )
 PAGE_IN_PATH_RE = re.compile(r"/pages/(\d+)-")
 IMAGE_URL_RE = re.compile(
-    r"https://(?:imgv2[^/\"]*|html[^/\"]*)\.scribdassets\.com/"
-    r"[A-Za-z0-9_\-./]+?\.(?:jpe?g|png|webp)"
+    r"https?://(?:[A-Za-z0-9_-]+\.)*scribdassets\.com/[A-Za-z0-9_\-./]+?\.(?:jpe?g|png|webp)",
+    re.I,
 )
 TEMPLATE_RE = re.compile(
     r"^(?P<prefix>https?://.+/pages/)\d+-(?P<hash>[^/.?]+)\.(?P<ext>jsonp|json)(?P<query>\?.*)?$"
@@ -257,14 +264,21 @@ async def fetch_oembed(fetcher, url: str) -> dict[str, Any]:
 # is uniform across the document — only the trailing page number changes —
 # so it can be turned into a template for pages missing from the HTML.
 PAGE_IMG_ASSET_RE = re.compile(
-    r"https://html\.scribdassets\.com/[A-Za-z0-9_]+/images/(\d+)-[A-Za-z0-9]+\.(?:jpe?g|png)"
-    r"(?:\?[^\"'\s<>\\]*)?"
+    r"https?://(?:[A-Za-z0-9_-]+\.)*scribdassets\.com/[A-Za-z0-9_\-]+/images/"
+    r"(\d+)-[A-Za-z0-9]+\.(?:jpe?g|png|webp)(?:\?[^\"'\s<>\\]*)?",
+    re.I,
 )
+# Locked to screenshots.scribd.com on purpose: a *.scribd.com wildcard would
+# also match unrelated URLs (documents, avatars) and produce bogus pages.
 PAGE_IMG_SHOT_RE = re.compile(
-    r"https://screenshots\.scribd\.com/Scribd/[^\"'\s<>\\]*?/(\d+)\.(?:jpe?g|png)"
+    r"https?://screenshots\.scribd\.com/Scribd/[^\"'\s<>\\]*?/(\d+)\.(?:jpe?g|png|webp)"
+    r"(?:\?[^\"'\s<>\\]*)?",
+    re.I,
 )
 SHOT_TEMPLATE_RE = re.compile(
-    r"^(?P<prefix>https?://screenshots\.scribd\.com/Scribd/.+/)\d+\.(?P<ext>jpe?g|png)(?P<q>\?.*)?$"
+    r"^(?P<prefix>https?://screenshots\.scribd\.com/Scribd/.+/)\d+\."
+    r"(?P<ext>jpe?g|png|webp)(?P<q>\?.*)?$",
+    re.I,
 )
 
 
