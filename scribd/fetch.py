@@ -171,20 +171,32 @@ async def _build_from_html(
     meta.page_count = total
 
     sem = asyncio.Semaphore(8)
+    failures: dict[str, int] = {}
+    samples: list[str] = []
+
+    def fail(reason: str, sample: str = "") -> None:
+        failures[reason] = failures.get(reason, 0) + 1
+        if sample and len(samples) < 3:
+            samples.append(sample)
 
     async def get_page(n: int) -> Page | None:
         url = page_url(n)
         if not url:
+            fail("no url")
             return None
         async with sem:
             try:
-                resp = await fetcher.get(url)
-            except Exception:
+                # Asset CDN: send a Referer, same as a browser would.
+                resp = await fetcher.get(url, headers={"Referer": ctx.url})
+            except Exception as exc:
+                fail(f"exception:{type(exc).__name__}")
                 return None
         if resp.status_code != 200:
+            fail(f"http:{resp.status_code}")
             return None
         payload = _parse_payload(resp.text)
         if not payload:
+            fail("unparsed-payload", (resp.text or "")[:160].replace("\n", " "))
             return None
         raw = _payload_body(payload)
         page = Page(number=n, html=raw)
@@ -195,6 +207,12 @@ async def _build_from_html(
         return page
 
     pages = [p for p in await asyncio.gather(*(get_page(n) for n in range(1, total + 1))) if p]
+    if not pages:
+        # Never report "no result" without saying WHY every page failed.
+        detail = ", ".join(f"{k} x{v}" for k, v in sorted(failures.items()))
+        ctx.note(f"jsonp-pages: no pages retrieved — {detail}")
+        for smp in samples:
+            ctx.note(f"jsonp-pages: payload sample {smp!r}")
     if not pages:
         return None
     pages.sort(key=lambda p: p.number)

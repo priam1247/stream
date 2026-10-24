@@ -773,3 +773,67 @@ def test_embed_uses_outer_page_containers():
     ctx = ScrapeContext(doc_id="1", url="https://www.scribd.com/document/1/X")
     doc = build_from_embed(ctx, html)
     assert doc is not None and len(doc.pages) == 95
+
+
+def test_jsonp_failures_are_reported_not_swallowed(capsys):
+    """The real run said '95 explicit page URLs' then nothing at all —
+    every page failed silently, so there was no way to know why."""
+    from scribd.fetch import JsonpPagesStrategy, ScrapeContext
+
+    html = (
+        "<html><body><span>3 pages</span>"
+        '<img src="https://html.scribdassets.com/u/pages/1-abc.jsonp">'
+        '<img src="https://html.scribdassets.com/u/pages/2-def.jsonp">'
+        '<img src="https://html.scribdassets.com/u/pages/3-ghi.jsonp"></body></html>'
+    )
+
+    class R:
+        def __init__(self, t="", st=403, ct="text/html"):
+            self.text = t
+            self.content = t.encode()
+            self.status_code = st
+            self.headers = {"content-type": ct}
+
+        def json(self):
+            return {}
+
+    class F:
+        async def get(self, url, **kw):
+            if "/pages/" in url:
+                return R("Access Denied", 403)
+            return R(html, 200)
+
+    logs: list[str] = []
+    ctx = ScrapeContext(doc_id="9", url="https://www.scribd.com/document/9/X", log=logs.append)
+    assert asyncio.run(JsonpPagesStrategy().run(ctx, F())) is None
+    joined = " ".join(logs)
+    assert "http:403 x3" in joined, joined
+
+
+def test_jsonp_sends_referer_to_asset_cdn():
+    from scribd.fetch import JsonpPagesStrategy, ScrapeContext
+
+    seen = {}
+
+    class R:
+        def __init__(self, t, st=200):
+            self.text = t
+            self.content = t.encode()
+            self.status_code = st
+            self.headers = {"content-type": "application/javascript"}
+
+        def json(self):
+            return {}
+
+    class F:
+        async def get(self, url, **kw):
+            if "/pages/" in url:
+                seen["referer"] = (kw.get("headers") or {}).get("Referer")
+                return R('window.page1 = {"content": "<p>hi</p>"};')
+            return R('<html><body><span>1 pages</span>'
+                     '<img src="https://html.scribdassets.com/u/pages/1-abc.jsonp"></body></html>')
+
+    ctx = ScrapeContext(doc_id="1", url="https://www.scribd.com/document/1/X")
+    doc = asyncio.run(JsonpPagesStrategy().run(ctx, F()))
+    assert doc is not None
+    assert seen["referer"] == "https://www.scribd.com/document/1/X"
