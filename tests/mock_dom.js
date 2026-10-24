@@ -36,6 +36,10 @@ class Style {
     this._props.set(name, String(value));
     this._sync();
   }
+  removeProperty(name) {
+    this._props.delete(name);
+    this._sync();
+  }
   getPropertyValue(name) {
     return this._props.has(name) ? this._props.get(name) : "";
   }
@@ -346,6 +350,45 @@ const again = isolate({ selector: SELECTOR, index: 1 });
 check(again, "isolate failed after cleanup");
 if (again) eq(again.width, 1114, "paper width after cleanup");
 cleanup();
+
+// ------------------------------------------------- embed-print isolation
+// themrsami/scribd-downloader's per-page print model (one page per sheet).
+if (input.embedIsolate) {
+  const embedIsolate = new Function("return (" + input.embedIsolate + ")")();
+  // leftovers from the previous iteration must be cleared before measuring
+  pages[1].style.setProperty("display", "none");
+  pages[1].style.setProperty("position", "absolute");
+  pages[1].style.setProperty("page-break-after", "always");
+
+  const info = embedIsolate(1);
+  check(info, "embed isolate returned nothing");
+  if (info) {
+    // ceil() of the rendered rect: 1114 x 0.7 -> 780, 1442 x 0.7 -> 1010
+    eq(info.width, 780, "embed paper width (ceil of the measured rect)");
+    eq(info.height, 1010, "embed paper height");
+    eq(info.text, "page 2 text", "embed page text");
+  }
+  eq(pages[1].style.getPropertyValue("display"), "", "leftover display cleared");
+  eq(pages[1].style.getPropertyValue("position"), "", "leftover position cleared");
+  eq(pages[1].style.getPropertyValue("page-break-after"), "", "leftover break cleared");
+  eq(pages[1].getAttribute("data-export-target"), "true", "target marked");
+  eq(document.querySelectorAll("[data-export-target]").length, 1, "exactly one target");
+
+  const isolated = document.getElementById("isolated-page-print-style");
+  check(isolated, "embed isolate injected no style");
+  if (isolated) {
+    check(/@page\s*{\s*size:\s*780px\s+1010px/.test(isolated.textContent),
+          "embed @page not sized to the page: " + isolated.textContent.slice(0, 200));
+    check(isolated.textContent.includes('.outer_page { display: none !important; }'),
+          "other pages are not hidden");
+    check(isolated.textContent.includes('.outer_page[data-export-target="true"]'),
+          "target has no absolute/0,0 rule");
+    check(isolated.textContent.includes("position: absolute !important"),
+          "target is not pinned");
+    check(isolated.textContent.includes("overflow: hidden !important"),
+          "document is not clamped to one sheet");
+  }
+}
 
 if (failures.length) {
   console.error("FAIL\n" + failures.join("\n"));

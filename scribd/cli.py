@@ -74,7 +74,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--browser",
         action="store_true",
-        help="Force the Chromium route (auto-scrolls the viewer; needs playwright)",
+        help=(
+            "Force the Chromium route: embed viewer + direct page loading + "
+            "one PDF sheet per page (needs playwright)"
+        ),
+    )
+    p.add_argument(
+        "--no-embed",
+        action="store_true",
+        help=(
+            "With --browser: skip the /embeds/<id>/content route "
+            "(themrsami-style) and use the main viewer instead"
+        ),
     )
     p.add_argument(
         "--no-print-pages",
@@ -180,14 +191,26 @@ async def run(args: argparse.Namespace) -> int:
             from .browser import BrowserStrategy
             from .fetch import JsonpPagesStrategy
 
-            strategies = [
+            from .embedprint import EmbedPrintStrategy
+
+            strategies = []
+            if not getattr(args, "no_embed", False):
+                # First choice: themrsami/scribd-downloader's model — the bare
+                # embed viewer, pages loaded through window.docManager, then
+                # one CDP Page.printToPDF sheet per document page.
+                strategies.append(EmbedPrintStrategy())
+            strategies.append(
                 BrowserStrategy(
                     screenshot=bool(getattr(args, "screenshots", False)),
                     print_pages=not bool(getattr(args, "no_print_pages", False)),
-                ),
-                JsonpPagesStrategy(),
-            ]
-            console.print("[dim]using the Chromium route (--browser)[/dim]")
+                )
+            )
+            strategies.append(JsonpPagesStrategy())
+            console.print(
+                "[dim]using the Chromium route (--browser): "
+                + ("embed-print -> " if len(strategies) > 2 else "")
+                + "scroll-print -> jsonp[/dim]"
+            )
         scraper = ScribdScraper(
             fetcher,
             strategies=strategies,
