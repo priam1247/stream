@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.6
+"""scribd_download.py — ONE file, standard library only.  Version 2.7
 
-Turns Scribd document links into clean PDFs, one document page per sheet, with
-no browser, no pip install and no repository.
+Turns Scribd documents into clean PDFs, one document page per sheet, with no
+browser, no pip install and no repository.
 
     python scribd_download.py                        # serves the page (panel mode)
+    python scribd_download.py --find "physics 12th"  # search Scribd, print the links
+    python scribd_download.py --find "physics 12th" --pick 1,3
     python scribd_download.py --url LINK             # one document, all pages
     python scribd_download.py --url LINK --limit 5   # first 5 pages only
     python scribd_download.py --url LINK --probe 4   # every url and its answer
@@ -13,21 +15,27 @@ no browser, no pip install and no repository.
     python scribd_download.py --selftest             # offline check of this file
 
 Panel mode: set PY_FILE to this file, restart, open the server address. The page
-has two ways in, and neither one searches:
+has three ways in:
 
-  1. SEARCH IN YOUR BROWSER, SEND THE LINKS. The page shows a bookmarklet built
-     from the address you opened it on. You search Scribd in your own browser,
-     click the bookmark, and every document link on that page is handed to this
-     panel's /send endpoint, which starts the downloads. Only links travel.
-  2. PASTE LINKS. One per line; anything that is not a Scribd document link is
+  1. FIND HERE. The panel asks Scribd's own search — the very request its search
+     page makes, /search/query — and gets the documents back as JSON with their
+     titles, page counts and links. Tick what you want, press download.
+  2. SEND LINKS FROM YOUR BROWSER. A bookmarklet built from the address you
+     opened the panel on: search Scribd in your own browser, click it, and every
+     document link on the page is handed to /send.
+  3. PASTE LINKS. One per line; anything that is not a Scribd document link is
      ignored, duplicates dropped.
 
-Why the panel does not search: its IP is blocked by the search engines (this was
-measured — see check_deployment.py, "Search engines are blocked from this IP as
-well, so searches must run elsewhere too"), and Scribd's own search page is a
-JavaScript app whose HTML has no results. So the search belongs in a browser,
-and this file is only the receiving end. Version 2.5 tried to search from the
-panel anyway; that is gone.
+Why the finding is done by Scribd and not by a search engine: the engines refuse
+this address (this was measured — the old check_deployment.py printed "Search
+engines are blocked from this IP as well"), and they refuse it whether the
+request comes from the panel or from a browser on the same network. Scribd does
+not refuse it: the panel already reads Scribd pages and scans to build the PDFs.
+The old failure was asking Google/Bing/DuckDuckGo for `site:scribd.com`; this
+asks Scribd directly, which is the same thing its own search box does. The one
+honest caveat: /search/query is not a documented API — it is the endpoint the
+site's own JavaScript calls. If Scribd changes it, the page says so in plain
+words instead of pretending there are no results.
 
 What 2.4 fixed in the OUTPUT (2.3 is kept everywhere else)
   1. PDF BROKEN was the checker, not the file: image streams were counted inside
@@ -63,9 +71,9 @@ A page that will not answer walks a short ladder: the name the document gave,
 the same name without the token, then the page's own descriptor, which names the
 real asset outright. Every url tried for a failed page is recorded.
 
-Options: --url LINK (repeatable), --links "TEXT", --limit N, --out DIR,
-         --cookies PATH, --base URL, --jobs N (default 12), --refresh,
-         --name TITLE, --no-check, --no-placeholder, --no-verify,
+Options: --find "TEXT", --pick 1,3, --url LINK (repeatable), --links "TEXT",
+         --limit N, --out DIR, --cookies PATH, --base URL, --jobs N (default 12),
+         --refresh, --name TITLE, --no-check, --no-placeholder, --no-verify,
          --verify FILE, --probe N, --selftest
 
 Cookies are read, never printed. Files stay on this machine.
@@ -91,7 +99,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.6"
+VERSION = "2.7"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -2056,6 +2064,167 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     JOB.say(f"written: {target}")
 
 # ---------------------------------------------------------------------------
+# find — Scribd's OWN search, so no search engine can refuse the request
+# ---------------------------------------------------------------------------
+FIND_URL = "https://www.scribd.com/search/query"
+FIND_REFERER = "https://www.scribd.com/search"
+FIND_PER_PAGE = 42                 # measured: Scribd sends 42 documents a page
+
+
+def search_url(query: str, page: int = 1) -> str:
+    """The request Scribd's own search page makes.
+
+    /search is a JavaScript app, but it does not search on the page: it asks
+    /search/query and renders the JSON that comes back. This is that same
+    request, so the answers come from Scribd itself — no search engine in the
+    way, and none of the engine blocking that made the old panel search fail.
+    """
+    params = {"query": " ".join((query or "").split()), "verbatim": "true",
+              "ct_lang": "0"}
+    if page > 1:
+        params["page"] = str(page)
+    return FIND_URL + "?" + urllib.parse.urlencode(params)
+
+
+def documents_in(payload) -> list:
+    """The list of documents inside Scribd's answer, wherever it is nested."""
+    node = payload
+    for key in ("results", "documents", "content", "documents"):
+        node = node.get(key) if isinstance(node, dict) else None
+        if node is None:
+            break
+    if isinstance(node, list):
+        return [item for item in node if isinstance(item, dict)]
+    # the shape moved? take the first list of documents that names a reader_url
+    queue = [payload]
+    while queue:
+        item = queue.pop(0)
+        if isinstance(item, dict):
+            queue.extend(item.values())
+        elif isinstance(item, list):
+            if any(isinstance(x, dict) and "reader_url" in x for x in item[:5]):
+                return [x for x in item if isinstance(x, dict)]
+            queue.extend(item)
+    return []
+
+
+def hit_from(doc: dict) -> dict:
+    """One search result, in the shape the page and the downloader both use."""
+    url = str(doc.get("reader_url") or doc.get("url") or "").strip()
+    if url and not re.search(r"(?:^|\.)scribd\.com/", url, re.I):
+        return {}
+    if url:
+        url = url.split("?")[0].split("#")[0]
+    ident = str(doc.get("id") or "").strip() or doc_id_of(url)
+    if not ident.isdigit():
+        return {}
+    if not url:
+        url = f"https://www.scribd.com/document/{ident}"
+    author = ""
+    authors = doc.get("authors")
+    if isinstance(authors, list) and authors and isinstance(authors[0], dict):
+        author = str(authors[0].get("name") or "").strip()
+    if not author and isinstance(doc.get("author"), dict):
+        author = str(doc["author"].get("name") or "").strip()
+    try:
+        pages = int(doc.get("pageCount") or 0)
+    except (TypeError, ValueError):
+        pages = 0
+    return {"id": ident,
+            "title": " ".join(str(doc.get("title") or "").split())
+                     or f"document {ident}",
+            "url": url, "pages": pages,
+            "views": str(doc.get("views") or "").strip(), "author": author}
+
+
+def find_refusal(status: int, body: bytes, error: str = "") -> str:
+    """Say plainly whether Scribd refused the address or just had no answer."""
+    if any(marker in (body or b"").lower() for marker in CHALLENGE):
+        return (f"HTTP {status} challenge page — Scribd wants a browser check "
+                f"from this address")
+    if status in (401, 403, 429, 503):
+        return (f"HTTP {status} — Scribd refused the search from this address; "
+                f"the download still works, the search has to happen elsewhere")
+    if not status:
+        return f"no answer ({error or 'connection failed'})"
+    return f"HTTP {status}"
+
+
+def find_documents(query: str, pages: int = 1,
+                   limit: int = 0, ask=None) -> tuple[list[dict], list[str]]:
+    """Search Scribd itself. Returns (hits, notes) — notes say what happened."""
+    query = " ".join((query or "").split())
+    if not query:
+        return [], ["type a few words to search for"]
+    caller = ask or (lambda url: fetch(url, referer=FIND_REFERER))
+    wanted = max(1, min(int(pages or 1), 20))
+    found: dict[str, dict] = {}
+    notes: list[str] = []
+    for page in range(1, wanted + 1):
+        got = caller(search_url(query, page)) or {}
+        status = int(got.get("status") or 0)
+        body = got.get("body") or b""
+        if status != 200:
+            notes.append(f"page {page}: "
+                         + find_refusal(status, body, str(got.get("error") or "")))
+            break
+        try:
+            payload = json.loads(body.decode("utf-8", "replace"))
+        except (ValueError, UnicodeDecodeError):
+            notes.append(f"page {page}: the answer was not search data "
+                         f"({describe(body)})")
+            break
+        documents = documents_in(payload)
+        if not documents:
+            if page == 1:
+                notes.append("Scribd answered, but named no documents for that query")
+            break
+        fresh = 0
+        for doc in documents:
+            hit = hit_from(doc)
+            if not hit or hit["id"] in found:
+                continue
+            found[hit["id"]] = hit
+            fresh += 1
+            if limit and len(found) >= limit:
+                break
+        notes.append(f"page {page}: {len(documents)} document(s), {fresh} new")
+        if not fresh or (limit and len(found) >= limit):
+            break
+    return list(found.values()), notes
+
+
+def print_hits(hits: list[dict]) -> None:
+    for number, hit in enumerate(hits, 1):
+        extra = " · ".join(part for part in (
+            f"{hit['pages']} pages" if hit["pages"] else "",
+            f"{hit['views']} views" if hit["views"] else "",
+            hit["author"] or "") if part)
+        print(f"  {number:2}. {hit['title']}")
+        print(f"      {hit['url']}" + (f"   ({extra})" if extra else ""))
+
+
+def picked_hits(hits: list[dict], spec: str) -> list[dict]:
+    """`--pick 1,3` and `--pick 2-4` out of the numbered list."""
+    chosen: list[dict] = []
+    for part in str(spec or "").replace(" ", ",").split(","):
+        if not part:
+            continue
+        try:
+            if "-" in part:
+                start, end = part.split("-", 1)
+                numbers = range(int(start), int(end) + 1)
+            else:
+                numbers = [int(part)]
+        except ValueError:
+            continue
+        for number in numbers:
+            if 1 <= number <= len(hits) and hits[number - 1] not in chosen:
+                chosen.append(hits[number - 1])
+    return chosen
+
+
+# ---------------------------------------------------------------------------
 # page
 # ---------------------------------------------------------------------------
 def queue_links(urls: list[str], limit: int, out: str) -> tuple[bool, str]:
@@ -2104,6 +2273,14 @@ PAGE = """<!doctype html>
   resize:vertical}
  input[type=number]{width:86px;font:inherit;padding:8px;border:1px solid #b8c0c8;
   border-radius:6px;background:#fff}
+ input[type=search]{flex:1 1 260px;min-width:180px;font:inherit;padding:9px 10px;
+  border:1px solid #b8c0c8;border-radius:6px;background:#fff}
+ .hit{display:flex;gap:10px;align-items:flex-start;padding:7px 2px;
+  border-bottom:1px solid #eaeef2;cursor:pointer}
+ .hit:last-child{border-bottom:0}
+ .hit input{margin-top:5px}
+ .hit .t{font-weight:600}
+ .hit .m{color:#57606a;font-size:12.5px;word-break:break-all}
  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0 0}
  button,.btn{font:inherit;padding:9px 16px;border-radius:6px;
   border:1px solid #1f6feb;background:#1f6feb;color:#fff;cursor:pointer;
@@ -2124,11 +2301,28 @@ PAGE = """<!doctype html>
 <h1>Download Scribd documents</h1>
 <div class="meta" id="meta">ready</div>
 
-<h2>1 · search in your own browser, then send the links here</h2>
+<h2>1 · find documents, right here</h2>
 <div class="card primary">
-  <div class="muted">This panel never searches — its address is blocked by the
-  search engines. Your browser is not, so the search happens there and only the
-  links travel. One bookmark, one click.</div>
+  <div class="muted">This asks <b>Scribd's own search</b> — the same request its
+  search page makes — so no search engine is involved and none of them can
+  refuse this address. Type a few words, tick what you want, press download.</div>
+  <div class="row">
+    <input type="search" id="q" placeholder="physics 12th"
+      autocomplete="off" spellcheck="false">
+    <button id="find">Find</button>
+    <span class="muted" id="said"></span>
+  </div>
+  <div id="hits"></div>
+  <div class="row">
+    <button id="ticked">Download ticked</button>
+    <span class="muted" id="picked">nothing ticked yet</span>
+  </div>
+</div>
+
+<h2>2 · or send links from your browser with one bookmark</h2>
+<div class="card alt">
+  <div class="muted">Still the fastest way when you are already searching
+  Scribd: your browser finds the links, this panel only receives them.</div>
   <ol class="steps">
     <li>Show your bookmarks bar: <b>Ctrl+Shift+B</b> (Chrome/Edge).</li>
     <li>Drag the blue button below onto the bar. If dragging does nothing, use
@@ -2145,7 +2339,7 @@ PAGE = """<!doctype html>
   <code class="bm" id="bm">__BOOKMARKLET_TEXT__</code>
 </div>
 
-<h2>2 · or paste links</h2>
+<h2>3 · or paste links</h2>
 <div class="card alt">
   <div class="muted">One link per line, or paste a whole column — anything that
   is not a Scribd document link is ignored, duplicates are dropped.</div>
@@ -2199,6 +2393,63 @@ async function start(payload) {
   if (timer) clearInterval(timer);
   poll(); timer = setInterval(poll, 1500);
 }
+
+function hitRow(hit, index) {
+  const wrap = document.createElement('label');
+  wrap.className = 'hit';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.value = hit.url;
+  box.dataset.title = hit.title;
+  const text = document.createElement('div');
+  const extra = [hit.pages ? hit.pages + ' pages' : '', hit.views ? hit.views + ' views' : '',
+                 hit.author || ''].filter(Boolean).join(' · ');
+  text.innerHTML = `<div class="t">${esc(hit.title)}</div>
+    <div class="m">${esc(hit.url)}${extra ? ' · ' + esc(extra) : ''}</div>`;
+  wrap.append(box, text);
+  box.onchange = countTicked;
+  return wrap;
+}
+
+function countTicked() {
+  const n = document.querySelectorAll('#hits input:checked').length;
+  $('picked').textContent = n ? n + ' ticked' : 'nothing ticked yet';
+}
+
+async function find() {
+  const q = $('q').value.trim();
+  if (!q) { $('said').textContent = 'type a few words first'; return; }
+  $('find').disabled = true;
+  $('said').textContent = 'asking Scribd…';
+  $('hits').innerHTML = '';
+  countTicked();
+  try {
+    const r = await fetch('/find', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query: q, pages: 1}),
+    });
+    const d = await r.json();
+    if (d.error) { $('said').textContent = d.error; return; }
+    $('said').textContent = d.summary
+      + (d.notes && d.notes.length ? ' · ' + d.notes.join(' · ') : '');
+    (d.hits || []).forEach((hit, i) => $('hits').append(hitRow(hit, i)));
+  } catch (e) {
+    $('said').textContent = 'the panel did not answer: ' + e;
+  } finally {
+    $('find').disabled = false;
+    countTicked();
+  }
+}
+
+$('find').onclick = find;
+$('q').onkeydown = (e) => { if (e.key === 'Enter') find(); };
+$('ticked').onclick = () => {
+  const boxes = [...document.querySelectorAll('#hits input:checked')];
+  if (!boxes.length) { $('verdict').textContent = 'tick at least one document first'; return; }
+  start({urls: boxes.map((b) => b.value),
+         limit: Number($('limit').value) || 0});
+  $('verdict').textContent = 'queued ' + boxes.length + ' document(s) — scroll down for progress';
+};
 
 $('go').onclick = () => {
   const text = $('links').value.trim();
@@ -2304,6 +2555,30 @@ def serve(port: int, out: str) -> None:
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except Exception:  # noqa: BLE001
                 payload = {}
+            if path == "/find":
+                query = str(payload.get("query") or "").strip()
+                if not query:
+                    self._send(json.dumps(
+                        {"error": "type a few words to search for"}).encode(),
+                        "application/json", 400)
+                    return
+                try:
+                    pages = int(payload.get("pages") or 1)
+                except (TypeError, ValueError):
+                    pages = 1
+                JOB.say(f"find: {query}")
+                hits, notes = find_documents(query, pages)
+                JOB.say("find: " + "; ".join(notes))
+                if hits:
+                    summary = f"{len(hits)} document(s) found"
+                elif any("named no documents" in note for note in notes):
+                    summary = "no documents match that"
+                else:
+                    summary = "the search did not answer"
+                body = json.dumps({"hits": hits, "notes": notes,
+                                   "summary": summary})
+                self._send(body.encode(), "application/json; charset=utf-8")
+                return
             if path != "/run":
                 self._send(b'{"error":"unknown endpoint"}', "application/json", 404)
                 return
@@ -2332,7 +2607,8 @@ def serve(port: int, out: str) -> None:
                        "application/json")
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"open http://0.0.0.0:{port}/ — paste a link, press Download", flush=True)
+    print(f"open http://0.0.0.0:{port}/ — find documents, or paste a link",
+          flush=True)
     print(f"cookies: {cookie_report(find_cookies())}", flush=True)
     try:
         server.serve_forever()
@@ -2595,6 +2871,67 @@ def selftest() -> str:
     # and the page shows it escaped, so the quote does not break the attribute
     assert html_escape('<a href="x">&') == "&lt;a href=&quot;x&quot;&gt;&amp;"
 
+    # ---- find: Scribd's own search answer, not an engine's html ----
+    first = search_url("  physics   12th ")
+    assert first.startswith("https://www.scribd.com/search/query?"), first
+    assert "query=physics+12th" in first and "page=" not in first, first
+    assert "page=2" in search_url("physics 12th", 2)
+    assert search_url("physics 12th") == first
+
+    answer = {"results": {"documents": {"content": {"documents": [
+        {"id": 1, "title": "Physics 12th", "pageCount": 402, "views": "123K",
+         "reader_url": "https://www.scribd.com/document/1/Physics-12th?utm=x",
+         "authors": [{"name": "someone"}]},
+        {"id": 2, "title": "  spaced   title ",
+         "reader_url": "https://id.scribd.com/document/2/Spaced",
+         "pageCount": "7"},
+        {"id": 3, "title": "id but no link"},
+        {"id": 4, "title": "elsewhere",
+         "reader_url": "https://example.com/document/4"},
+    ]}}}, "compilationId": "x"}
+    found = [hit for hit in (hit_from(d) for d in documents_in(answer)) if hit]
+    assert [hit["id"] for hit in found] == ["1", "2", "3"], found
+    assert found[0]["url"] == "https://www.scribd.com/document/1/Physics-12th"
+    assert found[0]["pages"] == 402 and found[0]["author"] == "someone"
+    assert found[1]["title"] == "spaced title"
+    assert found[2]["url"] == "https://www.scribd.com/document/3"  # id is enough
+    # a reshaped answer still gives up its documents
+    moved = {"payload": [{"node": {"list": [
+        {"reader_url": "https://www.scribd.com/document/9/x", "title": "moved"}]}}]}
+    assert documents_in(moved)[0]["title"] == "moved"
+    assert documents_in({"nothing": 1}) == []
+    assert documents_in([]) == []
+
+    def stub(payload, status=200, error=""):
+        def ask(url):
+            body = (payload if isinstance(payload, bytes)
+                    else json.dumps(payload).encode())
+            return {"status": status, "body": body, "headers": {}, "error": error}
+        return ask
+
+    hits, notes = find_documents("physics 12th", 1, ask=stub(answer))
+    assert [hit["id"] for hit in hits] == ["1", "2", "3"], hits
+    assert notes == ["page 1: 4 document(s), 3 new"], notes
+    assert picked_hits(hits, "2") == [hits[1]]
+    assert picked_hits(hits, "1-2") == hits[:2]
+    assert picked_hits(hits, "3,1") == [hits[2], hits[0]]
+    assert picked_hits(hits, "9") == [] and picked_hits(hits, "x") == []
+
+    # a refusal is reported as a refusal, never dressed up as "no results"
+    hits, notes = find_documents("physics", 1, ask=stub(b"nope", 403))
+    assert hits == [] and "refused" in notes[0], notes
+    hits, notes = find_documents("physics", 1, ask=stub(b"<html>app</html>"))
+    assert hits == [] and "not search data" in notes[0], notes
+    hits, notes = find_documents("physics", 1,
+                                 ask=stub({}, 0, "connection refused"))
+    assert hits == [] and "no answer" in notes[0], notes
+    hits, notes = find_documents("   ", 1, ask=stub(answer))
+    assert hits == [] and "type a few words" in notes[0], notes
+    # a page with nothing new stops the paging instead of hammering Scribd
+    hits, notes = find_documents("physics", 3, ask=stub(answer))
+    assert len(hits) == 3 and len(notes) == 2, notes
+    assert notes[-1] == "page 2: 4 document(s), 0 new", notes
+
     gate = Gate(rate=24.0, floor=8.0, ceiling=60.0)
     for _ in range(40):
         gate.complaint(403)
@@ -2606,7 +2943,7 @@ def selftest() -> str:
 
     return ("selftest: every check passed — sheet maths, EXIF rotation, "
             "jpeg size traps, pdf verify, cookies, token, names, "
-            "pasted links, bookmarklet")
+            "pasted links, bookmarklet, scribd search")
 
 def main(argv: list[str]) -> int:
     global BASE
@@ -2622,13 +2959,20 @@ def main(argv: list[str]) -> int:
     placeholder = True
     verify = True
     probe = 0
+    find_text = ""
+    pick = ""
     index = 0
     while index < len(argv):
         arg = argv[index]
         if arg in ("--url", "--links", "--limit", "--out", "--cookies", "--base",
-                   "--jobs", "--name", "--probe") and index + 1 < len(argv):
+                   "--jobs", "--name", "--probe", "--find",
+                   "--pick") and index + 1 < len(argv):
             value = argv[index + 1]
-            if arg == "--url":
+            if arg == "--find":
+                find_text = value.strip()
+            elif arg == "--pick":
+                pick = value.strip()
+            elif arg == "--url":
                 urls.append(value.strip())
             elif arg == "--links":
                 links_text += "\n" + value
@@ -2671,6 +3015,26 @@ def main(argv: list[str]) -> int:
         index += 1
     if cookies:
         os.environ["COOKIES"] = cookies
+    if pick and not find_text:
+        print('--pick only makes sense with --find "your words"')
+        return 2
+    if find_text:
+        hits, notes = find_documents(find_text, 1)
+        for note in notes:
+            print(f"  {note}")
+        if not hits:
+            print("no documents found — nothing to download")
+            return 1
+        print_hits(hits)
+        if not pick:
+            print(f"{len(hits)} document(s) — add --pick 1,3 to download any of them")
+            return 0
+        chosen = picked_hits(hits, pick)
+        if not chosen:
+            print(f"nothing matches --pick {pick} (there are {len(hits)})")
+            return 2
+        print(f"downloading {len(chosen)} of {len(hits)} document(s)")
+        urls += [hit["url"] for hit in chosen]
     if links_text.strip():
         urls += links_from_text(links_text)
     urls = [item for item in dict.fromkeys(urls) if item]

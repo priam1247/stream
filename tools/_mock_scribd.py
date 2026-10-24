@@ -5,9 +5,12 @@
   GET /embeds/<id>     the viewer shell
   GET /images/...      a small synthetic page scan
   GET /services/oembed title/author
+  GET /search/query    Scribd's own search answer (2 documents, then nothing)
 """
+import json
 import struct
 import sys
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8910
@@ -33,6 +36,29 @@ def document_html(doc_id):
             f'</script></body></html>').encode()
 
 
+def search_answer(query, page):
+    """The shape Scribd really returns: results.documents.content.documents."""
+    documents = []
+    if page == 1:
+        documents = [
+            {"id": 900001, "title": f"{query} question bank", "pageCount": 2,
+             "views": "1.2K", "releasedAt": "2025-01-01",
+             "reader_url": "https://www.scribd.com/document/900001/Question-Bank",
+             "authors": [{"id": 1, "name": "someone"}]},
+            {"id": 900001, "title": "duplicate of the first",
+             "pageCount": 2,
+             "reader_url": "https://www.scribd.com/document/900001/Question-Bank"},
+            {"id": 900002, "title": f"{query} notes", "pageCount": 2,
+             "views": "40",
+             "reader_url": "https://www.scribd.com/document/900002/Notes",
+             "authors": [{"id": 2, "name": "someone else"}]},
+            {"id": 900003, "title": "not scribd",
+             "reader_url": "https://example.com/document/900003"},
+        ]
+    return {"compilationId": "mock", "content_type": "documents",
+            "results": {"documents": {"content": {"documents": documents}}}}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -48,7 +74,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         path = self.path.split("?")[0]
-        if path.startswith("/document/"):
+        if path == "/search/query":
+            query = urllib.parse.parse_qs(self.path.split("?")[1])
+            words = (query.get("query") or [""])[0]
+            if "refused" in words.lower():
+                self.send(b"no", 403, "text/plain")
+                return
+            page = int((query.get("page") or ["1"])[0])
+            self.send(json.dumps(search_answer(words, page)).encode(),
+                      ctype="application/json")
+        elif path.startswith("/document/"):
             self.send(document_html(path.split("/")[2]))
         elif path.startswith("/embeds/"):
             self.send(b"<html>embed</html>")
