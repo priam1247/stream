@@ -236,26 +236,60 @@ assume it is the whole book.
 ## One book page per PDF sheet
 
 Earlier browser output contained the whole browser viewport (toolbars,
-sidebars, the viewer chrome). The fix, ported from the two projects below:
+sidebars, viewer chrome) and, after the first attempt at isolating pages,
+each page still spilled over **14 sheets**. Two things were wrong:
 
-1. **Isolate** — hide every top-level `<body>` element that does not contain
-   the document, flatten the page's ancestors, and drop Scribd's decorative
-   frame (`.b_tl … .highlighter_canvas`).
-2. **Mark one page** — `data-export-target` on the page being printed; all
-   other pages are `display:none`.
-3. **Size the sheet to the page** — `@page { size: <page>px <page>px; margin: 0 }`
-   and `page.pdf(width=page/96 in, height=page/96 in, margin=0)`.
-4. **Verify and merge** — each print must yield exactly one sheet; the parts
-   are merged with `pypdf`, preserving per-page sizes.
+* the page box was read from the inline `style` attribute, where Scribd writes
+  percentages (`width: 100%`), so `parseFloat` produced `100` and the paper
+  was ~1 inch instead of the page;
+* marking the page *in place* left the viewer's scrollers and virtual pages
+  contributing to the printed document, so nothing capped it at one sheet.
+
+What the browser route now does, per document page:
+
+1. **Scroll** the page into view (the viewer is virtualised — an unhydrated
+   page would print blank).
+2. **Clone** it (`cloneNode(true)`, plus canvas bitmaps and shadow roots) into
+   a bare `position: fixed; top: 0; left: 0` root appended to `<body>`. The
+   clone is inert, so the viewer cannot re-render or unload it mid-print.
+   Its ancestors are rebuilt as class-only shims so Scribd's descendant
+   selectors still match.
+3. **Measure** with `getComputedStyle` (always px, never the percentage
+   inline style) and grow to the image/text-layer bounds if they overflow.
+4. **Hide the viewer** — every other `<body>` child gets inline
+   `display: none !important`, `html`/`body` are clamped to the page size with
+   `overflow: hidden`, and Scribd's decorative frame
+   (`.b_tl … .highlighter_canvas`) is dropped.
+5. **Print** with `@page { size: <w>px <h>px; margin: 0 }`,
+   `page.pdf(width=w/96 in, height=h/96 in, margin=0, page_ranges="1")`,
+   `prefer_css_page_size=True` and `print_background=True`, after waiting for
+   the clone's images to decode.
+6. **Verify** with `pypdf`: exactly one sheet is accepted. A page that prints
+   as 0 or several sheets is rasterised from a screenshot of the isolated
+   clone instead — never two sheets, never a missing page.
+7. **Merge** the one-sheet PDFs with `pypdf`, preserving each page's size.
 
 ```bash
 python -m scribd "URL" -o out -f pdf --cookies-file cookies.txt --no-cache --browser
 # → browser: printing 95 pages, one sheet each
+# → browser: page 1 -> 1 sheet 836x1088 pt (1114x1442 px, 1 img(1 loaded), 2140 chars)
+# → browser: printed 10/95 pages…
 # → browser: merged 95 page PDFs -> 95 sheets
 ```
 
-`--no-print-pages` falls back to a single whole-document print;
-`--screenshots` additionally screenshots each page (only for text-free scans).
+If the sheet count is ever wrong you will see one of these instead, which says
+exactly which step misbehaved:
+
+```
+browser: page 7 printed as image (print gave 2 sheets)     # raster fallback used
+browser: page 7 isolate failed (Error: …)                  # selector/measure problem
+browser: 3 page(s) could not be printed                    # those pages were dropped
+browser: WARNING merged PDF has 90 sheets for 95 pages
+browser: pypdf missing, cannot merge page PDFs              # pip install -r requirements.txt
+```
+
+`--no-print-pages` falls back to a single whole-document print (the older
+viewport-shaped output); `--screenshots` additionally screenshots each page.
 
 ## Credits / what these approaches are based on
 
@@ -266,11 +300,13 @@ python -m scribd "URL" -o out -f pdf --cookies-file cookies.txt --no-cache --bro
   deriving page images from asset URLs (`/pages/N-hash.jsonp` →
   `/images/N-hash.jpg`).
 - **[themrsami/scribd-downloader](https://github.com/themrsami/scribd-downloader)**
-  — print each page alone with `@page` sized to that page, assert exactly one
-  sheet per document page, and merge with `pypdf`.
+  — print each page alone with `@page` sized to that page, `pageRanges: "1"`,
+  `scale: 1`, assert exactly one sheet per document page, and merge with
+  `pypdf`.
 - **[xDatx/Studocu-Scribd-Helper](https://github.com/xDatx/Studocu-Scribd-Helper)**
-  — isolate the viewer (hide every other body child, flatten ancestors, hide
-  the decorative corner classes) so only the document prints.
+  — isolate the viewer (move the page container under `<body>`, hide every
+  other body child, flatten ancestors, hide the decorative corner classes) so
+  only the document prints.
 - **[youngpiu/scribd-pdf-downloader](https://github.com/youngpiu/scribd-pdf-downloader)**
   — scroll each page into view until the container count stabilises
   (`scrollIntoView`, not `scrollBy`), then inject print CSS (hide toolbars,
