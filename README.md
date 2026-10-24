@@ -204,6 +204,45 @@ All endpoints except `/api/health` then require HTTP Basic auth (or
 `SCRIBD_WEB_TOKEN`, sent as `X-Token` or `?token=`). The cookie file is only
 ever read by the CLI subprocess — it is never served, logged or echoed.
 
+## Hand in hand: the panel does the downloading
+
+The panel was never the problem — forcing `--browser` was. That flag *skips* the
+HTTP routes. Without it the CLI fetches the document's page assets directly
+(`/pages/N-*.jsonp` → images) and merges them into a PDF with Pillow: no
+Chromium, no browser memory, and the container's own bandwidth does the work.
+
+So the web UI decides per machine:
+
+```
+SCRIBD_WEB_BROWSER=auto   # default: add --browser only if Chromium can start here
+SCRIBD_WEB_BROWSER=on     # always (a machine that has a browser)
+SCRIBD_WEB_BROWSER=off    # never (panel, VPS, anything without libraries)
+```
+
+Search is the other half. Scribd's search page needs JavaScript, so when the
+browser is unavailable the CLI falls back to a search engine that still answers
+over plain HTTP:
+
+```
+web search: 'excel and succeed' via DuckDuckGo (site:scribd.com)
+web search: 12 document(s) found
+```
+
+Nothing is crawled — it is `site:scribd.com <query>` asked once, and the document
+links are read from the result page. `parse_ddg_results` handles DuckDuckGo's
+redirect links and every Scribd document type.
+
+| machine | search | download | data |
+| --- | --- | --- | --- |
+| your PC | Chromium | Chromium (embed-print, one sheet per page) | yours |
+| **panel / VPS, no Chromium** | DuckDuckGo over HTTP | page assets over HTTP + Pillow merge | **theirs** |
+| GitHub Actions | Chromium | Chromium | theirs |
+
+The Chromium route is still better where it works — it produces the real page
+layout, one book page per sheet. The HTTP route is what keeps a plain container
+useful, and if `--browser` is on but the browser cannot start, the CLI no longer
+dies: it reports why and continues on HTTP.
+
 ## Hosting it on a panel (Pterodactyl / panel.xsystemshosting.com)
 
 A Pterodactyl "Python server" is not a shell and not cPanel. It pulls the repo,

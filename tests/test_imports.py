@@ -4014,3 +4014,102 @@ def test_start_here_is_four_steps_and_matches_the_workflow():
     first_section = readme.find("\n## ")
     assert first_section != -1
     assert "START-HERE.md" in readme[:first_section]
+
+
+# ---------------------------------------------------------------------------
+# The server does the downloading: no browser at all
+# ---------------------------------------------------------------------------
+def test_parse_ddg_results_handles_redirects_and_kinds():
+    from scribd.search import parse_ddg_results
+
+    html = """
+    <div class="result"><a class="result__a"
+        href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.scribd.com%2Fdocument%2F725194819%2FRevised-Subject-Matrix">
+        Revised Subject Matrix | PDF</a></div>
+    <div class="result"><a class="result__a"
+        href="https://www.scribd.com/presentation/111/Deck">A deck</a></div>
+    <div class="result"><a class="result__a" href="https://example.com/x">not scribd</a></div>
+    <div class="result"><a class="result__a"
+        href="https://www.scribd.com/document/725194819/Revised-Subject-Matrix">duplicate</a></div>
+    """
+    hits = parse_ddg_results(html)
+    assert [(h.doc_id, h.kind) for h in hits] == [("725194819", "document"), ("111", "presentation")]
+    assert hits[0].title == "Revised Subject Matrix | PDF"
+    assert hits[0].url.endswith("/document/725194819/Revised-Subject-Matrix")
+
+
+def test_web_search_needs_no_browser(monkeypatch):
+    """A container with no Chromium can still turn a keyword into document URLs."""
+    import httpx
+
+    import scribd.search as search
+
+    ddg_html = (
+        '<a class="result__a" href="https://www.scribd.com/document/42/Excel">'
+        "Excel and Succeed</a>"
+    )
+
+    def handler(request):
+        assert "site%3Ascribd.com" in str(request.url) or "site:scribd.com" in str(request.content)
+        return httpx.Response(200, text=ddg_html)
+
+    real_client = httpx.AsyncClient
+
+    def client(**kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    lines: list[str] = []
+    hits = asyncio.run(search.web_search("excel and succeed", limit=5, log=lines.append))
+    assert [hit.doc_id for hit in hits] == ["42"]
+    assert any("via DuckDuckGo" in line for line in lines)
+
+
+def test_web_search_reports_a_network_failure(monkeypatch):
+    import httpx
+
+    import scribd.search as search
+
+    real_client = httpx.AsyncClient
+
+    def client(**kwargs):
+        kwargs["transport"] = httpx.MockTransport(
+            lambda request: (_ for _ in ()).throw(httpx.ConnectError("boom"))
+        )
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    lines: list[str] = []
+    assert asyncio.run(search.web_search("x", log=lines.append)) == []
+    assert any("web search failed" in line for line in lines)
+
+
+def test_webapp_drops_browser_flag_when_chromium_is_missing(monkeypatch, tmp_path):
+    """The panel cannot run Chromium, so the job must use the HTTP routes."""
+    import importlib
+
+    import scribd.webapp as webapp
+
+    monkeypatch.setenv("SCRIBD_WEB_ENV_FILE", "/nonexistent.env")
+    monkeypatch.setenv("SCRIBD_WEB_DATA", str(tmp_path))
+    monkeypatch.delenv("SCRIBD_WEB_BROWSER", raising=False)
+    monkeypatch.setattr("scribd.chromium.find_chromium", lambda: "")
+    importlib.reload(webapp)
+
+    job = webapp.Job(id="j", mode="download", query="excel", limit=3)
+    command = webapp.build_command(job)
+    assert "--browser" not in command, command
+    assert "--search" in command and "--limit" in command
+
+    # a machine with Chromium keeps the browser route
+    monkeypatch.setattr("scribd.chromium.find_chromium", lambda: "/cache/chrome-linux64/chrome")
+    assert webapp.use_browser() is True
+    assert "--browser" in webapp.build_command(job)
+
+    # and it can be forced either way
+    monkeypatch.setenv("SCRIBD_WEB_BROWSER", "off")
+    assert webapp.use_browser() is False
+    monkeypatch.setenv("SCRIBD_WEB_BROWSER", "on")
+    assert webapp.use_browser() is True
+    importlib.reload(webapp)

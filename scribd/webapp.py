@@ -359,6 +359,16 @@ def _formats() -> str:
     return os.environ.get("SCRIBD_WEB_FORMATS", "pdf").strip() or "pdf"
 
 
+def use_browser() -> bool:
+    """Should the CLI be asked for Chromium? `auto` = only if it can start."""
+    mode = os.environ.get("SCRIBD_WEB_BROWSER", "auto").strip().lower()
+    if mode in ("1", "on", "true", "yes"):
+        return True
+    if mode in ("0", "off", "false", "no"):
+        return False
+    return bool(browser_status()["chromium"])
+
+
 def build_command(job: Job) -> list[str]:
     if job.mode == "setup":
         # no shell on most panels: download *and* launch-test Chromium as a job
@@ -368,8 +378,13 @@ def build_command(job: Job) -> list[str]:
         sys.executable, "-m", "scribd",
         "-o", str(OUT_DIR),
         "-f", _formats(),
-        "--browser", "--no-cache",
+        "--no-cache",
     ]
+    # Only ask for the Chromium route when this machine can actually run it:
+    # without a browser the CLI uses its HTTP strategies (page assets + image
+    # merge), which is how a plain container can still do the downloading.
+    if use_browser():
+        command.append("--browser")
     if os.environ.get("SCRIBD_WEB_NO_EMBED"):
         command.append("--no-embed")
     command += _cookies_args()

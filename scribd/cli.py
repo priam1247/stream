@@ -327,7 +327,7 @@ async def run(args: argparse.Namespace) -> int:
 
         # --- search: keyword -> document URLs (no link needed) -----------
         if queries:
-            from .search import browser_search, find_documents
+            from .search import browser_search, find_documents, web_search
             from .utils import slugify
 
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -403,6 +403,20 @@ async def run(args: argparse.Namespace) -> int:
                             )
                     seen = {hit.doc_id for hit in hits}
                     for hit in browser_hits:
+                        if want and len(hits) >= want:
+                            break
+                        if hit.doc_id in seen:
+                            continue
+                        seen.add(hit.doc_id)
+                        hits.append(hit)
+
+                if not hits:
+                    # Still nothing: no browser needed for this one — search
+                    # engines index Scribd's documents. This is what makes a
+                    # server without Chromium able to find documents at all.
+                    web_hits = await web_search(query, limit=want, log=lambda m: console.print(f"[dim]  {m}[/dim]"))
+                    seen = set()
+                    for hit in web_hits:
                         if want and len(hits) >= want:
                             break
                         if hit.doc_id in seen:
