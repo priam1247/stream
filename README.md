@@ -38,7 +38,7 @@ own browser, one click sends every link on the page) and a **paste box**.
 3. Start it: `PY_FILE=scribd_download.py`, restart.
 4. Open the server address. The line under the title must read **v2.7**.
 
-## 2. Find links: three ways
+## 2. Find links: five ways
 
 ### a) find them on the panel (no PC needed)
 
@@ -107,7 +107,39 @@ panel on, so it always comes back to *your* panel.
 It collects `/document/`, `/presentation/`, `/spreadsheet/` and `/ebook/` links
 (up to 40 on a page), merges duplicates, and ignores everything else.
 
-### d) paste links
+### d) search from your own JS server
+
+If you run a Node box with `@sparticuz/chromium` + `puppeteer-core`, `tools/troy-search/`
+is a second small service that searches and hands the links to the panel:
+
+```bash
+cd tools/troy-search
+npm start                                  # http://0.0.0.0:8096/
+# or point it at the panel once:
+SCRIBD_PANEL=http://YOUR-PANEL:25811 npm start
+```
+
+Type a keyword, tick the documents, press **Send ticked to the panel** — the
+panel answers `queued N link(s)` and starts downloading.
+
+It asks Scribd's own `/search/query` first, then DuckDuckGo, DuckDuckGo lite,
+Bing and Mojeek with `site:scribd.com`. **Plain HTTP is tried before the
+browser**, because that was measured: the same headless Chromium that this box
+runs was refused (HTTP 403) by a page that answered plain Python with ten real
+Scribd links, from the same address, four minutes apart. The browser is a
+fallback, and `/diag` tells you whether it can start at all on this box.
+
+```bash
+node index.js "physics 12th"                       # list the links
+node index.js "physics 12th" --pick 1,3 --panel http://IP:25811
+node index.js --selftest                           # offline check
+```
+
+It sends only links, only Scribd document links, at most 40 at a time, and it
+prints every engine's answer — `refused`, `captcha`, `no answer` — instead of
+turning a block into "no results".
+
+### e) paste links
 
 The panel page also has a box: one link per line, anything that is not a Scribd
 document link ignored, duplicates dropped, `?utm=…` and `#page=3` stripped.
