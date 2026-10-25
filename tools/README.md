@@ -333,22 +333,38 @@ settings** card (admin only) and land in Cloudflare D1, so moving the panel to a
 new host does not need a redeploy. `SCRIBD_PANEL_URL` / `SCRIBD_PANEL_KEY` in the
 environment are just the starting defaults.
 
-### Publishing the panel over HTTPS (and why you may want to)
+### Big books: signed links straight to the panel (no tunnel needed)
 
 The dashboard proxies every byte through its own server function, which is fine
 until a 150 MB book meets a hosting limit (Vercel's Hobby plan cuts a function at
-60 seconds). The panel itself has no such limit. Put it on HTTPS once, and the
-dashboard can hand the browser a link straight to the panel:
+60 seconds). The panel has no such limit, so the dashboard can hand the browser a
+link that goes **straight to the panel**:
 
-```bash
-cloudflared tunnel --url http://127.0.0.1:25811      # quick test: gives you an https:// URL
-# or a named tunnel:  scribd.yourdomain.com -> http://127.0.0.1:25811
+- the panel accepts `?t=<signature>&e=<expiry>` on `/file/<NAME>`: an HMAC of
+  `NAME|expiry` keyed with `PANEL_KEY`, valid for one file and a short time;
+- the dashboard mints it in `GET /api/scribd/link?name=…` when you press Save;
+- so the phone downloads from the panel itself and the key never appears in a
+  URL. Nothing extra to run, no tunnel, no domain.
+
+Set this on the dashboard (Vercel → Environment Variables) to switch it on:
+
+```text
+SCRIBD_PUBLIC_URL=http://195.123.189.187:25811     # the panel, as the browser sees it
 ```
 
-Then set **`SCRIBD_PUBLIC_URL=https://scribd.yourdomain.com`** on the dashboard
-(and nothing else). The Save link now points at the panel, so the PDF never
-passes through Vercel. Open `https://scribd.yourdomain.com/?key=<PANEL_KEY>` once
-on the phone and the panel cookie does the rest.
+`http://` is fine here **because the browser only navigates to it** (a download);
+it is never loaded as a subresource inside the https page, so there is no
+mixed-content block. Leave it empty and Save goes back to the proxy path.
+
+Verified with curl against the real code: a signed link answers `200` with a
+valid PDF, the same signature on another file answers `401`, an expired one
+answers `401`, and no signature on a locked panel answers `401`.
+
+If you would rather not expose port 25811 at all, put a **Cloudflare Tunnel**
+(named tunnel, `scribd.yourdomain.com -> http://127.0.0.1:25811`) in front and
+use `https://…` as `SCRIBD_PUBLIC_URL`. That needs a machine with a shell that
+can run `cloudflared` — a Pterodactyl plan has none — so the signed link is the
+one that works on the hosting you already have.
 
 ## A page Scribd will not serve
 
@@ -383,6 +399,23 @@ same progress record and the same output folder.
 - **Nothing is left half-alive.** Every worker checks a generation number before
   it touches the network, so a reset really stops the pages being fetched — the
   log ends with `stopped — no more pages requested`.
+
+## Disk: the panel keeps itself from filling the plan
+
+`SCRIBD_KEEP_FILES=40`, `SCRIBD_MAX_MB=6000`, `SCRIBD_CACHE_DAYS=3`
+
+Page scans are cached so re-running a partial only fetches the pages that
+failed — that cache is what makes the "run it again later" advice cheap. On a
+10 GB plan it cannot be kept for ever, so after every finished document (and once
+at startup) the panel prunes, and **says what it pruned**:
+
+1. page caches older than `SCRIBD_CACHE_DAYS` (3 days);
+2. PDFs beyond the newest `SCRIBD_KEEP_FILES` (40);
+3. if the folder is still over `SCRIBD_MAX_MB` (6000 MB), the oldest PDFs go —
+   never the last one left.
+
+A 150 MB book plus its cache is roughly 300 MB, so 40 books is about 12 GB of
+history: on a 10 GB plan lower `SCRIBD_KEEP_FILES` to about 20.
 
 ## Limits, stated plainly
 
