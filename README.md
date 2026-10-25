@@ -126,6 +126,28 @@ Verdicts are deliberately honest: `PDF BUILT`, `PDF PARTIAL`, `PDF BROKEN`,
 request per page). The full manual — every flag, the routes, the limits — is
 [`tools/README.md`](./tools/README.md).
 
+### Working from a phone
+
+Search, then download — that is the whole flow; there is no link box to fill in.
+
+- **Search accuracy**: results are ordered by what you actually typed (exact phrase
+  first, then all the words, then some). Anything that shares no word with the
+  query is kept but marked **related** — Scribd's search is loose by design, and
+  the tag stops a vague answer looking like a real match.
+- **Bulk**: **Mark all** ticks every loaded result, **Clear** undoes it, and pages
+  can be capped (0 = the whole document).
+- **Speed**: **Channels** (8/12/16/24, default 16) is how many pages are fetched at
+  once. More is not always faster — Scribd throttles by address, and the log's
+  `pages/s` figure is the honest measure.
+- **One job at a time**: a second tap cannot start a second download. If the panel
+  is already busy the page says how many seconds since the last page arrived.
+- **A stuck job stops blocking you**: if a job has not moved for 7 minutes, a new
+  download steps over it, and the amber banner's **Stop it** button clears it at
+  once (`POST /api/scribd/reset`, administrator only).
+- **Saving on a phone**: the PDF is streamed from the panel through this dashboard
+  and served as a normal attachment, so the phone saves a 150 MB book without
+  holding it in memory first. Tap the file name if the Save button does nothing.
+
 **The Control Room drives it.** The member console has a fourth tab, **Scribd**, so
 the whole workflow lives in the dashboard:
 
@@ -133,7 +155,7 @@ the whole workflow lives in the dashboard:
 |---|---|
 | server-side panel client (holds the key) | `dashboard/lib/scribd-panel.ts` |
 | session / admin gate | `dashboard/lib/scribd-guard.ts` |
-| proxy routes | `dashboard/app/api/scribd/{status,files,find,run,file,config}/route.ts` |
+| proxy routes | `dashboard/app/api/scribd/{status,files,find,run,file,config,reset}/route.ts` |
 | the tab | `dashboard/components/scribd-desk.tsx` |
 | saved address & key | `dashboard/lib/storage.ts` → `portal_settings` |
 

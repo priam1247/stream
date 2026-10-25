@@ -17,18 +17,17 @@ browser, no pip install and no repository.
     python scribd_download.py --selftest             # offline check of this file
 
 Panel mode: set PY_FILE to this file, restart, open the server address. The page
-has three ways in:
+has two ways in:
 
   1. FIND HERE. The panel asks Scribd's own search — the very request its search
      page makes, /search/query — and gets the documents back as JSON with their
-     titles, page counts and links. The answer also says how many documents
-     match in total and which page of results it is, so "Load more" asks for page
-     2, 3, … and the page can say "showing 80 of 1,234". Tick, press download.
+     titles, page counts and links. Results are put in the order the words were
+     typed, and a result that only shares a common word is marked "related".
+     Tick what you want, or press "Tick all shown", then download. "Load more"
+     asks for page 2, 3, … and the page can say "showing 80 of 1,234".
   2. SEND LINKS FROM YOUR BROWSER. A bookmarklet built from the address you
      opened the panel on: search Scribd in your own browser, click it, and every
      document link on the page is handed to /send.
-  3. PASTE LINKS. One per line; anything that is not a Scribd document link is
-     ignored, duplicates dropped.
 
 Why the finding is done by Scribd and not by a search engine: the engines refuse
 this address (this was measured — the old check_deployment.py printed "Search
@@ -197,7 +196,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.12"
+VERSION = "2.13"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -1685,9 +1684,21 @@ def verify_bytes(data: bytes, expect_pages: int = 0, expect_images: int = 0,
 # ---------------------------------------------------------------------------
 # the job
 # ---------------------------------------------------------------------------
+STALL_SECONDS = 420          # a "running" job with no page progress for 7 min is wedged
+
+
 class Job:
+    """One job slot, with a generation number so a stopped job really stops.
+
+    The generation is what makes stopping honest: every worker asks
+    `alive(gen)`, and a reset bumps the generation, so the abandoned thread
+    can never write into the new job's progress or verdict.
+    """
+
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        self.generation = 0
+        self.heartbeat = 0.0
         self.lines: list[str] = []
         self.state = "idle"
         self.verdict = ""
@@ -1709,6 +1720,76 @@ class Job:
     def set_progress(self, **kwargs) -> None:
         with self.lock:
             self.progress.update(kwargs)
+            self.heartbeat = time.time()      # the sign of a job that is alive
+
+    def quiet_for(self) -> float:
+        """Seconds since the last page progress (0 when nothing is running)."""
+        with self.lock:
+            if self.state != "running":
+                return 0.0
+            last = self.heartbeat or self.started or time.time()
+            return max(0.0, time.time() - last)
+
+    def stalled(self) -> bool:
+        return self.quiet_for() > STALL_SECONDS
+
+    def alive(self, gen: int) -> bool:
+        """Is that generation still the job that owns the slot?"""
+        with self.lock:
+            return self.state == "running" and gen == self.generation
+
+    def _start(self) -> int:
+        """Take the slot. Caller holds no lock; returns the new generation."""
+        with self.lock:
+            self.generation += 1
+            self.state = "running"
+            self.started = time.time()
+            self.heartbeat = self.started
+            self.ended = 0.0
+            self.verdict = ""
+            self.detail = ""
+            self.file = ""
+            self.title = ""
+            self.lines.clear()
+            self.progress = {"page": 0, "of": 0, "ok": 0, "skipped": 0, "blank": 0}
+            return self.generation
+
+    def begin(self) -> int:
+        """Start a job from the command line, where there is no queue to check."""
+        return self._start()
+
+    def claim(self) -> tuple[bool, int, str]:
+        """Take the one slot, atomically.
+
+        Two taps on a phone used to race here: both requests saw "idle" and two
+        threads wrote to the same job. Now exactly one can win, and a job that
+        has not moved for STALL_SECONDS is stepped over instead of blocking
+        downloads for ever.
+        """
+        with self.lock:
+            if self.state == "running":
+                quiet = time.time() - (self.heartbeat or self.started or time.time())
+                if quiet <= STALL_SECONDS:
+                    return (False, self.generation,
+                            f"a download is already running ({int(quiet)}s since the "
+                            f"last page) — wait for it to finish")
+                note = (f"taking over from a job that had not moved for "
+                        f"{int(quiet)}s")
+            else:
+                note = ""
+        return True, self._start(), note
+
+    def stop(self, reason: str) -> bool:
+        """Stop whatever is running, so its workers see they are not alive."""
+        with self.lock:
+            if self.state != "running":
+                return False
+            self.generation += 1          # every worker now answers alive() == False
+            self.state = "done"
+            self.verdict = "STOPPED"
+            self.detail = reason
+            self.ended = time.time()
+        return True
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -1720,6 +1801,11 @@ class Job:
                     if self.started else 0,
                     "log": list(self.lines)[-200:],
                     "cookies": cookie_report(find_cookies()),
+                    "quiet": round(max(0.0, time.time() - self.heartbeat)
+                                   if self.state == "running" and self.heartbeat else 0),
+                    "stalled": (self.state == "running" and self.heartbeat
+                                and time.time() - self.heartbeat > STALL_SECONDS),
+                    "stall_after": STALL_SECONDS,
                     "version": VERSION, "sample": SAMPLE}
 
 JOB = Job()
@@ -1900,6 +1986,7 @@ class Ctx:
         self.trace_lock = threading.Lock()
         self.cache_dir = ""
         self.refresh = False
+        self.gen = 0                 # 0 = a job that was not started from the panel
         self.total = 0
         self.title = ""
         self.author = ""
@@ -2248,6 +2335,8 @@ class Ctx:
 
     def grab(self, number: int, force: bool = False,
              wide: bool = False) -> tuple[int, dict | None, str]:
+        if self.gen and not JOB.alive(self.gen):
+            return number, None, ""      # a stopped job asks the network for nothing
         path = self.cache_path(number)
         if not force and not self.refresh and os.path.isfile(path):
             try:
@@ -2301,23 +2390,24 @@ class Ctx:
 def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12,
             refresh: bool = False, name: str = "", check: bool = True,
             placeholder: bool = True, probe_page: int = 0,
-            verify: bool = True, text: bool = False) -> None:
+            verify: bool = True, text: bool = False, gen: int = 0,
+            note: str = "") -> None:
     urls = [str(item).strip() for item in
             (url if isinstance(url, (list, tuple)) else [url])
             if str(item or "").strip()]
-    with JOB.lock:
-        JOB.state = "running"
-        JOB.lines.clear()
-        JOB.verdict = ""
-        JOB.detail = ""
-        JOB.file = ""
-        JOB.title = ""
-        JOB.url = urls[0] if urls else ""
-        JOB.out = out
-        JOB.started = time.time()
-        JOB.ended = 0.0
-        JOB.progress = {"page": 0, "of": 0, "ok": 0, "skipped": 0, "blank": 0}
+    if gen:
+        # /run already claimed the slot, so its progress must not be wiped here
+        with JOB.lock:
+            JOB.url = urls[0] if urls else ""
+            JOB.out = out
+    else:
+        gen = JOB.begin()
+        with JOB.lock:
+            JOB.url = urls[0] if urls else ""
+            JOB.out = out
     os.makedirs(out, exist_ok=True)
+    if note:
+        JOB.say(note)
     try:
         if not urls:
             with JOB.lock:
@@ -2326,10 +2416,11 @@ def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12
         elif probe_page:
             _probe(urls[0], probe_page)
         elif len(urls) > 1:
-            _batch(urls, limit, out, jobs, refresh, check, placeholder, verify)
+            _batch(urls, limit, out, jobs, refresh, check, placeholder, verify,
+                   text, gen)
         else:
             _download(urls[0], limit, out, jobs, refresh, name, check, placeholder,
-                      verify, text)
+                      verify, text, gen)
     except Exception as exc:  # noqa: BLE001
         JOB.say(f"crashed: {exc!r}")
         with JOB.lock:
@@ -2337,14 +2428,20 @@ def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12
             JOB.detail = repr(exc)[:180]
     finally:
         with JOB.lock:
-            JOB.state = "done"
-            JOB.ended = time.time()
-        JOB.say("")
-        JOB.say(f"== {JOB.verdict} — {JOB.detail}")
+            # a reset or a takeover may already have closed this job: never
+            # reopen it, and never let it narrate the job that replaced it
+            owner = JOB.generation == gen and JOB.state == "running"
+            if owner:
+                JOB.state = "done"
+                JOB.ended = time.time()
+            verdict, detail = JOB.verdict, JOB.detail
+        if owner:
+            JOB.say("")
+            JOB.say(f"== {verdict} — {detail}")
 
 def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
            refresh: bool = False, check: bool = True, placeholder: bool = True,
-           verify: bool = True) -> None:
+           verify: bool = True, text: bool = False, gen: int = 0) -> None:
     """Several documents, one after another, with one honest verdict at the end.
 
     Each link goes through exactly the same _download path as a single link, so
@@ -2355,13 +2452,16 @@ def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
     lines: list[str] = []
     last_file = ""
     for index, link in enumerate(urls, start=1):
+        if gen and not JOB.alive(gen):
+            JOB.say("stopped before the next document")
+            break
         JOB.say("")
         JOB.say(f"=== document {index} of {total}: {link}")
         with JOB.lock:
             JOB.url = link
         try:
             _download(link, limit, out, jobs, refresh, "", check, placeholder,
-                      verify)
+                      verify, text, gen)
         except Exception as exc:  # noqa: BLE001
             JOB.say(f"crashed on {link}: {exc!r}")
             broken += 1
@@ -2378,6 +2478,10 @@ def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
             broken += 1
         lines.append(f"{index}. {verdict} — {os.path.basename(JOB.file or '') or link}")
         JOB.set_progress(page=index, of=total)
+        with JOB.lock:
+            JOB.title = f"document {index} of {total}"
+    if gen and not JOB.alive(gen):
+        return                       # a reset ended this batch; leave it ended
     with JOB.lock:
         if built == total:
             JOB.verdict = "PDF BUILT"
@@ -2441,9 +2545,10 @@ def _probe(url: str, number: int) -> None:
 def _download(url: str, limit: int, out: str, jobs: int = 12,
               refresh: bool = False, name: str = "", check: bool = True,
               placeholder: bool = True, verify: bool = True,
-              text: bool = False) -> None:
+              text: bool = False, gen: int = 0) -> None:
     ctx = Ctx(url, jobs)
     ctx.refresh = refresh
+    ctx.gen = gen or JOB.generation
     if not ctx.ident:
         with JOB.lock:
             JOB.verdict = "BAD LINK"
@@ -2475,6 +2580,11 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         futures = [pool.submit(ctx.grab, number)
                    for number in range(1, with_limit + 1)]
         for future in as_completed(futures):
+            if not JOB.alive(ctx.gen):
+                for pending in futures:
+                    pending.cancel()
+                JOB.say("stopped — no more pages requested")
+                return
             number, built, message = future.result()
             done += 1
             if message:
@@ -2817,6 +2927,26 @@ def count_in(payload, key: str) -> int:
     return number if 0 <= number <= 10000000 else 0
 
 
+PANEL_JOBS = 16              # pages fetched at once; more is not always faster
+
+
+def as_channels(value, default: int = 0, top: int = 24) -> int:
+    """How many pages to fetch at once.
+
+    Each one is a channel: one connection, one page. Scribd throttles per
+    address, so past a point extra channels only produce more 403s — the
+    download rate stops rising and the log gets noisy. 16 is the measured
+    middle for a small container; the panel offers 8, 12, 16 and 24.
+    """
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        number = default or PANEL_JOBS
+    if number <= 0:
+        number = default or PANEL_JOBS
+    return max(1, min(number, top))
+
+
 def as_limit(value, default: int = 0, top: int = 5000) -> int:
     """A page limit from a browser or a shell: 0 means the whole document."""
     try:
@@ -2833,6 +2963,73 @@ def as_page(value, default: int = 1) -> int:
     except (TypeError, ValueError, OverflowError):
         number = default
     return max(1, min(number, FIND_MAX_PAGE))
+
+
+SEARCH_STOPWORDS = {"a", "an", "the", "of", "for", "and", "or", "in", "on", "to",
+                    "with", "by", "from", "pdf", "part"}
+
+
+def query_words(query: str) -> list[str]:
+    """The words a person actually searched for, without filler."""
+    raw = re.split(r"[^0-9a-z]+", (query or "").lower())
+    words = [word for word in raw if word and word not in SEARCH_STOPWORDS]
+    return list(dict.fromkeys(words))
+
+
+def title_words(text: str) -> list[str]:
+    return [word for word in re.split(r"[^0-9a-z]+", (text or "").lower()) if word]
+
+
+def rank_hits(hits: list[dict], query: str) -> tuple[list[dict], int]:
+    """Order results the way the words were typed, and say which are exact.
+
+    Scribd's own search is deliberately loose — a search for "physics 12th"
+    also returns books that merely share a common word, which is why the panel
+    used to look like it was answering something nobody asked. Nothing is
+    thrown away here: a result that matches every word comes first, a result
+    that matches none is kept but marked `match: "none"`, so the page can show
+    it as *related* instead of pretending it was the answer.
+    """
+    words = query_words(query)
+    phrase = " ".join((query or "").split()).lower()
+    rows: list[tuple[int, int, dict]] = []
+    for order, hit in enumerate(hits):
+        title = str(hit.get("title") or "").lower()
+        author = str(hit.get("author") or "").lower()
+        in_title = title_words(title)
+        title_set = set(in_title)
+        score = 0
+        matched = 0
+        for word in words:
+            if word in title_set:
+                score += 12
+                matched += 1
+            elif any(candidate.startswith(word) for candidate in in_title):
+                score += 6
+                matched += 1
+            elif any(len(word) >= 4 and word.startswith(candidate)
+                     for candidate in in_title):
+                score += 4
+                matched += 1
+            elif word in author:
+                score += 3
+                matched += 1
+        if phrase and phrase in title:
+            score += 100                      # the exact phrase, first
+        if words and matched == len(words):
+            score += 20                       # every word, in any order
+        if hit.get("pages"):
+            score += 1                       # a tie-break that prefers real books
+        marked = dict(hit)
+        marked["score"] = score
+        # an empty query (or one made only of filler words) cannot fail a match
+        marked["match"] = ("all" if not words or matched == len(words)
+                           else "some" if matched else "none")
+        rows.append((score, order, marked))
+    rows.sort(key=lambda row: (-row[0], row[1]))
+    ordered = [row[2] for row in rows]
+    weak = sum(1 for hit in ordered if hit["match"] == "none")
+    return ordered, weak
 
 
 def find_page(query: str, page: int = 1,
@@ -2872,10 +3069,13 @@ def find_page(query: str, page: int = 1,
         note = ("Scribd answered, but named no documents for that query"
                 if page == 1 else "no more documents")
     else:
+        hits, weak = rank_hits(hits, query)
         note = f"{len(documents)} document(s)"
         dropped = len(documents) - len(hits)
         if dropped:
             note += f", {dropped} dropped (duplicate or not a Scribd document)"
+        if weak:
+            note += f", {weak} only loosely related"
     return hits, note, info
 
 
@@ -3016,6 +3216,32 @@ PAGE = """<!doctype html>
  .muted{color:#57606a;font-size:13px}
  ol.steps{margin:8px 0 0;padding-left:22px} ol.steps li{margin:5px 0}
  a{color:#0969da}
+ select{font:inherit;padding:8px 10px;border:1px solid #b8c0c8;border-radius:6px;
+  background:#fff}
+ .tag{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;
+  font-size:11px;font-weight:600;background:#fff4d6;color:#7a4b00;
+  border:1px solid #f0d9a8;vertical-align:middle}
+ .hit.weak .t{color:#57606a;font-weight:500}
+ .actions{display:flex;gap:8px;flex-wrap:wrap}
+ @media (max-width:640px){
+  body{padding:18px 12px 90px;font-size:15px}
+  h1{font-size:18px} h2{margin-top:22px}
+  /* 16px stops iOS Safari zooming the whole page when a box is tapped, which
+     is what pushed the Find button off the screen on a phone */
+  input[type=search],input[type=number],textarea,select,button,.btn{
+   font-size:16px;min-height:44px}
+  input[type=number]{width:100%}
+  .row{gap:8px}
+  .row > *{flex:1 1 100%;width:100%}
+  .row label.muted{display:flex;justify-content:space-between;align-items:center}
+  .row input[type=number]{width:96px;flex:0 0 96px}
+  .actions > *{flex:1 1 auto}
+  .hit{padding:11px 2px}
+  .hit input{width:20px;height:20px;margin-top:1px}
+  .hit .m{font-size:12px}
+  .verdict{font-size:15px;padding:12px}
+  code.bm{white-space:normal;word-break:break-all}
+ }
 </style><style>__EMBED_CSS__</style></head><body><div class="wrap">
 <h1>Download Scribd documents</h1>
 <div class="meta" id="meta">ready</div>
@@ -3031,17 +3257,33 @@ PAGE = """<!doctype html>
     <button id="find">Find</button>
     <span class="muted" id="said"></span>
   </div>
-  <div id="hits"></div>
   <div class="row">
     <button id="more" class="ghost" hidden>Load more</button>
     <span class="muted" id="shown"></span>
   </div>
+  <div id="hits"></div>
+  <div class="row actions">
+    <button class="ghost" id="markall">Tick all shown</button>
+    <button class="ghost" id="untickall">Untick all</button>
+    <span class="muted" id="picked">nothing ticked yet</span>
+  </div>
   <div class="row">
     <label class="muted">pages <input type="number" id="ticklimit" value="0" min="0"
       title="0 = the whole document"></label>
+    <label class="muted" title="how many pages are fetched at once">channels
+      <select id="channels">
+        <option value="8">8</option>
+        <option value="12">12</option>
+        <option value="16" selected>16</option>
+        <option value="24">24</option>
+      </select></label>
+    <label class="muted" title="adds each page's real words, so the PDF can be
+      searched and copied — one extra request per page"><input type="checkbox"
+      id="textlayer"> searchable text</label>
+  </div>
+  <div class="row">
     <button id="ticked">Download ticked</button>
-    <span class="muted" id="picked">nothing ticked yet</span>
-    <span class="muted">0 = whole document</span>
+    <span class="muted">0 pages = the whole document</span>
   </div>
 </div>
 
@@ -3065,24 +3307,11 @@ PAGE = """<!doctype html>
   <code class="bm" id="bm">__BOOKMARKLET_TEXT__</code>
 </div>
 
-<h2>3 · or paste links</h2>
-<div class="card alt">
-  <div class="muted">One link per line, or paste a whole column — anything that
-  is not a Scribd document link is ignored, duplicates are dropped.</div>
-  <div class="row"><textarea id="links" placeholder="https://www.scribd.com/document/750213011/Physics-12th"></textarea></div>
-  <div class="row">
-    <label class="muted">pages <input type="number" id="limit" value="0" min="0"
-      title="0 = the whole document"></label>
-    <label class="muted" title="adds each page's real words, so the PDF can be
-      searched and copied — one extra request per page"><input type="checkbox"
-      id="textlayer"> searchable text</label>
-    <button id="go">Download</button>
-    <span class="muted">0 = whole document · the sample tries 5 first</span>
-    <button class="ghost" id="sample">Put the sample in</button>
-  </div>
-</div>
-
 <div class="verdict" id="verdict">idle</div>
+<div class="row" id="stallrow" hidden>
+  <button id="reset" class="ghost">Stop the stuck job</button>
+  <span class="muted" id="stallsaid"></span>
+</div>
 <div id="file" class="muted"></div>
 <pre id="log">(no output yet)</pre>
 </div>
@@ -3094,7 +3323,13 @@ const esc = (s) => String(s == null ? '' : s)
 let timer = null;
 
 async function poll() {
-  const s = await (await fetch('/status', {cache: 'no-store'})).json();
+  let s;
+  try {
+    s = await (await fetch('/status', {cache: 'no-store'})).json();
+  } catch (e) {
+    $('meta').textContent = 'the panel did not answer — retrying';
+    return;
+  }
   $('log').textContent = s.log.length ? s.log.join('\\n') : '(no output yet)';
   const p = s.progress;
   $('meta').textContent = `${s.state} · ${s.seconds}s · page ${p.page}/${p.of}`
@@ -3109,17 +3344,30 @@ async function poll() {
     ? `saved: <a href="/file">${esc(s.file.split('/').pop())}</a>
        · <a href="/logs">debug files</a>` : '';
   const running = s.state === 'running';
-  $('go').disabled = running;
   $('ticked').disabled = running;
+  $('stallrow').hidden = !s.stalled;
+  if (s.stalled) {
+    $('stallsaid').textContent = 'nothing has moved for '
+      + Math.round(s.quiet || 0) + 's — the panel will step over it after '
+      + Math.round((s.stall_after || 420) / 60) + ' min, or stop it now';
+  }
   if (!running && timer) { clearInterval(timer); timer = null; }
 }
 
 async function start(payload) {
+  const body = Object.assign({jobs: Number($('channels').value) || 16}, payload);
   const r = await fetch('/run', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
-  if (!r.ok) { $('verdict').textContent = (await r.json()).error; return; }
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    $('verdict').textContent = d.error || 'the panel refused that';
+    if (d.busy) { $('stallrow').hidden = false; $('stallsaid').textContent = d.error; }
+    // keep watching anyway: the job that is running above is still useful to see
+    if (!timer) { poll(); timer = setInterval(poll, 1500); }
+    return;
+  }
   if (timer) clearInterval(timer);
   poll(); timer = setInterval(poll, 1500);
 }
@@ -3137,7 +3385,10 @@ function hitRow(hit) {
   const text = document.createElement('div');
   const extra = [hit.pages ? hit.pages + ' pages' : '', hit.views ? hit.views + ' views' : '',
                  hit.author || ''].filter(Boolean).join(' · ');
-  text.innerHTML = `<div class="t">${esc(hit.title)}</div>
+  if (hit.match === 'none') wrap.className = 'hit weak';
+  text.innerHTML = `<div class="t">${esc(hit.title)}`
+    + (hit.match === 'none' ? '<span class="tag">related, not a match</span>' : '')
+    + `</div>
     <div class="m">${esc(hit.url)}${extra ? ' · ' + esc(extra) : ''}</div>`;
   wrap.append(box, text);
   box.onchange = countTicked;
@@ -3224,17 +3475,33 @@ $('ticked').onclick = () => {
   start({urls: boxes.map((b) => b.value),
          limit: Number($('ticklimit').value) || 0,
          text: $('textlayer').checked});
-  $('verdict').textContent = 'queued ' + boxes.length
-    + ' document(s) — scroll down for progress';
+  $('verdict').textContent = 'queued ' + boxes.length + ' document(s) at '
+    + (Number($('channels').value) || 16) + ' channels — progress below';
 };
 
-$('go').onclick = () => {
-  const text = $('links').value.trim();
-  if (!text) { $('verdict').textContent = 'paste at least one link first'; return; }
-  start({links: text, limit: Number($('limit').value) || 0,
-         text: $('textlayer').checked});
+$('markall').onclick = () => {
+  for (const box of document.querySelectorAll('#hits input')) box.checked = true;
+  countTicked();
 };
-$('sample').onclick = () => { $('links').value = '__SAMPLE__'; };
+$('untickall').onclick = () => {
+  for (const box of document.querySelectorAll('#hits input')) box.checked = false;
+  countTicked();
+};
+$('reset').onclick = async () => {
+  $('reset').disabled = true;
+  try {
+    const d = await (await fetch('/reset', {method: 'POST'})).json();
+    $('stallsaid').textContent = d.stopped
+      ? 'stopped — you can start a download now'
+      : 'nothing was running';
+    $('stallrow').hidden = true;
+    poll();
+  } catch (e) {
+    $('stallsaid').textContent = 'the panel did not answer: ' + e;
+  } finally {
+    $('reset').disabled = false;
+  }
+};
 $('copybm').onclick = async () => {
   try {
     await navigator.clipboard.writeText($('bm').textContent);
@@ -3412,6 +3679,16 @@ def serve(port: int, out: str) -> None:
                                    "per_page": FIND_PER_PAGE})
                 self._send(body.encode(), "application/json; charset=utf-8")
                 return
+            if path == "/reset":
+                # an admin escape hatch: stop a job that is not moving, so the
+                # next download is not blocked by it
+                stopped = JOB.stop(f"reset from the dashboard after "
+                                   f"{int(JOB.quiet_for())}s without progress")
+                JOB.say("reset: the running job was stopped" if stopped
+                        else "reset: nothing was running")
+                self._send(json.dumps({"ok": True, "stopped": stopped}).encode(),
+                           "application/json")
+                return
             if path != "/run":
                 self._send(b'{"error":"unknown endpoint"}', "application/json", 404)
                 return
@@ -3428,18 +3705,23 @@ def serve(port: int, out: str) -> None:
                 self._send(b'{"error":"no Scribd document link in that text"}',
                            "application/json", 400)
                 return
-            with JOB.lock:
-                busy = JOB.state == "running"
-            if busy:
-                self._send(b'{"error":"already running"}', "application/json", 409)
+            ok, gen, note = JOB.claim()
+            if not ok:
+                self._send(json.dumps({"error": note, "busy": True,
+                                       "quiet": int(JOB.quiet_for()),
+                                       "stall_after": STALL_SECONDS}).encode(),
+                           "application/json", 409)
                 return
             limit = as_limit(payload.get("limit"))
             wants_text = bool(payload.get("text"))
+            channels = as_channels(payload.get("jobs"))
             threading.Thread(target=run_job,
-                             args=(urls, limit, out, 12, False, "", True, True, 0,
-                                   True, wants_text),
+                             args=(urls, limit, out, channels, False, "", True,
+                                   True, 0, True, wants_text),
+                             kwargs={"gen": gen, "note": note},
                              daemon=True).start()
-            self._send(json.dumps({"ok": True, "queued": len(urls)}).encode(),
+            self._send(json.dumps({"ok": True, "queued": len(urls),
+                                   "channels": channels}).encode(),
                        "application/json")
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
@@ -3783,6 +4065,81 @@ def selftest() -> str:
     assert as_page(None) == 1 and as_page("x") == 1
     assert as_page(float("inf")) == 1                    # a browser could send this
 
+    # ---- search relevance: the words that were typed come first --------
+    loose = [
+        {"id": "1", "title": "Advanced Engineering Mathematics", "url":
+         "https://www.scribd.com/document/1/x", "pages": 400, "views": "", "author": ""},
+        {"id": "2", "title": "Physics 12th — complete notes", "url":
+         "https://www.scribd.com/document/2/x", "pages": 300, "views": "", "author": ""},
+        {"id": "3", "title": "Physics for Scientists", "url":
+         "https://www.scribd.com/document/3/x", "pages": 900, "views": "", "author": ""},
+    ]
+    ranked, weak = rank_hits(loose, "physics 12th")
+    assert [hit["id"] for hit in ranked] == ["2", "3", "1"], ranked
+    assert [hit["match"] for hit in ranked] == ["all", "some", "none"], ranked
+    assert weak == 1 and ranked[0]["score"] > ranked[1]["score"], ranked
+    # the exact phrase wins even when Scribd sent it last
+    ranked, _ = rank_hits(list(reversed(loose)), "physics 12th")
+    assert ranked[0]["id"] == "2", ranked
+    # filler words do not count as a mismatch
+    ranked, weak = rank_hits(loose[:1], "the book of mathematics")
+    assert ranked[0]["match"] == "some" and weak == 0, ranked
+    assert query_words("The Physics of 12th, part 2") == ["physics", "12th", "2"]
+    assert query_words("   ") == []
+    # an empty query never re-orders or marks anything
+    ranked, weak = rank_hits(loose, "")
+    assert [hit["id"] for hit in ranked] == ["1", "2", "3"] and weak == 0, ranked
+    assert as_channels("24") == 24 and as_channels(99) == 24
+    assert as_channels(0) == PANEL_JOBS and as_channels("x") == PANEL_JOBS
+    assert as_channels(-4) == PANEL_JOBS and as_channels(None) == PANEL_JOBS
+
+    # ---- one job slot: a second tap cannot start a second download ------
+    job = Job()
+    ok, gen, note = job.claim()
+    assert ok and not note and job.state == "running", (ok, gen, note)
+    ok2, _same, busy = job.claim()
+    assert not ok2 and "already running" in busy, busy
+    assert job.alive(gen) and not job.alive(gen - 1)
+    job.set_progress(page=1, of=9)
+    assert job.quiet_for() < 1 and not job.stalled()
+    # a job that stopped moving is stepped over, and the old workers are dead
+    job.heartbeat = time.time() - STALL_SECONDS - 5
+    assert job.stalled()
+    ok3, gen3, note3 = job.claim()
+    assert ok3 and gen3 == gen + 1 and "taking over" in note3, note3
+    assert not job.alive(gen) and job.alive(gen3)
+    # an explicit reset closes the job and keeps its reason
+    assert job.stop("reset from the dashboard after 900s without progress")
+    assert job.state == "done" and job.verdict == "STOPPED"
+    assert "900s" in job.detail and not job.alive(gen3)
+    assert job.stop("again") is False            # nothing left to stop
+    assert job.snapshot()["state"] == "done" and job.snapshot()["stalled"] is False
+    # the command line still begins its own job
+    job2 = Job()
+    assert job2.begin() == 1 and job2.state == "running"
+
+    # ---- the panel page is usable on a phone and has no paste box -------
+    assert "width=device-width" in PAGE
+    assert "@media (max-width:640px)" in PAGE and "font-size:16px" in PAGE
+    assert 'id="markall"' in PAGE and 'id="untickall"' in PAGE
+    assert 'id="channels"' in PAGE and 'value="16" selected' in PAGE
+    assert 'id="reset"' in PAGE and 'id="stallrow"' in PAGE
+    assert 'id="links"' not in PAGE and "paste links" not in PAGE
+    assert PAGE.count('id="ticked"') == 1 and "'/reset'" in PAGE
+    assert "related, not a match" in PAGE
+    # every element the page's script reaches for must exist in the page — a
+    # removed card leaves $('links') behind and nothing else notices until a tap
+    script = PAGE.split("<script>", 1)[1].split("</script>", 1)[0]
+    wanted_ids = set(re.findall(r"\$\('([a-z]+)'\)", script))
+    absent = sorted(name for name in wanted_ids if f'id="{name}"' not in PAGE)
+    assert not absent, absent
+    assert "markall" in wanted_ids and "channels" in wanted_ids
+    # the handlers the page needs, in the order the script defines them
+    for handler in ("$('find').onclick", "$('markall').onclick",
+                    "$('untickall').onclick", "$('reset').onclick",
+                    "$('ticked').onclick"):
+        assert handler in script, handler
+
     def stub(payload, status=200, error=""):
         def ask(url):
             body = (payload if isinstance(payload, bytes)
@@ -3825,7 +4182,8 @@ def selftest() -> str:
     assert asked[-1].endswith("page=2"), asked[-1]
     assert info == {"page": 2, "documents": 4, "total": 3, "pages": 2}, info
     assert len(hits) == 3, len(hits)
-    assert note == "4 document(s), 1 dropped (duplicate or not a Scribd document)", note
+    assert note == ("4 document(s), 1 dropped (duplicate or not a Scribd document)"
+                    ", 2 only loosely related"), note
 
     empty = {"results": {}, "total_results_count": 0, "page_count": 0}
     hits, note, info = find_page("nothing at all", 1, counting(empty))
@@ -3994,7 +4352,8 @@ def selftest() -> str:
     return ("selftest: every check passed — sheet maths, EXIF rotation, "
             "jpeg size traps, previews and cut transfers, pdf verify, text "
             "layer, panel key and CORS, cookies, token, names, pasted links, "
-            "bookmarklet, scribd search")
+            "bookmarklet, scribd search, relevance, channels, one job slot, "
+            "page wiring")
 
 def main(argv: list[str]) -> int:
     global BASE

@@ -71,8 +71,16 @@ calls only this app (`/api/scribd/*`); the server holds the panel key.
 |---|---|
 | `lib/scribd-panel.ts` | talks to the panel server-side, with `X-Panel-Key` |
 | `lib/scribd-guard.ts` | session gate (`run` and `config` are admin-only) |
-| `app/api/scribd/*/route.ts` | `status`, `files`, `find`, `run`, `file`, `config` |
+| `app/api/scribd/*/route.ts` | `status`, `files`, `find`, `run`, `file`, `config`, `reset` |
 | `components/scribd-desk.tsx` | the tab; includes the admin **Panel settings** card |
+
+Every PDF is streamed from the panel through `/api/scribd/file` (no buffering in
+the function, no blob on the phone), so a large book saves on mobile as a normal
+download. The route asks for `maxDuration = 300`; the real limit is the Vercel
+plan (`Hobby` cuts a function at 60 s). A 150 MB book pulled over a slow panel
+upload can hit that, and the save then stops part-way — test one large book after
+deploying, and if it is cut short, fetch that file from the panel address itself. `run` and `reset` are administrator-only; `status`, `files`, `find` and
+`file` work for any signed-in member.
 
 The panel address and key are saved from that card into `portal_settings`
 (`scribd_panel_url`, `scribd_panel_key`), so they can be changed without a

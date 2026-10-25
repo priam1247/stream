@@ -7,10 +7,12 @@ import {
   CheckCircle2,
   Download,
   FileText,
+  Gauge,
   Library,
-  Link2,
+  ListChecks,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings2,
 } from 'lucide-react';
@@ -70,11 +72,12 @@ export function ScribdDesk() {
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [more, setMore] = useState(false);
 
-  const [links, setLinks] = useState('');
   const [limit, setLimit] = useState('0');
   const [wantText, setWantText] = useState(false);
+  // how many pages are fetched at once — the panel calls these channels
+  const [channels, setChannels] = useState('16');
   const [starting, setStarting] = useState(false);
-  const [downloading, setDownloading] = useState('');
+  const [resetting, setResetting] = useState(false);
 
   // panel address/key live in D1 (portal_settings); this is the admin editor
   const [isAdmin, setIsAdmin] = useState(false);
@@ -237,19 +240,36 @@ export function ScribdDesk() {
         }
         const payload = json as unknown as ScribdFindPayload;
         const found = Array.isArray(payload.hits) ? payload.hits : [];
-        setHits((current) => (page === 1 ? found : [...current, ...found]));
+        // Scribd repeats documents across pages, so add only what is new.
+        // Work on a plain list here (not inside a state updater): an updater runs
+        // later, during render, so reading its result right after is stale.
+        const seenIds = new Set(page === 1 ? [] : hits.map((hit) => hit.id));
+        const fresh = page === 1 ? found : found.filter((hit) => !seenIds.has(hit.id));
+        const merged = page === 1 ? found : [...hits, ...fresh];
+        setHits(merged);
+        const shown = merged.length;
+        const maxPage = payload.max_page || 40;
+        const perPage = payload.per_page || 40;
+        const total = payload.total || 0;
         setSearchPage(payload.page || page);
-        setSearchTotal(payload.total || 0);
-        setSearchName(payload.summary || `${found.length} document(s)`);
-        setMore(found.length > 0);
+        setSearchTotal(total);
+        setSearchName(payload.summary || `${shown} document(s)`);
+        // "load more" only when another page can actually add something
+        const nextPage = (payload.page || page) + 1;
+        setMore(
+          found.length > 0 &&
+            nextPage <= maxPage &&
+            (total ? shown < total : found.length >= perPage),
+        );
         if (!found.length) say('No documents match that.', true);
+        else if (page > 1) say(`${found.length} more — ${shown} shown.`);
       } catch {
         say('Could not reach this dashboard’s API.', true);
       } finally {
         setSearching(false);
       }
     },
-    [query, say],
+    [query, hits, say],
   );
 
   const toggle = useCallback((url: string) => {
@@ -262,7 +282,7 @@ export function ScribdDesk() {
   }, []);
 
   const start = useCallback(
-    async (payload: { urls?: string[]; links?: string }) => {
+    async (payload: { urls?: string[] }) => {
       setStarting(true);
       try {
         const res = await fetch('/api/scribd/run', {
@@ -272,14 +292,28 @@ export function ScribdDesk() {
             ...payload,
             limit: Number(limit) || 0,
             text: wantText,
+            jobs: Number(channels) || 16,
           }),
         });
         const json = await readJson(res);
         if (!res.ok) {
-          say(String(json.error || 'The download did not start.'), true);
+          // 409 means the panel already has a job. Say how long it has been
+          // quiet, so "nothing happens" is never the whole message.
+          const quiet = Number(json.quiet) || 0;
+          say(
+            res.status === 409 && quiet
+              ? `${String(json.error)} — ${quiet}s since the last page.`
+              : String(json.error || 'The download did not start.'),
+            true,
+          );
+          void loadStatus();
           return;
         }
-        say(`Queued ${String(json.queued || '')} document(s) — progress below.`);
+        say(
+          `Queued ${String(json.queued || '')} document(s) at ${String(
+            json.channels || channels,
+          )} channels — progress below.`,
+        );
         void loadStatus();
       } catch {
         say('Could not reach this dashboard’s API.', true);
@@ -287,38 +321,59 @@ export function ScribdDesk() {
         setStarting(false);
       }
     },
-    [limit, wantText, say, loadStatus],
+    [limit, wantText, channels, say, loadStatus],
+  );
+
+  const resetJob = useCallback(async () => {
+    setResetting(true);
+    try {
+      const res = await fetch('/api/scribd/reset', {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      const json = await readJson(res);
+      if (!res.ok) {
+        say(String(json.error || 'The job could not be stopped.'), true);
+        return;
+      }
+      say(
+        json.stopped
+          ? 'Stopped the stuck job — you can start a download again.'
+          : 'Nothing was running.',
+      );
+      void loadStatus();
+    } catch {
+      say('Could not reach this dashboard’s API.', true);
+    } finally {
+      setResetting(false);
+    }
+  }, [say, loadStatus]);
+
+  /**
+   * Save a finished PDF.
+   *
+   * A plain navigation, not a blob: the route streams the file and the session
+   * cookie authorises it, so a phone can save a 150 MB book without first
+   * holding it in memory. The old blob route is what made a save do nothing on
+   * a phone on a long download.
+   */
+  const fileUrl = useCallback(
+    (name: string) => `/api/scribd/file?name=${encodeURIComponent(name)}`,
+    [],
   );
 
   const download = useCallback(
-    async (name: string) => {
-      setDownloading(name);
-      try {
-        const res = await fetch(`/api/scribd/file?name=${encodeURIComponent(name)}`, {
-          headers: authHeaders(),
-          cache: 'no-store',
-        });
-        if (!res.ok) {
-          const json = await readJson(res);
-          say(String(json.error || 'That file could not be fetched.'), true);
-          return;
-        }
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = name;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.setTimeout(() => URL.revokeObjectURL(url), 4000);
-      } catch {
-        say('The download stopped before it finished.', true);
-      } finally {
-        setDownloading('');
-      }
+    (name: string) => {
+      const link = document.createElement('a');
+      link.href = fileUrl(name);
+      link.download = name;
+      link.rel = 'noopener';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      say(`${name} — saving. If nothing appears, tap the file name.`);
     },
-    [say],
+    [fileUrl, say],
   );
 
   const progress = status?.progress;
@@ -375,7 +430,7 @@ export function ScribdDesk() {
         </div>
         <p className="mt-2 text-xs text-slate-600">
           Books come from Scribd into the server beside this dashboard, and land here as PDFs.
-          Search below, tick what you want, or paste links.
+          Search, tick what you want (or mark all), and download.
         </p>
       </section>
 
@@ -477,13 +532,15 @@ export function ScribdDesk() {
               if (event.key === 'Enter') void runSearch(1);
             }}
             placeholder="physics 12th"
-            className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
+            /* 16px on a phone stops iOS zooming the page when the box is tapped,
+               which is what used to push the Find button out of reach */
+            className="min-w-0 flex-1 touch-manipulation rounded-xl border border-slate-200 bg-white px-3 py-2 text-base text-slate-900 outline-none placeholder:text-slate-400 focus:border-teal-300 focus:ring-2 focus:ring-teal-100 sm:text-sm"
           />
           <button
             type="button"
             onClick={() => void runSearch(1)}
             disabled={searching}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
+            className="inline-flex min-h-11 w-full touch-manipulation items-center justify-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50 sm:min-h-0 sm:w-auto sm:text-xs"
           >
             {searching ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -505,17 +562,26 @@ export function ScribdDesk() {
             {hits.map((hit) => (
               <label
                 key={hit.id}
-                className="flex cursor-pointer items-start gap-2 px-3 py-2 hover:bg-slate-50"
+                className="flex cursor-pointer items-start gap-2.5 px-3 py-2.5 hover:bg-slate-50"
               >
                 <input
                   type="checkbox"
                   checked={ticked.has(hit.url)}
                   onChange={() => toggle(hit.url)}
-                  className="mt-1 h-3.5 w-3.5 accent-teal-600"
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-teal-600"
                 />
                 <span className="min-w-0">
-                  <span className="block truncate text-xs font-semibold text-slate-900">
+                  <span
+                    className={`block line-clamp-2 text-xs font-semibold ${
+                      hit.match === 'none' ? 'text-slate-600' : 'text-slate-900'
+                    }`}
+                  >
                     {hit.title}
+                    {hit.match === 'none' && (
+                      <span className="ml-1.5 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
+                        related
+                      </span>
+                    )}
                   </span>
                   <span className="block truncate text-[11px] text-slate-500">
                     {[hit.pages ? `${hit.pages} pages` : '', hit.views ? `${hit.views} views` : '', hit.author]
@@ -528,12 +594,34 @@ export function ScribdDesk() {
           </div>
         )}
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        {hits.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setTicked(new Set(hits.map((hit) => hit.url)))}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
+            >
+              <ListChecks className="h-3.5 w-3.5" /> Mark all ({hits.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setTicked(new Set())}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
+            >
+              Clear
+            </button>
+            <span className="text-[11px] font-semibold text-slate-500">
+              {ticked.size ? `${ticked.size} ticked` : 'nothing ticked yet'}
+            </span>
+          </div>
+        )}
+
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <button
             type="button"
             onClick={() => void start({ urls: [...ticked] })}
             disabled={starting || running || ticked.size === 0}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-40"
+            className="inline-flex min-h-11 w-full touch-manipulation items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-40 sm:min-h-0 sm:w-auto sm:text-xs"
           >
             <Download className="h-3.5 w-3.5" /> Download ticked ({ticked.size})
           </button>
@@ -552,44 +640,60 @@ export function ScribdDesk() {
 
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
-          <Link2 className="h-4 w-4 text-teal-600" /> Or paste links
+          <Gauge className="h-4 w-4 text-teal-600" /> How it downloads
         </h3>
-        <textarea
-          value={links}
-          onChange={(event) => setLinks(event.target.value)}
-          placeholder="https://www.scribd.com/document/750213011/Physics-12th"
-          rows={3}
-          className="mt-3 w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-900 outline-none placeholder:text-slate-400 focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
-        />
-        <div className="mt-2 flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
-            pages
-            <input
-              type="number"
-              min={0}
-              value={limit}
-              onChange={(event) => setLimit(event.target.value)}
-              className="w-16 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-900 outline-none focus:border-teal-300"
-            />
-            <span className="font-normal text-slate-400">0 = whole document</span>
-          </label>
-          <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
-            <input
-              type="checkbox"
-              checked={wantText}
-              onChange={(event) => setWantText(event.target.checked)}
-              className="h-3.5 w-3.5 accent-teal-600"
-            />
-            searchable text
-          </label>
-          <button
-            type="button"
-            onClick={() => void start({ links })}
-            disabled={starting || running || !links.trim()}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-40"
-          >
-            <Download className="h-3.5 w-3.5" /> Download
-          </button>
+        <div className="mt-3 space-y-3">
+          <div>
+            <p className="text-[11px] font-semibold text-slate-600">Channels</p>
+            <div className="mt-1.5 grid grid-cols-4 gap-1.5 rounded-xl bg-slate-100 p-1">
+              {['8', '12', '16', '24'].map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setChannels(value)}
+                  className={`min-h-9 rounded-lg px-2 py-1.5 text-xs font-bold tabular-nums transition ${
+                    channels === value
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11px] text-slate-500">
+              Pages fetched at once. More is not always faster: Scribd throttles by
+              address, so 24 can be slower than 16 — the log shows the rate it
+              actually reached.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
+              pages
+              <input
+                type="number"
+                min={0}
+                value={limit}
+                onChange={(event) => setLimit(event.target.value)}
+                className="w-16 rounded-lg border border-slate-200 px-2 py-1.5 text-base text-slate-900 outline-none focus:border-teal-300 sm:text-xs"
+              />
+              <span className="font-normal text-slate-400">0 = whole document</span>
+            </label>
+            <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
+              <input
+                type="checkbox"
+                checked={wantText}
+                onChange={(event) => setWantText(event.target.checked)}
+                className="h-4 w-4 accent-teal-600"
+              />
+              searchable text
+            </label>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            Searchable text adds each page&rsquo;s real words, one extra request per
+            page, so the PDF can be searched and copied.
+          </p>
         </div>
       </section>
 
@@ -627,6 +731,36 @@ export function ScribdDesk() {
           <span>{status?.seconds ? `${status.seconds}s` : ''}</span>
         </div>
 
+        {status?.stalled && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">
+            <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />
+            <p className="min-w-0 flex-1 text-[11px] font-medium text-amber-900">
+              Nothing has moved for {Math.round(Number(status.quiet) || 0)}s. A new
+              download steps over it after{' '}
+              {Math.round((Number(status.stall_after) || 420) / 60)} min, or stop it now.
+            </p>
+            {isAdmin ? (
+              <button
+                type="button"
+                onClick={() => void resetJob()}
+                disabled={resetting}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+              >
+                {resetting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="h-3.5 w-3.5" />
+                )}
+                Stop it
+              </button>
+            ) : (
+              <span className="text-[11px] font-semibold text-amber-800">
+                The administrator can stop it.
+              </span>
+            )}
+          </div>
+        )}
+
         {status?.detail && (
           <p className="mt-2 break-words rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-700">
             {status.detail}
@@ -652,22 +786,23 @@ export function ScribdDesk() {
             {files.map((file) => (
               <li key={file.name} className="flex items-center justify-between gap-2 py-2">
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-semibold text-slate-900">{file.name}</p>
+                  <a
+                    href={fileUrl(file.name)}
+                    download={file.name}
+                    className="block truncate text-xs font-semibold text-slate-900 underline-offset-2 hover:text-teal-700 hover:underline"
+                  >
+                    {file.name}
+                  </a>
                   <p className="text-[11px] text-slate-500 tabular-nums">
                     {bytesText(file.bytes)} · {whenText(file.when)}
                   </p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => void download(file.name)}
-                  disabled={downloading === file.name}
-                  className="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700 disabled:opacity-50"
+                  onClick={() => download(file.name)}
+                  className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
                 >
-                  {downloading === file.name ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Download className="h-3.5 w-3.5" />
-                  )}
+                  <Download className="h-3.5 w-3.5" />
                   Save
                 </button>
               </li>
@@ -675,7 +810,8 @@ export function ScribdDesk() {
           </ul>
         )}
         <p className="mt-2 text-[11px] text-slate-400">
-          Very large books are better downloaded straight from the panel address.
+          Tap a file name to save it. The PDF is streamed through this dashboard, so a
+          phone never has to hold the whole book in memory.
         </p>
       </section>
     </div>

@@ -32,7 +32,13 @@ const FILE_TIMEOUT_MS = 120_000;
 
 export type PanelResult<T> =
   | { ok: true; data: T }
-  | { ok: false; status: number; error: string };
+  | {
+      ok: false;
+      status: number;
+      error: string;
+      /** the panel's own JSON for a refusal (a 409 carries `quiet` seconds) */
+      extra?: Record<string, unknown>;
+    };
 
 export interface ScribdPanelConfig {
   baseUrl: string;
@@ -66,7 +72,7 @@ function explainPanelStatus(status: number): string {
     return 'The Scribd panel is locked and its key is missing or wrong. Put the panel\'s PANEL_KEY in Panel settings.';
   }
   if (status === 404) {
-    return 'The Scribd panel did not recognise that route. Update tools/scribd_download.py to v2.12 or newer.';
+    return 'The Scribd panel did not recognise that route. Update tools/scribd_download.py to v2.13 or newer (the reset route is new in 2.13).';
   }
   if (status === 409) {
     return 'A download is already running on the panel. Wait for it to finish.';
@@ -124,7 +130,15 @@ async function panelJson<T>(
         typeof (parsed as { error?: unknown }).error === 'string'
           ? String((parsed as { error: string }).error)
           : explainPanelStatus(res.status);
-      return { ok: false, status: res.status, error: message };
+      return {
+        ok: false,
+        status: res.status,
+        error: message,
+        extra:
+          parsed && typeof parsed === 'object'
+            ? (parsed as Record<string, unknown>)
+            : undefined,
+      };
     }
     if (parsed === null || typeof parsed !== 'object') {
       return {
@@ -208,8 +222,9 @@ export function startScribdJob(input: {
   links?: string;
   limit?: number;
   text?: boolean;
-}): Promise<PanelResult<{ ok: boolean; queued: number }>> {
-  return panelJson<{ ok: boolean; queued: number }>('/run', {
+  jobs?: number;
+}): Promise<PanelResult<{ ok: boolean; queued: number; channels?: number }>> {
+  return panelJson<{ ok: boolean; queued: number; channels?: number }>('/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -217,8 +232,20 @@ export function startScribdJob(input: {
       links: input.links || '',
       limit: input.limit || 0,
       text: Boolean(input.text),
+      jobs: input.jobs || 0,
     }),
   });
+}
+
+/**
+ * Stop a job the panel thinks is still running.
+ *
+ * The panel steps over a job that has not moved for seven minutes by itself;
+ * this is the "now" button for when you do not want to wait, and the way out
+ * of a stuck download that would otherwise block every new one.
+ */
+export function resetScribdJob(): Promise<PanelResult<{ ok: boolean; stopped: boolean }>> {
+  return panelJson<{ ok: boolean; stopped: boolean }>('/reset', { method: 'POST' });
 }
 
 export function listScribdFiles(): Promise<PanelResult<{ files: ScribdFile[] }>> {
@@ -241,7 +268,7 @@ export function safeScribdName(raw: string): string {
 export async function readScribdFile(
   name = '',
 ): Promise<
-  | { ok: true; data: ArrayBuffer; filename: string }
+  | { ok: true; body: ReadableStream<Uint8Array> | null; filename: string; length: string }
   | { ok: false; status: number; error: string }
 > {
   const { baseUrl, key } = await scribdPanelConfig();
@@ -268,13 +295,15 @@ export async function readScribdFile(
             : explainPanelStatus(res.status),
       };
     }
-    const data = await res.arrayBuffer();
     const fromHeader = /filename="?([^";]+)"?/i.exec(
       res.headers.get('content-disposition') || '',
     );
+    // hand the bytes straight on: a phone saving a 150 MB PDF must not wait
+    // for the whole thing to be buffered in this function first
     return {
       ok: true,
-      data,
+      body: res.body,
+      length: res.headers.get('content-length') || '',
       filename: clean || (fromHeader ? fromHeader[1] : 'scribd-document.pdf'),
     };
   } catch (err) {

@@ -24,8 +24,15 @@ The panel asks `scribd.com/search/query` — the exact request Scribd's own sear
 page makes — and gets titles, page counts and document links back as JSON. No
 Google, no Bing, no DuckDuckGo, so none of them can refuse the address.
 
-Two fallbacks stay, because they cost nothing: a **bookmarklet** (search in your
-own browser, one click sends every link on the page) and a **paste box**.
+One fallback stays, because it costs nothing: a **bookmarklet** (search in your
+own browser, one click sends every link on the page) and the command line.
+Search-then-download is the whole flow, so there is no paste box to fill in.
+
+Results are put in the order the words were typed: the exact phrase first, then
+titles with all the words, then titles with some. A result that shares no word
+with the query is kept but marked **related** — the search is Scribd's, and it
+is deliberately loose, so this is how the page stops looking like it answered
+something nobody asked.
 
 ---
 
@@ -149,10 +156,20 @@ It sends only links, only Scribd document links, at most 40 at a time, and it
 prints every engine's answer — `refused`, `captcha`, `no answer` — instead of
 turning a block into "no results".
 
-### e) paste links
+### e) tick all, and how many channels
 
-The panel page also has a box: one link per line, anything that is not a Scribd
-document link ignored, duplicates dropped, `?utm=…` and `#page=3` stripped.
+**Tick all shown** ticks every result the current search has loaded (then
+**Clear** undoes it), so a bulk download is two taps.
+
+**Channels** is how many pages are fetched at once — 8, 12, 16 or 24, default 16.
+Each channel is one connection fetching one page. More is not always faster:
+Scribd throttles by address, so past a point extra channels only produce more
+`403`s, and the log's `pages/s` figure stops rising. The gate slows down when it
+sees refusals, which is what keeps the output clean — a page that fails is
+retried, never silently dropped.
+
+The command line still takes a list (`--links "LINK LINK"`, `--jobs N`); it is
+the page that no longer has a paste box.
 
 ## 3. Read the verdict
 
@@ -186,7 +203,8 @@ python tools/scribd_download.py --verify FILE.pdf          # check a PDF you alr
 python tools/scribd_download.py --selftest                 # offline check of the file itself
 ```
 
-Useful extras: `--out DIR`, `--cookies PATH`, `--jobs N` (default 12),
+Useful extras: `--out DIR`, `--cookies PATH`, `--jobs N` (channels; the command
+line defaults to 12),
 `--refresh` (ignore the cache), `--name TITLE`, `--no-check`, `--no-placeholder`,
 `--no-verify`, `--text`.
 
@@ -265,11 +283,12 @@ locking, both optional:
 | route | returns |
 |---|---|
 | `GET /health` | `{"ok", "version", "locked", "state"}` — no key needed, safe to poll |
+| `POST /reset` | `{"ok", "stopped"}` — stop a job the panel still thinks is running |
 | `GET /status` | the job: `state`, `verdict`, `detail`, `progress`, `file`, `log`, `version` |
 | `GET /files` | `{"files": [{"name", "bytes", "when"}]}`, newest first |
 | `GET /file` or `/file/NAME` | the finished PDF (attachment) |
 | `GET /logs` / `/logs/NAME` | the debug folder |
-| `POST /run` | `{"urls" \| "url" \| "links", "limit", "text"}` → `{"ok", "queued"}` |
+| `POST /run` | `{"urls" \| "url" \| "links", "limit", "text", "jobs"}` → `{"ok", "queued", "channels"}`; a second call while one is running answers `409` with `quiet` seconds |
 | `POST /find` | `{"query", "page"}` → `{hits, notes, summary, page, total, documents}` |
 
 Best practice is a **server-side proxy**: the dashboard's own backend calls the
@@ -296,6 +315,21 @@ never leaves the server. The address and key are editable in the tab's **Panel
 settings** card (admin only) and land in Cloudflare D1, so moving the panel to a
 new host does not need a redeploy. `SCRIBD_PANEL_URL` / `SCRIBD_PANEL_KEY` in the
 environment are just the starting defaults.
+
+## When a download seems to do nothing
+
+The panel runs **one job at a time**, on purpose: two jobs at once write to the
+same progress record and the same output folder.
+
+- **A second request is refused clearly.** `/run` answers `409` with the seconds
+  since the last page arrived, and the dashboard says that in words instead of
+  failing silently. Double-tapping the button on a phone cannot start two jobs.
+- **A job that stops moving does not block you for ever.** If nothing has moved
+  for 7 minutes, the next request steps over it and says so in the log. The amber
+  banner in the dashboard also has **Stop it**, which calls `POST /reset`.
+- **Nothing is left half-alive.** Every worker checks a generation number before
+  it touches the network, so a reset really stops the pages being fetched — the
+  log ends with `stopped — no more pages requested`.
 
 ## Limits, stated plainly
 
