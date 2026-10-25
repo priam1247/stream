@@ -45,6 +45,29 @@ export interface ScribdPanelConfig {
   key: string;
 }
 
+/**
+ * Where the panel can be reached *by the browser*, when it is published over
+ * HTTPS (a Cloudflare Tunnel in front of port 25811, for example).
+ *
+ * The dashboard proxies every byte through its own functions, which is fine
+ * until a 150 MB book meets a Vercel function's time limit. With this set, the
+ * Save link points at the panel itself — the browser holds the panel cookie
+ * from opening `/?key=…` once — so the file never passes through Vercel.
+ */
+export function scribdPublicUrl(): string {
+  const raw = (process.env.SCRIBD_PUBLIC_URL || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:') return '';   // never mixed content
+    parsed.search = '';
+    parsed.hash = '';
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
 /** One panel address, cleaned so a pasted link still works. */
 export function cleanPanelUrl(raw: string): string {
   try {
@@ -223,8 +246,10 @@ export function startScribdJob(input: {
   limit?: number;
   text?: boolean;
   jobs?: number;
-}): Promise<PanelResult<{ ok: boolean; queued: number; channels?: number }>> {
-  return panelJson<{ ok: boolean; queued: number; channels?: number }>('/run', {
+}): Promise<
+  PanelResult<{ ok: boolean; queued: number; channels?: number; started?: boolean; pending?: number }>
+> {
+  return panelJson<{ ok: boolean; queued: number; channels?: number; started?: boolean; pending?: number }>('/run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

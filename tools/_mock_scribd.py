@@ -24,8 +24,18 @@ PAGES = int(os.environ.get("MOCK_PAGES", "2"))
 # way the real CDN does when a job goes too fast. MOCK_THROTTLE_FOR=seconds.
 THROTTLE_AFTER = int(os.environ.get("MOCK_THROTTLE_AFTER", "0"))
 THROTTLE_FOR = float(os.environ.get("MOCK_THROTTLE_FOR", "5"))
+# MOCK_DELAY_MS=n: make every page answer take n milliseconds, so a test can
+# look at a job while it is genuinely still running
+DELAY_MS = float(os.environ.get("MOCK_DELAY_MS", "0"))
 # MOCK_LOCK_PAGE=n: this page is always 403, never recovers (a locked page)
 LOCK_PAGE = int(os.environ.get("MOCK_LOCK_PAGE", "0"))
+# MOCK_LOCK_PAGES="3,7,9": several locked pages, the way a scan-only document
+# behaves when Scribd will not serve some of its pages to this account
+LOCK_PAGES = {int(part) for part in
+              os.environ.get("MOCK_LOCK_PAGES", "").replace(" ", "").split(",")
+              if part.isdigit()}
+if LOCK_PAGE:
+    LOCK_PAGES.add(LOCK_PAGE)
 # MOCK_SMALL_PAGES="3,5": those pages are only served as a 96x130 preview
 SMALL_PAGES = {int(part) for part in
                os.environ.get("MOCK_SMALL_PAGES", "").replace(" ", "").split(",")
@@ -160,8 +170,10 @@ class Handler(BaseHTTPRequestHandler):
             number = int(name) if name.isdigit() else 1
             self.send(page_jsonp(0, number), ctype="application/javascript")
         elif "/images/" in path:
+            if DELAY_MS:
+                time.sleep(DELAY_MS / 1000.0)
             page = path.rsplit("/", 1)[-1].split("-")[0]
-            if LOCK_PAGE and page == str(LOCK_PAGE):
+            if page.isdigit() and int(page) in LOCK_PAGES:
                 self.send(b"<html>not for you</html>", 403)
             elif refused_now():
                 self.send(b"<html>too many requests</html>", 403)

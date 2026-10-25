@@ -82,6 +82,26 @@ upload can hit that, and the save then stops part-way — test one large book af
 deploying, and if it is cut short, fetch that file from the panel address itself. `run` and `reset` are administrator-only; `status`, `files`, `find` and
 `file` work for any signed-in member.
 
+Documents download one at a time and the rest wait in the panel's queue, so the
+tab can keep searching and ticking while a book is in flight — `run` answers
+`started: false, pending: N` and the card shows `book 2 of 5 · 3 waiting`.
+
+### Big books vs. the function time limit
+
+`/api/scribd/file` streams, but a Vercel function still has a wall-clock limit
+(60 s on Hobby, 300 s on Pro). If a 150 MB book is cut short, put the panel on
+**HTTPS** with a Cloudflare Tunnel and set `SCRIBD_PUBLIC_URL`:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:25811       # quick test
+# named tunnel: scribd.yourdomain.com -> http://127.0.0.1:25811
+```
+
+With `SCRIBD_PUBLIC_URL=https://scribd.yourdomain.com` in the Vercel project, the
+Save link points at the panel and the bytes never touch Vercel. Open
+`https://scribd.yourdomain.com/?key=<PANEL_KEY>` once on the phone; the panel's
+own cookie then authorises later links. Nothing else changes.
+
 The panel address and key are saved from that card into `portal_settings`
 (`scribd_panel_url`, `scribd_panel_key`), so they can be changed without a
 redeploy. `SCRIBD_PANEL_URL` / `SCRIBD_PANEL_KEY` are only the defaults used

@@ -196,7 +196,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.13"
+VERSION = "2.14"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -224,6 +224,10 @@ HARD_THROTTLE = (429, 503)
 # that name again.
 REFUSALS_IN_A_ROW = 3
 PAUSE_LADDER = (4.0, 12.0, 30.0)
+# How long one document may spend resting and retrying before it is built with
+# whatever arrived. A page Scribd will not serve is not worth ten minutes of a
+# 100-page book: the placeholders are labelled, the PDF still lands.
+RETRY_BUDGET = float(os.environ.get("SCRIBD_RETRY_BUDGET", "75"))
 OTHER_HOSTS = ("html.scribd.com", "html2-f.scribdassets.com",
                "html3-f.scribdassets.com", "html4-f.scribdassets.com")
 # This panel is reachable from the internet, so it can be given a key. Empty
@@ -1710,6 +1714,12 @@ class Job:
         self.file = ""
         self.title = ""
         self.out = OUT
+        # the queue: ticked documents wait here, one is downloaded at a time
+        self.queue: list[dict] = []
+        self.queue_done = 0
+        self.queue_total = 0
+        self.current = ""
+        self.results: list[dict] = []
 
     def say(self, text: str) -> None:
         with self.lock:
@@ -1739,57 +1749,137 @@ class Job:
             return self.state == "running" and gen == self.generation
 
     def _start(self) -> int:
-        """Take the slot. Caller holds no lock; returns the new generation."""
-        with self.lock:
-            self.generation += 1
-            self.state = "running"
-            self.started = time.time()
-            self.heartbeat = self.started
-            self.ended = 0.0
-            self.verdict = ""
-            self.detail = ""
-            self.file = ""
-            self.title = ""
-            self.lines.clear()
-            self.progress = {"page": 0, "of": 0, "ok": 0, "skipped": 0, "blank": 0}
-            return self.generation
+        """Take the slot. `threading.Lock` is not re-entrant, so the CALLER
+        holds the lock — `begin()` and `enqueue()` both do."""
+        self.generation += 1
+        self.state = "running"
+        self.started = time.time()
+        self.heartbeat = self.started
+        self.ended = 0.0
+        self.verdict = ""
+        self.detail = ""
+        self.file = ""
+        self.title = ""
+        self.lines.clear()
+        self.progress = {"page": 0, "of": 0, "ok": 0, "skipped": 0, "blank": 0}
+        # a fresh start begins a fresh tally; anything already queued stays queued
+        self.queue_done = 0
+        self.results = []
+        self.current = ""
+        return self.generation
 
     def begin(self) -> int:
         """Start a job from the command line, where there is no queue to check."""
-        return self._start()
-
-    def claim(self) -> tuple[bool, int, str]:
-        """Take the one slot, atomically.
-
-        Two taps on a phone used to race here: both requests saw "idle" and two
-        threads wrote to the same job. Now exactly one can win, and a job that
-        has not moved for STALL_SECONDS is stepped over instead of blocking
-        downloads for ever.
-        """
         with self.lock:
-            if self.state == "running":
-                quiet = time.time() - (self.heartbeat or self.started or time.time())
-                if quiet <= STALL_SECONDS:
-                    return (False, self.generation,
-                            f"a download is already running ({int(quiet)}s since the "
-                            f"last page) — wait for it to finish")
-                note = (f"taking over from a job that had not moved for "
-                        f"{int(quiet)}s")
-            else:
-                note = ""
-        return True, self._start(), note
+            return self._start()
 
-    def stop(self, reason: str) -> bool:
+    def stop(self, reason: str, clear_queue: bool = True) -> bool:
         """Stop whatever is running, so its workers see they are not alive."""
         with self.lock:
+            dropped = len(self.queue)
+            if clear_queue:
+                self.queue.clear()
+                self.current = ""
             if self.state != "running":
                 return False
             self.generation += 1          # every worker now answers alive() == False
             self.state = "done"
             self.verdict = "STOPPED"
-            self.detail = reason
+            self.detail = reason + (f" · {dropped} document(s) dropped from the queue"
+                                    if dropped else "")
             self.ended = time.time()
         return True
+
+    # -- the queue ---------------------------------------------------------
+    def pending(self) -> int:
+        with self.lock:
+            return len(self.queue)
+
+    def enqueue(self, items: list[dict]) -> tuple[bool, int, str]:
+        """Queue these documents. Start the worker only if nobody is working.
+
+        This is what makes "download ticked while another book is downloading"
+        work: a second tap is not refused and nothing is lost — it is added
+        behind the one in flight. A job that has not moved for STALL_SECONDS is
+        taken over, and whatever was still queued for it carries on here.
+        """
+        if not items:
+            return False, self.generation, ""
+        note = ""
+        with self.lock:
+            if self.state == "running":
+                quiet = time.time() - (self.heartbeat or self.started or time.time())
+                if quiet <= STALL_SECONDS:
+                    self.queue.extend(items)
+                    self.queue_total += len(items)
+                    return False, self.generation, ""
+                note = (f"taking over from a job that had not moved for "
+                        f"{int(quiet)}s")
+            self.queue.extend(items)      # a takeover keeps the waiting work
+            gen = self._start()
+            self.queue_total = len(self.queue)
+            return True, gen, note
+
+    def next_item(self, gen: int) -> dict | None:
+        """The next document for this worker, or None when the queue is empty."""
+        with self.lock:
+            if gen != self.generation or self.state != "running":
+                return None
+            if not self.queue:
+                return None
+            item = self.queue.pop(0)
+            self.current = str(item.get("url") or "")
+            self.progress = {"page": 0, "of": 0, "ok": 0, "skipped": 0, "blank": 0}
+            self.heartbeat = time.time()
+            return item
+
+    def finish_item(self, gen: int, item: dict, verdict: str, detail: str,
+                    file: str) -> None:
+        """Record one finished document and move the queue forward."""
+        with self.lock:
+            if gen != self.generation:
+                return
+            self.queue_done += 1
+            self.results.append({
+                "url": item.get("url", ""),
+                "title": os.path.basename(file or "") or item.get("url", ""),
+                "file": file or "",
+                "verdict": verdict,
+                "detail": detail,
+            })
+            self.current = ""
+            self.heartbeat = time.time()
+            self.progress = {"page": self.queue_done, "of": self.queue_total,
+                             "ok": self.queue_done, "skipped": 0, "blank": 0}
+
+    def close_queue(self, gen: int) -> None:
+        """The queue is empty: one honest verdict for the whole batch."""
+        with self.lock:
+            if gen != self.generation or self.state != "running":
+                return
+            built = sum(1 for row in self.results if row["verdict"] == "PDF BUILT")
+            partial = sum(1 for row in self.results if row["verdict"] == "PDF PARTIAL")
+            other = len(self.results) - built - partial
+            last_file = next((row["file"] for row in reversed(self.results)
+                              if row["file"]), "")
+            if built and not partial and not other:
+                self.verdict = "PDF BUILT"
+            elif built or partial:
+                self.verdict = "PDF PARTIAL"
+            else:
+                self.verdict = "FAILED"
+            if len(self.results) == 1:
+                # one book keeps its own verdict and detail, not "0 of 1 built"
+                self.verdict = self.results[0]["verdict"] or self.verdict
+                self.detail = self.results[0]["detail"] or self.verdict
+            else:
+                self.detail = (f"{built} of {len(self.results)} document(s) built"
+                               + (f", {partial} partial" if partial else "")
+                               + (f", {other} failed" if other else ""))
+            self.file = last_file
+            self.current = ""
+            self.state = "done"
+            self.ended = time.time()
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -1801,6 +1891,9 @@ class Job:
                     if self.started else 0,
                     "log": list(self.lines)[-200:],
                     "cookies": cookie_report(find_cookies()),
+                    "queue": {"pending": len(self.queue), "done": self.queue_done,
+                              "total": self.queue_total, "current": self.current,
+                              "results": list(self.results)[-20:]},
                     "quiet": round(max(0.0, time.time() - self.heartbeat)
                                    if self.state == "running" and self.heartbeat else 0),
                     "stalled": (self.state == "running" and self.heartbeat
@@ -2439,6 +2532,55 @@ def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12
             JOB.say("")
             JOB.say(f"== {verdict} — {detail}")
 
+def run_queue(gen: int, out: str, note: str = "") -> None:
+    """Download the queue, one document at a time, until it is empty.
+
+    One document at a time is the whole point: the panel has one connection
+    budget and one output folder, and Scribd throttles by address anyway. What
+    the queue buys is the other half of the feature — you can keep searching and
+    tick more books while the current one downloads, and they are appended here
+    instead of being refused.
+    """
+    os.makedirs(out, exist_ok=True)
+    if note:
+        JOB.say(note)
+    while True:
+        item = JOB.next_item(gen)
+        if item is None:
+            break
+        url = str(item.get("url") or "")
+        with JOB.lock:
+            index = JOB.queue_done + 1
+            total = JOB.queue_total
+            JOB.url = url
+            JOB.verdict = ""
+            JOB.detail = ""
+            JOB.file = ""
+        JOB.say("")
+        JOB.say(f"=== document {index} of {total}: {url}")
+        try:
+            _download(url, int(item.get("limit") or 0), out,
+                      int(item.get("jobs") or PANEL_JOBS), False, "",
+                      True, True, True, bool(item.get("text")), gen)
+        except Exception as exc:  # noqa: BLE001
+            JOB.say(f"crashed on {url}: {exc!r}")
+            with JOB.lock:
+                JOB.verdict = "FAILED"
+                JOB.detail = repr(exc)[:180]
+                JOB.file = ""
+        with JOB.lock:
+            verdict, detail, file = JOB.verdict, JOB.detail, JOB.file
+        JOB.finish_item(gen, item, verdict, detail, file)
+
+    if not JOB.alive(gen):
+        return                        # stopped or taken over: say nothing
+    JOB.close_queue(gen)
+    with JOB.lock:
+        verdict, detail = JOB.verdict, JOB.detail
+    JOB.say("")
+    JOB.say(f"== {verdict} — {detail}")
+
+
 def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
            refresh: bool = False, check: bool = True, placeholder: bool = True,
            verify: bool = True, text: bool = False, gen: int = 0) -> None:
@@ -2603,20 +2745,36 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                         + f" · {rate:.1f} pages/s · gate {ctx.gate.rate:.1f}/s"
                         + (f" · about {left:.0f} s left" if left > 1 else ""))
 
+    # ---- retries, on a budget -------------------------------------------
+    # A page Scribd refuses is refused for a reason (not this account, or the
+    # address is throttled). Retrying is worth a minute; it is not worth ten.
+    # Everything already fetched is kept, the missing pages go in as labelled
+    # placeholders, and the PDF still lands.
     recovered_last = -1
+    spent = 0.0
     for round_number, pause in ((1, 2.0), (2, 8.0), (3, 20.0)):
         if not failed:
             break
-        if round_number == 3 and recovered_last == 0:
-            JOB.say("two retries recovered nothing — not resting a third time")
+        if not JOB.alive(ctx.gen):
+            break
+        if round_number > 1 and recovered_last == 0:
+            JOB.say(f"retry {round_number - 1} recovered nothing — not resting again")
+            break
+        if spent + pause > RETRY_BUDGET:
+            JOB.say(f"retry budget spent ({spent:.0f}s of {RETRY_BUDGET:.0f}s) — "
+                    f"building the PDF with {len(failed)} placeholder page(s)")
             break
         JOB.say(f"retry {round_number}: {len(failed)} page(s), resting {pause:.0f}s")
         time.sleep(pause)
+        spent += pause
         # a retry with the same names and the same token is the same request
         ctx.reload_names()
         ctx.dead.clear()
         still: list[int] = []
         for number in sorted(failed):
+            if not JOB.alive(ctx.gen):
+                still.append(number)
+                continue
             _n, built, _message = ctx.grab(number, force=True, wide=True)
             if built:
                 collected[number] = built
@@ -3332,7 +3490,12 @@ async function poll() {
   }
   $('log').textContent = s.log.length ? s.log.join('\\n') : '(no output yet)';
   const p = s.progress;
-  $('meta').textContent = `${s.state} · ${s.seconds}s · page ${p.page}/${p.of}`
+  const q = s.queue || {pending: 0, done: 0, total: 0};
+  const queueText = q.total > 1
+    ? ` · book ${Math.min(q.done + 1, q.total)}/${q.total}`
+      + (q.pending ? ` (${q.pending} waiting)` : '')
+    : '';
+  $('meta').textContent = `${s.state} · ${s.seconds}s${queueText} · page ${p.page}/${p.of}`
     + ` · ${p.ok} ok` + (p.skipped ? ` · ${p.skipped} retrying` : '')
     + ` · ${s.cookies} · v${s.version}`;
   const v = $('verdict');
@@ -3344,7 +3507,7 @@ async function poll() {
     ? `saved: <a href="/file">${esc(s.file.split('/').pop())}</a>
        · <a href="/logs">debug files</a>` : '';
   const running = s.state === 'running';
-  $('ticked').disabled = running;
+  $('ticked').textContent = running ? 'Add to queue' : 'Download ticked';
   $('stallrow').hidden = !s.stalled;
   if (s.stalled) {
     $('stallsaid').textContent = 'nothing has moved for '
@@ -3705,23 +3868,19 @@ def serve(port: int, out: str) -> None:
                 self._send(b'{"error":"no Scribd document link in that text"}',
                            "application/json", 400)
                 return
-            ok, gen, note = JOB.claim()
-            if not ok:
-                self._send(json.dumps({"error": note, "busy": True,
-                                       "quiet": int(JOB.quiet_for()),
-                                       "stall_after": STALL_SECONDS}).encode(),
-                           "application/json", 409)
-                return
             limit = as_limit(payload.get("limit"))
             wants_text = bool(payload.get("text"))
             channels = as_channels(payload.get("jobs"))
-            threading.Thread(target=run_job,
-                             args=(urls, limit, out, channels, False, "", True,
-                                   True, 0, True, wants_text),
-                             kwargs={"gen": gen, "note": note},
-                             daemon=True).start()
+            items = [{"url": url, "limit": limit, "text": wants_text,
+                      "jobs": channels} for url in urls]
+            started, gen, note = JOB.enqueue(items)
+            if started:
+                threading.Thread(target=run_queue, args=(gen, out, note),
+                                 daemon=True).start()
             self._send(json.dumps({"ok": True, "queued": len(urls),
-                                   "channels": channels}).encode(),
+                                   "channels": channels,
+                                   "started": started,
+                                   "pending": JOB.pending()}).encode(),
                        "application/json")
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
@@ -4093,30 +4252,57 @@ def selftest() -> str:
     assert as_channels(0) == PANEL_JOBS and as_channels("x") == PANEL_JOBS
     assert as_channels(-4) == PANEL_JOBS and as_channels(None) == PANEL_JOBS
 
-    # ---- one job slot: a second tap cannot start a second download ------
+    # ---- the queue: one worker, and a second tap is added, not refused ----
+    def item(url):
+        return {"url": url, "limit": 0, "text": False, "jobs": 8}
+
     job = Job()
-    ok, gen, note = job.claim()
-    assert ok and not note and job.state == "running", (ok, gen, note)
-    ok2, _same, busy = job.claim()
-    assert not ok2 and "already running" in busy, busy
-    assert job.alive(gen) and not job.alive(gen - 1)
-    job.set_progress(page=1, of=9)
-    assert job.quiet_for() < 1 and not job.stalled()
-    # a job that stopped moving is stepped over, and the old workers are dead
+    started, gen, note = job.enqueue([item("https://www.scribd.com/document/1/a")])
+    assert started and not note and job.state == "running", (started, gen, note)
+    # the book is downloading: ticking another one must not be refused
+    started2, gen2, _ = job.enqueue([item("https://www.scribd.com/document/2/b"),
+                                     item("https://www.scribd.com/document/3/c")])
+    assert not started2 and gen2 == gen, (started2, gen2)
+    assert job.pending() == 3 and job.queue_total == 3
+    first = job.next_item(gen)
+    assert first["url"].endswith("/1/a") and job.current.endswith("/1/a")
+    assert job.pending() == 2
+    job.finish_item(gen, first, "PDF BUILT", "ok", "/out/one.pdf")
+    assert job.queue_done == 1 and job.results[-1]["verdict"] == "PDF BUILT"
+    # a stopped job is nobody's worker any more
+    assert job.alive(gen)
     job.heartbeat = time.time() - STALL_SECONDS - 5
     assert job.stalled()
-    ok3, gen3, note3 = job.claim()
-    assert ok3 and gen3 == gen + 1 and "taking over" in note3, note3
+    started3, gen3, note3 = job.enqueue([item("https://www.scribd.com/document/4/d")])
+    assert started3 and gen3 == gen + 1 and "taking over" in note3, note3
     assert not job.alive(gen) and job.alive(gen3)
-    # an explicit reset closes the job and keeps its reason
-    assert job.stop("reset from the dashboard after 900s without progress")
-    assert job.state == "done" and job.verdict == "STOPPED"
-    assert "900s" in job.detail and not job.alive(gen3)
-    assert job.stop("again") is False            # nothing left to stop
-    assert job.snapshot()["state"] == "done" and job.snapshot()["stalled"] is False
-    # the command line still begins its own job
+    assert job.next_item(gen) is None             # the old worker gets nothing
+    assert job.queue_total >= 1                   # the queued work survives
+    # finishing the queue gives one verdict for the batch
+    while True:
+        nxt = job.next_item(gen3)
+        if nxt is None:
+            break
+        job.finish_item(gen3, nxt, "PDF BUILT", "ok", "/out/more.pdf")
+    job.close_queue(gen3)
+    assert job.state == "done" and job.verdict == "PDF BUILT", job.snapshot()
+    assert "document(s) built" in job.detail, job.detail
+    # an explicit reset drops what is still waiting, and keeps the reason
     job2 = Job()
-    assert job2.begin() == 1 and job2.state == "running"
+    _started, gen4, _ = job2.enqueue([item("https://www.scribd.com/document/5/e")])
+    job2.enqueue([item("https://www.scribd.com/document/6/f")])
+    assert job2.stop("reset from the dashboard after 900s without progress")
+    assert job2.state == "done" and job2.verdict == "STOPPED"
+    assert "900s" in job2.detail and not job2.alive(gen4)
+    assert job2.pending() == 0 and "dropped from the queue" in job2.detail
+    assert job2.stop("again") is False            # nothing left to stop
+    assert job2.snapshot()["stalled"] is False
+    assert job2.snapshot()["queue"]["total"] >= 2
+    # the command line still begins its own job
+    job3 = Job()
+    assert job3.begin() == 1 and job3.state == "running"
+    # a document may spend at most RETRY_BUDGET seconds being retried
+    assert 0 < RETRY_BUDGET <= 300, RETRY_BUDGET
 
     # ---- the panel page is usable on a phone and has no paste box -------
     assert "width=device-width" in PAGE
@@ -4352,8 +4538,8 @@ def selftest() -> str:
     return ("selftest: every check passed — sheet maths, EXIF rotation, "
             "jpeg size traps, previews and cut transfers, pdf verify, text "
             "layer, panel key and CORS, cookies, token, names, pasted links, "
-            "bookmarklet, scribd search, relevance, channels, one job slot, "
-            "page wiring")
+            "bookmarklet, scribd search, relevance, channels, the document "
+            "queue, page wiring")
 
 def main(argv: list[str]) -> int:
     global BASE
