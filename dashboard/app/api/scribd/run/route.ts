@@ -8,9 +8,12 @@ export const dynamic = 'force-dynamic';
  * POST /api/scribd/run  { urls?: string[], links?: string, limit?: number,
  *                         text?: boolean, jobs?: number }
  *
- * `links` is the paste box (anything that is not a Scribd link is dropped by
- * the panel itself); `urls` is the ticked search results. `limit: 0` means the
- * whole document, `text: true` puts each page's words into the PDF.
+ * `urls` is the ticked search results; `links` is still accepted for the
+ * bookmarklet and the command line. `limit: 0` means the whole document,
+ * `text: true` puts each page's words into the PDF, `jobs` is the channels.
+ *
+ * This never refuses because something else is downloading: the documents join
+ * the panel's queue and start when the current one finishes.
  */
 export async function POST(req: NextRequest) {
   const gate = await guardScribdRequest(req, { adminOnly: true });
@@ -54,20 +57,9 @@ export async function POST(req: NextRequest) {
     jobs,
   });
   if (!result.ok) {
-    if (result.status === 409) {
-      // the panel has a job already: say how long it has been quiet, so the
-      // page can explain "nothing happened" instead of just showing an error
-      return NextResponse.json(
-        {
-          error: result.error,
-          busy: true,
-          quiet: Number(result.extra?.quiet) || 0,
-          stall_after: Number(result.extra?.stall_after) || 420,
-        },
-        { status: 409 },
-      );
-    }
     return NextResponse.json({ error: result.error }, { status: 502 });
   }
+  // { ok, queued, channels, started, pending } — `started: false` means a book
+  // is already downloading and these were queued behind it
   return NextResponse.json(result.data);
 }

@@ -61,6 +61,8 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
 export function ScribdDesk() {
   const [status, setStatus] = useState<ScribdStatusPayload | null>(null);
   const [files, setFiles] = useState<ScribdFile[]>([]);
+  // set when the panel is on HTTPS itself, so big saves can skip this app
+  const [publicBase, setPublicBase] = useState('');
   const [notice, setNotice] = useState<{ text: string; bad?: boolean } | null>(null);
 
   const [query, setQuery] = useState('');
@@ -128,6 +130,7 @@ export function ScribdDesk() {
       const json = await readJson(res);
       if (!res.ok) return;
       setFiles(Array.isArray(json.files) ? (json.files as ScribdFile[]) : []);
+      setPublicBase(typeof json.publicBase === 'string' ? json.publicBase : '');
     } catch {
       // the status poll already reports a panel that is down
     }
@@ -249,18 +252,15 @@ export function ScribdDesk() {
         setHits(merged);
         const shown = merged.length;
         const maxPage = payload.max_page || 40;
-        const perPage = payload.per_page || 40;
         const total = payload.total || 0;
-        setSearchPage(payload.page || page);
+        const thisPage = payload.page || page;
+        setSearchPage(thisPage);
         setSearchTotal(total);
         setSearchName(payload.summary || `${shown} document(s)`);
-        // "load more" only when another page can actually add something
-        const nextPage = (payload.page || page) + 1;
-        setMore(
-          found.length > 0 &&
-            nextPage <= maxPage &&
-            (total ? shown < total : found.length >= perPage),
-        );
+        // Keep "Load more" while the search has any results and pages are left.
+        // It used to be hidden when Scribd sent no total, which is exactly when
+        // a person still wants it; a page that adds nothing simply says so.
+        setMore(merged.length > 0 && found.length > 0 && thisPage < maxPage);
         if (!found.length) say('No documents match that.', true);
         else if (page > 1) say(`${found.length} more — ${shown} shown.`);
       } catch {
@@ -297,23 +297,22 @@ export function ScribdDesk() {
         });
         const json = await readJson(res);
         if (!res.ok) {
-          // 409 means the panel already has a job. Say how long it has been
-          // quiet, so "nothing happens" is never the whole message.
-          const quiet = Number(json.quiet) || 0;
-          say(
-            res.status === 409 && quiet
-              ? `${String(json.error)} — ${quiet}s since the last page.`
-              : String(json.error || 'The download did not start.'),
-            true,
-          );
+          say(String(json.error || 'The download did not start.'), true);
           void loadStatus();
           return;
         }
+        // "started: false" is the good case here: a book is already downloading
+        // and these were added behind it, not refused.
+        const waiting = Number(json.pending) || 0;
         say(
-          `Queued ${String(json.queued || '')} document(s) at ${String(
-            json.channels || channels,
-          )} channels — progress below.`,
+          json.started === false
+            ? `Added ${Number(json.queued) || 0} to the queue — ${waiting} waiting. The book already downloading finishes first.`
+            : `${Number(json.queued) || 0} document(s) started at ${String(
+                json.channels || channels,
+              )} channels.`,
         );
+        // let the ticked set go, so the next search starts clean
+        setTicked(new Set());
         void loadStatus();
       } catch {
         say('Could not reach this dashboard’s API.', true);
@@ -358,8 +357,15 @@ export function ScribdDesk() {
    * a phone on a long download.
    */
   const fileUrl = useCallback(
-    (name: string) => `/api/scribd/file?name=${encodeURIComponent(name)}`,
-    [],
+    (name: string) => {
+      const clean = encodeURIComponent(name);
+      // straight from the panel when it is published over HTTPS: a 150 MB book
+      // then never passes through this app's function (and its time limit)
+      return publicBase
+        ? `${publicBase}/file/${clean}`
+        : `/api/scribd/file?name=${clean}`;
+    },
+    [publicBase],
   );
 
   const download = useCallback(
@@ -377,6 +383,7 @@ export function ScribdDesk() {
   );
 
   const progress = status?.progress;
+  const queue = status?.queue;
   const percent = useMemo(() => {
     if (!progress || !progress.of) return 0;
     return Math.min(100, Math.round((progress.page / progress.of) * 100));
@@ -620,10 +627,11 @@ export function ScribdDesk() {
           <button
             type="button"
             onClick={() => void start({ urls: [...ticked] })}
-            disabled={starting || running || ticked.size === 0}
+            disabled={starting || ticked.size === 0}
             className="inline-flex min-h-11 w-full touch-manipulation items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-40 sm:min-h-0 sm:w-auto sm:text-xs"
           >
-            <Download className="h-3.5 w-3.5" /> Download ticked ({ticked.size})
+            <Download className="h-3.5 w-3.5" />
+            {running ? `Add to queue (${ticked.size})` : `Download ticked (${ticked.size})`}
           </button>
           {more && (
             <button
@@ -725,11 +733,47 @@ export function ScribdDesk() {
         </div>
         <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] text-slate-500 tabular-nums">
           <span>
+            {queue && queue.total > 1
+              ? `book ${Math.min(queue.done + 1, queue.total)} of ${queue.total} · `
+              : ''}
             page {progress?.page || 0}/{progress?.of || 0} · {progress?.ok || 0} ok
             {progress?.skipped ? ` · ${progress.skipped} retrying` : ''}
           </span>
           <span>{status?.seconds ? `${status.seconds}s` : ''}</span>
         </div>
+
+        {queue && queue.total > 1 && (
+          <p className="mt-1.5 text-[11px] font-semibold text-slate-600">
+            {queue.pending + (queue.current ? 1 : 0)} waiting · {queue.done} finished
+            {queue.current ? ` · now: ${queue.current.split('/').pop()}` : ''}
+          </p>
+        )}
+
+        {queue && queue.results.length > 0 && (
+          <ul className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-100">
+            {queue.results.map((row) => (
+              <li
+                key={`${row.url}-${row.file}`}
+                className="flex items-center justify-between gap-2 px-2.5 py-1.5"
+              >
+                <span className="min-w-0 truncate text-[11px] text-slate-700">
+                  {row.title || row.url}
+                </span>
+                <span
+                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                    row.verdict === 'PDF BUILT'
+                      ? 'bg-teal-50 text-teal-700'
+                      : row.verdict === 'PDF PARTIAL'
+                        ? 'bg-amber-50 text-amber-700'
+                        : 'bg-rose-50 text-rose-700'
+                  }`}
+                >
+                  {row.verdict.replace('PDF ', '')}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
 
         {status?.stalled && (
           <div className="mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2">

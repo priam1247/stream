@@ -13,6 +13,24 @@ export interface ScribdProgress {
   blank: number;
 }
 
+/** One document that finished inside the queue. */
+export interface ScribdQueueResult {
+  url: string;
+  title: string;
+  file: string;
+  verdict: string;
+  detail: string;
+}
+
+/** The documents waiting behind the one in flight. */
+export interface ScribdQueue {
+  pending: number;
+  done: number;
+  total: number;
+  current: string;
+  results: ScribdQueueResult[];
+}
+
 export interface ScribdPanelStatus {
   state: 'idle' | 'running' | 'done' | 'failed' | string;
   verdict: string;
@@ -31,6 +49,8 @@ export interface ScribdPanelStatus {
   /** running, but nothing has moved for `stall_after` seconds */
   stalled?: boolean;
   stall_after?: number;
+  /** documents waiting, the one in flight, and the finished ones */
+  queue?: ScribdQueue;
 }
 
 export interface ScribdPanelHealth {
