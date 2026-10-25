@@ -1,0 +1,7 @@
+== page 1: HTTP 200 3038 bytes
+   not json: b'<!doctype html>\n<html lang="en">\n  <head>\n    <meta\n      http-equiv="Content-Security-Policy"\n     '
+== page 2: HTTP 200 3038 bytes
+   not json: b'<!doctype html>\n<html lang="en">\n  <head>\n    <meta\n      http-equiv="Content-Security-Policy"\n     '
+== page 5: HTTP 200 3038 bytes
+   not json: b'<!doctype html>\n<html lang="en">\n  <head>\n    <meta\n      http-equiv="Content-Security-Policy"\n     '
+== page 400: HTTP 200 3038 bytes — b'<!doctype html>\n<html lang="en">\n  <head>\n    <meta\n      http-equiv="Content-Security-Policy"\n      content="default-src \'self\'; img-src \'self\' data:; media-sr'
