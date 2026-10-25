@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.9
+"""scribd_download.py — ONE file, standard library only.  Version 2.10
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -11,6 +11,7 @@ browser, no pip install and no repository.
     python scribd_download.py --url LINK             # one document, all pages
     python scribd_download.py --url LINK --limit 5   # first 5 pages only
     python scribd_download.py --url LINK --probe 4   # every url and its answer
+    python scribd_download.py --url LINK --text      # searchable text, not photos
     python scribd_download.py --links "LINK LINK"    # several documents
     python scribd_download.py --verify FILE.pdf      # check a finished PDF
     python scribd_download.py --selftest             # offline check of this file
@@ -39,6 +40,26 @@ asks Scribd directly, which is the same thing its own search box does. The one
 honest caveat: /search/query is not a documented API — it is the endpoint the
 site's own JavaScript calls. If Scribd changes it, the page says so in plain
 words instead of pretending there are no results.
+
+What 2.10 added: REAL TEXT INSIDE THE PDF (--text, or the panel's checkbox)
+  A Scribd page is a scan plus its words. The scan was always downloaded; the
+  words were thrown away, so the PDF could be read but not searched or copied.
+  1. Each page's words come from the page's own descriptor, the same
+     <hash>/pages/<n>-<hash>.jsonp the downloader already knows how to read —
+     it answers window.pageN_callback([...]) with that page's text as HTML.
+  2. Descriptors were not always named in the HTML, so the name is DERIVED from
+     the scan's: pages/2-90c206b2e6.jsonp sits beside images/2-90c206b2e6.jpg.
+     Verified against a live 402-page document before writing a line of this.
+  3. The text goes in invisibly (render mode 3) under the scan, wrapped to the
+     sheet, in Helvetica WinAnsi: the page looks exactly as before, but search,
+     select and copy work, and the file is accessible. If a line has no room it
+     is dropped rather than printed over the picture.
+  4. It is opt-in and honest about its cost: one extra request per page, cached
+     beside the scan as NNNN.text, and the verdict says how many pages got words
+     ("14 sheet(s), 0.10 MB, 14 page(s) with searchable text").
+  5. Nothing is invented and nothing is bypassed: the words come from the same
+     pages the downloader is already allowed to read, only the scan's pictures
+     were being used before.
 
 What 2.9 fixed in the DOWNLOADS (the "failed pages keep increasing" report)
   1. A 403 was treated as permanent: the first one failed the page and blacklisted
@@ -97,6 +118,7 @@ real asset outright. Every url tried for a failed page is recorded.
 
 Options: --find "TEXT", --pages N, --pick 1,3, --url LINK (repeatable), --links "TEXT",
          --limit N, --out DIR, --cookies PATH, --base URL, --jobs N (default 12),
+         --text (put each page's words in the PDF, searchable and copyable),
          --refresh, --name TITLE, --no-check, --no-placeholder, --no-verify,
          --verify FILE, --probe N, --selftest
 
@@ -123,7 +145,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.9"
+VERSION = "2.10"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -394,6 +416,19 @@ def image_url_for(jsonp_url: str) -> str:
     swapped = re.sub(r"/pages/(\d+-[0-9A-Za-z]+)\.jsonp(?:\?.*)?$",
                      r"/images/\1.jpg", jsonp_url, flags=re.IGNORECASE)
     return "" if swapped == jsonp_url else swapped
+
+def jsonp_from_image(image_url: str) -> str:
+    """The descriptor that sits beside an image, under the same hash.
+
+    Measured against a live document: images/2-90c206b2e6.jpg and
+    pages/2-90c206b2e6.jsonp are the same <page>-<hash> pair, and the jsonp is
+    where that page's words are. So a document that names only its scans still
+    gives up its text.
+    """
+    swapped = re.sub(r"/images/(\d+-[0-9A-Za-z]+)\.(?:jpe?g|png|webp)(?:\?.*)?$",
+                     r"/pages/\1.jsonp", image_url, flags=re.IGNORECASE)
+    return "" if swapped == image_url else swapped
+
 
 def alternate_host(url: str) -> str:
     parsed = urllib.parse.urlsplit(url)
@@ -1087,8 +1122,67 @@ def _image_matrix(page: dict, box: tuple[float, float, float, float]) -> str:
         return f"{-width} 0 0 {-height} {left + width} {bottom + height} cm"
     return f"{width} 0 0 {height} {left} {bottom} cm"
 
+def pdf_visible_text(text: str) -> str:
+    """Escape a string for a PDF literal, and give up on what Helvetica cannot say.
+
+    The font is base-14 WinAnsi, so anything outside Latin-1 is dropped rather
+    than turned into a row of question marks. Brackets and backslashes must be
+    escaped or the string ends the content stream early.
+    """
+    out: list[str] = []
+    for char in text:
+        code = ord(char)
+        if char in "()\\":
+            out.append("\\" + char)
+        elif 32 <= code <= 126 or 160 <= code <= 255:
+            out.append(char)
+        elif char in "\t":
+            out.append(" ")
+    return "".join(out)
+
+
+def text_layer(words: str, box: tuple[float, float, float, float],
+               size: float = 9.0) -> bytes:
+    """The invisible text of one page, laid out inside the sheet.
+
+    box is _placement's (width, height, left, bottom). Invisible on purpose
+    (render mode 3): the scan is already the picture, so the text only has to be
+    there for search, copy and accessibility. Lines are wrapped to the sheet so
+    selection follows the page instead of running off it.
+    """
+    width, height, left, bottom = box
+    if not words or width < 20 or height < 20:
+        return b""
+    usable = max(10.0, width - 6)
+    per_line = max(8, int(usable / (size * 0.5)))
+    lines: list[str] = []
+    for paragraph in words.split("\n"):
+        while len(paragraph) > per_line:
+            cut = paragraph.rfind(" ", 0, per_line)
+            cut = cut if cut > per_line // 2 else per_line
+            lines.append(paragraph[:cut].strip())
+            paragraph = paragraph[cut:].strip()
+        lines.append(paragraph)
+    lines = [line for line in lines if line]
+    if not lines:
+        return b""
+    leading = size * 1.2
+    room = int((height - 8) / leading)
+    if room <= 0:
+        return b""
+    lines = lines[:room]
+    top = bottom + height - size - 2
+    body = [f"BT /F1 {size:.1f} Tf 3 Tr 0 0 0 rg"]
+    for index, line in enumerate(lines):
+        body.append(f"1 0 0 1 {left + 3:.2f} {top - index * leading:.2f} Tm "
+                    f"({pdf_visible_text(line)}) Tj")
+    body.append("ET")
+    return "\n".join(body).encode("latin-1", "replace")
+
+
 def build_pdf(pages: list[dict | None], path: str, title: str = "",
-              author: str = "", uniform: bool = True) -> tuple[bool, str]:
+              author: str = "", uniform: bool = True,
+              texts: dict[int, str] | None = None) -> tuple[bool, str]:
     """pages: [{'payload','params','width','height','rotate'}|None] in sheet order.
 
     None is a labelled placeholder sheet, so PDF page N always equals document
@@ -1098,6 +1192,8 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
     if not real:
         return False, "no pages to write"
     house = house_sheet(real)
+    texts = texts or {}
+    with_text = 0
 
     objects: list[bytes] = [b"", b"", b""]     # 1 catalog, 2 pages, 3 font
     objects[2] = (b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
@@ -1135,13 +1231,19 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
                         + f" /Length {len(image)} >>").encode()
                        + b"\nstream\n" + image + b"\nendstream")
         image_num = len(objects)
-        content = ("q " + _image_matrix(page, box) + " /Im0 Do Q").encode()
+        body = [("q " + _image_matrix(page, box) + " /Im0 Do Q").encode()]
+        layer = text_layer(texts.get(index, ""), box) if texts else b""
+        if layer:
+            body.append(layer)
+            with_text += 1
+        content = b"\n".join(body)
         objects.append(b"<< /Length " + str(len(content)).encode()
                        + b" >>\nstream\n" + content + b"\nendstream")
         content_num = len(objects)
         objects.append(
             (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {sheet[0]} {sheet[1]}]"
              f" /Resources << /ProcSet [/PDF /ImageB /ImageC /Text]"
+             f" /Font << /F1 3 0 R >>"
              f" /XObject << /Im0 {image_num} 0 R >> >>"
              f" /Contents {content_num} 0 R >>").encode())
         kids.append(len(objects))
@@ -1172,7 +1274,9 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
         handle.write(bytes(out))
     blanks = sum(1 for page in pages if page is None)
     return True, (f"{len(kids)} sheet(s), {len(out) / 1_000_000:.2f} MB"
-                  + (f", {blanks} placeholder" if blanks else ""))
+                  + (f", {blanks} placeholder" if blanks else "")
+                  + (f", {with_text} page(s) with searchable text" if texts
+                     and with_text else ""))
 
 # ---------------------------------------------------------------------------
 # read the file back and check it as a PDF
@@ -1463,6 +1567,48 @@ class Sources:
             both = set(self.images) | set(self.jsonps)
             return max(both) if both else 0
 
+TEXT_OF_JSONP_RE = re.compile(r"^\s*(?:window\.)?[A-Za-z0-9_$.]*call?back?\s*\(|"
+                              r"^\s*[A-Za-z0-9_$.]+\s*\(", re.I)
+BREAK_TAG_RE = re.compile(r"<\s*(?:br|/p|/div|/li|/h[1-6]|/tr)\s*/?\s*>", re.I)
+TAG_STRIP_RE = re.compile(r"<[^>]*>")
+SPACE_RE = re.compile(r"[ \t\u00a0]+")
+
+
+def html_to_text(html: str) -> str:
+    """The words of one page out of Scribd's own HTML, line by line.
+
+    Scribd sends each page's text as HTML with <br> and block tags, so breaks
+    have to become newlines before the tags are stripped; otherwise the whole
+    page becomes one long line and a text layer is useless for selection.
+    """
+    text = BREAK_TAG_RE.sub("\n", html or "")
+    text = TAG_STRIP_RE.sub("", text)
+    for a, b in (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+                 ("&#39;", "'"), ("&#x27;", "'"), ("&nbsp;", " "),
+                 ("&mdash;", "-"), ("&ndash;", "-"), ("&rsquo;", "'"),
+                 ("&lsquo;", "'"), ("&ldquo;", '"'), ("&rdquo;", '"')):
+        text = text.replace(a, b)
+    # blank lines carry no words and only eat the little room a sheet has,
+    # so they are dropped: one line of text per line of the page
+    lines = [SPACE_RE.sub(" ", line).strip() for line in text.split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
+def text_from_jsonp(body: bytes) -> str:
+    """A page's text out of its descriptor: window.pageN_callback([…, "…"])."""
+    raw = text_of(body)
+    start, end = raw.find("["), raw.rfind("]")
+    if start < 0 or end <= start:
+        return ""
+    try:
+        parts = json.loads(raw[start:end + 1])
+    except ValueError:
+        return ""
+    if not isinstance(parts, list):
+        return ""
+    return html_to_text("".join(part for part in parts if isinstance(part, str)))
+
+
 def page_count(body: bytes, sources: Sources) -> int:
     text = text_of(body)
     for pattern in (r'"page_count"\s*:\s*(\d+)', r'"totalPages"\s*:\s*(\d+)',
@@ -1716,6 +1862,49 @@ class Ctx:
         found += self.primaries_for(number)
         return list(dict.fromkeys(found))
 
+    def page_text(self, number: int) -> str:
+        """This page's words, from the descriptor, cached beside the scan.
+
+        Costs one extra request per page, which is why it is opt-in: the words
+        are what make the finished PDF searchable and selectable instead of a
+        stack of photographs.
+        """
+        if not self.cache_dir:
+            return ""
+        cached = os.path.join(self.cache_dir, f"{number:04d}.text")
+        if os.path.isfile(cached):
+            try:
+                with open(cached, encoding="utf-8", errors="replace") as handle:
+                    return handle.read()
+            except OSError:
+                pass
+        token = self.token.get()
+        names = list(self.sources.jsonps_for(number))
+        if not names:                       # scans named, descriptors not
+            names = [jsonp for jsonp in
+                     (jsonp_from_image(url) for url in self.sources.images_for(number))
+                     if jsonp]
+        for jsonp in names:
+            for variant in ([with_token(jsonp, token), strip_token(jsonp)]
+                            if token else [strip_token(jsonp)]):
+                if not variant:
+                    continue
+                self.rest()
+                self.gate.acquire()
+                got = fetch(variant, self.jar, referer=self.document_url, timeout=20)
+                if got["status"] != 200 or not got["body"]:
+                    continue
+                self.answered()
+                words = text_from_jsonp(got["body"])
+                if words:
+                    try:
+                        with open(cached, "w", encoding="utf-8") as handle:
+                            handle.write(words)
+                    except OSError:
+                        pass
+                    return words
+        return ""
+
     def cache_path(self, number: int) -> str:
         source = self.sources.get(number)
         stem = (source.get("image") or source.get("jsonp") or str(number)).split("?")[0]
@@ -1825,7 +2014,7 @@ class Ctx:
 def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12,
             refresh: bool = False, name: str = "", check: bool = True,
             placeholder: bool = True, probe_page: int = 0,
-            verify: bool = True) -> None:
+            verify: bool = True, text: bool = False) -> None:
     urls = [str(item).strip() for item in
             (url if isinstance(url, (list, tuple)) else [url])
             if str(item or "").strip()]
@@ -1853,7 +2042,7 @@ def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12
             _batch(urls, limit, out, jobs, refresh, check, placeholder, verify)
         else:
             _download(urls[0], limit, out, jobs, refresh, name, check, placeholder,
-                      verify)
+                      verify, text)
     except Exception as exc:  # noqa: BLE001
         JOB.say(f"crashed: {exc!r}")
         with JOB.lock:
@@ -1961,7 +2150,8 @@ def _probe(url: str, number: int) -> None:
 
 def _download(url: str, limit: int, out: str, jobs: int = 12,
               refresh: bool = False, name: str = "", check: bool = True,
-              placeholder: bool = True, verify: bool = True) -> None:
+              placeholder: bool = True, verify: bool = True,
+              text: bool = False) -> None:
     ctx = Ctx(url, jobs)
     ctx.refresh = refresh
     if not ctx.ident:
@@ -2074,6 +2264,16 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                             f" -> {built['width']}x{built['height']}")
             JOB.set_progress(ok=len(collected))
 
+    # ---- the words of each page, so the PDF is not just photographs --------
+    texts: dict[int, str] = {}
+    if text and collected:
+        JOB.say("text: asking for each page's words (one extra request per page)")
+        for number in sorted(collected):
+            words = ctx.page_text(number)
+            if words:
+                texts[number] = words
+        JOB.say(f"text: {len(texts)} of {len(collected)} page(s) had words")
+
     uniform = check and not mixed and bool(collected)
     sheets = sheet_list(collected, with_limit, placeholder)
     if uniform:
@@ -2175,7 +2375,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         suffix += 1
 
     ok, note_text = build_pdf(sheets, target, title=ctx.title, author=ctx.author,
-                              uniform=uniform)
+                              uniform=uniform, texts=texts)
     if not ok:
         with JOB.lock:
             JOB.verdict = "FAILED"
@@ -2557,6 +2757,9 @@ PAGE = """<!doctype html>
   <div class="row">
     <label class="muted">pages <input type="number" id="limit" value="0" min="0"
       title="0 = the whole document"></label>
+    <label class="muted" title="adds each page's real words, so the PDF can be
+      searched and copied — one extra request per page"><input type="checkbox"
+      id="textlayer"> searchable text</label>
     <button id="go">Download</button>
     <span class="muted">0 = whole document · the sample tries 5 first</span>
     <button class="ghost" id="sample">Put the sample in</button>
@@ -2703,7 +2906,8 @@ $('ticked').onclick = () => {
   const boxes = [...document.querySelectorAll('#hits input:checked')];
   if (!boxes.length) { $('verdict').textContent = 'tick at least one document first'; return; }
   start({urls: boxes.map((b) => b.value),
-         limit: Number($('ticklimit').value) || 0});
+         limit: Number($('ticklimit').value) || 0,
+         text: $('textlayer').checked});
   $('verdict').textContent = 'queued ' + boxes.length
     + ' document(s) — scroll down for progress';
 };
@@ -2711,7 +2915,8 @@ $('ticked').onclick = () => {
 $('go').onclick = () => {
   const text = $('links').value.trim();
   if (!text) { $('verdict').textContent = 'paste at least one link first'; return; }
-  start({links: text, limit: Number($('limit').value) || 0});
+  start({links: text, limit: Number($('limit').value) || 0,
+         text: $('textlayer').checked});
 };
 $('sample').onclick = () => { $('links').value = '__SAMPLE__'; };
 $('copybm').onclick = async () => {
@@ -2864,7 +3069,10 @@ def serve(port: int, out: str) -> None:
                 self._send(b'{"error":"already running"}', "application/json", 409)
                 return
             limit = as_limit(payload.get("limit"))
-            threading.Thread(target=run_job, args=(urls, limit, out),
+            wants_text = bool(payload.get("text"))
+            threading.Thread(target=run_job,
+                             args=(urls, limit, out, 12, False, "", True, True, 0,
+                                   True, wants_text),
                              daemon=True).start()
             self._send(json.dumps({"ok": True, "queued": len(urls)}).encode(),
                        "application/json")
@@ -3275,6 +3483,54 @@ def selftest() -> str:
     assert any("throttling" in line for line in spoken), spoken
     assert len(spoken) == 4, spoken          # one line per rest, not one per 403
 
+    # ---- the text layer: the words, not just the pictures -------------------
+    assert html_to_text("<div>One</div><br><div>Two &amp; three</div>") == "One\nTwo & three"
+    assert html_to_text("<p>a</p><p>b</p>").split("\n") == ["a", "b"]
+    assert html_to_text("  <span>x</span>  ") == "x"
+    assert html_to_text("") == "" and html_to_text(None) == ""
+    assert "\n\n\n" not in html_to_text("<br><br><br><div>z</div>")
+    page = b'window.page2_callback(["<div>First</div>", "<br>", "Second &#39;quote&#39;"]);'
+    assert text_from_jsonp(page) == "First\nSecond 'quote'", text_from_jsonp(page)
+    assert text_from_jsonp(b'window.page2_callback([1, null, "<b>ok</b>"]);') == "ok"
+    assert text_from_jsonp(b"not a descriptor") == ""
+    assert text_from_jsonp(b'window.page2_callback(["unterminated")') == ""
+    assert text_from_jsonp(b"[not json") == ""
+    # the descriptor shares the scan's <page>-<hash> pair, so it is derivable
+    assert jsonp_from_image(
+        "https://html.scribdassets.com/9675umbmgwcrttvn/images/2-90c206b2e6.jpg"
+    ) == "https://html.scribdassets.com/9675umbmgwcrttvn/pages/2-90c206b2e6.jsonp"
+    assert jsonp_from_image(
+        "https://html.scribdassets.com/9675umbmgwcrttvn/images/2-90c206b2e6.jpg?token=x"
+    ).endswith("/pages/2-90c206b2e6.jsonp")
+    assert jsonp_from_image("https://www.scribd.com/document/1/x") == ""
+    # a layer is only drawn where there is room, and it never prints
+    layer = text_layer("Hello there\nSecond line", (900.0, 1200.0, 0.0, 0.0))
+    assert b"3 Tr" in layer and b"(Hello there) Tj" in layer, layer
+    assert b"im0" not in layer and b"Do" not in layer
+    assert text_layer("Hello", (15.0, 15.0, 0.0, 0.0)) == b""
+    assert text_layer("", (900.0, 1200.0, 0.0, 0.0)) == b""
+    # brackets and backslashes must be escaped, latin-1 must survive
+    tricky = text_layer("a (b) \\ c \u2014 caf\u00e9", (400.0, 100.0, 0.0, 0.0))
+    assert b"\\(b\\)" in tricky and b"\\\\" in tricky, tricky
+    assert b"caf\xe9" in tricky and b"\xe2\x80\x94" not in tricky, tricky
+    # and the finished file carries it without breaking the sheet
+    with tempfile.TemporaryDirectory() as spot:
+        book = os.path.join(spot, "text.pdf")
+        leaf = scan_for_pdf(make_jpeg(1200, 1600))
+        ok, note = build_pdf([leaf, None], book, texts={1: "Mock page one\nline two"})
+        assert ok and "searchable text" in note, note
+        sound, report = verify_pdf(book, expect_pages=2, expect_images=1)
+        assert sound, report                       # the layer must not break xref
+        with open(book, "rb") as handle:
+            written = handle.read()
+        assert b"(Mock page one) Tj" in written
+        # the placeholder sheet is untouched by the layer: one page has text
+        assert note.count("1 page(s) with searchable text") == 1, note
+        ok, note = build_pdf([leaf], book)
+        assert ok and "searchable" not in note, note
+        with open(book, "rb") as handle:
+            assert b"Tj" not in handle.read()
+
     gate = Gate(rate=24.0, floor=8.0, ceiling=60.0)
     for _ in range(40):
         gate.complaint(403)
@@ -3285,7 +3541,7 @@ def selftest() -> str:
     assert abs(hard.rate - 8.0) < 0.01, hard.rate
 
     return ("selftest: every check passed — sheet maths, EXIF rotation, "
-            "jpeg size traps, pdf verify, cookies, token, names, "
+            "jpeg size traps, pdf verify, text layer, cookies, token, names, "
             "pasted links, bookmarklet, scribd search")
 
 def main(argv: list[str]) -> int:
@@ -3301,6 +3557,7 @@ def main(argv: list[str]) -> int:
     check = True
     placeholder = True
     verify = True
+    text = False
     probe = 0
     find_text = ""
     find_asked = False
@@ -3349,6 +3606,8 @@ def main(argv: list[str]) -> int:
             placeholder = False
         elif arg == "--no-verify":
             verify = False
+        elif arg in ("--text", "--text-layer"):
+            text = True
         elif arg == "--selftest":
             print(selftest())
             return 0
@@ -3392,7 +3651,7 @@ def main(argv: list[str]) -> int:
     urls = [item for item in dict.fromkeys(urls) if item]
     if urls:
         run_job(urls, limit, out, jobs, refresh, name, check, placeholder, probe,
-                verify)
+                verify, text)
         return 0 if JOB.verdict in ("PDF BUILT", "PDF PARTIAL", "PROBE DONE") else 1
     port = int(os.environ.get("SERVER_PORT") or os.environ.get("PORT") or 8090)
     serve(port, out)

@@ -4,6 +4,7 @@
   GET /document/<id>   document html naming 2 pages
   GET /embeds/<id>     the viewer shell
   GET /images/...      a small synthetic page scan
+  GET /pages/...jsonp  one page's words, the way Scribd sends them
   GET /services/oembed title/author
   GET /search/query    Scribd's own search answer (2 documents, then nothing)
 """
@@ -51,6 +52,14 @@ def fake_jpeg(width=1200, height=1600, fill=6000):
     out += bytes((index * 7) % 256 for index in range(fill))
     out += b"\xff\xd9"
     return bytes(out)
+
+
+def page_jsonp(doc_id, number):
+    """Scribd sends each page's text as window.pageN_callback([…]) of html."""
+    words = [f"Mock page {number}", f"This is line two of page {number}",
+             f"Search for the word needle{number} to find this page"]
+    return ('window.page%d_callback(["%s"]);'
+            % (number, "<br>".join(f"<div>{line}</div>" for line in words))).encode()
 
 
 def document_html(doc_id):
@@ -133,6 +142,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/services/oembed"):
             self.send(b'{"title":"Doc","author_name":"someone"}',
                       ctype="application/json")
+        elif "/pages/" in path and path.endswith(".jsonp"):
+            name = path.rsplit("/", 1)[-1].split("-")[0]
+            number = int(name) if name.isdigit() else 1
+            self.send(page_jsonp(0, number), ctype="application/javascript")
         elif "/images/" in path:
             page = path.rsplit("/", 1)[-1].split("-")[0]
             if LOCK_PAGE and page == str(LOCK_PAGE):
