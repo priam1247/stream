@@ -1,0 +1,266 @@
+name: Deploy bot to XS Systems panel
+
+# Pterodactyl-style panels (XS Systems included) have no GitHub integration:
+# no webhook, no git in the File Manager, and the console is the bot's stdin —
+# typing "git pull" there does nothing. So:
+#   1. `selftest` runs `npm ci && npm run selftest` + builds `dashboard/` first.
+#   2. Only after `selftest` passes on `main` (or manual dispatch), `deploy`
+#      uploads the bot files over SFTP using a dedicated restricted panel
+#      subuser, then triggers a restart over HTTPS via `PANEL_API_KEY`.
+#
+#   Repo → Settings → Secrets and variables → Actions
+#   secrets:  PANEL_SFTP_HOST  PANEL_SFTP_PORT  PANEL_SFTP_USER  PANEL_SFTP_PASS
+#             PANEL_API_KEY   (client key from a restricted panel subuser)
+#   vars:     PANEL_URL  PANEL_SERVER_ID  (enables automatic HTTPS restart)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: 'First upload: also send .git so the server can "git pull" later'
+        type: boolean
+        default: false
+
+concurrency:
+  group: panel-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    name: Selftest & Dashboard Build Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install bot dependencies & run offline selftest
+        run: |
+          npm ci
+          npm run selftest
+          npm run test:jobs
+          node scripts/test-nm3u8dl-live.js
+
+      - name: Verify standalone dashboard typecheck & build
+        working-directory: dashboard
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+  deploy:
+    name: Upload to panel over SFTP
+    needs: selftest
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Are the panel secrets configured?
+        id: cfg
+        env:
+          H: ${{ secrets.PANEL_SFTP_HOST }}
+          U: ${{ secrets.PANEL_SFTP_USER }}
+          P: ${{ secrets.PANEL_SFTP_PASS }}
+          K: ${{ secrets.PANEL_SSH_KEY }}
+        run: |
+          if [ -n "$H" ] && [ -n "$U" ] && { [ -n "$P" ] || [ -n "$K" ]; }; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::PANEL_SFTP_HOST / PANEL_SFTP_USER and (PANEL_SSH_KEY or PANEL_SFTP_PASS) are not all set — skipping the panel deploy."
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.cfg.outputs.ready == 'true'
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Pre-upload selftest gate
+        if: steps.cfg.outputs.ready == 'true'
+        run: npm ci && npm run selftest
+
+      - name: Install lftp
+        if: steps.cfg.outputs.ready == 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+
+      # mirror -R = upload, and deliberately NO --delete: a deploy can add or
+      # overwrite files but never removes anything from the server, so session/,
+      # .env and database/*.json live on untouched.
+      - name: Upload the bot
+        if: steps.cfg.outputs.ready == 'true'
+        env:
+          SFTP_HOST: ${{ secrets.PANEL_SFTP_HOST }}
+          SFTP_PORT: ${{ secrets.PANEL_SFTP_PORT || '2022' }}
+          SFTP_USER: ${{ secrets.PANEL_SFTP_USER }}
+          SFTP_PASS: ${{ secrets.PANEL_SFTP_PASS }}
+          SSH_KEY: ${{ secrets.PANEL_SSH_KEY }}
+          INCLUDE_GIT: ${{ inputs.bootstrap == true && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          EXCLUDES=(
+            --exclude-glob .github/
+            --exclude-glob node_modules/
+            --exclude-glob bin/
+            --exclude-glob dashboard/
+            --exclude-glob session/
+            --exclude-glob temp/
+            --exclude-glob data/
+            --exclude-glob .env
+            --exclude-glob 'database/*.json'
+            --exclude-glob 'database/*.bak'
+            --exclude-glob '*.log'
+          )
+          if [ "$INCLUDE_GIT" != "1" ]; then
+            EXCLUDES+=(--exclude-glob .git/)
+          fi
+
+          if [ -n "$SSH_KEY" ]; then
+            mkdir -p ~/.ssh
+            chmod 700 ~/.ssh
+            printf '%s\n' "$SSH_KEY" > ~/.ssh/id_panel
+            chmod 600 ~/.ssh/id_panel
+            trap 'rm -f ~/.ssh/id_panel' EXIT
+            lftp -c "
+              set sftp:auto-confirm yes;
+              set sftp:connect-program \"ssh -a -x -i $HOME/.ssh/id_panel -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new\";
+              set net:timeout 25;
+              set net:max-retries 3;
+              set net:reconnect-interval-base 5;
+              open -u \"$SFTP_USER\",DUMMY sftp://$SFTP_HOST:${SFTP_PORT:-2022};
+              mirror -R --verbose --no-perms --parallel=4 ${EXCLUDES[*]} ./ /;
+              bye
+            "
+          else
+            SAFE_PASS=${SFTP_PASS//\\/\\\\}
+            SAFE_PASS=${SAFE_PASS//\"/\\\"}
+            lftp -c "
+              set sftp:auto-confirm yes;
+              set net:timeout 25;
+              set net:max-retries 3;
+              set net:reconnect-interval-base 5;
+              open -u \"$SFTP_USER\",\"$SAFE_PASS\" sftp://$SFTP_HOST:${SFTP_PORT:-2022};
+              mirror -R --verbose --no-perms --parallel=4 ${EXCLUDES[*]} ./ /;
+              bye
+            "
+          fi
+
+      - name: Restart the server so the new code runs
+        if: steps.cfg.outputs.ready == 'true'
+        shell: bash
+        env:
+          PANEL_URL: ${{ vars.PANEL_URL || secrets.PANEL_URL }}
+          PANEL_SERVER_ID: ${{ vars.PANEL_SERVER_ID || secrets.PANEL_SERVER_ID }}
+          PANEL_API_KEY: ${{ secrets.PANEL_API_KEY }}
+          SFTP_HOST: ${{ secrets.PANEL_SFTP_HOST }}
+        run: |
+          set +e
+          if [ -z "$PANEL_API_KEY" ]; then
+            echo "::notice::Restart skipped: PANEL_API_KEY not set. Files were uploaded — press Restart in the panel."
+            exit 0
+          fi
+
+          # HTTPS-only candidate list so PANEL_API_KEY is never sent over cleartext HTTP
+          CANDS=()
+          [ -n "$PANEL_URL" ] && CANDS+=("$PANEL_URL")
+          if [ -n "$SFTP_HOST" ]; then
+            BASE_HOST="panel.${SFTP_HOST#*.}"
+            CANDS+=("https://$BASE_HOST")
+          fi
+          [ ${#CANDS[@]} -eq 0 ] && CANDS=("https://panel.xsystemshosting.com")
+
+          IDS=()
+          if [ -n "$PANEL_SERVER_ID" ]; then
+            IDS+=("$PANEL_SERVER_ID")
+            case "$PANEL_SERVER_ID" in
+              *-*) IDS+=("${PANEL_SERVER_ID%%-*}") ;;
+            esac
+          else
+            # Auto-discover server identifier via GET /api/client when PANEL_SERVER_ID is blank
+            for raw in "${CANDS[@]}"; do
+              BASE=${raw%/}; BASE=${BASE%%/server/*}
+              case "$BASE" in https://*) ;; *) continue ;; esac
+              disc=$(curl -sS --max-time 15 "$BASE/api/client" \
+                -H "Authorization: Bearer $PANEL_API_KEY" \
+                -H 'Accept: application/json' 2>/dev/null)
+              found=$(printf '%s' "$disc" | node -e '
+                let d=""; process.stdin.on("data",c=>d+=c).on("end",()=>{
+                  try {
+                    const j=JSON.parse(d);
+                    const ids=(j.data||[]).map(x=>x.attributes&&x.attributes.identifier).filter(Boolean);
+                    console.log(ids.join(" "));
+                  } catch {}
+                });
+              ')
+              if [ -n "$found" ]; then
+                for fid in $found; do IDS+=("$fid"); done
+                break
+              fi
+            done
+          fi
+
+          if [ ${#IDS[@]} -eq 0 ]; then
+            echo "::warning::Could not auto-discover PANEL_SERVER_ID via /api/client. Set PANEL_SERVER_ID in repo Variables."
+            exit 0
+          fi
+
+          ok=""; LAST="none"
+          for raw in "${CANDS[@]}"; do
+            BASE=${raw%/}
+            BASE=${BASE%%/server/*}
+            case "$BASE" in https://*) ;; *) continue ;; esac
+            for id in "${IDS[@]}"; do
+              echo "→ $BASE  server=$id"
+              code=$(curl -sS --max-time 20 -o /tmp/out -w '%{http_code}' -X POST \
+                "$BASE/api/client/servers/$id/power" \
+                -H "Authorization: Bearer $PANEL_API_KEY" \
+                -H 'Accept: application/json' \
+                -H 'Content-Type: application/json' \
+                -d '{"signal":"restart"}' 2>/tmp/err) || code="curl:$?"
+              err=$(head -c 160 /tmp/err 2>/dev/null | tr -d '\n')
+              echo "   status=$code $err"
+              LAST="$code @ $BASE (server=$id)"
+              case "$code" in
+                200|204) ok="$BASE"; break 2 ;;
+                404) continue ;;
+                000|curl:6|curl:7|curl:28|curl:35) continue 2 ;;
+                *) break 2 ;;
+              esac
+            done
+          done
+
+          if [ -z "$ok" ]; then
+            for raw in "${CANDS[@]}"; do
+              BASE=${raw%/}; BASE=${BASE%%/server/*}
+              case "$BASE" in https://*) ;; *) continue ;; esac
+              for id in "${IDS[@]}"; do
+                code=$(curl -sS --max-time 20 -o /tmp/out -w '%{http_code}' -X POST \
+                  "$BASE/api/application/servers/$id/power" \
+                  -H "Authorization: Bearer $PANEL_API_KEY" \
+                  -H 'Accept: application/json' \
+                  -H 'Content-Type: application/json' \
+                  -d '{"signal":"restart"}' 2>/dev/null) || code="curl:$?"
+                echo "   application API: $code ($BASE server=$id)"
+                LAST="$code @ $BASE (application key, server=$id)"
+                [ "$code" = "204" ] && { ok="$BASE (application)"; break 3; }
+              done
+            done
+          fi
+
+          rm -f /tmp/out /tmp/err
+          if [ -n "$ok" ]; then
+            echo "::notice::✅ Restart requested via $ok"
+            exit 0
+          fi
+          echo "::warning::Restart not accepted ($LAST). The files ARE uploaded — press Restart in the panel."
+          exit 0

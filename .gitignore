@@ -1,19 +1,57 @@
+# dependencies & runtime-fetched standalone binaries
+node_modules/
+bin/
+
+# WhatsApp credentials — never commit
+session/
+*.session/
+
+# runtime scratch (also used by the movie/series engine)
+temp/
+data/
+*.log
+
+# runtime state & vault snapshots written by the bot itself (never overwrite on deploy)
+database/*.json
+database/*.bak
+database/*.corrupt*
+database/*.tmp
+database/*.sqlite
+database/*.sqlite-wal
+database/*.sqlite-shm
+
+# local secrets
+.env
+secrets/
+cookies/
+*.wvd
+*.arl
+
+# web portal build output (dashboard/)
+.next/
+dashboard/.next/
+dashboard/.data/
+dashboard/next-env.d.ts
+.vercel/
+next-env.d.ts
+
+# next.js incremental build info
+dashboard/tsconfig.tsbuildinfo
+
+# Python side (tools/scribd_download.py) — keep these, they were here before the merge
 __pycache__/
 *.pyc
 .venv/
 venv/
-downloads/
-.debug/
 *.egg-info/
 .pytest_cache/
+.download-debug/
+downloads/
 
 # Session credentials — NEVER commit these (equivalent to a password)
 cookies.txt
 *cookies*.txt
 
-# local settings (may contain a password) — uploaded to the host, never committed
-.env
-
-# the JS search service: its deps and its scratch folder
-node_modules/
+# Lambda-style scratch folder used by the bot's JS runtime (TMPDIR=./tmp)
+tmp/
 tools/troy-search/tmp/
