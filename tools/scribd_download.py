@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.7
+"""scribd_download.py — ONE file, standard library only.  Version 2.8
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -102,7 +102,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.7"
+VERSION = "2.8"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -2056,7 +2056,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     with JOB.lock:
         JOB.file = target
         JOB.verdict = "PDF BUILT" if not failed else "PDF PARTIAL"
-        JOB.detail = (f"{note_text} · {len(collected)} of {ctx.total} page(s) real"
+        asked = with_limit if limit else ctx.total
+        JOB.detail = (f"{note_text} · {len(collected)} of {asked} page(s) real"
+                      + (f" of {ctx.total} in the document" if limit and
+                         with_limit < ctx.total else "")
                       + (f" · {len(failed)} placeholder" if failed else "")
                       + (" · verified" if verify else ""))
     if failed:
@@ -2498,6 +2501,8 @@ function say(d) {
 }
 
 async function ask(page) {
+  // if the words in the box changed, this is a new search, not a next page
+  if (page > 1 && $('q').value.trim() !== search.query) return find();
   $('find').disabled = true;
   $('more').disabled = true;
   const first = page === 1;

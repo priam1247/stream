@@ -36,7 +36,7 @@ own browser, one click sends every link on the page) and a **paste box**.
    printed, and only `scribd.com` / `scribdassets.com` cookies are ever sent —
    the rest of a browser export stays out of the request.
 3. Start it: `PY_FILE=scribd_download.py`, restart.
-4. Open the server address. The line under the title must read **v2.7**.
+4. Open the server address. The line under the title must read **v2.8**.
 
 ## 2. Find links: five ways
 
