@@ -5,6 +5,14 @@ import { readScribdFile, safeScribdName } from '@/lib/scribd-panel';
 export const dynamic = 'force-dynamic';
 
 /**
+ * A big book can take a while to stream through this function. Vercel caps this
+ * by plan (Hobby 60s, Pro 300s), so the value is a request, not a promise: a
+ * very large PDF on a slow panel upload is better fetched from the panel
+ * address directly if the plan cuts it short.
+ */
+export const maxDuration = 300;
+
+/**
  * GET /api/scribd/file?name=Book.pdf
  *
  * Streams the PDF from the panel through this dashboard, so the download link
@@ -26,13 +34,13 @@ export async function GET(req: NextRequest) {
   }
 
   const filename = result.filename.replace(/["\\]/g, '');
-  return new NextResponse(result.data, {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': String(result.data.byteLength),
-      'Cache-Control': 'no-store',
-    },
-  });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/pdf',
+    'Content-Disposition': `attachment; filename="${filename}"`,
+    'Cache-Control': 'no-store',
+    // a phone on a slow connection must not need the whole PDF in memory
+    'X-Accel-Buffering': 'no',
+  };
+  if (result.length) headers['Content-Length'] = result.length;
+  return new NextResponse(result.body, { status: 200, headers });
 }

@@ -26,6 +26,11 @@ export interface ScribdPanelStatus {
   sample: string;
   progress: ScribdProgress;
   log: string[];
+  /** seconds since the last page arrived (0 when nothing is running) */
+  quiet?: number;
+  /** running, but nothing has moved for `stall_after` seconds */
+  stalled?: boolean;
+  stall_after?: number;
 }
 
 export interface ScribdPanelHealth {
@@ -42,6 +47,9 @@ export interface ScribdHit {
   pages: number;
   views: string;
   author: string;
+  /** how well the title matches the words that were typed */
+  score?: number;
+  match?: 'all' | 'some' | 'none';
 }
 
 export interface ScribdFindPayload {
