@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.10
+"""scribd_download.py — ONE file, standard library only.  Version 2.11
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -40,6 +40,26 @@ asks Scribd directly, which is the same thing its own search box does. The one
 honest caveat: /search/query is not a documented API — it is the endpoint the
 site's own JavaScript calls. If Scribd changes it, the page says so in plain
 words instead of pretending there are no results.
+
+What 2.11 fixed: "HTTP 200, 6 kB jpeg that is not a page scan" (a real run)
+  A 323-page book came back with 108 pages lost, most of them not 403s but
+  small pictures the tool refused to call pages. The line said nothing useful:
+  not how big the picture was, not whether it had arrived whole.
+  1. Every refusal now names what actually arrived — "a 60x80 jpeg, 430 B —
+     below the 200 px floor for a page", "a 764x1031 jpeg, 6.2 kB, cut short
+     (no end-of-image marker)" — and the bytes are kept in debug/rejected/ so
+     the sentence can be checked instead of believed.
+  2. A picture is only "cut short" if it has no end-of-image marker. That test
+     did not exist; a transfer cut in half was embedded silently and showed as
+     a grey band. Now it is asked for once more, then kept and counted.
+  3. A complete, page-shaped picture smaller than a real scan is a PREVIEW, not
+     a failure: some documents are only served at 96x130 under every name we
+     know. Those pages now go into the PDF filled to the sheet, are left out of
+     the median that decides the page size, and are counted in the verdict
+     ("1 small preview"). A blank placeholder with an excuse helps nobody.
+     Below 80 px it is still a smudge and still refused.
+  4. The verifier knows the difference too: a 96x130 page is a legal sheet, a
+     40x40 one is still a broken file.
 
 What 2.10 added: REAL TEXT INSIDE THE PDF (--text, or the panel's checkbox)
   A Scribd page is a scan plus its words. The scan was always downloaded; the
@@ -145,7 +165,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.10"
+VERSION = "2.11"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -177,6 +197,7 @@ OTHER_HOSTS = ("html.scribd.com", "html2-f.scribdassets.com",
                "html3-f.scribdassets.com", "html4-f.scribdassets.com")
 # a page scan is never smaller than this, and never this lopsided
 MIN_PAGE_PX = 200
+PREVIEW_MIN_PX = 80                # below this a picture is a smudge, not a page
 ASPECT_RANGE = (0.4, 3.0)          # width / height
 SIZE_TOLERANCE = 0.06              # 6% either way counts as the same page
 MAX_REFETCH = 40                   # pages whose wrong size we will pay to redo
@@ -689,20 +710,20 @@ def _sof_candidates(data: bytes) -> list[tuple[int, int, int]]:
             found.append((width, height, components))
     return found
 
-def jpeg_size(data: bytes) -> tuple[int, int, int]:
-    """The real frame size, validated — not the first marker we trip over.
+def jpeg_frames(data: bytes) -> tuple[list[tuple[int, int, int]], bool]:
+    """Every frame header in a JPEG, and whether the file arrived whole.
 
-    2.3 walked the marker chain and believed the first SOF it met. An EXIF
-    thumbnail, a padding segment or a truncated chain can put a 772x68 "frame"
-    in front of the real one, and then the whole book was laid out for 772x68.
-    Now: walk the chain, collect every plausible frame, and only if none of them
-    is a plausible page scan fall back to scanning the raw bytes.
+    A cut transfer keeps the header and loses the tail, so the only honest test
+    for "did this file arrive complete" is the end-of-image marker. Without it a
+    viewer draws the decoded sliver and greys the rest — a page that looks like
+    our bug instead of the CDN's.
     """
     if data[:2] != b"\xff\xd8":
-        return 0, 0, 0
-    walked: list[tuple[int, int, int]] = []
+        return [], False
+    frames: list[tuple[int, int, int]] = []
     index = 2
     limit = min(len(data), 4_000_000)
+    saw_scan = False
     while index + 4 <= limit:
         if data[index] != 0xFF:
             index += 1
@@ -714,7 +735,10 @@ def jpeg_size(data: bytes) -> tuple[int, int, int]:
         if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
             index += 2
             continue
-        if marker in (0xD9, 0xDA):            # end of image, or scan data starts
+        if marker == 0xD9:                    # end of image, before any scan
+            break
+        if marker == 0xDA:                    # scan data starts here
+            saw_scan = True
             break
         length = struct.unpack(">H", data[index + 2:index + 4])[0]
         if length < 2:
@@ -724,8 +748,48 @@ def jpeg_size(data: bytes) -> tuple[int, int, int]:
                 height, width = struct.unpack(">HH", data[index + 5:index + 9])
                 components = data[index + 9]
                 if width and height:
-                    walked.append((width, height, components))
+                    frames.append((width, height, components))
         index += 2 + length
+    tail = data.rstrip(b"\x00\t\r\n ")
+    return frames, bool(saw_scan and tail.endswith(b"\xff\xd9"))
+
+
+def biggest_frame(frames: list[tuple[int, int, int]]) -> tuple[int, int, int]:
+    """The largest picture in a JPEG file — never a header's decoy thumbnail."""
+    if not frames:
+        return 0, 0, 0
+    return max(frames, key=lambda frame: frame[0] * frame[1])
+
+
+def small_frame(frames: list[tuple[int, int, int]]) -> tuple[int, int, int]:
+    """A page-shaped picture that is complete but smaller than a real scan.
+
+    Some documents are only served at reduced size under every name we know. A
+    page at 300x400 is readable; one at 60 px is a smudge, so there is a floor.
+    """
+    best = (0, 0, 0)
+    for width, height, components in frames:
+        if min(width, height) < PREVIEW_MIN_PX:
+            continue
+        if not (ASPECT_RANGE[0] <= width / height <= ASPECT_RANGE[1]):
+            continue
+        if width * height > best[0] * best[1]:
+            best = (width, height, components or 3)
+    return best
+
+
+def jpeg_size(data: bytes) -> tuple[int, int, int]:
+    """The real frame size, validated — not the first marker we trip over.
+
+    2.3 walked the marker chain and believed the first SOF it met. An EXIF
+    thumbnail, a padding segment or a truncated chain can put a 772x68 "frame"
+    in front of the real one, and then the whole book was laid out for 772x68.
+    Now: walk the chain, collect every plausible frame, and only if none of them
+    is a plausible page scan fall back to scanning the raw bytes.
+    """
+    if data[:2] != b"\xff\xd8":
+        return 0, 0, 0
+    walked, _complete = jpeg_frames(data)
     for group in (walked, _sof_candidates(data[:200_000])):
         for width, height, components in group:
             if (width >= MIN_PAGE_PX and height >= MIN_PAGE_PX
@@ -990,45 +1054,115 @@ def pillow_size(data: bytes) -> tuple[int, int, int]:
     except Exception:  # noqa: BLE001
         return 0, 0, 0
 
+def with_flags(page: dict | None, complete: bool = True) -> dict | None:
+    """Record what the report needs to know about the picture that arrived."""
+    if not page:
+        return None
+    page.setdefault("preview", False)
+    page.setdefault("complete", complete)
+    return page
+
+
 def scan_for_pdf(data: bytes) -> dict | None:
-    """One page scan -> {'payload','params','width','height','rotate','label'}."""
+    """One page scan -> {'payload','params','width','height','rotate','label'}.
+
+    Two facts ride along with the picture, because both decide what the report
+    can honestly say about it:
+
+      complete  the file ends where it should (JPEG end-of-image, PNG IEND).
+                A transfer cut in the middle looks normal otherwise.
+      preview   a complete, page-shaped picture smaller than a real scan: some
+                documents are only served at that size. It still goes into the
+                PDF, scaled to the sheet, and the count is reported — a readable
+                page beats a blank placeholder with an excuse.
+    """
     if data[:2] == b"\xff\xd8":
+        frames, complete = jpeg_frames(data)
         width, height, components = jpeg_size(data)
+        preview = False
         if width and not page_can_be_this_small(width, height, len(data)):
             # a page-sized file cannot really be a 772x68 picture: the header
             # read is wrong, so ask a decoder before believing either number
             wide, tall, guess = pillow_size(data)
-            width, height, components = ((wide, tall, guess)
-                                         if page_can_be_this_small(wide, tall, len(data))
-                                         else (0, 0, 0))
+            if page_can_be_this_small(wide, tall, len(data)):
+                width, height, components = wide, tall, guess
+            else:
+                width = 0
         if not (width and plausible_page({"width": width, "height": height})):
             # the header chain said nothing usable, or said something no page
-            # could be: ask a real decoder before throwing a good scan away
+            # could be: ask a real decoder, then fall back to the best picture
+            # the file actually contains
             wide, tall, guess = pillow_size(data)
             if wide and tall and plausible_page({"width": wide, "height": tall}):
                 width, height, components = wide, tall, guess
-            elif not width:
-                return None
+            else:
+                width, height, components = small_frame(frames)
+                if not width:
+                    return None
+                preview = True
         space = {1: "/DeviceGray", 3: "/DeviceRGB", 4: "/DeviceCMYK"}.get(
             components, "/DeviceRGB")
         return {"payload": data, "width": width, "height": height,
                 "rotate": jpeg_orientation(data),
                 "params": (f"/Width {width} /Height {height} /ColorSpace {space} "
                            "/BitsPerComponent 8 /Filter /DCTDecode /Interpolate true"),
-                "label": f"{width}x{height} jpeg, {len(data) / 1000:.0f} kB"}
+                "label": (f"{width}x{height} jpeg, {len(data) / 1000:.0f} kB"
+                          + (", small preview" if preview else "")
+                          + ("" if complete else ", cut short")),
+                "preview": preview, "complete": complete}
     if data[:8] == b"\x89PNG\r\n\x1a\n":
+        complete = data.rstrip(b"\x00\t\r\n ").endswith(b"IEND\xaeB`\x82")
         direct = png_for_pdf(data)
         if direct:
-            return direct
+            return with_flags(direct, complete)
         decoded = png_to_raw(data)
         if decoded:
             pixels, width, height, components = decoded
-            return _raw_page(pixels, width, height, components,
-                             f"{width}x{height} png")
-        return pillow_page(data)          # 16-bit / interlaced, if Pillow is here
+            return with_flags(_raw_page(pixels, width, height, components,
+                                        f"{width}x{height} png"), complete)
+        return with_flags(pillow_page(data), complete)   # 16-bit / interlaced
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return pillow_page(data)
-    return pillow_page(data)
+        return with_flags(pillow_page(data))
+    return with_flags(pillow_page(data))
+
+
+def size_text(count: int) -> str:
+    """Bytes as the log should say them: 430 B, 6.2 kB, 151 kB."""
+    if count < 1000:
+        return f"{count} B"
+    if count < 10_000:
+        return f"{count / 1000:.1f} kB"
+    return f"{count / 1000:.0f} kB"
+
+
+def describe_image(data: bytes) -> str:
+    """What actually arrived, in one line, so a refusal is never a riddle.
+
+    "6 kB jpeg that is not a page scan" told nobody anything. This says the
+    size the file declares, whether it is complete, and whether it was simply
+    too small to be a page — which is the difference between a bad parse, a cut
+    transfer and a document Scribd keeps at low resolution.
+    """
+    size = size_text(len(data))
+    if not data:
+        return "an empty body"
+    if data[:2] == b"\xff\xd8":
+        frames, complete = jpeg_frames(data)
+        cut = "" if complete else ", cut short (no end-of-image marker)"
+        width, height, _components = biggest_frame(frames)
+        if not width:
+            return f"a jpeg with no frame header, {size}{cut}"
+        if not plausible_page({"width": width, "height": height}):
+            return (f"a {width}x{height} jpeg, {size}{cut} — below the "
+                    f"{MIN_PAGE_PX} px floor for a page")
+        return f"a {width}x{height} jpeg, {size}{cut}"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return f"a png, {size}"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return f"a webp, {size}"
+    return (f"{size} that is not an image at all "
+            f"(starts {data[:12].decode('latin-1', 'replace').strip()!r})")
+
 
 def looks_like_image(data: bytes) -> bool:
     return (data[:2] == b"\xff\xd8" or data[:8] == b"\x89PNG\r\n\x1a\n"
@@ -1075,8 +1209,13 @@ def median_page(pages: list[dict]) -> tuple[int, int]:
     return page["width"], page["height"]
 
 def house_sheet(pages: list[dict]) -> tuple[float, float]:
-    """The one sheet every page is scaled into: the median page, in points."""
-    width, height = median_page(pages)
+    """The one sheet every page is scaled into: the median page, in points.
+
+    Pages that only came as a small preview are left out of the median: a
+    document served half in 96x130 copies must not end up with 96x130 sheets.
+    """
+    real = [page for page in pages if not page.get("preview")] or pages
+    width, height = median_page(real)
     return round(width * 0.75, 2), round(height * 0.75, 2)
 
 def sheet_list(collected: dict[int, dict], total: int,
@@ -1098,8 +1237,12 @@ def _placement(page: dict, sheet: tuple[float, float]) -> tuple[float, float, fl
         width, height = height, width
     natural_w, natural_h = width * 0.75, height * 0.75
     # fill the sheet, but never blow a small scan up into mush: past 2x the
-    # pixels are invented, so a genuinely small page stays crisp and centred
-    fit = min(sheet[0] / natural_w, sheet[1] / natural_h, 2.0)
+    # pixels are invented, so a genuinely small page stays crisp and centred.
+    # A preview has no crispness to lose, so it fills the sheet instead of
+    # sitting in the middle of it like a postage stamp.
+    fit = min(sheet[0] / natural_w, sheet[1] / natural_h)
+    if not page.get("preview"):
+        fit = min(fit, 2.0)
     box_w = round(natural_w * fit, 2)
     box_h = round(natural_h * fit, 2)
     return (box_w, box_h, round((sheet[0] - box_w) / 2, 2),
@@ -1377,7 +1520,9 @@ def verify_bytes(data: bytes, expect_pages: int = 0, expect_images: int = 0,
             height = re.search(rb"/Height (\d+)", head)
             if width and height:
                 wide, tall = int(width.group(1)), int(height.group(1))
-                if wide < MIN_PAGE_PX or tall < MIN_PAGE_PX:
+                if wide < PREVIEW_MIN_PX or tall < PREVIEW_MIN_PX:
+                    # a preview page is allowed to be small, a smudge is not:
+                    # the sheet can only ever be as readable as its picture
                     problems.append(f"image object {number} is only {wide}x{tall} px")
         if b"/Type /Catalog" in head:
             if b"/Pages" not in body:
@@ -1723,6 +1868,27 @@ class Ctx:
             self.trace.setdefault(number, []).append(f"{status:>3}  {url}")
             self.tried.setdefault(number, set()).add(url)
 
+    def keep_reject(self, number: int, data: bytes) -> None:
+        """Keep the picture that was refused, so the reason can be checked.
+
+        A rejection nobody can look at is a rumour. The bytes land in
+        debug/rejected/ (capped, so a broken document cannot fill the disk) and
+        the log says so once.
+        """
+        if not number or not data:
+            return
+        folder = os.path.join(JOB.out or OUT, "debug", "rejected")
+        try:
+            os.makedirs(folder, exist_ok=True)
+            if len(os.listdir(folder)) >= 40:
+                return
+            with open(os.path.join(folder, f"page-{number:04d}.bin"), "wb") as handle:
+                handle.write(data)
+            self.note(f"page {number}: the refused picture is saved in "
+                      "debug/rejected — the log line above says what it was")
+        except OSError:
+            pass
+
     def reject(self, data: bytes) -> str:
         """Remember the KIND of file that arrived but could not be read."""
         if data[:2] == b"\xff\xd8":
@@ -1933,16 +2099,22 @@ class Ctx:
             if status == 200 and looks_like_image(got["body"]):
                 built = scan_for_pdf(got["body"])
                 if built:
+                    if built.get("complete") is False and attempt < min(tries, 2):
+                        # the CDN cut the transfer: the picture is here but its
+                        # tail is not, so ask once more before keeping it
+                        reason = "cut short mid-transfer — asking again"
+                        time.sleep(delay)
+                        continue
                     self.gate.clean_answer()
                     self.answered()
                     built["url"] = url
                     built["bytes"] = len(got["body"])
                     built["raw"] = got["body"]
                     return built, "", status
-                kind = self.reject(got["body"])
+                self.reject(got["body"])
                 self.answered()
-                return None, (f"HTTP 200, {len(got['body']) / 1000:.0f} kB "
-                              f"{kind} that is not a page scan"), status
+                self.keep_reject(number, got["body"])
+                return None, f"HTTP 200 — {describe_image(got['body'])}", status
             if got["error"]:
                 reason = got["error"]
             else:
@@ -1970,7 +2142,7 @@ class Ctx:
             except OSError:
                 data = b""
             built = scan_for_pdf(data)
-            if built and plausible_page(built):
+            if built and (plausible_page(built) or built.get("preview")):
                 built["url"] = "cache"
                 built["bytes"] = len(data)
                 return number, built, ""
@@ -1992,7 +2164,7 @@ class Ctx:
                 tries = 1 if url in self.dead else 2
                 built, reason, status = self.attempt(url, tries, number)
                 self.record(number, url, status)
-                if built and plausible_page(built):
+                if built and (plausible_page(built) or built.get("preview")):
                     raw = built.pop("raw", b"")
                     if raw:
                         try:
@@ -2008,7 +2180,8 @@ class Ctx:
                     reason = f"{built['width']}x{built['height']} is not a page"
                 if status == 403:
                     self.dead.add(url)
-        self.note(f"page {number}: {len(seen)} name(s) tried, all refused ({reason})")
+        self.note(f"page {number}: {len(seen)} name(s) tried, nothing usable came "
+                  f"back ({reason})")
         return number, None, f"page {number}: {reason}"
 
 def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12,
@@ -2141,7 +2314,10 @@ def _probe(url: str, number: int) -> None:
         if mark == "IMAGE":
             built = scan_for_pdf(got["body"])
             detail = (f"  {built['width']}x{built['height']}"
-                      f" rot {built.get('rotate', 1)}" if built else "  unreadable")
+                      f" rot {built.get('rotate', 1)}"
+                      + (", small preview" if built.get("preview") else "")
+                      + ("" if built.get("complete", True) else ", cut short")
+                      if built else f"  {describe_image(got['body'])}")
         JOB.say(f"  {mark} {got['status']:>3} {size / 1000:8.1f} kB  {candidate[:150]}"
                 + (detail or (f"   {http_reason(got)}" if mark == "     " else "")))
     with JOB.lock:
@@ -2229,19 +2405,37 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         failed = still
         JOB.set_progress(ok=len(collected), skipped=len(failed))
 
+    # ---- pictures that arrived, but not as a full scan -------------------
+    previews = sorted(number for number, page in collected.items()
+                      if page.get("preview"))
+    cuts = sorted(number for number, page in collected.items()
+                  if page.get("complete") is False)
+    if previews:
+        sample = collected[previews[0]]
+        JOB.say(f"{len(previews)} page(s) were only served as a small preview "
+                f"({sample['width']}x{sample['height']}) — no larger copy came "
+                "under any name; they are in the PDF, filled to the sheet")
+    if cuts:
+        JOB.say(f"{len(cuts)} page(s) still arrived cut short after a retry — "
+                "kept, but part of each picture may show grey")
+
     # ---- one document, one page size ------------------------------------
     # The size is the MEDIAN of the scans, so a single odd page cannot shape the
     # book. Pages that miss it are refetched once; if most pages miss it, the
     # document simply has mixed page sizes and every sheet keeps its own.
+    # Previews are excluded: a low-resolution copy is not this book's page size.
     reference = (0, 0)
     if collected:
-        reference = median_page(list(collected.values()))
+        reference = median_page([page for page in collected.values()
+                                 if not page.get("preview")]
+                                or list(collected.values()))
     mixed = False
     if check and reference[0] and len(collected) >= 8:
         offenders = [
             number for number, page in collected.items()
-            if abs(page["width"] / reference[0] - 1) > SIZE_TOLERANCE
-            or abs(page["height"] / reference[1] - 1) > SIZE_TOLERANCE]
+            if not page.get("preview")
+            and (abs(page["width"] / reference[0] - 1) > SIZE_TOLERANCE
+                 or abs(page["height"] / reference[1] - 1) > SIZE_TOLERANCE)]
         if len(offenders) > len(collected) * 0.2:
             mixed = True
             JOB.say(f"size check: {len(offenders)} of {len(collected)} pages differ "
@@ -2340,7 +2534,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             lines = ctx.trace.get(number, [])
             names = len(ctx.tried.get(number, ()))
             JOB.say(f"page {number}: {names} name(s) tried, "
-                    f"every one refused ({len(lines)} request(s))")
+                    f"nothing usable came back ({len(lines)} request(s))")
             for line in lines[:4]:
                 JOB.say("   " + line)
 
@@ -2401,6 +2595,8 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                       + (f" of {ctx.total} in the document" if limit and
                          with_limit < ctx.total else "")
                       + (f" · {len(failed)} placeholder" if failed else "")
+                      + (f" · {len(previews)} small preview" if previews else "")
+                      + (f" · {len(cuts)} cut short" if cuts else "")
                       + (" · verified" if verify else ""))
     if failed:
         JOB.say("placeholder pages: " + ", ".join(str(n) for n in failed[:60])
@@ -3166,6 +3362,37 @@ def selftest() -> str:
     assert jpeg_orientation(make_jpeg(1200, 1600)) == 1
     assert jpeg_orientation(b"not a jpeg") == 1
 
+    # ---- what arrived, and whether it is really a page --------------------
+    frames, whole = jpeg_frames(real)
+    assert frames == [(1200, 1600, 3)] and whole, frames
+    assert jpeg_frames(trapped)[0][-1] == (1200, 1600, 3)   # the decoy is not it
+    assert jpeg_frames(b"not a jpeg") == ([], False)
+    cut = real[:-40]                                        # a transfer cut short
+    assert jpeg_frames(cut)[0] == [(1200, 1600, 3)]
+    assert jpeg_frames(cut)[1] is False
+    assert scan_for_pdf(cut)["complete"] is False
+    assert scan_for_pdf(real)["complete"] is True
+    # a complete, page-shaped picture smaller than a scan is a page, not a fail
+    preview_page = scan_for_pdf(make_jpeg(96, 130))
+    assert preview_page and preview_page["preview"] is True, preview_page
+    assert preview_page["width"] == 96 and "small preview" in preview_page["label"]
+    assert scan_for_pdf(make_jpeg(60, 80)) is None           # that is a smudge
+    assert scan_for_pdf(real)["preview"] is False
+    # a decoy thumbnail in front of a full page never wins
+    assert scan_for_pdf(make_jpeg(1200, 1600, thumbnail=(90, 120)))["preview"] is False
+    # the reason line says what arrived instead of "not a page scan"
+    assert "below the 200 px floor" in describe_image(make_jpeg(60, 80))
+    assert "cut short" in describe_image(cut)
+    assert "1200x1600 jpeg" in describe_image(real)
+    assert "not an image at all" in describe_image(b"<Error>AccessDenied</Error>")
+    assert "empty body" in describe_image(b"")
+    # previews never shape the sheet, and they fill it instead of floating in it
+    assert house_sheet([{"width": 1200, "height": 1600}] * 5
+                       + [{"width": 96, "height": 130, "preview": True}]) == (900.0, 1200.0)
+    wide_box = _placement({"width": 96, "height": 130, "rotate": 1, "preview": True},
+                          (900.0, 1200.0))
+    assert wide_box[1] == 1200.0, wide_box
+
     # ---- the sheet comes from the median, so one odd page cannot wreck it ----
     normal = [{"width": 1200, "height": 1600} for _ in range(9)]
     odd = normal + [{"width": 772, "height": 68}]
@@ -3530,6 +3757,20 @@ def selftest() -> str:
         assert ok and "searchable" not in note, note
         with open(book, "rb") as handle:
             assert b"Tj" not in handle.read()
+        # a preview page is a legal sheet; a smudge is still a broken file
+        ok, note = build_pdf([preview_page, leaf], book)
+        assert ok, note
+        with open(book, "rb") as handle:
+            written = handle.read()
+        assert verify_bytes(written, expect_pages=2, expect_images=2)[0]
+        smudge = dict(preview_page)
+        smudge["width"] = smudge["height"] = 40
+        smudge["params"] = (preview_page["params"]
+                            .replace("/Width 96", "/Width 40")
+                            .replace("/Height 130", "/Height 40"))
+        assert build_pdf([smudge, leaf], book)[0]
+        sound, report = verify_pdf(book, expect_pages=2, expect_images=2)
+        assert not sound and "only 40x40" in report, report
 
     gate = Gate(rate=24.0, floor=8.0, ceiling=60.0)
     for _ in range(40):
@@ -3541,8 +3782,9 @@ def selftest() -> str:
     assert abs(hard.rate - 8.0) < 0.01, hard.rate
 
     return ("selftest: every check passed — sheet maths, EXIF rotation, "
-            "jpeg size traps, pdf verify, text layer, cookies, token, names, "
-            "pasted links, bookmarklet, scribd search")
+            "jpeg size traps, previews and cut transfers, pdf verify, text "
+            "layer, cookies, token, names, pasted links, bookmarklet, "
+            "scribd search")
 
 def main(argv: list[str]) -> int:
     global BASE

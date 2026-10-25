@@ -36,7 +36,7 @@ own browser, one click sends every link on the page) and a **paste box**.
    printed, and only `scribd.com` / `scribdassets.com` cookies are ever sent —
    the rest of a browser export stays out of the request.
 3. Start it: `PY_FILE=scribd_download.py`, restart.
-4. Open the server address. The line under the title must read **v2.10**.
+4. Open the server address. The line under the title must read **v2.11**.
 
 ## 2. Find links: five ways
 
@@ -218,6 +218,8 @@ words: `14 sheet(s), 0.10 MB, 14 page(s) with searchable text`.
 - `downloads/debug/pages.txt` — every page: real pixel size, orientation, source URL
 - `downloads/debug/failed-pages.txt` — every URL tried for a page that failed
 - `downloads/debug/missing-pages.txt` — just the page numbers
+- `downloads/debug/rejected/` — any picture that arrived but could not be used,
+  so the reason in the log can be checked against the bytes (capped at 40 files)
 
 ## How the PDF is kept clean
 
@@ -242,7 +244,7 @@ python tools/scribd_download.py --base http://127.0.0.1:8911 --out /tmp/out \
 ```
 
 `--selftest` covers the rest offline: sheet maths, all four EXIF rotations, JPEG
-header traps, PDF verification, the text layer (including brackets, backslashes
+header traps, previews and cut transfers, PDF verification, the text layer (including brackets, backslashes
 and non-Latin characters), cookie filtering, token parsing, pasted links, the
 bookmarklet, the throttle breaker, and the search-answer parser (a refusal is
 never reported as "no results").
@@ -264,6 +266,14 @@ never reported as "no results").
   one locked page re-ran in 0.2s once the page was reachable.
 - Very large documents take a while: roughly 400 pages in ~6 minutes on a shared
   container (the download rate is capped on purpose to avoid throttling).
+- **A picture that arrived but is not a full page now says so.** The log used
+  to say `6 kB jpeg that is not a page scan`, which explains nothing. It now
+  says what arrived (`a 60x80 jpeg, 430 B — below the 200 px floor for a page`,
+  `a 764x1031 jpeg, 6.2 kB, cut short (no end-of-image marker)`), keeps the
+  bytes in `downloads/debug/rejected/`, retries a cut transfer once, and puts a
+  complete page-shaped picture that is simply small into the PDF as a **small
+  preview** — filled to the sheet and counted in the verdict, because a readable
+  page beats a blank one. Under 80 px it is still treated as a smudge.
 - `--text` is one request per page and gives up quietly on a page that has no
   descriptor: the PDF is still built, that page just stays a picture. A locked
   page (403) gets a placeholder sheet with no words for the same reason.
