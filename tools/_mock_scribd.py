@@ -3,7 +3,8 @@
 
   GET /document/<id>   document html naming 2 pages
   GET /embeds/<id>     the viewer shell
-  GET /images/...      a small synthetic page scan
+  GET /images/...      a small synthetic page scan (some pages can be a low-res
+                       copy, or a transfer cut in half)
   GET /pages/...jsonp  one page's words, the way Scribd sends them
   GET /services/oembed title/author
   GET /search/query    Scribd's own search answer (2 documents, then nothing)
@@ -25,6 +26,18 @@ THROTTLE_AFTER = int(os.environ.get("MOCK_THROTTLE_AFTER", "0"))
 THROTTLE_FOR = float(os.environ.get("MOCK_THROTTLE_FOR", "5"))
 # MOCK_LOCK_PAGE=n: this page is always 403, never recovers (a locked page)
 LOCK_PAGE = int(os.environ.get("MOCK_LOCK_PAGE", "0"))
+# MOCK_SMALL_PAGES="3,5": those pages are only served as a 96x130 preview
+SMALL_PAGES = {int(part) for part in
+               os.environ.get("MOCK_SMALL_PAGES", "").replace(" ", "").split(",")
+               if part.isdigit()}
+# MOCK_CUT_PAGES="4": those pages arrive cut in half, with no end-of-image
+CUT_PAGES = {int(part) for part in
+             os.environ.get("MOCK_CUT_PAGES", "").replace(" ", "").split(",")
+             if part.isdigit()}
+# MOCK_JUNK_PAGES="2": those pages answer with a picture far too small to be one
+JUNK_PAGES = {int(part) for part in
+              os.environ.get("MOCK_JUNK_PAGES", "").replace(" ", "").split(",")
+              if part.isdigit()}
 STATE = {"scans": 0, "until": 0.0}
 LOCK = threading.Lock()
 
@@ -153,7 +166,15 @@ class Handler(BaseHTTPRequestHandler):
             elif refused_now():
                 self.send(b"<html>too many requests</html>", 403)
             else:
-                self.send(fake_jpeg(), ctype="image/jpeg")
+                number = int(page) if page.isdigit() else 0
+                if number in JUNK_PAGES:
+                    self.send(fake_jpeg(60, 80, fill=400), ctype="image/jpeg")
+                elif number in CUT_PAGES:
+                    self.send(fake_jpeg()[:900], ctype="image/jpeg")   # no EOI
+                elif number in SMALL_PAGES:
+                    self.send(fake_jpeg(96, 130, fill=900), ctype="image/jpeg")
+                else:
+                    self.send(fake_jpeg(), ctype="image/jpeg")
         else:
             self.send(b"not found", 404, "text/plain")
 
