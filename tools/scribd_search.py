@@ -133,6 +133,15 @@ def normalise_panel(value: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def as_count(value, default: int = 1, low: int = 1, high: int = 5) -> int:
+    """A small whole number from anything a browser or a shell might send."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        number = default
+    return max(low, min(number, high))
+
+
 # ---------------------------------------------------------------------------
 # reading a results page
 # ---------------------------------------------------------------------------
@@ -520,7 +529,7 @@ def serve(port: int, panel: str) -> None:
                 payload = {}
             if path == "/search":
                 query = str(payload.get("query") or "").strip()
-                pages = max(1, min(int(payload.get("pages") or 1), 5))
+                pages = as_count(payload.get("pages"), 1, 1, 5)
                 if not query:
                     self.send(json.dumps({"hits": [], "notes": [],
                                           "summary": "no query"}).encode(),
@@ -536,10 +545,13 @@ def serve(port: int, panel: str) -> None:
                 return
             if path == "/send":
                 panel_address = str(payload.get("panel") or panel or DEFAULT_PANEL)
-                urls = payload.get("urls") or []
+                urls = payload.get("urls")
                 if isinstance(urls, str):
                     urls = [urls]
-                ok, message = send_to_panel(panel_address, [str(u) for u in urls])
+                elif not isinstance(urls, list):
+                    urls = [payload.get("url")] if payload.get("url") else []
+                urls = [str(u).strip() for u in urls if str(u or "").strip()]
+                ok, message = send_to_panel(panel_address, urls)
                 print(f"send: {message}", flush=True)
                 self.send(json.dumps({"ok": ok, "message": message}).encode(),
                           "application/json; charset=utf-8", 200 if ok else 400)
@@ -745,11 +757,11 @@ def main(argv: list[str]) -> int:
             elif arg == "--pick":
                 pick = value
             elif arg == "--pages":
-                pages = max(1, min(int(value), 5))
+                pages = as_count(value, 1, 1, 5)
             elif arg == "--limit":
-                limit = max(0, int(value))
+                limit = as_count(value, 0, 0, 1000)
             else:
-                port = int(value)
+                port = as_count(value, DEFAULT_PORT, 1, 65535)
             index += 2
             continue
         if arg == "--selftest":

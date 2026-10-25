@@ -46,6 +46,15 @@ On the panel page, box **1**: type `physics 12th`, press **Find**. Scribd's own
 search answers, each result shows its title, link, page count and views. Tick
 the ones you want, press **Download ticked**.
 
+Under the results it says how far you have got — `showing 40 of 1,234 match(es)`
+— and **Load more** asks Scribd for the next 40, appending them and keeping
+whatever you already ticked. When the count reaches the total, the button goes
+away. If Scribd does not say how many match, it says `showing 40` and the button
+stays while each page still brings something new.
+
+The **pages** box beside *Download ticked* is for that download only: `0` is the
+whole document, `5` fetches the first five pages of each ticked book.
+
 If it cannot search, it says why in those words — `HTTP 403 — Scribd refused the
 search from this address` is not the same as `no documents match that`, and it
 never pretends to be.
@@ -54,6 +63,7 @@ Same thing from a shell, if you have one:
 
 ```bash
 python scribd_download.py --find "physics 12th"                 # list only
+python scribd_download.py --find "physics 12th" --pages 3       # three pages of results
 python scribd_download.py --find "physics 12th" --pick 1,3      # list, then download 1 and 3
 ```
 
@@ -228,9 +238,9 @@ the bookmarklet, and the search-answer parser (a refusal is never reported as
 - The tool reads JPEG and PNG on its own. WebP needs Pillow — without it, those
   pages are reported as unreadable rather than silently lost.
 - The panel's search uses `scribd.com/search/query`, the endpoint Scribd's own
-  page calls. It is not documented and not promised to stay. It is also read
-  only: it returns 42 documents a page, and the panel shows the first page of
-  answers, which is what a search box needs.
+  page calls. It is not documented and not promised to stay. It answers 40
+  documents at a time, plus `total_results_count` — that is where the "of N"
+  comes from. Pages go up to 40 (1,600 results); nobody reads further.
 - If Scribd ever refuses the search from a host's address, the message says
   exactly that. The download half is unaffected — it uses the document pages,
   not the search.

@@ -6,6 +6,7 @@ browser, no pip install and no repository.
 
     python scribd_download.py                        # serves the page (panel mode)
     python scribd_download.py --find "physics 12th"  # search Scribd, print the links
+    python scribd_download.py --find "physics 12th" --pages 3
     python scribd_download.py --find "physics 12th" --pick 1,3
     python scribd_download.py --url LINK             # one document, all pages
     python scribd_download.py --url LINK --limit 5   # first 5 pages only
@@ -19,7 +20,9 @@ has three ways in:
 
   1. FIND HERE. The panel asks Scribd's own search — the very request its search
      page makes, /search/query — and gets the documents back as JSON with their
-     titles, page counts and links. Tick what you want, press download.
+     titles, page counts and links. The answer also says how many documents
+     match in total and which page of results it is, so "Load more" asks for page
+     2, 3, … and the page can say "showing 80 of 1,234". Tick, press download.
   2. SEND LINKS FROM YOUR BROWSER. A bookmarklet built from the address you
      opened the panel on: search Scribd in your own browser, click it, and every
      document link on the page is handed to /send.
@@ -71,7 +74,7 @@ A page that will not answer walks a short ladder: the name the document gave,
 the same name without the token, then the page's own descriptor, which names the
 real asset outright. Every url tried for a failed page is recorded.
 
-Options: --find "TEXT", --pick 1,3, --url LINK (repeatable), --links "TEXT",
+Options: --find "TEXT", --pages N, --pick 1,3, --url LINK (repeatable), --links "TEXT",
          --limit N, --out DIR, --cookies PATH, --base URL, --jobs N (default 12),
          --refresh, --name TITLE, --no-check, --no-placeholder, --no-verify,
          --verify FILE, --probe N, --selftest
@@ -2068,7 +2071,8 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
 # ---------------------------------------------------------------------------
 FIND_URL = "https://www.scribd.com/search/query"
 FIND_REFERER = "https://www.scribd.com/search"
-FIND_PER_PAGE = 42                 # measured: Scribd sends 42 documents a page
+FIND_PER_PAGE = 40                 # measured: 40 documents on a page of results
+FIND_MAX_PAGE = 40                 # a stop, so a typo cannot walk the whole index
 
 
 def search_url(query: str, page: int = 1) -> str:
@@ -2150,46 +2154,102 @@ def find_refusal(status: int, body: bytes, error: str = "") -> str:
     return f"HTTP {status}"
 
 
+def count_in(payload, key: str) -> int:
+    """A number Scribd sent, or 0 when it sent nothing usable."""
+    value = payload.get(key) if isinstance(payload, dict) else None
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return number if 0 <= number <= 10000000 else 0
+
+
+def as_limit(value, default: int = 0, top: int = 5000) -> int:
+    """A page limit from a browser or a shell: 0 means the whole document."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(0, min(number, top))
+
+
+def as_page(value, default: int = 1) -> int:
+    """A page number from anything a browser or a shell might send."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        number = default
+    return max(1, min(number, FIND_MAX_PAGE))
+
+
+def find_page(query: str, page: int = 1,
+              ask=None) -> tuple[list[dict], str, dict]:
+    """One page of Scribd's own search.
+
+    Returns (hits, one line saying what happened, what Scribd said about the
+    result set). The page number is honoured by Scribd, so "load more" asks for
+    page 2, 3, … instead of asking for page 1 again and hoping.
+    """
+    query = " ".join((query or "").split())
+    if not query:
+        return [], "type a few words to search for", {}
+    page = as_page(page)
+    caller = ask or (lambda url: fetch(url, referer=FIND_REFERER))
+    got = caller(search_url(query, page)) or {}
+    status = int(got.get("status") or 0)
+    body = got.get("body") or b""
+    if status != 200:
+        return [], find_refusal(status, body, str(got.get("error") or "")), {}
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+    except (ValueError, UnicodeDecodeError):
+        return [], f"the answer was not search data ({describe(body)})", {}
+    documents = documents_in(payload)
+    hits: list[dict] = []
+    seen: set[str] = set()
+    for doc in documents:
+        hit = hit_from(doc)
+        if hit and hit["id"] not in seen:
+            seen.add(hit["id"])
+            hits.append(hit)
+    info = {"page": page, "documents": len(documents),
+            "total": count_in(payload, "total_results_count"),
+            "pages": count_in(payload, "page_count")}
+    if not documents:
+        note = ("Scribd answered, but named no documents for that query"
+                if page == 1 else "no more documents")
+    else:
+        note = f"{len(documents)} document(s)"
+        dropped = len(documents) - len(hits)
+        if dropped:
+            note += f", {dropped} dropped (duplicate or not a Scribd document)"
+    return hits, note, info
+
+
 def find_documents(query: str, pages: int = 1,
                    limit: int = 0, ask=None) -> tuple[list[dict], list[str]]:
     """Search Scribd itself. Returns (hits, notes) — notes say what happened."""
     query = " ".join((query or "").split())
     if not query:
         return [], ["type a few words to search for"]
-    caller = ask or (lambda url: fetch(url, referer=FIND_REFERER))
-    wanted = max(1, min(int(pages or 1), 20))
+    wanted = max(1, min(int(pages or 1), FIND_MAX_PAGE))
     found: dict[str, dict] = {}
     notes: list[str] = []
     for page in range(1, wanted + 1):
-        got = caller(search_url(query, page)) or {}
-        status = int(got.get("status") or 0)
-        body = got.get("body") or b""
-        if status != 200:
-            notes.append(f"page {page}: "
-                         + find_refusal(status, body, str(got.get("error") or "")))
-            break
-        try:
-            payload = json.loads(body.decode("utf-8", "replace"))
-        except (ValueError, UnicodeDecodeError):
-            notes.append(f"page {page}: the answer was not search data "
-                         f"({describe(body)})")
-            break
-        documents = documents_in(payload)
-        if not documents:
-            if page == 1:
-                notes.append("Scribd answered, but named no documents for that query")
+        hits, note, info = find_page(query, page, ask)
+        if not info:                      # refused, challenged or not search data
+            notes.append(f"page {page}: {note}")
             break
         fresh = 0
-        for doc in documents:
-            hit = hit_from(doc)
-            if not hit or hit["id"] in found:
+        for hit in hits:
+            if hit["id"] in found:
                 continue
             found[hit["id"]] = hit
             fresh += 1
             if limit and len(found) >= limit:
                 break
-        notes.append(f"page {page}: {len(documents)} document(s), {fresh} new")
-        if not fresh or (limit and len(found) >= limit):
+        notes.append(f"page {page}: {info['documents']} document(s), {fresh} new")
+        if not info["documents"] or not fresh or (limit and len(found) >= limit):
             break
     return list(found.values()), notes
 
@@ -2314,8 +2374,15 @@ PAGE = """<!doctype html>
   </div>
   <div id="hits"></div>
   <div class="row">
+    <button id="more" class="ghost" hidden>Load more</button>
+    <span class="muted" id="shown"></span>
+  </div>
+  <div class="row">
+    <label class="muted">pages <input type="number" id="ticklimit" value="0" min="0"
+      title="0 = the whole document"></label>
     <button id="ticked">Download ticked</button>
     <span class="muted" id="picked">nothing ticked yet</span>
+    <span class="muted">0 = whole document</span>
   </div>
 </div>
 
@@ -2381,6 +2448,7 @@ async function poll() {
        · <a href="/logs">debug files</a>` : '';
   const running = s.state === 'running';
   $('go').disabled = running;
+  $('ticked').disabled = running;
   if (!running && timer) { clearInterval(timer); timer = null; }
 }
 
@@ -2394,7 +2462,10 @@ async function start(payload) {
   poll(); timer = setInterval(poll, 1500);
 }
 
-function hitRow(hit, index) {
+// what the current search has shown so far, so "load more" knows where it is
+const search = {query: '', page: 0, total: 0, shown: 0, ids: new Set(), more: false};
+
+function hitRow(hit) {
   const wrap = document.createElement('label');
   wrap.className = 'hit';
   const box = document.createElement('input');
@@ -2416,39 +2487,80 @@ function countTicked() {
   $('picked').textContent = n ? n + ' ticked' : 'nothing ticked yet';
 }
 
-async function find() {
-  const q = $('q').value.trim();
-  if (!q) { $('said').textContent = 'type a few words first'; return; }
+function say(d) {
+  const pages = d.page > 1 ? `page ${d.page} · ` : '';
+  const count = d.total
+    ? `showing ${search.shown} of ${d.total} match(es)`
+    : `showing ${search.shown}`;
+  $('shown').textContent = search.shown ? pages + count : '';
+  $('more').hidden = !search.more;
+  $('more').textContent = `Load more (page ${d.page + 1})`;
+}
+
+async function ask(page) {
   $('find').disabled = true;
-  $('said').textContent = 'asking Scribd…';
-  $('hits').innerHTML = '';
-  countTicked();
+  $('more').disabled = true;
+  const first = page === 1;
+  if (first) {
+    $('said').textContent = 'asking Scribd…';
+    $('hits').innerHTML = '';
+    search.query = $('q').value.trim();
+    search.page = 0;
+    search.total = 0;
+    search.shown = 0;
+    search.ids = new Set();
+    search.more = false;
+    say({page: 1, total: 0});
+    countTicked();
+  }
   try {
     const r = await fetch('/find', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({query: q, pages: 1}),
+      body: JSON.stringify({query: search.query, page}),
     });
     const d = await r.json();
     if (d.error) { $('said').textContent = d.error; return; }
-    $('said').textContent = d.summary
-      + (d.notes && d.notes.length ? ' · ' + d.notes.join(' · ') : '');
-    (d.hits || []).forEach((hit, i) => $('hits').append(hitRow(hit, i)));
+    $('said').textContent = (d.notes && d.notes.length ? d.notes.join(' · ') : d.summary);
+    let fresh = 0;
+    for (const hit of d.hits || []) {
+      const id = (hit.url.match(/\/(\d{3,})/) || [])[1] || hit.url;
+      if (search.ids.has(id)) continue;          // a re-run must not double the list
+      search.ids.add(id);
+      $('hits').append(hitRow(hit));
+      fresh += 1;
+    }
+    search.page = d.page || page;
+    search.total = d.total || 0;
+    search.shown += fresh;
+    // more to come when Scribd says so, or when a full page came back and it
+    // did not say how many there are at all
+    search.more = (search.page < (d.max_page || 40)) && (
+      search.total ? search.shown < search.total : (d.documents || 0) >= (d.per_page || 40));
+    say({page: search.page, total: search.total});
   } catch (e) {
     $('said').textContent = 'the panel did not answer: ' + e;
   } finally {
     $('find').disabled = false;
+    $('more').disabled = false;
     countTicked();
   }
 }
 
+function find() {
+  if (!$('q').value.trim()) { $('said').textContent = 'type a few words first'; return; }
+  ask(1);
+}
+
 $('find').onclick = find;
+$('more').onclick = () => ask(search.page + 1);
 $('q').onkeydown = (e) => { if (e.key === 'Enter') find(); };
 $('ticked').onclick = () => {
   const boxes = [...document.querySelectorAll('#hits input:checked')];
   if (!boxes.length) { $('verdict').textContent = 'tick at least one document first'; return; }
   start({urls: boxes.map((b) => b.value),
-         limit: Number($('limit').value) || 0});
-  $('verdict').textContent = 'queued ' + boxes.length + ' document(s) — scroll down for progress';
+         limit: Number($('ticklimit').value) || 0});
+  $('verdict').textContent = 'queued ' + boxes.length
+    + ' document(s) — scroll down for progress';
 };
 
 $('go').onclick = () => {
@@ -2562,21 +2674,27 @@ def serve(port: int, out: str) -> None:
                         {"error": "type a few words to search for"}).encode(),
                         "application/json", 400)
                     return
-                try:
-                    pages = int(payload.get("pages") or 1)
-                except (TypeError, ValueError):
-                    pages = 1
-                JOB.say(f"find: {query}")
-                hits, notes = find_documents(query, pages)
-                JOB.say("find: " + "; ".join(notes))
-                if hits:
+                page = as_page(payload.get("page"))
+                JOB.say(f"find: {query}" + (f" (page {page})" if page > 1 else ""))
+                hits, note, info = find_page(query, page)
+                JOB.say("find: " + note
+                        + (f" · {info['total']} match(es)" if info.get("total") else ""))
+                total = int(info.get("total") or 0)
+                documents = int(info.get("documents") or 0)
+                if hits and page == 1:
                     summary = f"{len(hits)} document(s) found"
-                elif any("named no documents" in note for note in notes):
-                    summary = "no documents match that"
+                elif hits:
+                    summary = f"+{len(hits)} more on page {page}"
+                elif any(word in note for word in ("named no documents", "no more")):
+                    summary = ("no documents match that" if page == 1
+                               else "no more documents after this point")
                 else:
                     summary = "the search did not answer"
-                body = json.dumps({"hits": hits, "notes": notes,
-                                   "summary": summary})
+                body = json.dumps({"hits": hits, "notes": [note],
+                                   "summary": summary, "page": page,
+                                   "total": total, "documents": documents,
+                                   "max_page": FIND_MAX_PAGE,
+                                   "per_page": FIND_PER_PAGE})
                 self._send(body.encode(), "application/json; charset=utf-8")
                 return
             if path != "/run":
@@ -2600,7 +2718,7 @@ def serve(port: int, out: str) -> None:
             if busy:
                 self._send(b'{"error":"already running"}', "application/json", 409)
                 return
-            limit = int(payload.get("limit") or 0)
+            limit = as_limit(payload.get("limit"))
             threading.Thread(target=run_job, args=(urls, limit, out),
                              daemon=True).start()
             self._send(json.dumps({"ok": True, "queued": len(urls)}).encode(),
@@ -2902,6 +3020,20 @@ def selftest() -> str:
     assert documents_in({"nothing": 1}) == []
     assert documents_in([]) == []
 
+    # the numbers Scribd sends with the answer: total, pages, which page
+    assert count_in({"total_results_count": 1234}, "total_results_count") == 1234
+    assert count_in({"total_results_count": "12"}, "total_results_count") == 12
+    assert count_in({"total_results_count": -5}, "total_results_count") == 0
+    assert count_in({"total_results_count": None}, "total_results_count") == 0
+    assert count_in({"total_results_count": 10 ** 12}, "total_results_count") == 0
+    assert count_in([], "total_results_count") == 0
+    assert count_in({}, "missing") == 0
+    assert as_page(2) == 2 and as_page("3") == 3
+    assert as_page(0) == 1 and as_page(-9) == 1          # never page zero
+    assert as_page(999) == FIND_MAX_PAGE                 # and never the whole index
+    assert as_page(None) == 1 and as_page("x") == 1
+    assert as_page(float("inf")) == 1                    # a browser could send this
+
     def stub(payload, status=200, error=""):
         def ask(url):
             body = (payload if isinstance(payload, bytes)
@@ -2927,6 +3059,35 @@ def selftest() -> str:
     assert hits == [] and "no answer" in notes[0], notes
     hits, notes = find_documents("   ", 1, ask=stub(answer))
     assert hits == [] and "type a few words" in notes[0], notes
+    # one page at a time: the page number is sent, and the totals come back
+    asked: list[str] = []
+
+    def counting(payload):
+        def ask(url):
+            asked.append(url)
+            return {"status": 200, "body": json.dumps(payload).encode(),
+                    "headers": {}, "error": ""}
+        return ask
+
+    paged = dict(answer)
+    paged["total_results_count"] = 3
+    paged["page_count"] = 2
+    hits, note, info = find_page("physics 12th", 2, counting(paged))
+    assert asked[-1].endswith("page=2"), asked[-1]
+    assert info == {"page": 2, "documents": 4, "total": 3, "pages": 2}, info
+    assert len(hits) == 3, len(hits)
+    assert note == "4 document(s), 1 dropped (duplicate or not a Scribd document)", note
+
+    empty = {"results": {}, "total_results_count": 0, "page_count": 0}
+    hits, note, info = find_page("nothing at all", 1, counting(empty))
+    assert hits == [] and info["total"] == 0, (hits, info)
+    assert "named no documents" in note, note
+    hits, note, info = find_page("nothing at all", 3, counting(empty))
+    assert note == "no more documents", note          # a later page is not a failure
+    # no totals in the answer: still fine, the page just will not show a count
+    hits, note, info = find_page("physics", 1, stub(answer))
+    assert info["total"] == 0 and info["documents"] == 4, info
+
     # a page with nothing new stops the paging instead of hammering Scribd
     hits, notes = find_documents("physics", 3, ask=stub(answer))
     assert len(hits) == 3 and len(notes) == 2, notes
@@ -2960,16 +3121,21 @@ def main(argv: list[str]) -> int:
     verify = True
     probe = 0
     find_text = ""
+    find_asked = False
+    find_pages = 1
     pick = ""
     index = 0
     while index < len(argv):
         arg = argv[index]
         if arg in ("--url", "--links", "--limit", "--out", "--cookies", "--base",
-                   "--jobs", "--name", "--probe", "--find",
+                   "--jobs", "--name", "--probe", "--find", "--pages",
                    "--pick") and index + 1 < len(argv):
             value = argv[index + 1]
             if arg == "--find":
                 find_text = value.strip()
+                find_asked = True
+            elif arg == "--pages":
+                find_pages = as_page(value)
             elif arg == "--pick":
                 pick = value.strip()
             elif arg == "--url":
@@ -2977,7 +3143,7 @@ def main(argv: list[str]) -> int:
             elif arg == "--links":
                 links_text += "\n" + value
             elif arg == "--limit":
-                limit = int(value)
+                limit = as_limit(value)
             elif arg == "--out":
                 out = value
             elif arg == "--cookies":
@@ -2985,9 +3151,10 @@ def main(argv: list[str]) -> int:
             elif arg == "--name":
                 name = value
             elif arg == "--probe":
-                probe = int(value)
+                probe = as_limit(value, 0, FIND_MAX_PAGE)
             elif arg == "--jobs":
-                jobs = max(1, min(int(value), 32))
+                jobs = as_page(value, 12)
+                jobs = max(1, min(jobs, 32))
             else:
                 BASE = value.rstrip("/")
             index += 2
@@ -3015,11 +3182,14 @@ def main(argv: list[str]) -> int:
         index += 1
     if cookies:
         os.environ["COOKIES"] = cookies
+    if find_asked and not find_text:
+        print('--find needs a few words: --find "physics 12th"')
+        return 2
     if pick and not find_text:
         print('--pick only makes sense with --find "your words"')
         return 2
     if find_text:
-        hits, notes = find_documents(find_text, 1)
+        hits, notes = find_documents(find_text, find_pages)
         for note in notes:
             print(f"  {note}")
         if not hits:
