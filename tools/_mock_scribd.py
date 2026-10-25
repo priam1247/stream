@@ -37,7 +37,12 @@ def document_html(doc_id):
 
 
 def search_answer(query, page):
-    """The shape Scribd really returns: results.documents.content.documents."""
+    """The shape Scribd really returns: results.documents.content.documents.
+
+    Two pages, so "Load more" can be tested: page 1 has a duplicate and an
+    off-site link (both must be dropped), page 2 has two more documents, and
+    the totals say there are four documents on two pages.
+    """
     documents = []
     if page == 1:
         documents = [
@@ -55,7 +60,17 @@ def search_answer(query, page):
             {"id": 900003, "title": "not scribd",
              "reader_url": "https://example.com/document/900003"},
         ]
+    elif page == 2:
+        documents = [
+            {"id": 900004, "title": f"{query} past paper", "pageCount": 2,
+             "views": "9K",
+             "reader_url": "https://www.scribd.com/document/900004/Past-Paper"},
+            {"id": 900005, "title": f"{query} revision", "pageCount": 2,
+             "reader_url": "https://www.scribd.com/document/900005/Revision"},
+        ]
     return {"compilationId": "mock", "content_type": "documents",
+            "current_page": page, "page_count": 2, "total_results_count": 4,
+            "resultRangeStart": 1 + (page - 1) * 40,
             "results": {"documents": {"content": {"documents": documents}}}}
 
 

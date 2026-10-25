@@ -274,9 +274,14 @@ export async function searchWithFetch(query, ask = fetchText) {
       hits.push({ ...hit, engine: engine.name });
       fresh += 1;
     }
-    notes.push(found.length
-      ? `${engine.name}: ${found.length} link(s), ${fresh} new`
-      : `${engine.name}: answered, no Scribd links in the page`);
+    if (found.length) {
+      notes.push(`${engine.name}: ${found.length} link(s), ${fresh} new`);
+    } else {
+      const challenged = refusal(200, got.body);
+      notes.push(`${engine.name}: ` + (challenged.includes("challenge")
+        ? challenged
+        : "answered, no Scribd links in the page"));
+    }
     if (hits.length >= MAX_SEND) break;
   }
   return { hits, notes };
@@ -452,6 +457,7 @@ export async function sendToPanel(panel, urls) {
 // ---------------------------------------------------------------------------
 // the page
 // ---------------------------------------------------------------------------
+const CONFIG = JSON.stringify({ panel: PANEL }).replace(/</g, "\\u003c");
 const PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -511,11 +517,12 @@ const PAGE = `<!doctype html>
 <div class="verdict" id="verdict">idle</div>
 </div>
 <script>
+const CONFIG = ${CONFIG};
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? '' : s).replace(/&/g,'&amp;')
   .replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-$('panel').value = localStorage.getItem('panel') || '${PANEL}';
+$('panel').value = localStorage.getItem('panel') || CONFIG.panel;
 
 function collect() {
   return [...document.querySelectorAll('#hits input:checked')].map((b) => ({
@@ -652,14 +659,22 @@ async function readJson(request) {
   }
 }
 
+let browserFacts = null;
+
 export async function browserStatus() {
-  try {
-    const chromium = (await import("@sparticuz/chromium")).default;
-    const executablePath = process.env.CHROME_PATH || (await chromium.executablePath());
-    return { ready: Boolean(executablePath), note: "", path: executablePath };
-  } catch (exc) {
-    return { ready: false, note: String(exc.message || exc).slice(0, 160) };
+  if (!browserFacts) {
+    browserFacts = (async () => {
+      try {
+        const chromium = (await import("@sparticuz/chromium")).default;
+        const executablePath = process.env.CHROME_PATH ||
+          (await chromium.executablePath());
+        return { ready: Boolean(executablePath), note: "", path: executablePath };
+      } catch (exc) {
+        return { ready: false, note: String(exc.message || exc).slice(0, 160) };
+      }
+    })();
   }
+  return browserFacts;
 }
 
 export function serve(port = PORT) {
@@ -704,7 +719,9 @@ export function serve(port = PORT) {
       }
       if (url.pathname === "/send" && request.method === "POST") {
         const payload = await readJson(request);
-        const result = await sendToPanel(payload.panel || PANEL, payload.urls || []);
+        const asked = Array.isArray(payload.urls) ? payload.urls
+          : (payload.urls || payload.url ? [payload.urls || payload.url] : []);
+        const result = await sendToPanel(payload.panel || PANEL, asked);
         console.log(`send -> ${result.ok ? "ok" : "refused"}: ${result.message}`);
         return json(response, result.ok ? 200 : 502, result);
       }
@@ -713,6 +730,15 @@ export function serve(port = PORT) {
       console.error("error:", exc);
       return json(response, 500, { error: String(exc.message || exc).slice(0, 300) });
     }
+  });
+  server.on("error", (exc) => {
+    if (exc && exc.code === "EADDRINUSE") {
+      console.error(`port ${port} is already in use — stop the other copy, or ` +
+                    `start this one with PORT=8097 node index.js`);
+    } else {
+      console.error("the page could not start:", exc && exc.message ? exc.message : exc);
+    }
+    process.exit(1);
   });
   server.listen(port, "0.0.0.0", () => {
     console.log(`open http://0.0.0.0:${port}/ — search, tick, send to the panel`);
