@@ -4,16 +4,45 @@
   GET /document/<id>   document html naming 2 pages
   GET /embeds/<id>     the viewer shell
   GET /images/...      a small synthetic page scan
+  GET /pages/...jsonp  one page's words, the way Scribd sends them
   GET /services/oembed title/author
   GET /search/query    Scribd's own search answer (2 documents, then nothing)
 """
 import json
+import os
 import struct
 import sys
+import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8910
+PAGES = int(os.environ.get("MOCK_PAGES", "2"))
+# MOCK_THROTTLE_AFTER=n: after n page scans, refuse everything for a while, the
+# way the real CDN does when a job goes too fast. MOCK_THROTTLE_FOR=seconds.
+THROTTLE_AFTER = int(os.environ.get("MOCK_THROTTLE_AFTER", "0"))
+THROTTLE_FOR = float(os.environ.get("MOCK_THROTTLE_FOR", "5"))
+# MOCK_LOCK_PAGE=n: this page is always 403, never recovers (a locked page)
+LOCK_PAGE = int(os.environ.get("MOCK_LOCK_PAGE", "0"))
+STATE = {"scans": 0, "until": 0.0}
+LOCK = threading.Lock()
+
+
+def refused_now() -> bool:
+    """Count this scan, and say whether the throttle window is open."""
+    with LOCK:
+        now = time.time()
+        if STATE["until"] and now < STATE["until"]:
+            return True
+        if STATE["until"]:
+            STATE["until"] = 0.0            # the window closed
+        STATE["scans"] += 1
+        if THROTTLE_AFTER and STATE["scans"] > THROTTLE_AFTER:
+            STATE["until"] = now + THROTTLE_FOR
+            STATE["scans"] = 0
+            return True
+    return False
 
 def fake_jpeg(width=1200, height=1600, fill=6000):
     out = bytearray(b"\xff\xd8")
@@ -25,15 +54,23 @@ def fake_jpeg(width=1200, height=1600, fill=6000):
     return bytes(out)
 
 
+def page_jsonp(doc_id, number):
+    """Scribd sends each page's text as window.pageN_callback([…]) of html."""
+    words = [f"Mock page {number}", f"This is line two of page {number}",
+             f"Search for the word needle{number} to find this page"]
+    return ('window.page%d_callback(["%s"]);'
+            % (number, "<br>".join(f"<div>{line}</div>" for line in words))).encode()
+
+
 def document_html(doc_id):
+    names = "".join(
+        f'var p{number}="https:\\\\\\\\/\\\\\\\\/html.scribdassets.com'
+        f'\\\\\\\\/h{doc_id}\\\\/images\\\\\\\\/{number}-aa{doc_id}.jpg";'
+        for number in range(1, PAGES + 1))
     return (f'<!doctype html><html><head>'
             f'<meta property="og:title" content="Doc {doc_id} | Scribd">'
-            f'</head><body><script>var d={{"page_count":2}};'
-            f'var p1="https:\\\\/\\\\/html.scribdassets.com\\\\/h{doc_id}'
-            f'\\\\/images\\\\/1-aa{doc_id}.jpg";'
-            f'var p2="https:\\\\/\\\\/html.scribdassets.com\\\\/h{doc_id}'
-            f'\\\\/images\\\\/2-bb{doc_id}.jpg";'
-            f'</script></body></html>').encode()
+            f'</head><body><script>var d={{"page_count":{PAGES}}};'
+            f'{names}</script></body></html>').encode()
 
 
 def search_answer(query, page):
@@ -105,8 +142,18 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/services/oembed"):
             self.send(b'{"title":"Doc","author_name":"someone"}',
                       ctype="application/json")
+        elif "/pages/" in path and path.endswith(".jsonp"):
+            name = path.rsplit("/", 1)[-1].split("-")[0]
+            number = int(name) if name.isdigit() else 1
+            self.send(page_jsonp(0, number), ctype="application/javascript")
         elif "/images/" in path:
-            self.send(fake_jpeg(), ctype="image/jpeg")
+            page = path.rsplit("/", 1)[-1].split("-")[0]
+            if LOCK_PAGE and page == str(LOCK_PAGE):
+                self.send(b"<html>not for you</html>", 403)
+            elif refused_now():
+                self.send(b"<html>too many requests</html>", 403)
+            else:
+                self.send(fake_jpeg(), ctype="image/jpeg")
         else:
             self.send(b"not found", 404, "text/plain")
 

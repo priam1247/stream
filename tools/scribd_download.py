@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.8
+"""scribd_download.py — ONE file, standard library only.  Version 2.10
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -11,6 +11,7 @@ browser, no pip install and no repository.
     python scribd_download.py --url LINK             # one document, all pages
     python scribd_download.py --url LINK --limit 5   # first 5 pages only
     python scribd_download.py --url LINK --probe 4   # every url and its answer
+    python scribd_download.py --url LINK --text      # searchable text, not photos
     python scribd_download.py --links "LINK LINK"    # several documents
     python scribd_download.py --verify FILE.pdf      # check a finished PDF
     python scribd_download.py --selftest             # offline check of this file
@@ -39,6 +40,47 @@ asks Scribd directly, which is the same thing its own search box does. The one
 honest caveat: /search/query is not a documented API — it is the endpoint the
 site's own JavaScript calls. If Scribd changes it, the page says so in plain
 words instead of pretending there are no results.
+
+What 2.10 added: REAL TEXT INSIDE THE PDF (--text, or the panel's checkbox)
+  A Scribd page is a scan plus its words. The scan was always downloaded; the
+  words were thrown away, so the PDF could be read but not searched or copied.
+  1. Each page's words come from the page's own descriptor, the same
+     <hash>/pages/<n>-<hash>.jsonp the downloader already knows how to read —
+     it answers window.pageN_callback([...]) with that page's text as HTML.
+  2. Descriptors were not always named in the HTML, so the name is DERIVED from
+     the scan's: pages/2-90c206b2e6.jsonp sits beside images/2-90c206b2e6.jpg.
+     Verified against a live 402-page document before writing a line of this.
+  3. The text goes in invisibly (render mode 3) under the scan, wrapped to the
+     sheet, in Helvetica WinAnsi: the page looks exactly as before, but search,
+     select and copy work, and the file is accessible. If a line has no room it
+     is dropped rather than printed over the picture.
+  4. It is opt-in and honest about its cost: one extra request per page, cached
+     beside the scan as NNNN.text, and the verdict says how many pages got words
+     ("14 sheet(s), 0.10 MB, 14 page(s) with searchable text").
+  5. Nothing is invented and nothing is bypassed: the words come from the same
+     pages the downloader is already allowed to read, only the scan's pictures
+     were being used before.
+
+What 2.9 fixed in the DOWNLOADS (the "failed pages keep increasing" report)
+  1. A 403 was treated as permanent: the first one failed the page and blacklisted
+     that name for the whole job, while the gate only slowed by 3%. When Scribd
+     throttles a long job it answers 403, so every page hit in that window was
+     lost and the retries failed too (same dead names, same token).
+  2. Now a 403 is read in context: ONE page refused while others arrive is a
+     locked page (give up at once, no resting). THREE different pages refused in
+     a row is throttling: rest the whole job for 4s, then 12s, then 30s, clear
+     the blacklist and the dead list, slow the gate, and try that name again.
+  3. Retry rounds re-read the document page and viewer first, so they get a new
+     token and any names the first read missed. A retry with the same names is
+     not a retry, it is the same request.
+  4. If two retries recover nothing, the third is skipped instead of resting 20
+     more seconds for nothing.
+  5. The report says why: "why: 12 answer(s) 403" and whether that looks like a
+     locked document or a throttled address.
+
+Measured on the local mock (14 pages, refusals start after 5 scans for 6s):
+old code -> PDF PARTIAL, 10 of 14 real. New code -> PDF BUILT, 14 of 14, in 30s.
+One permanently locked page: 10.7s and an honest PARTIAL, with no resting.
 
 What 2.4 fixed in the OUTPUT (2.3 is kept everywhere else)
   1. PDF BROKEN was the checker, not the file: image streams were counted inside
@@ -76,6 +118,7 @@ real asset outright. Every url tried for a failed page is recorded.
 
 Options: --find "TEXT", --pages N, --pick 1,3, --url LINK (repeatable), --links "TEXT",
          --limit N, --out DIR, --cookies PATH, --base URL, --jobs N (default 12),
+         --text (put each page's words in the PDF, searchable and copyable),
          --refresh, --name TITLE, --no-check, --no-placeholder, --no-verify,
          --verify FILE, --probe N, --selftest
 
@@ -102,7 +145,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.8"
+VERSION = "2.10"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -122,6 +165,14 @@ SCAN_RE = re.compile(r"\.(?:jpe?g|png|webp)(?:\?|$)", re.IGNORECASE)
 TOKEN_RE = re.compile(r"[?&]token=([A-Za-z0-9._\-%]+)", re.IGNORECASE)
 RETRY_STATUS = (408, 425, 429, 500, 502, 503, 504)
 HARD_THROTTLE = (429, 503)
+# A 403 has two meanings and they need opposite answers: "this page is not for
+# you" (nothing to do) and "you are going too fast" (wait, then it works). The
+# only way to tell them apart is what the rest of the job is doing: one refusal
+# on its own is a locked page, several in a row with nothing succeeding is a
+# throttle. Three in a row rests the whole job, clears the blacklist and tries
+# that name again.
+REFUSALS_IN_A_ROW = 3
+PAUSE_LADDER = (4.0, 12.0, 30.0)
 OTHER_HOSTS = ("html.scribd.com", "html2-f.scribdassets.com",
                "html3-f.scribdassets.com", "html4-f.scribdassets.com")
 # a page scan is never smaller than this, and never this lopsided
@@ -365,6 +416,19 @@ def image_url_for(jsonp_url: str) -> str:
     swapped = re.sub(r"/pages/(\d+-[0-9A-Za-z]+)\.jsonp(?:\?.*)?$",
                      r"/images/\1.jpg", jsonp_url, flags=re.IGNORECASE)
     return "" if swapped == jsonp_url else swapped
+
+def jsonp_from_image(image_url: str) -> str:
+    """The descriptor that sits beside an image, under the same hash.
+
+    Measured against a live document: images/2-90c206b2e6.jpg and
+    pages/2-90c206b2e6.jsonp are the same <page>-<hash> pair, and the jsonp is
+    where that page's words are. So a document that names only its scans still
+    gives up its text.
+    """
+    swapped = re.sub(r"/images/(\d+-[0-9A-Za-z]+)\.(?:jpe?g|png|webp)(?:\?.*)?$",
+                     r"/pages/\1.jsonp", image_url, flags=re.IGNORECASE)
+    return "" if swapped == image_url else swapped
+
 
 def alternate_host(url: str) -> str:
     parsed = urllib.parse.urlsplit(url)
@@ -1058,8 +1122,67 @@ def _image_matrix(page: dict, box: tuple[float, float, float, float]) -> str:
         return f"{-width} 0 0 {-height} {left + width} {bottom + height} cm"
     return f"{width} 0 0 {height} {left} {bottom} cm"
 
+def pdf_visible_text(text: str) -> str:
+    """Escape a string for a PDF literal, and give up on what Helvetica cannot say.
+
+    The font is base-14 WinAnsi, so anything outside Latin-1 is dropped rather
+    than turned into a row of question marks. Brackets and backslashes must be
+    escaped or the string ends the content stream early.
+    """
+    out: list[str] = []
+    for char in text:
+        code = ord(char)
+        if char in "()\\":
+            out.append("\\" + char)
+        elif 32 <= code <= 126 or 160 <= code <= 255:
+            out.append(char)
+        elif char in "\t":
+            out.append(" ")
+    return "".join(out)
+
+
+def text_layer(words: str, box: tuple[float, float, float, float],
+               size: float = 9.0) -> bytes:
+    """The invisible text of one page, laid out inside the sheet.
+
+    box is _placement's (width, height, left, bottom). Invisible on purpose
+    (render mode 3): the scan is already the picture, so the text only has to be
+    there for search, copy and accessibility. Lines are wrapped to the sheet so
+    selection follows the page instead of running off it.
+    """
+    width, height, left, bottom = box
+    if not words or width < 20 or height < 20:
+        return b""
+    usable = max(10.0, width - 6)
+    per_line = max(8, int(usable / (size * 0.5)))
+    lines: list[str] = []
+    for paragraph in words.split("\n"):
+        while len(paragraph) > per_line:
+            cut = paragraph.rfind(" ", 0, per_line)
+            cut = cut if cut > per_line // 2 else per_line
+            lines.append(paragraph[:cut].strip())
+            paragraph = paragraph[cut:].strip()
+        lines.append(paragraph)
+    lines = [line for line in lines if line]
+    if not lines:
+        return b""
+    leading = size * 1.2
+    room = int((height - 8) / leading)
+    if room <= 0:
+        return b""
+    lines = lines[:room]
+    top = bottom + height - size - 2
+    body = [f"BT /F1 {size:.1f} Tf 3 Tr 0 0 0 rg"]
+    for index, line in enumerate(lines):
+        body.append(f"1 0 0 1 {left + 3:.2f} {top - index * leading:.2f} Tm "
+                    f"({pdf_visible_text(line)}) Tj")
+    body.append("ET")
+    return "\n".join(body).encode("latin-1", "replace")
+
+
 def build_pdf(pages: list[dict | None], path: str, title: str = "",
-              author: str = "", uniform: bool = True) -> tuple[bool, str]:
+              author: str = "", uniform: bool = True,
+              texts: dict[int, str] | None = None) -> tuple[bool, str]:
     """pages: [{'payload','params','width','height','rotate'}|None] in sheet order.
 
     None is a labelled placeholder sheet, so PDF page N always equals document
@@ -1069,6 +1192,8 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
     if not real:
         return False, "no pages to write"
     house = house_sheet(real)
+    texts = texts or {}
+    with_text = 0
 
     objects: list[bytes] = [b"", b"", b""]     # 1 catalog, 2 pages, 3 font
     objects[2] = (b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
@@ -1106,13 +1231,19 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
                         + f" /Length {len(image)} >>").encode()
                        + b"\nstream\n" + image + b"\nendstream")
         image_num = len(objects)
-        content = ("q " + _image_matrix(page, box) + " /Im0 Do Q").encode()
+        body = [("q " + _image_matrix(page, box) + " /Im0 Do Q").encode()]
+        layer = text_layer(texts.get(index, ""), box) if texts else b""
+        if layer:
+            body.append(layer)
+            with_text += 1
+        content = b"\n".join(body)
         objects.append(b"<< /Length " + str(len(content)).encode()
                        + b" >>\nstream\n" + content + b"\nendstream")
         content_num = len(objects)
         objects.append(
             (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {sheet[0]} {sheet[1]}]"
              f" /Resources << /ProcSet [/PDF /ImageB /ImageC /Text]"
+             f" /Font << /F1 3 0 R >>"
              f" /XObject << /Im0 {image_num} 0 R >> >>"
              f" /Contents {content_num} 0 R >>").encode())
         kids.append(len(objects))
@@ -1143,7 +1274,9 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
         handle.write(bytes(out))
     blanks = sum(1 for page in pages if page is None)
     return True, (f"{len(kids)} sheet(s), {len(out) / 1_000_000:.2f} MB"
-                  + (f", {blanks} placeholder" if blanks else ""))
+                  + (f", {blanks} placeholder" if blanks else "")
+                  + (f", {with_text} page(s) with searchable text" if texts
+                     and with_text else ""))
 
 # ---------------------------------------------------------------------------
 # read the file back and check it as a PDF
@@ -1434,6 +1567,48 @@ class Sources:
             both = set(self.images) | set(self.jsonps)
             return max(both) if both else 0
 
+TEXT_OF_JSONP_RE = re.compile(r"^\s*(?:window\.)?[A-Za-z0-9_$.]*call?back?\s*\(|"
+                              r"^\s*[A-Za-z0-9_$.]+\s*\(", re.I)
+BREAK_TAG_RE = re.compile(r"<\s*(?:br|/p|/div|/li|/h[1-6]|/tr)\s*/?\s*>", re.I)
+TAG_STRIP_RE = re.compile(r"<[^>]*>")
+SPACE_RE = re.compile(r"[ \t\u00a0]+")
+
+
+def html_to_text(html: str) -> str:
+    """The words of one page out of Scribd's own HTML, line by line.
+
+    Scribd sends each page's text as HTML with <br> and block tags, so breaks
+    have to become newlines before the tags are stripped; otherwise the whole
+    page becomes one long line and a text layer is useless for selection.
+    """
+    text = BREAK_TAG_RE.sub("\n", html or "")
+    text = TAG_STRIP_RE.sub("", text)
+    for a, b in (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'),
+                 ("&#39;", "'"), ("&#x27;", "'"), ("&nbsp;", " "),
+                 ("&mdash;", "-"), ("&ndash;", "-"), ("&rsquo;", "'"),
+                 ("&lsquo;", "'"), ("&ldquo;", '"'), ("&rdquo;", '"')):
+        text = text.replace(a, b)
+    # blank lines carry no words and only eat the little room a sheet has,
+    # so they are dropped: one line of text per line of the page
+    lines = [SPACE_RE.sub(" ", line).strip() for line in text.split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
+def text_from_jsonp(body: bytes) -> str:
+    """A page's text out of its descriptor: window.pageN_callback([…, "…"])."""
+    raw = text_of(body)
+    start, end = raw.find("["), raw.rfind("]")
+    if start < 0 or end <= start:
+        return ""
+    try:
+        parts = json.loads(raw[start:end + 1])
+    except ValueError:
+        return ""
+    if not isinstance(parts, list):
+        return ""
+    return html_to_text("".join(part for part in parts if isinstance(part, str)))
+
+
 def page_count(body: bytes, sources: Sources) -> int:
     text = text_of(body)
     for pattern in (r'"page_count"\s*:\s*(\d+)', r'"totalPages"\s*:\s*(\d+)',
@@ -1469,6 +1644,74 @@ class Ctx:
         self.total = 0
         self.title = ""
         self.author = ""
+        # the throttle breaker, shared by every worker thread
+        self.refuse_lock = threading.Lock()
+        self.refused_pages: set[int] = set()
+        self.rest_until = 0.0
+        self.rests = 0
+        self.reliefs = 0
+
+    # -- the throttle breaker ------------------------------------------------
+    def rest(self) -> None:
+        """Wait out a rest the breaker called, if there is one."""
+        wait = self.rest_until - time.time()
+        if wait > 0:
+            time.sleep(min(wait, 30.0))
+
+    def refused(self, number: int) -> bool:
+        """One more 403 on this page. True means "throttled: rest, then again".
+
+        The discriminator is *which* page keeps being refused. One page refused
+        over and over while the rest arrive is a locked page — retrying it is
+        pointless and resting for it wastes minutes. Different pages refused in
+        a row, with nothing succeeding between them, is the address being
+        throttled, and resting is the only thing that helps.
+        """
+        with self.refuse_lock:
+            if time.time() < self.rest_until:
+                return True                # already resting: do not climb the ladder
+            if number in self.refused_pages:
+                return False               # the same page again: it is not ours
+            self.refused_pages.add(number)
+            if len(self.refused_pages) < REFUSALS_IN_A_ROW:
+                return False
+            pause = PAUSE_LADDER[min(self.rests, len(PAUSE_LADDER) - 1)]
+            self.rests += 1
+            self.rest_until = time.time() + pause
+            self.refused_pages.clear()     # after a rest they get a fair second look
+            self.dead.clear()              # a name refused while throttled is not dead
+            self.gate.rate = max(self.gate.floor, self.gate.rate * 0.75)
+        JOB.say(f"refused {REFUSALS_IN_A_ROW} times with nothing succeeding — "
+                f"resting {pause:.0f}s and slowing down (that is throttling, "
+                f"not a locked page)")
+        return True
+
+    def answered(self) -> None:
+        """A page arrived: start counting refusals again from zero.
+
+        After a run of good answers the pause ladder steps back down, so one
+        throttle early in a big document does not make every later pause long.
+        """
+        with self.refuse_lock:
+            self.refused_pages.clear()
+            self.reliefs += 1
+            if self.rests and self.reliefs >= 8 and time.time() >= self.rest_until:
+                self.rests = max(0, self.rests - 1)
+                self.reliefs = 0
+
+    def reload_names(self) -> None:
+        """Ask Scribd for the document again before a retry round.
+
+        A retry with the same token and the same names is not a retry, it is the
+        same request. This reads the document page and the viewer again, which
+        re-harvests the token and any page names the first read did not have.
+        """
+        before = self.sources.count()
+        JOB.say("refreshing the document before retrying: new names, new token")
+        if not self.load():
+            self.note("retry: the document page did not answer the second time")
+            return
+        self.note(f"retry: names refreshed ({before} -> {self.sources.count()})")
 
     def note(self, text: str) -> None:
         with self.notes_lock:
@@ -1619,17 +1862,71 @@ class Ctx:
         found += self.primaries_for(number)
         return list(dict.fromkeys(found))
 
+    def page_text(self, number: int) -> str:
+        """This page's words, from the descriptor, cached beside the scan.
+
+        Costs one extra request per page, which is why it is opt-in: the words
+        are what make the finished PDF searchable and selectable instead of a
+        stack of photographs.
+        """
+        if not self.cache_dir:
+            return ""
+        cached = os.path.join(self.cache_dir, f"{number:04d}.text")
+        if os.path.isfile(cached):
+            try:
+                with open(cached, encoding="utf-8", errors="replace") as handle:
+                    return handle.read()
+            except OSError:
+                pass
+        token = self.token.get()
+        names = list(self.sources.jsonps_for(number))
+        if not names:                       # scans named, descriptors not
+            names = [jsonp for jsonp in
+                     (jsonp_from_image(url) for url in self.sources.images_for(number))
+                     if jsonp]
+        for jsonp in names:
+            for variant in ([with_token(jsonp, token), strip_token(jsonp)]
+                            if token else [strip_token(jsonp)]):
+                if not variant:
+                    continue
+                self.rest()
+                self.gate.acquire()
+                got = fetch(variant, self.jar, referer=self.document_url, timeout=20)
+                if got["status"] != 200 or not got["body"]:
+                    continue
+                self.answered()
+                words = text_from_jsonp(got["body"])
+                if words:
+                    try:
+                        with open(cached, "w", encoding="utf-8") as handle:
+                            handle.write(words)
+                    except OSError:
+                        pass
+                    return words
+        return ""
+
     def cache_path(self, number: int) -> str:
         source = self.sources.get(number)
         stem = (source.get("image") or source.get("jsonp") or str(number)).split("?")[0]
         stem = re.sub(r"[^0-9A-Za-z]+", "-", stem.rsplit("/", 1)[-1])[:48]
         return os.path.join(self.cache_dir, f"{number:04d}-{stem}.bin")
 
-    def attempt(self, url: str, tries: int) -> tuple[dict | None, str, int]:
+    def attempt(self, url: str, tries: int,
+                number: int = 0) -> tuple[dict | None, str, int]:
+        """Ask for one name, with the breaker deciding what a 403 means.
+
+        A single 403 with pages succeeding around it is a locked page: give up
+        now, quietly. A 403 that arrives with its neighbours is throttling: rest
+        the whole job and try that same name again, because it was never dead.
+        """
         reason = "no attempt"
         delay = 0.7
         status = 0
-        for attempt in range(tries):
+        attempt = 0
+        budget = tries + REFUSALS_IN_A_ROW      # a rest earns at most this many
+        while attempt < budget:
+            attempt += 1
+            self.rest()
             self.gate.acquire()
             got = fetch(url, self.jar, referer=self.document_url, timeout=25)
             status = got["status"]
@@ -1637,11 +1934,13 @@ class Ctx:
                 built = scan_for_pdf(got["body"])
                 if built:
                     self.gate.clean_answer()
+                    self.answered()
                     built["url"] = url
                     built["bytes"] = len(got["body"])
                     built["raw"] = got["body"]
                     return built, "", status
                 kind = self.reject(got["body"])
+                self.answered()
                 return None, (f"HTTP 200, {len(got['body']) / 1000:.0f} kB "
                               f"{kind} that is not a page scan"), status
             if got["error"]:
@@ -1650,12 +1949,15 @@ class Ctx:
                 reason = http_reason(got)
                 self.gate.complaint(status)
                 if status == 403:
-                    return None, reason, status     # deterministic: no backoff
+                    if not self.refused(number):
+                        return None, reason, status   # a locked page
+                    continue                           # throttled: rest, then again
                 if status not in RETRY_STATUS:
                     return None, reason, status
-            if attempt < tries - 1:
-                time.sleep(retry_after(got["headers"]) or delay)
-                delay = min(6.0, delay * 1.8)
+            if attempt >= tries:
+                break
+            time.sleep(retry_after(got["headers"]) or delay)
+            delay = min(6.0, delay * 1.8)
         return None, reason, status
 
     def grab(self, number: int, force: bool = False,
@@ -1688,7 +1990,7 @@ class Ctx:
                     continue
                 seen.add(url)
                 tries = 1 if url in self.dead else 2
-                built, reason, status = self.attempt(url, tries)
+                built, reason, status = self.attempt(url, tries, number)
                 self.record(number, url, status)
                 if built and plausible_page(built):
                     raw = built.pop("raw", b"")
@@ -1712,7 +2014,7 @@ class Ctx:
 def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12,
             refresh: bool = False, name: str = "", check: bool = True,
             placeholder: bool = True, probe_page: int = 0,
-            verify: bool = True) -> None:
+            verify: bool = True, text: bool = False) -> None:
     urls = [str(item).strip() for item in
             (url if isinstance(url, (list, tuple)) else [url])
             if str(item or "").strip()]
@@ -1740,7 +2042,7 @@ def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12
             _batch(urls, limit, out, jobs, refresh, check, placeholder, verify)
         else:
             _download(urls[0], limit, out, jobs, refresh, name, check, placeholder,
-                      verify)
+                      verify, text)
     except Exception as exc:  # noqa: BLE001
         JOB.say(f"crashed: {exc!r}")
         with JOB.lock:
@@ -1848,7 +2150,8 @@ def _probe(url: str, number: int) -> None:
 
 def _download(url: str, limit: int, out: str, jobs: int = 12,
               refresh: bool = False, name: str = "", check: bool = True,
-              placeholder: bool = True, verify: bool = True) -> None:
+              placeholder: bool = True, verify: bool = True,
+              text: bool = False) -> None:
     ctx = Ctx(url, jobs)
     ctx.refresh = refresh
     if not ctx.ident:
@@ -1900,19 +2203,29 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                         + f" · {rate:.1f} pages/s · gate {ctx.gate.rate:.1f}/s"
                         + (f" · about {left:.0f} s left" if left > 1 else ""))
 
-    for round_number, pause in ((1, 1.0), (2, 3.0)):
+    recovered_last = -1
+    for round_number, pause in ((1, 2.0), (2, 8.0), (3, 20.0)):
         if not failed:
             break
-        JOB.say(f"retry {round_number}: {len(failed)} page(s)")
+        if round_number == 3 and recovered_last == 0:
+            JOB.say("two retries recovered nothing — not resting a third time")
+            break
+        JOB.say(f"retry {round_number}: {len(failed)} page(s), resting {pause:.0f}s")
         time.sleep(pause)
+        # a retry with the same names and the same token is the same request
+        ctx.reload_names()
+        ctx.dead.clear()
         still: list[int] = []
         for number in sorted(failed):
-            _n, built, message = ctx.grab(number, force=True, wide=True)
+            _n, built, _message = ctx.grab(number, force=True, wide=True)
             if built:
                 collected[number] = built
-                JOB.say(f"page {number}: recovered on retry")
+                JOB.say(f"page {number}: recovered on retry {round_number}")
             else:
                 still.append(number)
+        recovered = len(failed) - len(still)
+        recovered_last = recovered
+        JOB.say(f"retry {round_number}: {recovered} recovered, {len(still)} still missing")
         failed = still
         JOB.set_progress(ok=len(collected), skipped=len(failed))
 
@@ -1950,6 +2263,16 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                     JOB.say(f"  page {number}: {old['width']}x{old['height']}"
                             f" -> {built['width']}x{built['height']}")
             JOB.set_progress(ok=len(collected))
+
+    # ---- the words of each page, so the PDF is not just photographs --------
+    texts: dict[int, str] = {}
+    if text and collected:
+        JOB.say("text: asking for each page's words (one extra request per page)")
+        for number in sorted(collected):
+            words = ctx.page_text(number)
+            if words:
+                texts[number] = words
+        JOB.say(f"text: {len(texts)} of {len(collected)} page(s) had words")
 
     uniform = check and not mixed and bool(collected)
     sheets = sheet_list(collected, with_limit, placeholder)
@@ -1996,6 +2319,23 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 handle.write("\nnotes:\n" + "\n".join(sorted(ctx.notes)) + "\n")
         with open(os.path.join(out, "debug", "missing-pages.txt"), "w") as handle:
             handle.write(", ".join(str(n) for n in failed) + "\n")
+        codes: dict[str, int] = {}
+        for number in failed:
+            for line in ctx.trace.get(number, []):
+                parts = line.split()
+                code = parts[0] if parts else "?"
+                codes[code] = codes.get(code, 0) + 1
+        order = sorted(codes.items(), key=lambda row: -row[1])[:4]
+        JOB.say("why: " + " · ".join(f"{count} answer(s) {code}"
+                                     for code, count in order))
+        if codes.get("403", 0) >= sum(codes.values()) * 0.6:
+            JOB.say("     403 is the only answer: either those pages are not for "
+                    "this account, or Scribd is still throttling this address — "
+                    "run it again later, the finished pages are cached")
+        if ctx.rejected:
+            JOB.say("     arrived but unreadable: "
+                    + ", ".join(f"{count} {kind}" for kind, count in
+                                sorted(ctx.rejected.items())))
         for number in sorted(failed)[:3]:
             lines = ctx.trace.get(number, [])
             names = len(ctx.tried.get(number, ()))
@@ -2035,7 +2375,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         suffix += 1
 
     ok, note_text = build_pdf(sheets, target, title=ctx.title, author=ctx.author,
-                              uniform=uniform)
+                              uniform=uniform, texts=texts)
     if not ok:
         with JOB.lock:
             JOB.verdict = "FAILED"
@@ -2417,6 +2757,9 @@ PAGE = """<!doctype html>
   <div class="row">
     <label class="muted">pages <input type="number" id="limit" value="0" min="0"
       title="0 = the whole document"></label>
+    <label class="muted" title="adds each page's real words, so the PDF can be
+      searched and copied — one extra request per page"><input type="checkbox"
+      id="textlayer"> searchable text</label>
     <button id="go">Download</button>
     <span class="muted">0 = whole document · the sample tries 5 first</span>
     <button class="ghost" id="sample">Put the sample in</button>
@@ -2563,7 +2906,8 @@ $('ticked').onclick = () => {
   const boxes = [...document.querySelectorAll('#hits input:checked')];
   if (!boxes.length) { $('verdict').textContent = 'tick at least one document first'; return; }
   start({urls: boxes.map((b) => b.value),
-         limit: Number($('ticklimit').value) || 0});
+         limit: Number($('ticklimit').value) || 0,
+         text: $('textlayer').checked});
   $('verdict').textContent = 'queued ' + boxes.length
     + ' document(s) — scroll down for progress';
 };
@@ -2571,7 +2915,8 @@ $('ticked').onclick = () => {
 $('go').onclick = () => {
   const text = $('links').value.trim();
   if (!text) { $('verdict').textContent = 'paste at least one link first'; return; }
-  start({links: text, limit: Number($('limit').value) || 0});
+  start({links: text, limit: Number($('limit').value) || 0,
+         text: $('textlayer').checked});
 };
 $('sample').onclick = () => { $('links').value = '__SAMPLE__'; };
 $('copybm').onclick = async () => {
@@ -2724,7 +3069,10 @@ def serve(port: int, out: str) -> None:
                 self._send(b'{"error":"already running"}', "application/json", 409)
                 return
             limit = as_limit(payload.get("limit"))
-            threading.Thread(target=run_job, args=(urls, limit, out),
+            wants_text = bool(payload.get("text"))
+            threading.Thread(target=run_job,
+                             args=(urls, limit, out, 12, False, "", True, True, 0,
+                                   True, wants_text),
                              daemon=True).start()
             self._send(json.dumps({"ok": True, "queued": len(urls)}).encode(),
                        "application/json")
@@ -3098,6 +3446,91 @@ def selftest() -> str:
     assert len(hits) == 3 and len(notes) == 2, notes
     assert notes[-1] == "page 2: 4 document(s), 0 new", notes
 
+    # ---- the throttle breaker: a locked page and a throttled address ----
+    spoken: list[str] = []
+    before_say = JOB.say
+    JOB.say = lambda text: spoken.append(text)
+    ctx = Ctx("https://www.scribd.com/document/750213011/x", 4)
+    assert ctx.refused(3) is False            # one page refused: not a throttle
+    assert ctx.refused(3) is False            # the same page again: still not
+    assert ctx.refused(4) is False            # a second page
+    assert ctx.refused(5) is True             # three different pages: throttled
+    assert 0 < ctx.rest_until - time.time() <= PAUSE_LADDER[0] + 0.5
+    assert ctx.rest_until - time.time() > 1
+    # while resting it keeps saying "rest", and the ladder must not climb
+    assert ctx.refused(6) is True and ctx.rests == 1, ctx.rests
+    ctx.rest_until = 0.0                      # the rest is over
+    ctx.dead.add("some-name")
+    for page in (7, 8, 9):
+        last = ctx.refused(page)
+    assert last is True and ctx.rests == 2, (last, ctx.rests)
+    assert not ctx.dead, "names refused while throttled must not stay dead"
+    # a good page resets the counting
+    ctx.rest_until = 0.0
+    ctx.answered()
+    assert ctx.refused(10) is False and ctx.refused(11) is False
+    assert ctx.refused(12) is True
+    # the ladder is capped, and a run of good answers steps it back down
+    ctx.rest_until = 0.0
+    ctx.rests = 99
+    ctx.refused(20), ctx.refused(21), ctx.refused(22)
+    assert PAUSE_LADDER[-1] - 0.5 <= ctx.rest_until - time.time() <= PAUSE_LADDER[-1] + 0.5
+    ctx.rests, ctx.reliefs, ctx.rest_until = 2, 0, 0.0
+    for _ in range(8):
+        ctx.answered()
+    assert ctx.rests == 1, ctx.rests
+    JOB.say = before_say
+    assert any("throttling" in line for line in spoken), spoken
+    assert len(spoken) == 4, spoken          # one line per rest, not one per 403
+
+    # ---- the text layer: the words, not just the pictures -------------------
+    assert html_to_text("<div>One</div><br><div>Two &amp; three</div>") == "One\nTwo & three"
+    assert html_to_text("<p>a</p><p>b</p>").split("\n") == ["a", "b"]
+    assert html_to_text("  <span>x</span>  ") == "x"
+    assert html_to_text("") == "" and html_to_text(None) == ""
+    assert "\n\n\n" not in html_to_text("<br><br><br><div>z</div>")
+    page = b'window.page2_callback(["<div>First</div>", "<br>", "Second &#39;quote&#39;"]);'
+    assert text_from_jsonp(page) == "First\nSecond 'quote'", text_from_jsonp(page)
+    assert text_from_jsonp(b'window.page2_callback([1, null, "<b>ok</b>"]);') == "ok"
+    assert text_from_jsonp(b"not a descriptor") == ""
+    assert text_from_jsonp(b'window.page2_callback(["unterminated")') == ""
+    assert text_from_jsonp(b"[not json") == ""
+    # the descriptor shares the scan's <page>-<hash> pair, so it is derivable
+    assert jsonp_from_image(
+        "https://html.scribdassets.com/9675umbmgwcrttvn/images/2-90c206b2e6.jpg"
+    ) == "https://html.scribdassets.com/9675umbmgwcrttvn/pages/2-90c206b2e6.jsonp"
+    assert jsonp_from_image(
+        "https://html.scribdassets.com/9675umbmgwcrttvn/images/2-90c206b2e6.jpg?token=x"
+    ).endswith("/pages/2-90c206b2e6.jsonp")
+    assert jsonp_from_image("https://www.scribd.com/document/1/x") == ""
+    # a layer is only drawn where there is room, and it never prints
+    layer = text_layer("Hello there\nSecond line", (900.0, 1200.0, 0.0, 0.0))
+    assert b"3 Tr" in layer and b"(Hello there) Tj" in layer, layer
+    assert b"im0" not in layer and b"Do" not in layer
+    assert text_layer("Hello", (15.0, 15.0, 0.0, 0.0)) == b""
+    assert text_layer("", (900.0, 1200.0, 0.0, 0.0)) == b""
+    # brackets and backslashes must be escaped, latin-1 must survive
+    tricky = text_layer("a (b) \\ c \u2014 caf\u00e9", (400.0, 100.0, 0.0, 0.0))
+    assert b"\\(b\\)" in tricky and b"\\\\" in tricky, tricky
+    assert b"caf\xe9" in tricky and b"\xe2\x80\x94" not in tricky, tricky
+    # and the finished file carries it without breaking the sheet
+    with tempfile.TemporaryDirectory() as spot:
+        book = os.path.join(spot, "text.pdf")
+        leaf = scan_for_pdf(make_jpeg(1200, 1600))
+        ok, note = build_pdf([leaf, None], book, texts={1: "Mock page one\nline two"})
+        assert ok and "searchable text" in note, note
+        sound, report = verify_pdf(book, expect_pages=2, expect_images=1)
+        assert sound, report                       # the layer must not break xref
+        with open(book, "rb") as handle:
+            written = handle.read()
+        assert b"(Mock page one) Tj" in written
+        # the placeholder sheet is untouched by the layer: one page has text
+        assert note.count("1 page(s) with searchable text") == 1, note
+        ok, note = build_pdf([leaf], book)
+        assert ok and "searchable" not in note, note
+        with open(book, "rb") as handle:
+            assert b"Tj" not in handle.read()
+
     gate = Gate(rate=24.0, floor=8.0, ceiling=60.0)
     for _ in range(40):
         gate.complaint(403)
@@ -3108,7 +3541,7 @@ def selftest() -> str:
     assert abs(hard.rate - 8.0) < 0.01, hard.rate
 
     return ("selftest: every check passed — sheet maths, EXIF rotation, "
-            "jpeg size traps, pdf verify, cookies, token, names, "
+            "jpeg size traps, pdf verify, text layer, cookies, token, names, "
             "pasted links, bookmarklet, scribd search")
 
 def main(argv: list[str]) -> int:
@@ -3124,6 +3557,7 @@ def main(argv: list[str]) -> int:
     check = True
     placeholder = True
     verify = True
+    text = False
     probe = 0
     find_text = ""
     find_asked = False
@@ -3172,6 +3606,8 @@ def main(argv: list[str]) -> int:
             placeholder = False
         elif arg == "--no-verify":
             verify = False
+        elif arg in ("--text", "--text-layer"):
+            text = True
         elif arg == "--selftest":
             print(selftest())
             return 0
@@ -3215,7 +3651,7 @@ def main(argv: list[str]) -> int:
     urls = [item for item in dict.fromkeys(urls) if item]
     if urls:
         run_job(urls, limit, out, jobs, refresh, name, check, placeholder, probe,
-                verify)
+                verify, text)
         return 0 if JOB.verdict in ("PDF BUILT", "PDF PARTIAL", "PROBE DONE") else 1
     port = int(os.environ.get("SERVER_PORT") or os.environ.get("PORT") or 8090)
     serve(port, out)
