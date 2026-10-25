@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.11
+"""scribd_download.py — ONE file, standard library only.  Version 2.12
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -40,6 +40,23 @@ asks Scribd directly, which is the same thing its own search box does. The one
 honest caveat: /search/query is not a documented API — it is the endpoint the
 site's own JavaScript calls. If Scribd changes it, the page says so in plain
 words instead of pretending there are no results.
+
+What 2.12 added: WIRING THIS PANEL INTO ANOTHER DASHBOARD
+  The panel is a plain HTTP service, so another site can drive it without a line
+  of browser automation. Four small things were missing for that to be clean:
+  1. A KEY. This panel sits on a public address and can spend your Scribd
+     session, so it can now be locked: set PANEL_KEY (or SCRIBD_PANEL_KEY) and
+     every route except /health wants X-Panel-Key, ?key=…, or the cookie that
+     opening ?key=… once sets. Unset means open, exactly as before.
+  2. CORS, but never a wildcard: PANEL_ORIGIN=https://your-dashboard lists the
+     origins allowed to call the JSON endpoints from a browser, and OPTIONS is
+     answered. A server-side proxy needs none of this and is the better way.
+  3. /health now answers JSON ({"ok", "version", "locked", "state"}) so a
+     dashboard can show "panel online / locked" before it tries a job, and
+     /files lists the finished PDFs — no side has to remember a file name.
+  4. ?embed=1 hides the bookmarklet card and the wide margins, for showing the
+     panel inside a frame. The bookmarklet itself now carries ?key= when the
+     panel is locked, so "send links from your browser" still works.
 
 What 2.11 fixed: "HTTP 200, 6 kB jpeg that is not a page scan" (a real run)
   A 323-page book came back with 108 pages lost, most of them not 403s but
@@ -142,6 +159,20 @@ Options: --find "TEXT", --pages N, --pick 1,3, --url LINK (repeatable), --links 
          --refresh, --name TITLE, --no-check, --no-placeholder, --no-verify,
          --verify FILE, --probe N, --selftest
 
+Panel options (environment, all optional):
+  PANEL_KEY / SCRIBD_PANEL_KEY   lock the panel (X-Panel-Key, ?key=, or cookie)
+  PANEL_ORIGIN                   comma-separated browser origins allowed by CORS
+  SERVER_PORT / PORT             port to listen on
+
+Endpoints, for a dashboard in front of this panel:
+  GET  /health                   {"ok", "version", "locked", "state"} — no key
+  GET  /status                   the running job: state, verdict, progress, log
+  GET  /files                    {"files": [{name, bytes, when}]} newest first
+  GET  /file[/NAME]              the finished PDF
+  GET  /logs[/NAME]              the debug folder, as a page or a file
+  POST /run                      {"urls"|"url"|"links", "limit", "text"}
+  POST /find                     {"query", "page"} -> documents from Scribd
+
 Cookies are read, never printed. Files stay on this machine.
 """
 
@@ -150,6 +181,7 @@ from __future__ import annotations
 import base64
 import datetime
 import gzip
+import hmac
 import http.client
 import json
 import os
@@ -165,7 +197,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.11"
+VERSION = "2.12"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -195,6 +227,16 @@ REFUSALS_IN_A_ROW = 3
 PAUSE_LADDER = (4.0, 12.0, 30.0)
 OTHER_HOSTS = ("html.scribd.com", "html2-f.scribdassets.com",
                "html3-f.scribdassets.com", "html4-f.scribdassets.com")
+# This panel is reachable from the internet, so it can be given a key. Empty
+# means open, exactly as before: nothing changes for anyone who does not set it.
+PANEL_KEY = (os.environ.get("PANEL_KEY") or os.environ.get("SCRIBD_PANEL_KEY")
+             or "").strip()
+# Optional browser origins allowed to call the JSON endpoints directly, e.g.
+# PANEL_ORIGIN=https://my-dashboard.vercel.app — a server-side proxy needs none.
+PANEL_ORIGINS = [part.strip().rstrip("/") for part in
+                 (os.environ.get("PANEL_ORIGIN") or "").split(",") if part.strip()]
+PANEL_COOKIE = "scribd_panel_key"
+
 # a page scan is never smaller than this, and never this lopsided
 MIN_PAGE_PX = 200
 PREVIEW_MIN_PX = 80                # below this a picture is a smudge, not a page
@@ -617,6 +659,76 @@ def links_from_text(text: str) -> list[str]:
     return urls
 
 
+def panel_gate(headers, query: dict, cookies: str = "") -> bool:
+    """Is this request allowed in?
+
+    Open panel: everything is. Keyed panel: the key must arrive as the
+    X-Panel-Key header (a server-side proxy), as ?key= (a link somebody was
+    given), or in the cookie that opening the panel with the right key sets.
+    The cookie is SameSite=Strict, so another site cannot borrow it.
+    """
+    if not PANEL_KEY:
+        return True
+    wanted = PANEL_KEY.encode()
+    given = (headers.get("X-Panel-Key") or "").strip()
+    if not given:
+        given = (query.get("key") or [""])[0].strip()
+    if not given and cookies:
+        for part in cookies.split(";"):
+            name, _sep, value = part.strip().partition("=")
+            if name == PANEL_COOKIE:
+                given = urllib.parse.unquote(value.strip())
+                break
+    return bool(given) and hmac.compare_digest(given.encode(), wanted)
+
+
+def panel_cookie() -> str:
+    """The cookie that keeps the panel working after ?key= was used once."""
+    return (f"{PANEL_COOKIE}={urllib.parse.quote(PANEL_KEY, safe='')}; "
+            "Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
+
+
+def cors_headers(origin: str) -> dict[str, str]:
+    """Allow exactly the origins listed in PANEL_ORIGIN, and no others.
+
+    A wildcard would let any page on the internet drive this panel with a
+    visitor's cookies, so the list is explicit or the answer is none.
+    """
+    clean = (origin or "").strip().rstrip("/")
+    if not clean or clean not in PANEL_ORIGINS:
+        return {}
+    return {"Access-Control-Allow-Origin": clean,
+            "Access-Control-Allow-Headers": "Content-Type, X-Panel-Key",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Max-Age": "600",
+            "Vary": "Origin"}
+
+
+def panel_files(folder: str, limit: int = 100) -> list[dict]:
+    """Every finished PDF in the output folder, newest first.
+
+    The dashboard cannot guess file names, so it asks for this list instead of
+    remembering what it started.
+    """
+    found: list[dict] = []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return found
+    for name in names:
+        if not name.lower().endswith(".pdf"):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        found.append({"name": name, "bytes": stat.st_size,
+                      "when": int(stat.st_mtime)})
+    found.sort(key=lambda item: -item["when"])
+    return found[:max(1, limit)]
+
+
 def bookmarklet(origin: str) -> str:
     """The one-bookmark route: your browser finds, the panel downloads.
 
@@ -624,6 +736,8 @@ def bookmarklet(origin: str) -> str:
     link always points back at this panel — never at scribd.com.
     """
     target = (origin or "").rstrip("/") + "/send?"
+    if PANEL_KEY:
+        target += "key=" + urllib.parse.quote(PANEL_KEY, safe="") + "&"
     return ("javascript:(()=>{const o=" + json.dumps(target) + ";"
             "const sel='a[href*=\"/document/\"],a[href*=\"/presentation/\"],'"
             "+'a[href*=\"/spreadsheet/\"],a[href*=\"/ebook/\"]';"
@@ -2839,6 +2953,12 @@ def queue_links(urls: list[str], limit: int, out: str) -> tuple[bool, str]:
     return True, f"queued {len(urls)} link(s)"
 
 
+# ?embed=1: the same panel with the "send links" card and the wide margins
+# removed, for the case where it is shown inside another site's frame.
+EMBED_CSS = ("body{padding:12px 10px 34px;background:#fff}"
+             ".wrap{max-width:none}h1{font-size:17px;margin-bottom:2px}"
+             "#bmblock,#bmcard{display:none}")
+
 SEND_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <title>links queued</title><style>
 body{font:15px/1.6 ui-monospace,Menlo,Consolas,monospace;background:#fbfbfa;
@@ -2896,7 +3016,7 @@ PAGE = """<!doctype html>
  .muted{color:#57606a;font-size:13px}
  ol.steps{margin:8px 0 0;padding-left:22px} ol.steps li{margin:5px 0}
  a{color:#0969da}
-</style></head><body><div class="wrap">
+</style><style>__EMBED_CSS__</style></head><body><div class="wrap">
 <h1>Download Scribd documents</h1>
 <div class="meta" id="meta">ready</div>
 
@@ -2925,8 +3045,8 @@ PAGE = """<!doctype html>
   </div>
 </div>
 
-<h2>2 · or send links from your browser with one bookmark</h2>
-<div class="card alt">
+<h2 id="bmblock">2 · or send links from your browser with one bookmark</h2>
+<div class="card alt" id="bmcard">
   <div class="muted">Still the fastest way when you are already searching
   Scribd: your browser finds the links, this panel only receives them.</div>
   <ol class="steps">
@@ -3131,21 +3251,63 @@ def serve(port: int, out: str) -> None:
         def log_message(self, *args) -> None:
             pass
 
-        def _send(self, body: bytes, ctype: str, code: int = 200) -> None:
+        def _send(self, body: bytes, ctype: str, code: int = 200,
+                  extra: dict | None = None) -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            for name, value in cors_headers(self.headers.get("Origin", "")).items():
+                self.send_header(name, value)
+            for name, value in (extra or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
+        def _allowed(self, path: str) -> bool:
+            """One gate in front of every route, so none can be forgotten."""
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if panel_gate(self.headers, query, self.headers.get("Cookie", "")):
+                return True
+            if path == "/health":
+                return True                      # uptime checks stay open
+            what = ("application/json" if path not in ("/", "/send", "/logs")
+                    else "text/html")
+            if what == "application/json":
+                self._send(json.dumps({"error": "this panel needs its key: send "
+                                                "X-Panel-Key, or open ?key=…"}).encode(),
+                           "application/json; charset=utf-8", 401)
+            else:
+                self._send(b"<h3>This panel is locked.</h3><p>Open it with "
+                           b"?key=YOUR_KEY at the end of the address.</p>",
+                           "text/html; charset=utf-8", 401)
+            return False
+
+        def do_OPTIONS(self) -> None:  # noqa: N802
+            """Preflight for a dashboard that calls this panel from a browser."""
+            self.send_response(204)
+            for name, value in cors_headers(self.headers.get("Origin", "")).items():
+                self.send_header(name, value)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def do_GET(self) -> None:  # noqa: N802
             path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)
+            if not self._allowed(path):
+                return
             if path == "/status":
                 self._send(json.dumps(JOB.snapshot()).encode(),
                            "application/json; charset=utf-8")
             elif path == "/health":
-                self._send(b"ok", "text/plain")
+                # cheap enough for a dashboard to poll, and it says whether the
+                # panel is locked so the other side can explain a 401 properly
+                self._send(json.dumps({"ok": True, "version": VERSION,
+                                       "locked": bool(PANEL_KEY),
+                                       "state": JOB.state}).encode(),
+                           "application/json; charset=utf-8")
+            elif path == "/files":
+                self._send(json.dumps({"files": panel_files(out)}).encode(),
+                           "application/json; charset=utf-8")
             elif path in ("/file", "/file/") or path.startswith("/file/"):
                 target = JOB.file
                 if path.startswith("/file/"):
@@ -3192,6 +3354,8 @@ def serve(port: int, out: str) -> None:
                     body = handle.read()
                 self._send(body, "text/plain; charset=utf-8")
             else:
+                query = urllib.parse.parse_qs(
+                    urllib.parse.urlparse(self.path).query)
                 origin = (self.headers.get("X-Forwarded-Proto") and
                           self.headers.get("X-Forwarded-Host") and
                           f"{self.headers['X-Forwarded-Proto']}://"
@@ -3200,14 +3364,19 @@ def serve(port: int, out: str) -> None:
                           if self.headers.get("Host") else
                           f"http://localhost:{port}")
                 code = bookmarklet(origin)
-                self._send(PAGE
+                embed = (query.get("embed") or [""])[0].lower() in ("1", "true", "yes")
+                page = PAGE.replace("__EMBED_CSS__", EMBED_CSS if embed else "")
+                extra = {"Set-Cookie": panel_cookie()} if PANEL_KEY else None
+                self._send(page
                            .replace("__SAMPLE__", SAMPLE)
                            .replace("__BOOKMARKLET_TEXT__", html_escape(code))
                            .replace("__BOOKMARKLET_ATTR__", html_escape(code))
-                           .encode(), "text/html; charset=utf-8")
+                           .encode(), "text/html; charset=utf-8", 200, extra)
 
         def do_POST(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path
+            if not self._allowed(path):
+                return
             length = int(self.headers.get("Content-Length") or 0)
             try:
                 payload = json.loads(self.rfile.read(length) or b"{}")
@@ -3772,6 +3941,47 @@ def selftest() -> str:
         sound, report = verify_pdf(book, expect_pages=2, expect_images=2)
         assert not sound and "only 40x40" in report, report
 
+    # ---- the panel gate a dashboard has to come through ---------------------
+    global PANEL_KEY, PANEL_ORIGINS
+    saved_key, saved_origins = PANEL_KEY, PANEL_ORIGINS
+
+    PANEL_KEY = ""                                   # open panel: as before
+    assert panel_gate({}, {}) and panel_gate({"X-Panel-Key": "anything"}, {})
+
+    PANEL_KEY = "s3cret"                             # keyed panel
+    assert not panel_gate({}, {})
+    assert not panel_gate({"X-Panel-Key": "nope"}, {})
+    assert panel_gate({"X-Panel-Key": "s3cret"}, {})
+    assert panel_gate({}, {"key": ["s3cret"]})
+    assert not panel_gate({}, {"key": ["S3CRET"]})    # exact, not fuzzy
+    assert panel_gate({}, {}, "theme=dark; scribd_panel_key=s3cret")
+    assert not panel_gate({}, {}, "scribd_panel_key=other")
+    cookie = panel_cookie()
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie, cookie
+    assert "scribd_panel_key=s3cret" in cookie
+
+    PANEL_ORIGINS = ["https://dash.example.vercel.app"]
+    allowed = cors_headers("https://dash.example.vercel.app")
+    assert allowed["Access-Control-Allow-Origin"] == "https://dash.example.vercel.app"
+    assert "X-Panel-Key" in allowed["Access-Control-Allow-Headers"]
+    assert cors_headers("https://evil.example") == {}   # never a wildcard
+    assert cors_headers("") == {}
+    PANEL_ORIGINS = []
+    assert cors_headers("https://dash.example.vercel.app") == {}
+
+    PANEL_KEY, PANEL_ORIGINS = saved_key, saved_origins
+
+    # ---- the file list the dashboard reads, so it never guesses names ------
+    with tempfile.TemporaryDirectory() as shelf:
+        with open(os.path.join(shelf, "Book.pdf"), "wb") as handle:
+            handle.write(b"x" * 12)
+        with open(os.path.join(shelf, "notes.txt"), "wb") as handle:
+            handle.write(b"not a pdf")
+        rows = panel_files(shelf)
+        assert [row["name"] for row in rows] == ["Book.pdf"], rows
+        assert rows[0]["bytes"] == 12 and rows[0]["when"] > 0
+        assert panel_files(os.path.join(shelf, "gone")) == []
+
     gate = Gate(rate=24.0, floor=8.0, ceiling=60.0)
     for _ in range(40):
         gate.complaint(403)
@@ -3783,8 +3993,8 @@ def selftest() -> str:
 
     return ("selftest: every check passed — sheet maths, EXIF rotation, "
             "jpeg size traps, previews and cut transfers, pdf verify, text "
-            "layer, cookies, token, names, pasted links, bookmarklet, "
-            "scribd search")
+            "layer, panel key and CORS, cookies, token, names, pasted links, "
+            "bookmarklet, scribd search")
 
 def main(argv: list[str]) -> int:
     global BASE

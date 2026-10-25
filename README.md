@@ -36,7 +36,7 @@ own browser, one click sends every link on the page) and a **paste box**.
    printed, and only `scribd.com` / `scribdassets.com` cookies are ever sent —
    the rest of a browser export stays out of the request.
 3. Start it: `PY_FILE=scribd_download.py`, restart.
-4. Open the server address. The line under the title must read **v2.11**.
+4. Open the server address. The line under the title must read **v2.12**.
 
 ## 2. Find links: five ways
 
@@ -250,6 +250,36 @@ bookmarklet, the throttle breaker, and the search-answer parser (a refusal is
 never reported as "no results").
 
 ---
+
+## Wiring it into a dashboard
+
+The panel is a plain HTTP service, so another site can drive it — a Next.js /
+Express / PHP dashboard, no browser automation anywhere. Two settings do the
+locking, both optional:
+
+| variable | what it does |
+|---|---|
+| `PANEL_KEY` (or `SCRIBD_PANEL_KEY`) | locks every route except `/health`. Callers send `X-Panel-Key: …`, or open `?key=…` once (that sets a `SameSite=Strict` cookie). Unset = open, as before |
+| `PANEL_ORIGIN` | comma-separated browser origins allowed by CORS, e.g. `https://your-dashboard.vercel.app`. Never a wildcard — it is refused for any other origin |
+
+| route | returns |
+|---|---|
+| `GET /health` | `{"ok", "version", "locked", "state"}` — no key needed, safe to poll |
+| `GET /status` | the job: `state`, `verdict`, `detail`, `progress`, `file`, `log`, `version` |
+| `GET /files` | `{"files": [{"name", "bytes", "when"}]}`, newest first |
+| `GET /file` or `/file/NAME` | the finished PDF (attachment) |
+| `GET /logs` / `/logs/NAME` | the debug folder |
+| `POST /run` | `{"urls" \| "url" \| "links", "limit", "text"}` → `{"ok", "queued"}` |
+| `POST /find` | `{"query", "page"}` → `{hits, notes, summary, page, total, documents}` |
+
+Best practice is a **server-side proxy**: the dashboard's own backend calls the
+panel with `X-Panel-Key`, and the browser only ever talks to the dashboard. That
+avoids CORS entirely, keeps the key out of the page, and stops a public
+`http://` panel being mixed into an `https://` site.
+
+`?embed=1` on the panel address hides the bookmarklet card and the wide margins,
+for showing the whole panel inside a frame. A ready-made Next.js integration
+(Craft Room side) lives in [`integrations/zafar-dashboard`](integrations/zafar-dashboard/README.md).
 
 ## Limits, stated plainly
 
