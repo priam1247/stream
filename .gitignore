@@ -13,3 +13,7 @@ cookies.txt
 
 # local settings (may contain a password) — uploaded to the host, never committed
 .env
+
+# the JS search service: its deps and its scratch folder
+node_modules/
+tools/troy-search/tmp/

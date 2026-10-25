@@ -1,0 +1,19 @@
+{
+  "name": "troy-search",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Find Scribd documents, send the links to the download panel.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "selftest": "node index.js --selftest"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "latest",
+    "puppeteer-core": "latest"
+  }
+}
