@@ -36,7 +36,7 @@ own browser, one click sends every link on the page) and a **paste box**.
    printed, and only `scribd.com` / `scribdassets.com` cookies are ever sent —
    the rest of a browser export stays out of the request.
 3. Start it: `PY_FILE=scribd_download.py`, restart.
-4. Open the server address. The line under the title must read **v2.8**.
+4. Open the server address. The line under the title must read **v2.9**.
 
 ## 2. Find links: five ways
 
@@ -161,7 +161,7 @@ Every run ends with one of:
 | verdict | meaning |
 |---|---|
 | `PDF BUILT` | every page arrived, the PDF was re-read and passed its own checks |
-| `PDF PARTIAL` | some pages could not be fetched; they are labelled placeholder sheets, **in their own position**, and named in the log |
+| `PDF PARTIAL` | some pages could not be fetched; they are labelled placeholder sheets, **in their own position**, named in the log, and the log ends with `why: … 403` so you know whether to wait or to give up on those pages |
 | `PDF BROKEN` | the finished file failed its checks — the reason is printed |
 | `NO PAGES` | the document named no pages, or nothing could be read |
 | `BAD LINK` | that URL has no document id in it |
@@ -233,6 +233,15 @@ the bookmarklet, and the search-answer parser (a refusal is never reported as
 
 - A page whose scan Scribd refuses will stay a placeholder. The log says which
   page and why; it is never quietly dropped.
+- **A refusal means one of two things, and v2.9 tells them apart.** One page
+  refused while the rest arrive is a locked page — nothing to do. Different
+  pages refused in a row is *throttling*: the job rests (4s, 12s, 30s), slows
+  down, clears its blacklist and tries again, then re-reads the document for a
+  fresh token before its retry rounds. Before this, the first 403 killed the
+  page for the whole run, which is why the missing pages used to grow.
+- **A partial is cheap to finish.** Page scans are cached, so running the same
+  document again later only fetches the pages that failed — an 8-page test with
+  one locked page re-ran in 0.2s once the page was reachable.
 - Very large documents take a while: roughly 400 pages in ~6 minutes on a shared
   container (the download rate is capped on purpose to avoid throttling).
 - The tool reads JPEG and PNG on its own. WebP needs Pillow — without it, those

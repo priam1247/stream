@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.8
+"""scribd_download.py — ONE file, standard library only.  Version 2.9
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -39,6 +39,27 @@ asks Scribd directly, which is the same thing its own search box does. The one
 honest caveat: /search/query is not a documented API — it is the endpoint the
 site's own JavaScript calls. If Scribd changes it, the page says so in plain
 words instead of pretending there are no results.
+
+What 2.9 fixed in the DOWNLOADS (the "failed pages keep increasing" report)
+  1. A 403 was treated as permanent: the first one failed the page and blacklisted
+     that name for the whole job, while the gate only slowed by 3%. When Scribd
+     throttles a long job it answers 403, so every page hit in that window was
+     lost and the retries failed too (same dead names, same token).
+  2. Now a 403 is read in context: ONE page refused while others arrive is a
+     locked page (give up at once, no resting). THREE different pages refused in
+     a row is throttling: rest the whole job for 4s, then 12s, then 30s, clear
+     the blacklist and the dead list, slow the gate, and try that name again.
+  3. Retry rounds re-read the document page and viewer first, so they get a new
+     token and any names the first read missed. A retry with the same names is
+     not a retry, it is the same request.
+  4. If two retries recover nothing, the third is skipped instead of resting 20
+     more seconds for nothing.
+  5. The report says why: "why: 12 answer(s) 403" and whether that looks like a
+     locked document or a throttled address.
+
+Measured on the local mock (14 pages, refusals start after 5 scans for 6s):
+old code -> PDF PARTIAL, 10 of 14 real. New code -> PDF BUILT, 14 of 14, in 30s.
+One permanently locked page: 10.7s and an honest PARTIAL, with no resting.
 
 What 2.4 fixed in the OUTPUT (2.3 is kept everywhere else)
   1. PDF BROKEN was the checker, not the file: image streams were counted inside
@@ -102,7 +123,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.8"
+VERSION = "2.9"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -122,6 +143,14 @@ SCAN_RE = re.compile(r"\.(?:jpe?g|png|webp)(?:\?|$)", re.IGNORECASE)
 TOKEN_RE = re.compile(r"[?&]token=([A-Za-z0-9._\-%]+)", re.IGNORECASE)
 RETRY_STATUS = (408, 425, 429, 500, 502, 503, 504)
 HARD_THROTTLE = (429, 503)
+# A 403 has two meanings and they need opposite answers: "this page is not for
+# you" (nothing to do) and "you are going too fast" (wait, then it works). The
+# only way to tell them apart is what the rest of the job is doing: one refusal
+# on its own is a locked page, several in a row with nothing succeeding is a
+# throttle. Three in a row rests the whole job, clears the blacklist and tries
+# that name again.
+REFUSALS_IN_A_ROW = 3
+PAUSE_LADDER = (4.0, 12.0, 30.0)
 OTHER_HOSTS = ("html.scribd.com", "html2-f.scribdassets.com",
                "html3-f.scribdassets.com", "html4-f.scribdassets.com")
 # a page scan is never smaller than this, and never this lopsided
@@ -1469,6 +1498,74 @@ class Ctx:
         self.total = 0
         self.title = ""
         self.author = ""
+        # the throttle breaker, shared by every worker thread
+        self.refuse_lock = threading.Lock()
+        self.refused_pages: set[int] = set()
+        self.rest_until = 0.0
+        self.rests = 0
+        self.reliefs = 0
+
+    # -- the throttle breaker ------------------------------------------------
+    def rest(self) -> None:
+        """Wait out a rest the breaker called, if there is one."""
+        wait = self.rest_until - time.time()
+        if wait > 0:
+            time.sleep(min(wait, 30.0))
+
+    def refused(self, number: int) -> bool:
+        """One more 403 on this page. True means "throttled: rest, then again".
+
+        The discriminator is *which* page keeps being refused. One page refused
+        over and over while the rest arrive is a locked page — retrying it is
+        pointless and resting for it wastes minutes. Different pages refused in
+        a row, with nothing succeeding between them, is the address being
+        throttled, and resting is the only thing that helps.
+        """
+        with self.refuse_lock:
+            if time.time() < self.rest_until:
+                return True                # already resting: do not climb the ladder
+            if number in self.refused_pages:
+                return False               # the same page again: it is not ours
+            self.refused_pages.add(number)
+            if len(self.refused_pages) < REFUSALS_IN_A_ROW:
+                return False
+            pause = PAUSE_LADDER[min(self.rests, len(PAUSE_LADDER) - 1)]
+            self.rests += 1
+            self.rest_until = time.time() + pause
+            self.refused_pages.clear()     # after a rest they get a fair second look
+            self.dead.clear()              # a name refused while throttled is not dead
+            self.gate.rate = max(self.gate.floor, self.gate.rate * 0.75)
+        JOB.say(f"refused {REFUSALS_IN_A_ROW} times with nothing succeeding — "
+                f"resting {pause:.0f}s and slowing down (that is throttling, "
+                f"not a locked page)")
+        return True
+
+    def answered(self) -> None:
+        """A page arrived: start counting refusals again from zero.
+
+        After a run of good answers the pause ladder steps back down, so one
+        throttle early in a big document does not make every later pause long.
+        """
+        with self.refuse_lock:
+            self.refused_pages.clear()
+            self.reliefs += 1
+            if self.rests and self.reliefs >= 8 and time.time() >= self.rest_until:
+                self.rests = max(0, self.rests - 1)
+                self.reliefs = 0
+
+    def reload_names(self) -> None:
+        """Ask Scribd for the document again before a retry round.
+
+        A retry with the same token and the same names is not a retry, it is the
+        same request. This reads the document page and the viewer again, which
+        re-harvests the token and any page names the first read did not have.
+        """
+        before = self.sources.count()
+        JOB.say("refreshing the document before retrying: new names, new token")
+        if not self.load():
+            self.note("retry: the document page did not answer the second time")
+            return
+        self.note(f"retry: names refreshed ({before} -> {self.sources.count()})")
 
     def note(self, text: str) -> None:
         with self.notes_lock:
@@ -1625,11 +1722,22 @@ class Ctx:
         stem = re.sub(r"[^0-9A-Za-z]+", "-", stem.rsplit("/", 1)[-1])[:48]
         return os.path.join(self.cache_dir, f"{number:04d}-{stem}.bin")
 
-    def attempt(self, url: str, tries: int) -> tuple[dict | None, str, int]:
+    def attempt(self, url: str, tries: int,
+                number: int = 0) -> tuple[dict | None, str, int]:
+        """Ask for one name, with the breaker deciding what a 403 means.
+
+        A single 403 with pages succeeding around it is a locked page: give up
+        now, quietly. A 403 that arrives with its neighbours is throttling: rest
+        the whole job and try that same name again, because it was never dead.
+        """
         reason = "no attempt"
         delay = 0.7
         status = 0
-        for attempt in range(tries):
+        attempt = 0
+        budget = tries + REFUSALS_IN_A_ROW      # a rest earns at most this many
+        while attempt < budget:
+            attempt += 1
+            self.rest()
             self.gate.acquire()
             got = fetch(url, self.jar, referer=self.document_url, timeout=25)
             status = got["status"]
@@ -1637,11 +1745,13 @@ class Ctx:
                 built = scan_for_pdf(got["body"])
                 if built:
                     self.gate.clean_answer()
+                    self.answered()
                     built["url"] = url
                     built["bytes"] = len(got["body"])
                     built["raw"] = got["body"]
                     return built, "", status
                 kind = self.reject(got["body"])
+                self.answered()
                 return None, (f"HTTP 200, {len(got['body']) / 1000:.0f} kB "
                               f"{kind} that is not a page scan"), status
             if got["error"]:
@@ -1650,12 +1760,15 @@ class Ctx:
                 reason = http_reason(got)
                 self.gate.complaint(status)
                 if status == 403:
-                    return None, reason, status     # deterministic: no backoff
+                    if not self.refused(number):
+                        return None, reason, status   # a locked page
+                    continue                           # throttled: rest, then again
                 if status not in RETRY_STATUS:
                     return None, reason, status
-            if attempt < tries - 1:
-                time.sleep(retry_after(got["headers"]) or delay)
-                delay = min(6.0, delay * 1.8)
+            if attempt >= tries:
+                break
+            time.sleep(retry_after(got["headers"]) or delay)
+            delay = min(6.0, delay * 1.8)
         return None, reason, status
 
     def grab(self, number: int, force: bool = False,
@@ -1688,7 +1801,7 @@ class Ctx:
                     continue
                 seen.add(url)
                 tries = 1 if url in self.dead else 2
-                built, reason, status = self.attempt(url, tries)
+                built, reason, status = self.attempt(url, tries, number)
                 self.record(number, url, status)
                 if built and plausible_page(built):
                     raw = built.pop("raw", b"")
@@ -1900,19 +2013,29 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                         + f" · {rate:.1f} pages/s · gate {ctx.gate.rate:.1f}/s"
                         + (f" · about {left:.0f} s left" if left > 1 else ""))
 
-    for round_number, pause in ((1, 1.0), (2, 3.0)):
+    recovered_last = -1
+    for round_number, pause in ((1, 2.0), (2, 8.0), (3, 20.0)):
         if not failed:
             break
-        JOB.say(f"retry {round_number}: {len(failed)} page(s)")
+        if round_number == 3 and recovered_last == 0:
+            JOB.say("two retries recovered nothing — not resting a third time")
+            break
+        JOB.say(f"retry {round_number}: {len(failed)} page(s), resting {pause:.0f}s")
         time.sleep(pause)
+        # a retry with the same names and the same token is the same request
+        ctx.reload_names()
+        ctx.dead.clear()
         still: list[int] = []
         for number in sorted(failed):
-            _n, built, message = ctx.grab(number, force=True, wide=True)
+            _n, built, _message = ctx.grab(number, force=True, wide=True)
             if built:
                 collected[number] = built
-                JOB.say(f"page {number}: recovered on retry")
+                JOB.say(f"page {number}: recovered on retry {round_number}")
             else:
                 still.append(number)
+        recovered = len(failed) - len(still)
+        recovered_last = recovered
+        JOB.say(f"retry {round_number}: {recovered} recovered, {len(still)} still missing")
         failed = still
         JOB.set_progress(ok=len(collected), skipped=len(failed))
 
@@ -1996,6 +2119,23 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 handle.write("\nnotes:\n" + "\n".join(sorted(ctx.notes)) + "\n")
         with open(os.path.join(out, "debug", "missing-pages.txt"), "w") as handle:
             handle.write(", ".join(str(n) for n in failed) + "\n")
+        codes: dict[str, int] = {}
+        for number in failed:
+            for line in ctx.trace.get(number, []):
+                parts = line.split()
+                code = parts[0] if parts else "?"
+                codes[code] = codes.get(code, 0) + 1
+        order = sorted(codes.items(), key=lambda row: -row[1])[:4]
+        JOB.say("why: " + " · ".join(f"{count} answer(s) {code}"
+                                     for code, count in order))
+        if codes.get("403", 0) >= sum(codes.values()) * 0.6:
+            JOB.say("     403 is the only answer: either those pages are not for "
+                    "this account, or Scribd is still throttling this address — "
+                    "run it again later, the finished pages are cached")
+        if ctx.rejected:
+            JOB.say("     arrived but unreadable: "
+                    + ", ".join(f"{count} {kind}" for kind, count in
+                                sorted(ctx.rejected.items())))
         for number in sorted(failed)[:3]:
             lines = ctx.trace.get(number, [])
             names = len(ctx.tried.get(number, ()))
@@ -3097,6 +3237,43 @@ def selftest() -> str:
     hits, notes = find_documents("physics", 3, ask=stub(answer))
     assert len(hits) == 3 and len(notes) == 2, notes
     assert notes[-1] == "page 2: 4 document(s), 0 new", notes
+
+    # ---- the throttle breaker: a locked page and a throttled address ----
+    spoken: list[str] = []
+    before_say = JOB.say
+    JOB.say = lambda text: spoken.append(text)
+    ctx = Ctx("https://www.scribd.com/document/750213011/x", 4)
+    assert ctx.refused(3) is False            # one page refused: not a throttle
+    assert ctx.refused(3) is False            # the same page again: still not
+    assert ctx.refused(4) is False            # a second page
+    assert ctx.refused(5) is True             # three different pages: throttled
+    assert 0 < ctx.rest_until - time.time() <= PAUSE_LADDER[0] + 0.5
+    assert ctx.rest_until - time.time() > 1
+    # while resting it keeps saying "rest", and the ladder must not climb
+    assert ctx.refused(6) is True and ctx.rests == 1, ctx.rests
+    ctx.rest_until = 0.0                      # the rest is over
+    ctx.dead.add("some-name")
+    for page in (7, 8, 9):
+        last = ctx.refused(page)
+    assert last is True and ctx.rests == 2, (last, ctx.rests)
+    assert not ctx.dead, "names refused while throttled must not stay dead"
+    # a good page resets the counting
+    ctx.rest_until = 0.0
+    ctx.answered()
+    assert ctx.refused(10) is False and ctx.refused(11) is False
+    assert ctx.refused(12) is True
+    # the ladder is capped, and a run of good answers steps it back down
+    ctx.rest_until = 0.0
+    ctx.rests = 99
+    ctx.refused(20), ctx.refused(21), ctx.refused(22)
+    assert PAUSE_LADDER[-1] - 0.5 <= ctx.rest_until - time.time() <= PAUSE_LADDER[-1] + 0.5
+    ctx.rests, ctx.reliefs, ctx.rest_until = 2, 0, 0.0
+    for _ in range(8):
+        ctx.answered()
+    assert ctx.rests == 1, ctx.rests
+    JOB.say = before_say
+    assert any("throttling" in line for line in spoken), spoken
+    assert len(spoken) == 4, spoken          # one line per rest, not one per 403
 
     gate = Gate(rate=24.0, floor=8.0, ceiling=60.0)
     for _ in range(40):
