@@ -369,9 +369,22 @@ export function ScribdDesk() {
   );
 
   const download = useCallback(
-    (name: string) => {
+    async (name: string) => {
+      let href = fileUrl(name);
+      try {
+        // ask for a fresh link: when the panel is published, this is a signed
+        // direct URL (bytes never touch this app); otherwise it is the proxy
+        const res = await fetch(`/api/scribd/link?name=${encodeURIComponent(name)}`, {
+          headers: authHeaders(),
+          cache: 'no-store',
+        });
+        const json = await readJson(res);
+        if (res.ok && typeof json.url === 'string') href = json.url;
+      } catch {
+        // fall back to the proxy path
+      }
       const link = document.createElement('a');
-      link.href = fileUrl(name);
+      link.href = href;
       link.download = name;
       link.rel = 'noopener';
       document.body.appendChild(link);

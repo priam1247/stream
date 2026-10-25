@@ -80,6 +80,30 @@ Shared container panels often report the entire host node's free space via `stat
    - Every delivered media/movie file is deleted immediately after WhatsApp accepts it; `utils/cleanup.js` sweeps leftover `.part`/`.ytdl` partials on boot and caps `temp/` at `TEMP_MAX_MB` (`2048` MB default).
    - Direct torrent support (`webtorrent` optional dependency) remains enabled when `TORRENT_DIRECT=true`.
 
+## Sizing: what the two servers actually need
+
+| what | RAM it uses | disk it needs |
+|---|---|---|
+| the Scribd panel (`tools/scribd_download.py`) | ~70–120 MB while downloading (the channels are threads) | **the real constraint**: each book is 40–150 MB, plus its page cache (roughly the same again) |
+| the search helper (`tools/troy-search`) | ~100–200 MB | a few MB |
+| the dashboard (`dashboard/`, on Vercel) | 0 on your servers | 0 on your servers |
+
+So 4 GB / 10 GB for the panel is comfortable on RAM and tight on **disk**. The
+panel now guards that itself (`SCRIBD_KEEP_FILES=40`, `SCRIBD_MAX_MB=6000`,
+`SCRIBD_CACHE_DAYS=3` — lower `KEEP_FILES` to ~20 on a 10 GB plan) and prints
+what it pruned.
+
+Merging the two servers buys nothing for downloads — the second box is nearly
+idle — and costs a supervisor, because a Pterodactyl startup command runs one
+process. If you want one box, run the search under the same startup line
+(`node tools/troy-search/index.js & python scribd_download.py`); the panel does
+not need the search to work.
+
+Running the **dashboard** on your own box removes the Vercel function limit, but
+it needs HTTPS (the session cookie is `Secure` in production) so a domain and a
+reverse proxy, and 2 GB / 2 GB is tight for Next.js. Keeping it on Vercel and
+using signed links to the panel gets the same result for free.
+
 ## Deploying to XS Systems / Pterodactyl Panel
 
 ### 1. Secret Rotation Order (Zero Downtime)
@@ -154,10 +178,12 @@ Search, then download — that is the whole flow; there is no link box to fill i
 - **Saving on a phone**: the PDF is streamed through this dashboard and served as
   a normal attachment, so the phone saves a 150 MB book without holding it in
   memory. Tap the file name if the Save button does nothing.
-- **Big files vs. hosting limits**: a Vercel function is cut at 60 s on Hobby. If
-  that bites, publish the panel on HTTPS (Cloudflare Tunnel — free) and set
-  `SCRIBD_PUBLIC_URL=https://…` on the dashboard: the Save link then goes straight
-  to the panel and the file never passes through Vercel. No migration needed.
+- **Big files vs. hosting limits**: a Vercel function is cut at 60 s on Hobby.
+  Set `SCRIBD_PUBLIC_URL=http://195.123.189.187:25811` on the dashboard and Save
+  mints a **signed, short-lived link straight to the panel** (`?t=…&e=…`, an HMAC
+  keyed with `PANEL_KEY`), so the bytes never pass through Vercel and the key
+  never appears in a URL. `http://` is fine: the browser only navigates to it.
+  No tunnel, no domain, no migration.
 
 **The Control Room drives it.** The member console has a fourth tab, **Scribd**, so
 the whole workflow lives in the dashboard:

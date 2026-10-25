@@ -180,12 +180,14 @@ from __future__ import annotations
 import base64
 import datetime
 import gzip
+import hashlib
 import hmac
 import http.client
 import json
 import os
 import re
 import socket
+import shutil
 import struct
 import sys
 import threading
@@ -196,7 +198,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.14"
+VERSION = "2.15"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -685,6 +687,37 @@ def panel_gate(headers, query: dict, cookies: str = "") -> bool:
     return bool(given) and hmac.compare_digest(given.encode(), wanted)
 
 
+def file_token(name: str, expires: int) -> str:
+    """A short-lived signature for one file, so a browser can fetch it directly.
+
+    Why this exists: the dashboard proxies every byte through its own server
+    function, and a hosting function has a wall-clock limit (60 s on Vercel's
+    free plan). A 150 MB book on a slow link does not fit in that. With this the
+    dashboard mints `?t=…&e=…` for one file and one moment, the phone downloads
+    straight from the panel, and the panel key never appears in the URL.
+    """
+    if not PANEL_KEY:
+        return ""
+    message = f"{name}|{int(expires)}".encode()
+    return hmac.new(PANEL_KEY.encode(), message, hashlib.sha256).hexdigest()
+
+
+def token_ok(name: str, expires, given: str) -> bool:
+    """Is that signature ours, for this file, and still in date?"""
+    if not PANEL_KEY:
+        return True                       # an open panel needs no signature
+    if not given or expires is None:
+        return False
+    try:
+        moment = int(expires)
+    except (TypeError, ValueError):
+        return False
+    now = time.time()
+    if moment < now or moment > now + 7 * 24 * 3600:
+        return False                      # expired, or absurdly far ahead
+    return hmac.compare_digest(given.strip(), file_token(name, moment))
+
+
 def panel_cookie() -> str:
     """The cookie that keeps the panel working after ?key= was used once."""
     return (f"{PANEL_COOKIE}={urllib.parse.quote(PANEL_KEY, safe='')}; "
@@ -705,6 +738,78 @@ def cors_headers(origin: str) -> dict[str, str]:
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Max-Age": "600",
             "Vary": "Origin"}
+
+
+KEEP_FILES = int(os.environ.get("SCRIBD_KEEP_FILES", "40"))
+MAX_OUT_MB = int(os.environ.get("SCRIBD_MAX_MB", "6000"))
+CACHE_DAYS = float(os.environ.get("SCRIBD_CACHE_DAYS", "3"))
+
+
+def folder_mb(folder: str) -> float:
+    total = 0
+    for root, _dirs, names in os.walk(folder):
+        for name in names:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total / (1024 * 1024)
+
+
+def prune_out(folder: str) -> list[str]:
+    """Keep the output folder from filling a small disk.
+
+    A 10 GB plan holds maybe forty 150 MB books, and every document also leaves
+    its page scans in `cache/` — which is what makes re-running a partial cheap,
+    so it is kept for a few days rather than thrown away at once. Rules, in
+    order:
+
+      1. page caches older than SCRIBD_CACHE_DAYS are deleted;
+      2. only the newest SCRIBD_KEEP_FILES PDFs are kept;
+      3. if the folder is still bigger than SCRIBD_MAX_MB, the oldest PDFs go
+         until it is not.
+
+    Returns one line per thing it deleted, so the log can say what happened
+    instead of a folder quietly shrinking.
+    """
+    said: list[str] = []
+    if not os.path.isdir(folder):
+        return said
+
+    cache_root = os.path.join(folder, "cache")
+    cutoff = time.time() - CACHE_DAYS * 86400
+    if os.path.isdir(cache_root):
+        for name in sorted(os.listdir(cache_root)):
+            path = os.path.join(cache_root, name)
+            try:
+                if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                    shutil.rmtree(path, ignore_errors=True)
+                    said.append(f"cache: dropped {name} (older than "
+                                f"{CACHE_DAYS:g} day(s))")
+            except OSError:
+                pass
+
+    pdfs = panel_files(folder, limit=100000)
+    for row in pdfs[KEEP_FILES:]:
+        path = os.path.join(folder, row["name"])
+        try:
+            os.remove(path)
+            said.append(f"disk: removed {row['name']} "
+                        f"({row['bytes'] / 1e6:.0f} MB, older than the newest "
+                        f"{KEEP_FILES})")
+        except OSError:
+            pass
+
+    while folder_mb(folder) > MAX_OUT_MB and len(pdfs) > 1:
+        row = pdfs.pop()                      # the oldest one left
+        path = os.path.join(folder, row["name"])
+        try:
+            os.remove(path)
+            said.append(f"disk: removed {row['name']} to stay under "
+                        f"{MAX_OUT_MB} MB")
+        except OSError:
+            break
+    return said
 
 
 def panel_files(folder: str, limit: int = 100) -> list[dict]:
@@ -2984,6 +3089,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         JOB.say("placeholder pages: " + ", ".join(str(n) for n in failed[:60])
                 + (" …" if len(failed) > 60 else ""))
         JOB.say("why, page by page: downloads/debug/failed-pages.txt")
+
+    # a small disk fills up quietly; say what was cleaned instead of hiding it
+    for line in prune_out(out):
+        JOB.say(line)
         JOB.say("to see every name and answer for one of them: --probe <page>")
     JOB.say(f"written: {target}")
 
@@ -3701,6 +3810,14 @@ def serve(port: int, out: str) -> None:
                 return True
             if path == "/health":
                 return True                      # uptime checks stay open
+            if path == "/file" or path.startswith("/file/") or path == "/logs":
+                # a signed link (minted by the dashboard) opens one file, briefly
+                wanted = (os.path.basename(path) if path.startswith("/file/")
+                          else (query.get("name") or [""])[0])
+                if wanted and token_ok(urllib.parse.unquote(wanted),
+                                       (query.get("e") or [None])[0],
+                                       (query.get("t") or [""])[0]):
+                    return True
             what = ("application/json" if path not in ("/", "/send", "/logs")
                     else "text/html")
             if what == "application/json":
@@ -3883,6 +4000,8 @@ def serve(port: int, out: str) -> None:
                                    "pending": JOB.pending()}).encode(),
                        "application/json")
 
+    for line in prune_out(out):
+        print(line, flush=True)
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"open http://0.0.0.0:{port}/ — find documents, or paste a link",
           flush=True)
@@ -4304,6 +4423,45 @@ def selftest() -> str:
     # a document may spend at most RETRY_BUDGET seconds being retried
     assert 0 < RETRY_BUDGET <= 300, RETRY_BUDGET
 
+    # ---- the disk guard: a small plan must not fill up in silence -------
+    keep_root = os.path.join(work, "keep")
+    os.makedirs(keep_root, exist_ok=True)
+    old_pdf = os.path.join(keep_root, "old.pdf")
+    with open(old_pdf, "wb") as handle:
+        handle.write(b"%PDF-1.4\n" + b"x" * 4000)
+    long_ago = time.time() - 5 * 86400
+    os.utime(old_pdf, (long_ago, long_ago))
+    cache_dir = os.path.join(keep_root, "cache", "123")
+    os.makedirs(cache_dir, exist_ok=True)
+    with open(os.path.join(cache_dir, "0001-a.bin"), "wb") as handle:
+        handle.write(b"x" * 100)
+    os.utime(cache_dir, (long_ago, long_ago))
+    fresh_pdf = os.path.join(keep_root, "new.pdf")
+    with open(fresh_pdf, "wb") as handle:
+        handle.write(b"%PDF-1.4\n" + b"y" * 4000)
+    said = prune_out(keep_root)
+    assert os.path.isfile(fresh_pdf), "the newest PDF must be kept"
+    assert any("cache: dropped 123" in line for line in said), said
+    assert not os.path.isdir(cache_dir), said
+    # too many files: only the newest KEEP_FILES survive
+    before = KEEP_FILES
+    globals()["KEEP_FILES"] = 1
+    try:
+        said = prune_out(keep_root)
+    finally:
+        globals()["KEEP_FILES"] = before
+    assert not os.path.isfile(old_pdf) and os.path.isfile(fresh_pdf), said
+    assert any("older than the newest 1" in line for line in said), said
+    # a hard cap removes the oldest first, and never the last one left
+    before_mb = MAX_OUT_MB
+    globals()["MAX_OUT_MB"] = 0
+    try:
+        said = prune_out(keep_root)
+    finally:
+        globals()["MAX_OUT_MB"] = before_mb
+    assert os.path.isfile(fresh_pdf), "the last PDF is never deleted"
+    assert folder_mb(keep_root) >= 0
+
     # ---- the panel page is usable on a phone and has no paste box -------
     assert "width=device-width" in PAGE
     assert "@media (max-width:640px)" in PAGE and "font-size:16px" in PAGE
@@ -4504,6 +4662,25 @@ def selftest() -> str:
     assert "HttpOnly" in cookie and "SameSite=Strict" in cookie, cookie
     assert "scribd_panel_key=s3cret" in cookie
 
+    # ---- signed download links: one file, briefly, no key in the URL ----
+    keep_signing, PANEL_KEY = PANEL_KEY, "k3y"
+    try:
+        soon = int(time.time()) + 600
+        good = file_token("Doc (2).pdf", soon)
+        assert len(good) == 64 and token_ok("Doc (2).pdf", soon, good)
+        assert not token_ok("Doc (3).pdf", soon, good)          # another file
+        assert not token_ok("Doc (2).pdf", soon + 1, good)      # another moment
+        assert not token_ok("Doc (2).pdf", int(time.time()) - 5, good)   # expired
+        assert not token_ok("Doc (2).pdf", soon, good[:-1] + ("0" if good[-1] != "0" else "1"))
+        assert not token_ok("Doc (2).pdf", "soon", good)        # junk expiry
+        assert not token_ok("Doc (2).pdf", None, good)
+        assert not token_ok("Doc (2).pdf", soon, "")            # no signature
+        # a signature dated years ahead is refused, so a leaked one dies
+        assert not token_ok("Doc (2).pdf", int(time.time()) + 8 * 24 * 3600, good)
+    finally:
+        PANEL_KEY = keep_signing
+
+
     PANEL_ORIGINS = ["https://dash.example.vercel.app"]
     allowed = cors_headers("https://dash.example.vercel.app")
     assert allowed["Access-Control-Allow-Origin"] == "https://dash.example.vercel.app"
@@ -4539,7 +4716,7 @@ def selftest() -> str:
             "jpeg size traps, previews and cut transfers, pdf verify, text "
             "layer, panel key and CORS, cookies, token, names, pasted links, "
             "bookmarklet, scribd search, relevance, channels, the document "
-            "queue, page wiring")
+            "queue, signed links, the disk guard, page wiring")
 
 def main(argv: list[str]) -> int:
     global BASE

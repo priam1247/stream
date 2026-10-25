@@ -15,6 +15,7 @@
  *   SCRIBD_PANEL_KEY   the panel's PANEL_KEY, if it was locked
  */
 
+import { createHmac } from 'node:crypto';
 import type {
   ScribdFile,
   ScribdFindPayload,
@@ -59,13 +60,43 @@ export function scribdPublicUrl(): string {
   if (!raw) return '';
   try {
     const parsed = new URL(raw);
-    if (parsed.protocol !== 'https:') return '';   // never mixed content
+    // https is preferred, but http is allowed on purpose: the browser only ever
+    // *navigates* to this address (a download), it never loads it as a
+    // subresource, so mixed content does not apply
+    if (!/^https?:$/.test(parsed.protocol)) return '';
     parsed.search = '';
     parsed.hash = '';
     return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
   } catch {
     return '';
   }
+}
+
+/**
+ * A signed link straight to one finished PDF on the panel.
+ *
+ * The panel accepts `?t=<hmac>&e=<expiry>` for one file, so the browser can
+ * download a 150 MB book from the panel itself instead of fetching it through
+ * this app's function — and the panel key never appears in the URL. Returns ''
+ * when there is no public panel address (the caller then uses the proxy).
+ */
+export async function signedFileUrl(name: string): Promise<string> {
+  const base = scribdPublicUrl();
+  const clean = safeScribdName(name);
+  if (!base || !clean) return '';
+  const { key } = await scribdPanelConfig();
+  if (!key) {
+    // an open panel needs no signature at all
+    return `${base}/file/${encodeURIComponent(clean)}`;
+  }
+  const expires = Math.floor(Date.now() / 1000) + 900; // 15 minutes
+  const token = createHmac('sha256', key)
+    .update(`${clean}|${expires}`)
+    .digest('hex');
+  return (
+    `${base}/file/${encodeURIComponent(clean)}` +
+    `?t=${token}&e=${expires}`
+  );
 }
 
 /** One panel address, cleaned so a pasted link still works. */

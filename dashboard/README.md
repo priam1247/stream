@@ -89,18 +89,20 @@ tab can keep searching and ticking while a book is in flight — `run` answers
 ### Big books vs. the function time limit
 
 `/api/scribd/file` streams, but a Vercel function still has a wall-clock limit
-(60 s on Hobby, 300 s on Pro). If a 150 MB book is cut short, put the panel on
-**HTTPS** with a Cloudflare Tunnel and set `SCRIBD_PUBLIC_URL`:
+(60 s on Hobby, 300 s on Pro). Set one variable and Save stops using it:
 
-```bash
-cloudflared tunnel --url http://127.0.0.1:25811       # quick test
-# named tunnel: scribd.yourdomain.com -> http://127.0.0.1:25811
+```text
+SCRIBD_PUBLIC_URL=http://195.123.189.187:25811
 ```
 
-With `SCRIBD_PUBLIC_URL=https://scribd.yourdomain.com` in the Vercel project, the
-Save link points at the panel and the bytes never touch Vercel. Open
-`https://scribd.yourdomain.com/?key=<PANEL_KEY>` once on the phone; the panel's
-own cookie then authorises later links. Nothing else changes.
+Now `GET /api/scribd/link?name=Book.pdf` mints a **signed, short-lived** link
+(`?t=<hmac>&e=<expiry>`, keyed with `PANEL_KEY`) and the browser downloads
+straight from the panel. The key is never in a URL, `http://` is fine because the
+browser only navigates to it, and nothing needs a tunnel or a domain. Leave the
+variable empty and Save falls back to the proxy route.
+
+(If the panel is behind a Cloudflare Tunnel, use the `https://` hostname instead —
+same mechanism, tidier address.)
 
 The panel address and key are saved from that card into `portal_settings`
 (`scribd_panel_url`, `scribd_panel_key`), so they can be changed without a
