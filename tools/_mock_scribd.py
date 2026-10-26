@@ -32,6 +32,17 @@ THROTTLE_FOR = float(os.environ.get("MOCK_THROTTLE_FOR", "5"))
 # have to be built from the one that is named.
 TEXT_DOC = os.environ.get("MOCK_TEXT_DOC", "") in ("1", "2")
 ONE_ASSET = os.environ.get("MOCK_TEXT_DOC", "") == "2"
+# MOCK_NO_DESCRIPTORS=1: every /pages/*.jsonp answers 403, like a document whose
+# per-page descriptors are not served at all. Then the viewer's own page is the
+# only place the words exist — the shape that produced the 37 blank sheets.
+NO_DESCRIPTORS = os.environ.get("MOCK_NO_DESCRIPTORS", "") == "1"
+# MOCK_VIEWER_WINDOW=n: the viewer page hands out n pages per answer and the
+# rest only when asked with ?start_page=…, the way the real viewer does for a
+# long document. 0 = all pages at once.
+VIEWER_WINDOW = int(os.environ.get("MOCK_VIEWER_WINDOW", "0"))
+# MOCK_VIEWER_EMPTY=1: the viewer page is a JavaScript shell with no text in the
+# HTML at all, so there is nothing to read and nothing may be invented.
+VIEWER_EMPTY = os.environ.get("MOCK_VIEWER_EMPTY", "") == "1"
 # MOCK_DELAY_MS=n: make every page answer take n milliseconds, so a test can
 # look at a job while it is genuinely still running
 DELAY_MS = float(os.environ.get("MOCK_DELAY_MS", "0"))
@@ -85,21 +96,62 @@ def fake_jpeg(width=1200, height=1600, fill=6000):
     return bytes(out)
 
 
-def page_jsonp(doc_id, number):
-    """Scribd sends each page's text as window.pageN_callback([…]) of html."""
+def page_text_lines(number, doc_id=0):
+    """The words of one mock page — short for a scan, long for a text page."""
     if TEXT_DOC:
-        # a converted document: the viewer renders this, there is no scan
         lines = [f"KUSANTHULA BUKU LA NTHONDO — page {number}",
                  "Ndondomeko ya buku ili ndi yotalikirapo pa nkhani za nthondo ndi "
                  "mmene anthu amapezera chithandizo ku chipatala cha boma."]
         lines += [f"Mutu wa nkhani {line} pa tsamba {number}: mawu oti "
                   f"needle{number} amapezeka mmenemo." for line in range(1, 7)]
         lines.append("Zolembedwa ndi a NTHONDO SUMMARY, kukonza kwa 2026.")
-    else:
-        lines = [f"Mock page {number}", f"This is line two of page {number}",
-                 f"Search for the word needle{number} to find this page"]
+        return lines
+    return [f"Mock page {number}", f"This is line two of page {number}",
+            f"Search for the word needle{number} to find this page"]
+
+
+def page_jsonp(doc_id, number):
+    """Scribd sends each page's text as window.pageN_callback([…]) of html."""
+    lines = page_text_lines(number, doc_id)
     return ('window.page%d_callback(["%s"]);'
             % (number, "<br>".join(f"<div>{line}</div>" for line in lines))).encode()
+
+
+def embed_page(doc_id, number):
+    """One page of the embed viewer, with the chrome a real one has.
+
+    A browser reading a Scribd document reads this: each page is an HTML block
+    whose text is already in it. For a converted document it is the only place
+    the words exist, so the mock has to produce it or the shape is not tested.
+    """
+    lines = page_text_lines(number, doc_id)
+    body = "".join(f"<p>{line}</p>" for line in lines)
+    picture = ""
+    if (not TEXT_DOC) or number == 1:
+        picture = (f'<img src="//html.scribdassets.com/h{doc_id}/images/'
+                   f'{number}-aa{doc_id}.jpg">')
+    return (f'<div id="page-{number}" class="outer_page" '
+            f'data-page-number="{number}">'
+            f'<div class="newpage"><div class="text_layer">{body}</div>'
+            f'{picture}'
+            f'<div class="ad"><a href="https://www.scribd.com/oauth/signup">'
+            f'Download to read ad-free</a></div>'
+            f'<div class="share">Share this document · Copy link</div>'
+            f'<div class="pagenum">{number}</div>'
+            f'</div></div>')
+
+
+def embed_html(doc_id, start=1):
+    if VIEWER_EMPTY:
+        return (b'<!doctype html><html><body><div id="viewer"></div>'
+                b'<script>window.boot=function(){}</script></body></html>')
+    first = max(1, start)
+    last = PAGES if not VIEWER_WINDOW else min(PAGES, first + VIEWER_WINDOW - 1)
+    return (f'<!doctype html><html><head><title>embed</title></head><body>'
+            f'<div class="document_scroll_container">'
+            + "".join(embed_page(doc_id, number)
+                      for number in range(first, last + 1))
+            + '</div></body></html>').encode()
 
 
 def document_html(doc_id):
@@ -191,11 +243,18 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/document/"):
             self.send(document_html(path.split("/")[2]))
         elif path.startswith("/embeds/"):
-            self.send(b"<html>embed</html>")
+            query = urllib.parse.parse_qs(self.path.split("?")[1]) \
+                if "?" in self.path else {}
+            start = int((query.get("start_page") or ["1"])[0])
+            self.send(embed_html(path.split("/")[2], start))
         elif path.startswith("/services/oembed"):
             self.send(b'{"title":"Doc","author_name":"someone"}',
                       ctype="application/json")
         elif "/pages/" in path and path.endswith(".jsonp"):
+            if NO_DESCRIPTORS:
+                self.send(b"<Error><Code>AccessDenied</Code></Error>", 403,
+                          "application/xml")
+                return
             name = path.rsplit("/", 1)[-1].split("-")[0]
             number = int(name) if name.isdigit() else 1
             self.send(page_jsonp(0, number), ctype="application/javascript")
