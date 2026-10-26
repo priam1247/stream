@@ -158,6 +158,12 @@ when no browser can exist at all is the page left out of the PDF and named in
 the verdict. A page is never grey: no sheet is ever drawn for a page that has
 nothing on it.
 
+A document that is text rather than scans gets the same care: the viewer's own
+look is photographed page by page whenever a browser runs or can be started,
+and the words stay underneath as a hidden searchable layer. The retypeset words
+sheet is the last resort for when no browser exists — the content survives, and
+the PDF says which pages are which.
+
 Options: --find "TEXT", --pages N, --pick 1,3, --url LINK (repeatable), --links "TEXT",
          --limit N, --out DIR, --cookies PATH, --base URL, --jobs N (default 12),
          --shots URL (a browser service that photographs a page we could not build),
@@ -215,7 +221,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.30"
+VERSION = "2.31"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -4606,6 +4612,42 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             if saved:
                 JOB.say(f"viewer page saved to {saved} (no cookie in it) — that "
                         f"file says what the viewer really sends")
+
+    # ---- fidelity pass: photograph the pages that only arrived as words ---
+    # Words keep a page's content but lose the document: a retypeset sheet is
+    # not the page a reader saw in the viewer — no layout, no headings in
+    # place, no page number. A browser sees exactly what the viewer shows, so
+    # whenever one runs (or can be started) the viewer's own look is
+    # photographed for those pages, and their words stay underneath as a
+    # hidden, searchable layer. With no browser at all the words sheet
+    # remains, because the content beats the look.
+    word_only = sorted(number for number in text_pages
+                       if number not in collected)
+    if word_only and not ctx.skip_now:
+        shooter = ensure_shooter(shooter)
+    if word_only and shooter.alive() and not ctx.skip_now:
+        JOB.say(f"photographing {len(word_only)} text page(s) with a browser "
+                f"({shooter.base}) — the viewer's own look, with the words kept "
+                f"underneath, searchable")
+        pictures, shot_notes = shooter.capture(
+            ctx.ident, word_only, jobs=ctx.jobs,
+            alive=lambda: JOB.alive(ctx.gen))
+        for number in sorted(pictures):
+            collected[number] = pictures[number]
+            photographed.append(number)
+            # the picture now IS the page's look, so its words go underneath as
+            # the hidden searchable layer instead of a second, retypeset sheet
+            if number in text_pages:
+                texts[number] = text_pages.pop(number)
+        for note in shot_notes:
+            JOB.say("  " + note)
+        left = [number for number in word_only if number not in collected]
+        JOB.say(f"the viewer's look is in the PDF for {len(word_only) - len(left)}"
+                f" of {len(word_only)} text page(s)"
+                + (f" — {len(left)} keep their words sheet: the browser could "
+                   f"not see them" if left else ""))
+        JOB.set_progress(ok=len(collected) + len(
+            [n for n in text_pages if n not in collected]), skipped=len(failed))
 
     # ---- a page with neither a scan nor words: photograph it --------------
     # This is the page that used to say "scan not available". Nothing arrived
