@@ -743,13 +743,27 @@ export function checkPageRun(rects) {
              note: `only ${run.length} page block(s) found — nothing to cut` };
   }
   const width = run[0].width, height = run[0].height;
-  for (const r of run) {
-    if (Math.abs(r.width - width) > width * 0.02 ||
-        Math.abs(r.height - height) > height * 0.02) {
+  // every block but the last must be the column's size; the last may end
+  // short — that is the document ending, and its clip is padded with the
+  // background after the last page, so every page of the book still comes
+  // out at exactly the same size
+  let pad = 0;
+  for (let i = 0; i < run.length; i++) {
+    const r = run[i];
+    const last = i === run.length - 1;
+    if (Math.abs(r.width - width) > width * 0.02) {
       return { ok: false, count: run.length,
-               note: `page blocks differ in size (${Math.round(r.width)}x` +
-                     `${Math.round(r.height)} against ${Math.round(width)}x` +
-                     `${Math.round(height)}) — not one column of pages` };
+               note: `page block ${i + 1} is ${Math.round(r.width)} wide ` +
+                     `against ${Math.round(width)} — not one column of pages` };
+    }
+    if (Math.abs(r.height - height) > height * 0.02) {
+      if (last && r.height >= height * 0.6 && r.height < height) {
+        pad = height - r.height;
+        continue;
+      }
+      return { ok: false, count: run.length,
+               note: `page block ${i + 1} is ${Math.round(r.height)} tall ` +
+                     `against ${Math.round(height)} — not one column of pages` };
     }
   }
   let gapMin = Infinity, gapMax = -Infinity;
@@ -768,11 +782,13 @@ export function checkPageRun(rects) {
     gapMin = Math.min(gapMin, gap); gapMax = Math.max(gapMax, gap);
   }
   return { ok: true, count: run.length, width: Math.round(width),
-           height: Math.round(height),
+           height: Math.round(height), pad: Math.round(pad),
            gapMin: Math.round(gapMin), gapMax: Math.round(gapMax),
            note: `${run.length} page block(s), each ${Math.round(width)}x` +
                  `${Math.round(height)}, gaps ${Math.round(gapMin)}–` +
-                 `${Math.round(gapMax)}px — every cut the same` };
+                 `${Math.round(gapMax)}px — every cut the same` +
+                 (pad ? `, the last padded ${Math.round(pad)}px with the ` +
+                         `background so no page is a different size` : "") };
 }
 
 /**
@@ -868,10 +884,14 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS) 
     const hash = (b) => crypto.createHash("sha256").update(b).digest("hex");
     const pages = [];
     const notes = [];
+    const clipH = Math.round(run.height);   // every clip the same height
+    const wantW = Math.max(1, Math.round(run.width * ratio));
+    const wantH = Math.max(1, Math.round(clipH * ratio));
     for (let i = 0; i < rects.length; i++) {
       const r = rects[i];
+      const padded = i === rects.length - 1 && run.pad > 0;
       const clip = { x: Math.round(r.x), y: Math.round(r.y),
-                     width: Math.round(r.width), height: Math.round(r.height),
+                     width: Math.round(r.width), height: clipH,
                      scale: ratio };
       const take = async () => {
         const res = await cdp.send("Page.captureScreenshot", {
@@ -879,6 +899,15 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS) 
         return Buffer.from(res.data, "base64");
       };
       let png = await take();
+      // a clip that came back the wrong size is a capture that lied: one
+      // retake, and if it still disagrees it is kept and named, because a
+      // named odd page beats a missing page
+      let size = pngSize(png);
+      if (size.width !== wantW || size.height !== wantH) {
+        notes.push(`page ${i + 1}: the clip came back ${size.width}x` +
+                   `${size.height}, asked ${wantW}x${wantH} — taken again`);
+        png = await take();
+      }
       let unstable = false;
       for (let tries = 0; tries < 3; tries++) {
         const first = hash(png);
@@ -887,9 +916,13 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS) 
         if (hash(png) === first) { unstable = false; break; }
         unstable = true;
       }
-      const size = pngSize(png);
+      size = pngSize(png);
+      if (size.width !== wantW || size.height !== wantH) {
+        notes.push(`page ${i + 1}: kept at ${size.width}x${size.height} ` +
+                   `though the column is ${wantW}x${wantH}`);
+      }
       pages.push({ page: i + 1, png, width: size.width, height: size.height,
-                   unstable, blank: blankShot(png) });
+                   unstable, blank: blankShot(png), padded });
       if (unstable) notes.push(`page ${i + 1}: still moving between captures — kept the last one`);
       if (blankShot(png)) notes.push(`page ${i + 1}: the clip looks empty — kept, an empty page is still that page`);
     }
@@ -1270,7 +1303,8 @@ export function serve(port = PORT) {
           run: book.run,
           pages: book.pages.map((p) => ({ page: p.page, width: p.width,
                                           height: p.height,
-                                          unstable: p.unstable, blank: p.blank })),
+                                          unstable: p.unstable, blank: p.blank,
+                                          padded: Boolean(p.padded) })),
         };
         const body = encodeShots(book.pages.map((p) => p.png), manifest);
         console.log(`  -> ok: ${book.pages.length} page(s), ${body.length} bytes`);
@@ -1434,10 +1468,22 @@ export function selftest() {
   assert(checkPageRun([
     { x: 0, y: 0, width: 800, height: 1100 },
     { x: 0, y: 1090, width: 800, height: 1100 }]).ok === false, "overlap refused");
-  // a block of another size is not a page of this column — refuse
+  // a block of another width is not a page of this column — refuse
   assert(checkPageRun([
     { x: 0, y: 0, width: 800, height: 1100 },
     { x: 0, y: 1140, width: 400, height: 1100 }]).ok === false, "odd size refused");
+  // a short LAST block is the document ending: padded, not refused
+  const padRun = checkPageRun([
+    { x: 0, y: 0, width: 800, height: 1100 },
+    { x: 0, y: 1140, width: 800, height: 1100 },
+    { x: 0, y: 2280, width: 800, height: 700 }]);
+  assert(padRun.ok && padRun.pad === 400, padRun.note);
+  // a short MIDDLE block still is not a page of this column — refuse
+  assert(checkPageRun([
+    { x: 0, y: 0, width: 800, height: 1100 },
+    { x: 0, y: 1140, width: 800, height: 700 },
+    { x: 0, y: 1880, width: 800, height: 1100 }]).ok === false,
+         "short middle refused");
   // one block is not a run, and a canyon is not a gap
   assert(checkPageRun([{ x: 0, y: 0, width: 800, height: 1100 }]).ok === false,
          "one block refused");

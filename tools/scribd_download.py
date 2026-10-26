@@ -4102,6 +4102,19 @@ def decode_shots(body: bytes) -> tuple[list[dict], str]:
     return pages, ""
 
 
+def body_manifest(body: bytes) -> dict:
+    """The JSON tail of a /shots answer, without re-walking the pictures."""
+    import json as _json
+    # the manifest is the last JSON object: cut at the final zero length mark
+    mark = body.rfind(b"\x00\x00\x00\x00")
+    tail = body[mark + 4:] if mark >= 0 else b"{}"
+    try:
+        got = _json.loads(tail or b"{}")
+    except Exception:                                              # noqa: BLE001
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
 def entry_manifest(pages: list[dict]) -> str:
     """One honest line about how the book was cut."""
     widths = {int(e.get("width") or 0) for e in pages}
@@ -4301,6 +4314,15 @@ class Shooter:
             built["blank"] = bool(entry.get("blank"))
             out[number] = built
         manifest = entry_manifest(pages)
+        pad = 0
+        try:
+            pad = int((body_manifest(body) or {}).get("run", {}).get("pad") or 0)
+        except Exception:                                          # noqa: BLE001
+            pad = 0
+        if pad:
+            manifest += (f" · the last page was padded {pad}px with the "
+                         f"background after the document, so no page of the "
+                         f"book is a different size from any other")
         return out, manifest
 
     def capture(self, ident: str, pages, jobs: int = 4,
@@ -7051,6 +7073,9 @@ def selftest() -> str:
     assert got[0]["width"] == 20 and got[0]["height"] == 8
     assert decode_shots(wire[:len(wire) - 20])[1], "a cut body is refused"
     assert decode_shots(b"\x00" * 4 + b"not json")[1], "a bad manifest is refused"
+    padded_wire = b"\x00" * 4 + b'{"run": {"pad": 400, "count": 3}}'
+    assert body_manifest(padded_wire).get("run", {}).get("pad") == 400
+    assert body_manifest(b"\x00" * 4 + b"not json") == {}
     assert entry_manifest(got).startswith("2 page(s) clipped at the gaps, every sheet 20x8")
     assert shot_request("http://host:8096/", "7", 12, 2.0) == (
         "http://host:8096/shot?doc=7&page=12&scale=2")
