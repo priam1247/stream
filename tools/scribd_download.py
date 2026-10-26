@@ -111,6 +111,11 @@ What 2.9 fixed in the DOWNLOADS (the "failed pages keep increasing" report)
      not a retry, it is the same request.
   4. If two retries recover nothing, the third is skipped instead of resting 20
      more seconds for nothing.
+     (3 and 4 are history: 2.37 removed the retry rounds altogether. In every
+     run since, a retry never once found a page that was missing, and the rounds
+     cost a document up to a minute of standing still. A page nobody sends is
+     photographed, or left out and named — never waited for. What remains of this
+     list is the throttle breaker's short rests, which do help.)
   5. The report says why: "why: 12 answer(s) 403" and whether that looks like a
      locked document or a throttled address.
 
@@ -148,12 +153,17 @@ How a document is downloaded, plain HTTPS with your cookies:
      as-is, PNG as its own filtered stream (predictor 15, no pixel loop)
   4. read the finished PDF back and validate it before calling it done
 
-Every page of every document is photographed: one pass over the scroll viewer,
-each page clipped at the gap between it and the next, then page by page for
-whatever the pass missed. Scanning is off — the browser is the source of every
-page, and the document's words travel underneath as the searchable layer. Only
-a box with no browser at all falls back to the words ladder (SCRIBD_SCANS=1
-brings the old scan ladder back for that case). A page that will not answer
+There are two loads, and every document goes down the one that fits it — one
+request decides which. A converted document (a docx, a pdf of text) has no
+image behind any of its pages, so its pages are PHOTOGRAPHED: one pass over the
+scroll viewer that measures the column of page blocks a window at a time,
+numbers every block by the column's own step, and clips each page while it is in
+the window — then page by page for whatever the pass could not cut, and the
+document's own words travel underneath as the searchable layer. A document of page scans is the other load:
+its scans are fetched straight from Scribd, twelve pages at a time, with no
+browser opened for them at all — and a page no scan reached is photographed
+rather than left out. SCRIBD_SCANS=1 forces the scan load on every document,
+SCRIBD_SHOTS_ONLY=1 the screenshot load. A page that will not answer
 walks a short ladder: the name the document gave,
 the same name without the token, then the page's own descriptor, which names the
 real asset outright. Every url tried for a failed page is recorded. A page that
@@ -232,7 +242,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.36"
+VERSION = "2.38"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -286,19 +296,17 @@ PAUSE_LADDER = (4.0, 12.0, 30.0)
 # before it drops itself. Twenty seconds is long enough to prove the refusals
 # are not a momentary throttle — three pages refused, or a rest already taken
 # that changed nothing — and short enough that 38 waiting books do not spend
-# the evening on one that will never come. Zero switches the whole queue
-# impatience off — the drop and the shortened retry — and every document then
+# the evening on one that will never come. Zero switches the queue impatience
+# off — the drop — and every document then
 # fights to the end even with a queue behind it, which is how 2.27 behaved.
 QUEUE_DROP_AFTER = float(os.environ.get("SCRIBD_QUEUE_DROP_AFTER", "20"))
-# How long one document may spend resting and retrying before it is built with
-# whatever arrived. A page Scribd will not serve is not worth ten minutes of a
-# 100-page book: the missing pages are named in the verdict, the PDF still lands.
-RETRY_BUDGET = float(os.environ.get("SCRIBD_RETRY_BUDGET", "75"))
-# With a browser to photograph what is left, resting a minute for scans that may
-# never come is a minute the reader waits for a page that could already be in the
-# PDF. One short round is still worth it — a real scan beats a photograph — and
-# then the browser takes over.
-SHOT_RETRY_BUDGET = float(os.environ.get("SCRIBD_SHOT_RETRY_BUDGET", "12"))
+# Missing pages are NOT retried. A page Scribd refuses is refused for a reason,
+# and round after round of the very same request has never once brought a page
+# back — it only spends the reader's minutes and holds the queue behind it. What
+# arrived is kept; a missing page is photographed if a browser is on hand, and
+# otherwise left out of the PDF and named in the verdict. Never grey, never
+# retried. The only rests left are the throttle breaker's, bounded by
+# REST_BUDGET, and a document with a browser waiting rests less:
 SHOT_REST_BUDGET = float(os.environ.get("SCRIBD_SHOT_REST_BUDGET", "12"))
 # Resting is part of that budget and has its own cap, so a document whose pages
 # are simply not served cannot spend minutes of the reader's time being polite
@@ -404,10 +412,13 @@ def cookie_sentence(jar: dict[str, str]) -> str:
             + (f", session '{session[0]}'" if session else ", NO session"))
 
 BASE = os.environ.get("SCRIBD_BASE", "").rstrip("/")   # only for local tests
+# Two loads, and every document goes down the one that fits it (decided in
+# _download, one request): a converted document is photographed, a document of
+# page scans is fetched from Scribd directly. These two switches only force the
+# choice — SCRIBD_SHOTS_ONLY=1 sends every document down the screenshot load and
+# asks for no scan at all; SCRIBD_SCANS=1 / --scans brings the scan ladder back
+# for every document, for a box with no browser at all.
 SHOTS_ONLY = os.environ.get("SCRIBD_SHOTS_ONLY", "") == "1"
-# Scanning is off. Every page is photographed; the scan ladder only runs if
-# somebody forces it back with SCRIBD_SCANS=1 / --scans, for a box with no
-# browser at all where the words ladder is not enough.
 SCANS_OK = os.environ.get("SCRIBD_SCANS", "") == "1"
 _POOL = threading.local()
 
@@ -3175,20 +3186,6 @@ class Ctx:
                 self.rests = max(0, self.rests - 1)
                 self.reliefs = 0
 
-    def reload_names(self) -> None:
-        """Ask Scribd for the document again before a retry round.
-
-        A retry with the same token and the same names is not a retry, it is the
-        same request. This reads the document page and the viewer again, which
-        re-harvests the token and any page names the first read did not have.
-        """
-        before = self.sources.count()
-        JOB.say("refreshing the document before retrying: new names, new token")
-        if not self.load():
-            self.note("retry: the document page did not answer the second time")
-            return
-        self.note(f"retry: names refreshed ({before} -> {self.sources.count()})")
-
     def note(self, text: str) -> None:
         with self.notes_lock:
             if text not in self.notes:
@@ -3949,10 +3946,13 @@ SHOT_FOUND_FOR = 300.0      # a service that answered is trusted for this long
 SHOT_RETRY_AFTER = 60.0     # one that did not is looked for again after this
 _SHOT_CACHE: dict = {"base": "", "note": "", "when": 0.0}
 _SHOT_LOCK = threading.Lock()
-SHOT_SCALE = float(os.environ.get("SCRIBD_SHOT_SCALE") or 2)
+# 1x is standard quality: the page at the size the viewer draws it. 2x was the
+# same page at twice the detail — four times the pixels to draw, encode, send
+# and embed, for a sheet that is placed at the same size in the PDF anyway.
+SHOT_SCALE = float(os.environ.get("SCRIBD_SHOT_SCALE") or 1)
 SHOT_TIMEOUT = float(os.environ.get("SCRIBD_SHOT_TIMEOUT") or 120)
 MAX_SHOT_PAGES = 400        # a whole book can be photographed, but not forever
-MAX_SHOT_JOBS = 6           # tabs in one browser: past this it stops helping
+MAX_SHOT_JOBS = 8           # tabs in one browser: past this it stops helping
 
 
 def set_shots(value: str) -> None:
@@ -4568,20 +4568,27 @@ class Shooter:
                       f"{size_text(len(body))}) — kept, it is the only picture of "
                       f"that page" if blank else "")
 
-    def shoot_book(self, ident: str, scale: float = 0.0
+    def shoot_book(self, ident: str, scale: float = 0.0, pages: int = 0
                    ) -> tuple[dict[int, dict], str]:
         """Every page of the document in one pass, cut at the gaps.
 
-        The browser service opens the scroll viewer once, loads the whole
-        column, and clips each page block at the gap between it and the next —
-        so every page arrives at exactly the page's own size and no page is cut
-        differently from any other. -> (page -> picture, one note).
+        The browser service opens the scroll viewer once, measures the column of
+        page blocks a window at a time, and clips each page while that page is in
+        the window — so every page arrives at exactly the page's own size and no
+        page is cut differently from any other. It is told how many pages the
+        document has: the column's own step is what numbers the blocks, so a
+        column holding more slots than the document has pages is refused rather
+        than believed, and a hole in the column is a page named as missing, never
+        a book shifted one page out of place. A page the pass could not cut is
+        simply absent from the pictures and named in the note, and then gets a
+        photograph of its own. -> (page -> picture, one note).
         """
         base = (self.base or "").rstrip("/")
         if not base or not ident:
             return {}, "no browser to ask"
         url = (f"{base}/shots?doc={ident}"
-               f"&scale={(scale or self.scale):g}")
+               f"&scale={(scale or self.scale):g}"
+               + (f"&pages={int(pages)}" if pages else ""))
         status, body, error = shot_get(url, self.timeout * 6)
         if error:
             return {}, f"the one-pass photograph failed: {error}"
@@ -4734,26 +4741,49 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     os.makedirs(ctx.cache_dir, exist_ok=True)
     os.makedirs(os.path.join(out, "debug"), exist_ok=True)
 
-    # ---- shots only: one pass over the viewer, cut at the gaps -------------
-    # No scan is asked for at all. The browser opens the scroll viewer once,
-    # loads the whole column and clips every page block at the gap between it
-    # and the next: each page arrives at exactly its own size, and no page can
-    # be cut or cropped differently from any other. The words still come from
-    # the document, underneath, so the book stays searchable.
+    # ---- which load is this document? --------------------------------------
+    # One request answers it: does the second page come back as words? A
+    # converted document — a docx, a pdf of text — has no image to fetch for any
+    # of its pages, so its pages are photographed: the viewer's own look, with
+    # the words kept underneath. A document of page scans is the other load: its
+    # scans come straight from Scribd, twelve at a time, and no browser is opened
+    # for them at all. Sending a scan document down the screenshot load is what
+    # made a 38-page book take ten minutes, and a scanned exam paper come out
+    # with nothing in it: the viewer has no page blocks to cut, and the scans
+    # that would have built the book were never asked for.
+    text_only = ctx.is_text_document()
+    shot_load = text_only or SHOTS_ONLY
+    scans_on = SCANS_OK or (not text_only and not SHOTS_ONLY)
+    JOB.say(("route: a converted document — no image exists for its pages, so "
+             "the SCREENSHOT load runs: every page is photographed at standard "
+             "quality and its words stay underneath, searchable") if text_only
+            else ("route: a document of page scans — the SCAN load runs: the "
+                  "scans are fetched from Scribd directly and no browser is "
+                  "opened for them; only a page no scan reached is photographed")
+            + ("" if scans_on else " (scans forced off: SCRIBD_SHOTS_ONLY=1)"))
+    # ---- the screenshot load: one pass over the viewer, cut at the gaps ----
+    # The browser opens the scroll viewer once, measures the column of page
+    # blocks a window at a time and clips each page while it is in the window:
+    # every page arrives at exactly its own size, and no page can be cut or
+    # cropped differently from any other. Whatever that pass could not cut is
+    # photographed one page at a time behind it — a hole costs that page's own
+    # photograph, never the book. The words still come from the document,
+    # underneath, so the book stays searchable.
     collected: dict[int, dict] = {}
     failed: list[int] = []
     text_pages: dict[int, str] = {}
     texts: dict[int, str] = {}        # the invisible text layer of a scan page
     book_pages: dict[int, dict] = {}
     book_shot: list[int] = []
-    if not ctx.skip_now:
+    if not ctx.skip_now and shot_load:
         shooter = ensure_shooter(shooter)
         if shooter.alive():
             JOB.say(f"photographing the whole viewer in one pass "
-                    f"({shooter.base}) — every page clipped at the gap between "
-                    f"it and the next; scanning is off, the browser is the "
-                    f"source of every page")
-            book_pages, book_note = shooter.shoot_book(ctx.ident, shooter.scale)
+                    f"({shooter.base}) — {with_limit} page(s) measured in the "
+                    f"column and clipped at the gap between one and the next, "
+                    f"at {shooter.scale:g}x")
+            book_pages, book_note = shooter.shoot_book(ctx.ident, shooter.scale,
+                                                       pages=with_limit)
             if book_pages:
                 JOB.say(book_note)
             else:
@@ -4762,8 +4792,9 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         else:
             JOB.say("no browser is reachable"
                     + (f" at {shooter.base}" if shooter.base else "")
-                    + f": {shooter.note} — the words ladder runs instead; "
-                    f"scanning is off (SCRIBD_SCANS=1 brings it back)")
+                    + f": {shooter.note} — the words ladder runs instead"
+                    + ("" if scans_on else ", and scans are forced off "
+                                          "(SCRIBD_SCANS=1 brings them back)"))
     if book_pages:
         collected.update(book_pages)
         book_shot = sorted(book_pages)
@@ -4826,10 +4857,9 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         text_pages: dict[int, str] = {}
         texts: dict[int, str] = {}        # the invisible text layer of a scan page
         done = 0
-        text_only = ctx.is_text_document()
         if text_only:
-            JOB.say("this document is text, not page scans — reading the pages the "
-                    "viewer renders (that is what a browser shows you)")
+            JOB.say("reading the pages the viewer renders — that is what a "
+                    "browser shows you, and what this document is made of")
             # ONE request first: the viewer's scroll page carries every page's
             # words. Only what it does not have is asked for page by page.
             viewer = ctx.viewer_pages()
@@ -4891,7 +4921,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                     if number in text_pages and number not in locked
                     and ctx.sources.images_for(number)]
             fetched: list[tuple[int, dict, str]] = []
-            for number in (both[:MAX_COVER_SCANS] if SCANS_OK else []):
+            for number in (both[:MAX_COVER_SCANS] if scans_on else []):
                 if not JOB.alive(ctx.gen) or ctx.skip_now:
                     break
                 _n, built, _m = ctx.grab(number)
@@ -4917,7 +4947,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                             f"its words are drawn instead")
                     continue
                 collected[number] = built
-            if both and SCANS_OK:
+            if both and scans_on:
                 kept_cover = [n for n, _built, _sha in fetched if n in collected]
                 JOB.say(f"pictures: {len(kept_cover)} of {len(both[:MAX_COVER_SCANS])} "
                         f"page(s) that name a scan are shown as that scan")
@@ -4934,7 +4964,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             need_scan = ([number for number in silent
                           if ctx.sources.images_for(number)
                           or ctx.sources.jsonps_for(number)]
-                         if SCANS_OK else [])
+                         if scans_on else [])
             if need_scan:
                 JOB.say(f"scan fallback: {len(need_scan)} page(s) have no words but "
                         f"do name a picture ({', '.join(str(n) for n in need_scan[:8])}"
@@ -4971,7 +5001,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             # not one scan request when the document is text: the old code queued
             # every page here and then threw the queue away, which is what made a
             # text document ask for 38 images that never existed
-            futures = ([] if (text_only or not SCANS_OK) else
+            futures = ([] if (text_only or not scans_on) else
                        [pool.submit(ctx.grab, number)
                         for number in range(1, with_limit + 1)
                         if number not in locked])
@@ -5017,78 +5047,14 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                         f"queue moved on without them: they will be left out of "
                         f"the PDF and named, never greyed")
 
-    # ---- retries, on a budget -------------------------------------------
-    # A page Scribd refuses is refused for a reason (not this account, or the
-    # address is throttled). Retrying is worth a minute; it is not worth ten.
-    # Everything already fetched is kept, the missing pages are photographed or
-    # left out of the PDF and named, and the PDF still lands.
-    recovered_last = -1
-    retry_started = time.time()
-    budget = RETRY_BUDGET
+    # ---- no retries --------------------------------------------------------
+    # A page Scribd refused is refused for a reason, and the very same request
+    # again has never once brought one back — it only spends the reader's minutes
+    # and holds every document in the queue behind it. Everything already fetched
+    # is kept, a locked page is a failed page (photographed if a browser is on
+    # hand, left out and named if not), and the book is built now.
     if locked:
-        # a locked page is a failed page: photographed if a browser is on hand,
-        # left out and named if not, never counted as something we dropped
         failed = sorted(set(failed) | locked)
-    if failed and shooter.alive() and not ctx.skip_now:
-        budget = min(RETRY_BUDGET, SHOT_RETRY_BUDGET)
-        JOB.say(f"a browser can photograph what is left ({shooter.base}) — "
-                f"resting {budget:.0f}s for real scans instead of "
-                f"{RETRY_BUDGET:.0f}s")
-    rounds = ((1, 2.0), (2, 8.0), (3, 20.0))
-    waiting = JOB.waiting()
-    if (waiting > 0 and failed and not ctx.skip_now
-            and QUEUE_DROP_AFTER > 0):
-        # three rounds of resting to recover a page that has already been
-        # refused three ways is thirty seconds of every other book's evening.
-        # With a queue behind this one, the retry is one quick round.
-        rounds = ((1, 2.0),)
-        JOB.say(f"the queue has {waiting} document(s) waiting — one quick "
-                f"retry for {len(failed)} missing page(s) instead of three "
-                f"rounds of resting")
-    for round_number, pause in rounds:
-        if not failed:
-            break
-        if not JOB.alive(ctx.gen) or ctx.skip_now:
-            break
-        if text_only:
-            # a text document has no scan queue to recover: its pages are words
-            # the viewer already answered for. Retrying images that do not
-            # exist would only cost the reader another two minutes.
-            break
-        if round_number > 1 and recovered_last == 0:
-            JOB.say(f"retry {round_number - 1} recovered nothing — not resting again")
-            break
-        # the budget is measured in real seconds, not in sleeps: the rests the
-        # breaker takes are part of what the document waits for
-        spent = time.time() - retry_started
-        if spent + pause > budget:
-            JOB.say(f"retry budget spent ({spent:.0f}s of {budget:.0f}s) — "
-                    + (f"{len(failed)} page(s) go to the browser"
-                       if budget < RETRY_BUDGET else
-                       f"leaving {len(failed)} page(s) out of the PDF rather "
-                       f"than greying them"))
-            break
-        JOB.say(f"retry {round_number}: {len(failed)} page(s), resting {pause:.0f}s")
-        time.sleep(pause)
-        # a retry with the same names and the same token is the same request
-        ctx.reload_names()
-        ctx.dead.clear()
-        still: list[int] = []
-        for number in sorted(failed):
-            if not JOB.alive(ctx.gen):
-                still.append(number)
-                continue
-            _n, built, _message = ctx.grab(number, force=True, wide=True)
-            if built:
-                collected[number] = built
-                JOB.say(f"page {number}: recovered on retry {round_number}")
-            else:
-                still.append(number)
-        recovered = len(failed) - len(still)
-        recovered_last = recovered
-        JOB.say(f"retry {round_number}: {recovered} recovered, {len(still)} still missing")
-        failed = still
-        JOB.set_progress(ok=len(collected), skipped=len(failed))
 
     # ---- a refused page may still have words: use them --------------------
     # This is the case that made a 38-page document come out blank. Most of its
@@ -5357,8 +5323,9 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                    "read — see downloads/debug/"
                    + ("" if ctx.token.get() else
                       " · no browser answered and the document named no words: "
-                      "start the /shot service, or bring the scan ladder back "
-                      "with SCRIBD_SCANS=1"))
+                      "a document of page scans is fetched without a browser, "
+                      "so this one is a converted document with nothing to "
+                      "photograph it — start the /shot service"))
         waited, aged = JOB.waiting(), ctx.age()
         with JOB.lock:
             if ctx.skip_now:
@@ -6807,12 +6774,15 @@ def selftest() -> str:
     # the command line still begins its own job
     job3 = Job()
     assert job3.begin() == 1 and job3.state == "running"
-    # a document may spend at most RETRY_BUDGET seconds being retried, and
-    # only REST_BUDGET of it resting
-    assert 0 < RETRY_BUDGET <= 300, RETRY_BUDGET
-    assert 0 < REST_BUDGET <= RETRY_BUDGET, REST_BUDGET
-    assert 0 < SHOT_RETRY_BUDGET <= RETRY_BUDGET, SHOT_RETRY_BUDGET
+    # missing pages are never retried: the budgets that paid for retry rounds
+    # are gone with them, and the only rests left are the breaker's
+    assert "RETRY_BUDGET" not in globals(), "a retry budget came back"
+    assert "SHOT_RETRY_BUDGET" not in globals(), "a retry budget came back"
+    assert 0 < REST_BUDGET <= 300, REST_BUDGET
     assert 0 < SHOT_REST_BUDGET <= REST_BUDGET, SHOT_REST_BUDGET
+    # standard quality, and enough tabs to keep a browser busy
+    assert SHOT_SCALE == float(os.environ.get("SCRIBD_SHOT_SCALE") or 1), SHOT_SCALE
+    assert MAX_SHOT_JOBS >= 6, MAX_SHOT_JOBS
     # a document with a browser waiting rests less, and says so in its own voice
     quick = Ctx("https://www.scribd.com/document/7/x")
     assert quick.rest_budget == REST_BUDGET, quick.rest_budget
@@ -7564,7 +7534,10 @@ def selftest() -> str:
     service = ThreadingHTTPServer(("127.0.0.1", 0), ShotHandler)
     threading.Thread(target=service.serve_forever, daemon=True).start()
     try:
-        shooter = Shooter(f"http://127.0.0.1:{service.server_address[1]}")
+        # pinned at 2x on purpose: what is under test is the rule that a shot's
+        # pixels are the page at the scale it was taken, whatever the default is
+        shooter = Shooter(f"http://127.0.0.1:{service.server_address[1]}",
+                          scale=2.0)
         assert shooter.alive() is True and shooter.note == "", shooter.note
         page, note = shooter.shoot("7", 1)
         assert page and page["shot"] and page["phase"] == "shot", note
@@ -7573,6 +7546,13 @@ def selftest() -> str:
         assert "photographed" in page["label"] and "2x" in page["label"], page
         assert page["bytes"] == len(inked) and not looks_blank_scan(page), page
         assert page["url"].startswith("browser http://127.0.0.1:"), page
+        # and the default is standard quality: the page at the size the viewer
+        # draws it, not twice the pixels for a sheet placed at the same size
+        standard = Shooter(shooter.base)
+        one, _note = standard.shoot("7", 1)
+        assert one and (one["width"], one["height"]) == (
+            round(200 / standard.scale), round(283 / standard.scale)), one
+        assert ("2x" in one["label"]) == (standard.scale != 1), one["label"]
         refused, note = shooter.shoot("7", 4)
         assert refused is None and "refused" in note, note
         # the reason arrives as json: the note is the service's own words
