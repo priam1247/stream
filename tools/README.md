@@ -267,6 +267,45 @@ no quality loss. JPEG is embedded as-is; PNG goes in as its own filtered stream.
 If the pages genuinely differ (a portrait book with landscape spreads), that is
 reported and every sheet keeps its own size instead of being squashed.
 
+## Where a page's words are looked for (v2.18)
+
+A page is only ever called blank after **every** source of its words has been
+asked. In order, and stopping at the first that has them:
+
+| # | source | cost |
+|---|---|---|
+| 1 | `downloads/cache/<id>/<page>.text`, from an earlier run | free |
+| 2 | the page's own descriptor (`…/pages/<n>-<hash>.jsonp`), by the names the document printed **and** the address built from a name it did print | 1–6 requests, and they may all be `403` |
+| 3 | **the viewer's own scroll page** — `…/embeds/<id>/content?start_page=1&view_mode=scroll`, the page a browser reads, one answer for the whole book | 1 request (a few more if the viewer hands out windows) |
+| 4 | otherwise a labelled placeholder, and the reason written down per page | free |
+
+Step 3 is what v2.18 adds: for a converted document the descriptor is often not
+served at all, and the viewer's page is the only place the words exist. The
+viewer's chrome — `Download to read ad-free`, `Share this document`, the page
+number, the cookie notice — is stripped by name, so it is never drawn onto a
+sheet as if it were the book.
+
+`--probe N` now answers "why is this page blank" in one line:
+
+```
+probe: viewer page: 38 page(s) of words · 37 kB · 76 page mark(s) · 38 text block(s) · 25680 chars of text · pages it prints: 1, 2, 3 …
+probe: viewer words for page 4: 605 chars
+        KUSANTHULA BUKU LA NTHONDO — page 4 …
+```
+
+If it instead says `no page blocks in the viewer page`, the viewer is a
+JavaScript shell and nothing can be read from it: the panel then saves the page
+as `downloads/debug/viewer-<id>.html`, which holds no cookie and can be sent
+as-is — the parser is then written against what Scribd really sends instead of
+a guess.
+
+**Waiting is bounded too (v2.18).** A document may spend at most
+`SCRIBD_REST_BUDGET` seconds resting in total (`60` by default); after that the
+403s are reported instead of rested on. A document where not one page has ever
+arrived stops resting after two turns of the ladder. That took a fully refused
+6-page document from **2 m 50 s to under a minute**, with the same honest
+report at the end.
+
 ## A document that is text, not scans
 
 Half of Scribd is not photographed pages. An uploaded Word file, a typed book,
@@ -349,12 +388,24 @@ A **converted document** (text pages, no scans) has its own switches, because
 that is the shape that used to produce grey sheets:
 
 ```
-MOCK_PAGES=38 MOCK_TEXT_DOC=1 python3 tools/_mock_scribd.py 8912   # page 1 scan, 37 text pages
-MOCK_PAGES=38 MOCK_TEXT_DOC=2 python3 tools/_mock_scribd.py 8913   # only page 1 is named at all
-MOCK_PAGES=5 MOCK_TEXT_DOC=3 python3 tools/_mock_scribd.py 8914    # every page names both words and an image
+# page 1 is a scan, the other 37 pages are text
+MOCK_PAGES=38 MOCK_TEXT_DOC=1 python3 tools/_mock_scribd.py 8912
+# only page 1 is named at all, and no descriptor is served either:
+# the viewer's page is the only place the words exist — the real broken shape
+MOCK_PAGES=38 MOCK_TEXT_DOC=2 MOCK_NO_DESCRIPTORS=1 \
+    MOCK_VIEWER_WINDOW=10 python3 tools/_mock_scribd.py 8913
+# every page names both usable words and an image (the blank-image case)
+MOCK_PAGES=5 MOCK_TEXT_DOC=3 python3 tools/_mock_scribd.py 8914
+# a viewer that is a JavaScript shell: nothing may be invented
+MOCK_PAGES=6 MOCK_TEXT_DOC=1 MOCK_NO_DESCRIPTORS=1 \
+    MOCK_VIEWER_EMPTY=1 python3 tools/_mock_scribd.py 8915
 python3 tools/scribd_download.py --base http://127.0.0.1:8912 --out /tmp/t1 \
     --url https://www.scribd.com/document/681599722/NTHONDO
 ```
+
+`MOCK_VIEWER_WINDOW` hands out N pages per answer (the real viewer does this on
+a long document) and `MOCK_VIEWER_EMPTY=1` makes the viewer page carry no text at
+all, so the honest-failure path is tested too.
 
 Expect `38 sheet(s) … 37 page(s) from the document's text · 38 of 38 page(s)
 real`, `--verify` clean, and no request for the 37 images that do not exist. With
@@ -366,8 +417,9 @@ header traps, previews and cut transfers, PDF verification, the text layer (incl
 and non-Latin characters), text pages for a document that has no scans, word
 wrapping, descriptor addresses built from the one name a page prints, cookie
 filtering, token parsing, pasted links, the
-bookmarklet, the throttle breaker, and the search-answer parser (a refusal is
-never reported as "no results").
+bookmarklet, the throttle breaker, the resting budget, the viewer page parser
+(page marks, bare text blocks, chrome removal, a script full of markup), and the
+search-answer parser (a refusal is never reported as "no results").
 
 ---
 
@@ -504,10 +556,13 @@ history: on a 10 GB plan lower `SCRIBD_KEEP_FILES` to about 20.
 
 ## Limits, stated plainly
 
+- **The words are looked for in three places before a page is called blank
+  (v2.18)**: its descriptor, the address built from a name the document did
+  print, and the viewer's own scroll page. Only then a placeholder.
 - **Readable native text takes priority over a named scan (v2.18).** Scribd can
-  expose both page words and an empty/black image URL. The PDF now draws the real
-  text instead, and only falls back to a scan when a page has no usable words.
-  On scan-only documents, pages with words still rescue otherwise missing scans.
+  expose both page words and an empty/black image URL; the PDF draws the words
+  instead and only falls back to a scan where a page has none. On scan-only
+  documents the same lookups rescue pages whose scans are refused.
 - **Nothing that arrives is thrown away any more (v2.16).** A small scan, a
   thumbnail, a double-page spread, a page whose shape is nothing like a book page
   — all of it goes into the PDF and is scaled to the sheet. Only a picture under

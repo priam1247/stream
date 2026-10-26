@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.17
+"""scribd_download.py — ONE file, standard library only.  Version 2.18
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -205,14 +205,18 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 OUT = "downloads"
 DOC_MARKERS = (b"docManager", b"page_count", b"document_detail", b"outer_page")
 CHALLENGE = (b"just a moment", b"cf-chl", b"attention required")
+# Scribd writes an asset name with a scheme, without one (`//html.scribdassets…`)
+# and inside JSON (`https:\/\/…`). It is the same name in all three shapes, so
+# the patterns accept all three and Names normalises them on the way in.
+URL_HEAD = r"(?:https?:)?//"
 IMAGE_RE = re.compile(
-    r"https?://[^\s\"'\\<>]+/images/(\d+)-[0-9A-Za-z]+\.(?:jpe?g|png|webp)"
+    URL_HEAD + r"[^\s\"'\\<>]+/images/(\d+)-[0-9A-Za-z]+\.(?:jpe?g|png|webp)"
     r"(?:\?[^\s\"'\\<>]*)?", re.IGNORECASE)
 JSONP_RE = re.compile(
-    r"https?://[^\s\"'\\<>]+/pages/(\d+)-[0-9A-Za-z]+\.jsonp"
+    URL_HEAD + r"[^\s\"'\\<>]+/pages/(\d+)-[0-9A-Za-z]+\.jsonp"
     r"(?:\?[^\s\"'\\<>]*)?", re.IGNORECASE)
 ASSET_RE = re.compile(
-    r"https?://[^\s\"'\\<>()]+?/(?:images|pages)/\d+-[0-9A-Za-z]+"
+    URL_HEAD + r"[^\s\"'\\<>()]+?/(?:images|pages)/\d+-[0-9A-Za-z]+"
     r"\.(?:jpe?g|png|webp|jsonp|json)(?:\?[^\s\"'\\<>()]*)?", re.IGNORECASE)
 SCAN_RE = re.compile(r"\.(?:jpe?g|png|webp)(?:\?|$)", re.IGNORECASE)
 TOKEN_RE = re.compile(r"[?&]token=([A-Za-z0-9._\-%]+)", re.IGNORECASE)
@@ -230,6 +234,8 @@ TOKEN_SHAPES = (
     re.compile(r"(?<![A-Za-z0-9_\-])(eyJ[A-Za-z0-9_\-]*\."
                r"[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)"),
 )
+VIEWER_WINDOWS = 6          # how many windows of the viewer page to walk
+NO_HOPE_RESTS = 2           # rests before "nothing has ever arrived" is final
 RETRY_STATUS = (408, 425, 429, 500, 502, 503, 504)
 HARD_THROTTLE = (429, 503)
 # A 403 has two meanings and they need opposite answers: "this page is not for
@@ -244,6 +250,10 @@ PAUSE_LADDER = (4.0, 12.0, 30.0)
 # whatever arrived. A page Scribd will not serve is not worth ten minutes of a
 # 100-page book: the placeholders are labelled, the PDF still lands.
 RETRY_BUDGET = float(os.environ.get("SCRIBD_RETRY_BUDGET", "75"))
+# Resting is part of that budget and has its own cap, so a document whose pages
+# are simply not served cannot spend minutes of the reader's time being polite
+# to a refusal that never clears.
+REST_BUDGET = float(os.environ.get("SCRIBD_REST_BUDGET", "60"))
 OTHER_HOSTS = ("html.scribd.com", "html2-f.scribdassets.com",
                "html3-f.scribdassets.com", "html4-f.scribdassets.com")
 # This panel is reachable from the internet, so it can be given a key. Empty
@@ -353,6 +363,24 @@ def rebase(url: str) -> str:
     return urllib.parse.urlunsplit(
         (urllib.parse.urlsplit(BASE).scheme, urllib.parse.urlsplit(BASE).netloc,
          parsed.path, parsed.query, ""))
+
+def full_url(url: str) -> str:
+    """A name always begins with https://, however the page wrote it.
+
+    Scribd writes the same asset as `https://html…`, `//html…` and
+    `https:\\/\\/html…`; the last is already `text_of()`'s job. The first two
+    are normalised here so a name seen in one shape matches the same name seen
+    in another, and so `fetch()` never has to guess a scheme.
+    """
+    url = (url or "").strip().strip("\"'")
+    if not url:
+        return ""
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith(("http://", "https://")):
+        return url
+    return ""
+
 
 def _connection(scheme: str, netloc: str, timeout: float):
     pool = getattr(_POOL, "pool", None)
@@ -2229,6 +2257,9 @@ class Sources:
 
     @staticmethod
     def _add(table: dict[int, list[str]], number: int, url: str) -> bool:
+        url = full_url(url)
+        if not url:
+            return False
         bucket = table.setdefault(number, [])
         if url in bucket:
             return False
@@ -2326,6 +2357,126 @@ def text_from_jsonp(body: bytes) -> str:
     return html_to_text("".join(part for part in parts if isinstance(part, str)))
 
 
+# ---------------------------------------------------------------------------
+# the embed viewer's own pages — where the words are when no descriptor is
+# ---------------------------------------------------------------------------
+# This is the piece v2.17 did not have. A converted document (a Word file, a
+# typed book) has no scan for most of its pages, and its `.jsonp` descriptor is
+# sometimes not served either: the only place the words exist is the page a
+# browser reads, `/embeds/<id>/content?start_page=1&view_mode=scroll`, where
+# every page is an HTML block with its text already in it.
+# A browser reads that page anonymously for public documents, which is why the
+# document looks complete on Scribd and used to come out blank here.
+PAGE_ANCHOR_RE = re.compile(
+    r'id="(?:outer_)?page[-_]?(\d+)"'
+    r'|data-page-number="(\d+)"'
+    r'|data-page="(\d+)"'
+    r'|id="page-(\d+)"', re.IGNORECASE)
+SCRIPT_BLOCK_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>",
+                             re.IGNORECASE | re.DOTALL)
+# The viewer wraps every page in furniture: an ad, "Share this document", the
+# cookie notice, the sign-up banner. Those lines are not the book and must not
+# be drawn onto a sheet as if they were.
+BOILERPLATE = (
+    "download to read ad-free", "opens in a new window", "opening in a new window",
+    "opens an external website", "you are on page", "share this document",
+    "copy link", "share on facebook", "share on linkedin", "share with email",
+    "sign in", "sign up", "log in", "free trial", "privacy policy",
+    "your privacy choices", "close this consent banner", "skip to main content",
+    "open navigation menu", "close suggestions", "change language",
+    "found this document useful", "uploaded by", "millions of documents",
+    "ad-free", "scribd.com/oauth", "follow this publisher", "related documents",
+    "report this document", "about scribd", "cookie", "advertisement",
+)
+BOILERPLATE_JUNK = {"ad", "ads", "advert", "scribd", "download", "menu",
+                    "search", "searchsearch", "share", "save", "print"}
+
+
+def is_boilerplate(line: str) -> bool:
+    """Is this line the viewer's furniture rather than the document?"""
+    plain = line.strip().lower()
+    if not plain:
+        return False
+    if plain in BOILERPLATE_JUNK:
+        return True
+    if plain.isdigit() and len(plain) <= 4:      # a page number in the chrome
+        return True
+    return any(marker in plain for marker in BOILERPLATE)
+
+
+def tidy_page_text(words: str) -> str:
+    """One page's words with the viewer chrome taken out, lines kept."""
+    out: list[str] = []
+    for line in (words or "").split("\n"):
+        line = " ".join(line.split())
+        if line and not is_boilerplate(line):
+            out.append(line)
+    return "\n".join(out)
+
+
+def embed_text_pages(body: bytes) -> dict[int, str]:
+    """Every page's words out of the embed viewer, by page number.
+
+    The viewer marks each page's block with its number (`id="page-3"`,
+    `data-page-number="3"`, …). Slicing the page at those marks is what keeps
+    page 34's words on sheet 34 instead of dumping all 38 pages onto one.
+    """
+    text = SCRIPT_BLOCK_RE.sub(" ", text_of(body))
+    marks: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    for match in PAGE_ANCHOR_RE.finditer(text):
+        digits = next((group for group in match.groups() if group), "")
+        if not digits.isdigit():
+            continue
+        number = int(digits)
+        if number in seen or number == 0:
+            continue
+        seen.add(number)
+        marks.append((match.start(), number))
+    if not marks:
+        # some viewers print no page number at all, only a text block per page
+        blocks = [m.start() for m in re.finditer(r'class="[^"]*text_layer',
+                                                 text, re.IGNORECASE)]
+        if len(blocks) >= 3:
+            marks = [(position, index + 1)
+                     for index, position in enumerate(blocks)]
+        else:
+            return {}
+    marks.sort()
+
+    def tag_start(position: int) -> int:
+        """Where the tag around this mark begins, so no half tag leaks in.
+
+        A mark is an attribute inside `<div id="page-3" …>`. Cutting at the mark
+        itself leaves `id="page-3" class="outer_page"` behind, and the tag
+        stripper cannot remove a fragment that has no `<` in front of it.
+        """
+        opened = text.rfind("<", 0, position)
+        return opened if opened >= 0 else position
+
+    pages: dict[int, str] = {}
+    for index, (start, number) in enumerate(marks):
+        end = tag_start(marks[index + 1][0]) if index + 1 < len(marks) else len(text)
+        words = tidy_page_text(html_to_text(text[tag_start(start):end]))
+        if words.strip():
+            pages[number] = words
+    return pages
+
+
+def viewer_fingerprint(body: bytes) -> str:
+    """What the viewer page actually is, in one line — for `--probe`.
+
+    When a page comes out blank, this is the line that says why: a JS-only
+    shell (no text at all), text with no page numbers, or the normal case.
+    """
+    text = SCRIPT_BLOCK_RE.sub(" ", text_of(body))
+    marks = len(PAGE_ANCHOR_RE.findall(text))
+    layers = len(re.findall(r'class="[^"]*text_layer', text, re.IGNORECASE))
+    words = len(html_to_text(text))
+    return (f"{len(body) / 1000:.0f} kB · {marks} page mark(s) · "
+            f"{layers} text block(s) · {words} chars of text")
+
+
 def page_count(body: bytes, sources: Sources) -> int:
     text = text_of(body)
     for pattern in (r'"page_count"\s*:\s*(\d+)', r'"totalPages"\s*:\s*(\d+)',
@@ -2354,9 +2505,17 @@ class Ctx:
         self.notes_lock = threading.Lock()
         self.trace: dict[int, list[str]] = {}
         self.tried: dict[int, set[str]] = {}
+        # the viewer's own pages, kept once: they are the words of the whole
+        # document in one answer, and every later lookup reads them from here
+        self.embed_body = b""
+        self.embed_texts: dict[int, str] = {}
+        self.embed_state = ""        # "", "N page(s) of words", or why not
+        self.embed_walked = False    # the windows were walked once, not again
+        self.embed_lock = threading.Lock()
         self.rejected: dict[str, int] = {}
         self.trace_lock = threading.Lock()
         self.cache_dir = ""
+        self.debug_dir = ""
         self.refresh = False
         self.gen = 0                 # 0 = a job that was not started from the panel
         self.total = 0
@@ -2365,6 +2524,9 @@ class Ctx:
         # the throttle breaker, shared by every worker thread
         self.refuse_lock = threading.Lock()
         self.refused_pages: set[int] = set()
+        self.arrived = 0             # pages that actually came back, ever
+        self.rested = 0.0            # seconds this document has spent resting
+        self.said_no_hope = False
         self.rest_until = 0.0
         self.rests = 0
         self.reliefs = 0
@@ -2393,7 +2555,28 @@ class Ctx:
             self.refused_pages.add(number)
             if len(self.refused_pages) < REFUSALS_IN_A_ROW:
                 return False
+            if self.arrived == 0 and self.rests >= NO_HOPE_RESTS:
+                # Two rests and not one page has ever arrived in this document.
+                # That is not a throttle — a throttle stops a job that was
+                # working — and resting again only makes the reader wait for
+                # the same refusal. Say it once and let the pages fail.
+                if not self.said_no_hope:
+                    self.said_no_hope = True
+                    JOB.say("nothing in this document has arrived and resting "
+                            "has not changed that — treating these 403s as "
+                            "'not this account', not as throttling")
+                return False
             pause = PAUSE_LADDER[min(self.rests, len(PAUSE_LADDER) - 1)]
+            if self.rested + pause > REST_BUDGET:
+                # the whole document has already spent its resting budget on
+                # refusals that did not clear: more waiting is just more waiting
+                if not self.said_no_hope:
+                    self.said_no_hope = True
+                    JOB.say(f"rested {self.rested:.0f}s of {REST_BUDGET:.0f}s "
+                            f"already and the refusals did not clear — not "
+                            f"resting again, the missing pages will be reported")
+                return False
+            self.rested += pause
             self.rests += 1
             self.rest_until = time.time() + pause
             self.refused_pages.clear()     # after a rest they get a fair second look
@@ -2412,6 +2595,7 @@ class Ctx:
         """
         with self.refuse_lock:
             self.refused_pages.clear()
+            self.arrived += 1
             self.reliefs += 1
             if self.rests and self.reliefs >= 8 and time.time() >= self.rest_until:
                 self.rests = max(0, self.rests - 1)
@@ -2509,6 +2693,7 @@ class Ctx:
                     f"{len(embed['body']) / 1000:.0f} kB, {describe(embed['body'])}")
 
         combined = embed["body"] + doc["body"]
+        self.embed_body = embed["body"]
         self.sources.merge(combined)
         found = harvest_token(combined, where="document or viewer page")
         self.token.set(found)
@@ -2631,22 +2816,115 @@ class Ctx:
         found += self.primaries_for(number)
         return list(dict.fromkeys(found))
 
-    def page_text(self, number: int) -> str:
-        """This page's words, from the descriptor, cached beside the scan.
+    def viewer_pages(self) -> dict[int, str]:
+        """Every page's words from the viewer's own scroll page.
 
-        Costs one extra request per page, which is why it is opt-in: the words
-        are what make the finished PDF searchable and selectable instead of a
-        stack of photographs.
+        This is what a browser reads. For a converted document it is the only
+        place the words exist — no descriptor, no scan — and it is normally one
+        request for the whole book. A viewer that hands out its pages in
+        windows is walked (`?start_page=<next>`), but only a few times: past
+        that, the honest answer is "the viewer did not give it", not silence.
         """
-        if not self.cache_dir:
+        with self.embed_lock:
+            if self.embed_walked:
+                return dict(self.embed_texts)
+            self.embed_walked = True
+            pages: dict[int, str] = {}
+            start_page = 1
+            windows = 0
+            while windows < VIEWER_WINDOWS:
+                if windows == 0 and self.embed_body:
+                    body = self.embed_body
+                else:
+                    url = (f"{self.embed_url}?start_page={start_page}"
+                           f"&view_mode=scroll")
+                    got = fetch(url, self.jar, referer=self.document_url,
+                                timeout=30)
+                    if got["error"] or got["status"] != 200 or not got["body"]:
+                        self.note("viewer page: start_page=%d -> %s"
+                                  % (start_page, (got["error"]
+                                                  or http_reason(got))[:90]))
+                        break
+                    body = got["body"]
+                    if not self.embed_body:
+                        self.embed_body = body
+                self.sources.merge(body)          # its names are names too
+                fresh_token = harvest_token(body)
+                if fresh_token:
+                    self.token.set(fresh_token)
+                found = embed_text_pages(body)
+                windows += 1
+                new_pages = {number: words for number, words in found.items()
+                             if number not in pages}
+                pages.update(new_pages)
+                if not found or not new_pages:
+                    break                    # the same window again: stop
+                if self.total and len(pages) >= self.total:
+                    break
+                start_page = max(found) + 1
+            self.embed_texts = pages
+            if pages:
+                self.embed_state = f"{len(pages)} page(s) of words"
+            else:
+                self.embed_state = "no page blocks in the viewer page"
+                self.note("viewer page: " + self.embed_state)
+                self.save_viewer_page()
+            return dict(pages)
+
+    def save_viewer_page(self) -> str:
+        """Keep the raw viewer page when it gave no words.
+
+        Guessing at markup that was never seen is what turned this into three
+        rounds of "not working". The page is public content and holds no
+        cookie, so the file can be sent as-is and the parser written against
+        what is really there.
+        """
+        if not self.debug_dir or not self.embed_body:
             return ""
-        cached = os.path.join(self.cache_dir, f"{number:04d}.text")
-        if os.path.isfile(cached):
-            try:
-                with open(cached, encoding="utf-8", errors="replace") as handle:
-                    return handle.read()
-            except OSError:
-                pass
+        target = os.path.join(self.debug_dir, f"viewer-{self.ident}.html")
+        try:
+            os.makedirs(self.debug_dir, exist_ok=True)
+            with open(target, "wb") as handle:
+                handle.write(self.embed_body[:2_000_000])
+        except OSError:
+            return ""
+        return target
+
+    def page_text(self, number: int) -> str:
+        """This page's words: its descriptor first, then the viewer's page.
+
+        A converted document often serves no descriptor at all; the words still
+        exist, in the page a browser reads (`viewer_pages()`, one request for
+        the whole book). Both are tried before a page is called blank, because
+        that is the difference between a book and 37 empty sheets.
+        """
+        if self.cache_dir:
+            cached = os.path.join(self.cache_dir, f"{number:04d}.text")
+            if os.path.isfile(cached):
+                try:
+                    with open(cached, encoding="utf-8", errors="replace") as handle:
+                        return handle.read()
+                except OSError:
+                    pass
+        words = self.descriptor_text(number)
+        if not words.strip():
+            words = self.viewer_pages().get(number, "")
+        self.remember_text(number, words)
+        return words
+
+    def remember_text(self, number: int, words: str) -> None:
+        """Keep one page's words beside its scan, so a re-run reads no network."""
+        if not self.cache_dir or not (words or "").strip():
+            return
+        try:
+            with open(os.path.join(self.cache_dir, f"{number:04d}.text"),
+                      "w", encoding="utf-8") as handle:
+                handle.write(words)
+        except OSError:
+            pass
+
+    def descriptor_text(self, number: int) -> str:
+        """This page's words out of its own descriptor, if one is served."""
         token = self.token.get()
         names = list(self.sources.jsonps_for(number))
         if not names:                       # scans named, descriptors not
@@ -2656,8 +2934,8 @@ class Ctx:
         # nothing names this page? build its address from a page that is named.
         # This is what a converted document needs: it names one asset, page 1's
         # scan, and its 37 other pages are words behind a name nobody printed.
-        for url in self.sources.asset_patterns()[:4]:
-            borrowed = jsonp_for_page(url, number)
+        for pattern in self.sources.asset_patterns()[:4]:
+            borrowed = jsonp_for_page(pattern, number)
             if borrowed and borrowed not in names:
                 names.append(borrowed)
         names = names[:6]
@@ -2673,12 +2951,7 @@ class Ctx:
                     continue
                 self.answered()
                 words = text_from_jsonp(got["body"])
-                if words:
-                    try:
-                        with open(cached, "w", encoding="utf-8") as handle:
-                            handle.write(words)
-                    except OSError:
-                        pass
+                if words.strip():
                     return words
         return ""
 
@@ -2971,6 +3244,19 @@ def _probe(url: str, number: int) -> None:
         return
     JOB.say(f"probe: page {number} · token "
             + ("found (redacted)" if ctx.token.get() else "NONE FOUND"))
+    # the viewer's own page: is the text of the whole book in it, and which
+    # page numbers does it print? This one line answers "why is my page blank".
+    viewer = ctx.viewer_pages()
+    JOB.say(f"probe: viewer page: {ctx.embed_state or 'not read'}"
+            + (f" · {viewer_fingerprint(ctx.embed_body)}" if ctx.embed_body else "")
+            + (f" · pages it prints: {', '.join(str(n) for n in sorted(viewer)[:12])}"
+               f"{' …' if len(viewer) > 12 else ''}" if viewer else ""))
+    words = (viewer.get(number) or "").strip()
+    if words:
+        JOB.say(f"probe: viewer words for page {number}: {len(words)} chars")
+        JOB.say("        " + redact(words, 300))
+    elif viewer:
+        JOB.say(f"probe: the viewer page has no words for page {number}")
     for name in ctx.sources.images_for(number):
         JOB.say(f"probe: document name  {redact(name, 160)}")
     for jsonp in ctx.sources.jsonps_for(number):
@@ -3030,6 +3316,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     JOB.set_progress(page=0, of=with_limit, ok=0, skipped=0, blank=0)
 
     ctx.cache_dir = os.path.join(out, "cache", ctx.ident)
+    ctx.debug_dir = os.path.join(out, "debug")
     os.makedirs(ctx.cache_dir, exist_ok=True)
     os.makedirs(os.path.join(out, "debug"), exist_ok=True)
 
@@ -3040,12 +3327,33 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     done = 0
     text_only = ctx.is_text_document()
     if text_only:
-        JOB.say("this document is text, not page scans — reading each page's "
-                "words (that is what the viewer shows you)")
-        JOB.say("text: asking for each page's words (one request per page)")
+        JOB.say("this document is text, not page scans — reading the pages the "
+                "viewer renders (that is what a browser shows you)")
+        # ONE request first: the viewer's scroll page carries every page's
+        # words. Only what it does not have is asked for page by page.
+        viewer = ctx.viewer_pages()
+        if viewer:
+            JOB.say(f"viewer: {ctx.embed_state} — its pages are the document, "
+                    f"so they are drawn as pages")
+            for number in range(1, with_limit + 1):
+                words = (viewer.get(number) or "").strip()
+                if words:
+                    text_pages[number] = viewer[number]
+                    ctx.remember_text(number, viewer[number])
+        missing = [number for number in range(1, with_limit + 1)
+                   if number not in text_pages]
+        done = len(text_pages)
+        JOB.set_progress(page=done, ok=len(text_pages), skipped=len(missing))
+        if missing and done:
+            saved = ctx.save_viewer_page()
+            if saved:
+                JOB.say(f"viewer: it carries no page text — the page as received "
+                        f"is saved to {saved} (safe to send: no cookie in it)")
+            JOB.say(f"text: {len(missing)} page(s) are not in the viewer page — "
+                    f"asking their descriptors")
         with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
-            futures = {pool.submit(ctx.page_text, number): number
-                       for number in range(1, with_limit + 1)}
+            futures = {pool.submit(ctx.descriptor_text, number): number
+                       for number in missing}
             for future in as_completed(futures):
                 if not JOB.alive(ctx.gen):
                     for pending in futures:
@@ -3057,25 +3365,29 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                     words = future.result()
                 except Exception:                      # noqa: BLE001
                     words = ""
-                done += 1
                 if words.strip():
                     text_pages[number] = words
-                else:
-                    failed.append(number)
+                done += 1
                 JOB.set_progress(page=done, ok=len(text_pages),
-                                 skipped=len(failed))
+                                 skipped=with_limit - len(text_pages))
                 if done % 10 == 0 or done == with_limit:
                     JOB.say(f"… {done}/{with_limit} pages, "
                             f"{len(text_pages)} with words")
-        # Prefer native page text over a named picture. Scribd sometimes names
-        # a black/empty placeholder image alongside usable text; using that
-        # image made a structurally valid but visually blank PDF. Only fall
-        # back to scans for pages whose text request returned nothing.
-        need_scan = [number for number in range(1, with_limit + 1)
-                     if number not in text_pages]
+        # Text first, then a picture. Scribd sometimes names a black/empty
+        # placeholder image beside usable text, and using that image made a
+        # structurally valid but visually blank page. Only a page with no words
+        # is asked for a scan — and only if it actually names one, because 37
+        # requests for images that do not exist would just be refused 37 times.
+        silent = [number for number in range(1, with_limit + 1)
+                  if number not in text_pages]
+        need_scan = [number for number in silent
+                     if ctx.sources.images_for(number)]
         if need_scan:
-            JOB.say(f"scan fallback: {len(need_scan)} page(s) have no usable text")
-        still_missing: list[int] = []
+            JOB.say(f"scan fallback: {len(need_scan)} page(s) have no words but "
+                    f"do name a picture ({', '.join(str(n) for n in need_scan[:8])}"
+                    f"{' …' if len(need_scan) > 8 else ''})")
+        still_missing: list[int] = [number for number in silent
+                                    if number not in need_scan]
         for number in need_scan:
             if not JOB.alive(ctx.gen):
                 break
@@ -3130,22 +3442,29 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     # Everything already fetched is kept, the missing pages go in as labelled
     # placeholders, and the PDF still lands.
     recovered_last = -1
-    spent = 0.0
+    retry_started = time.time()
     for round_number, pause in ((1, 2.0), (2, 8.0), (3, 20.0)):
         if not failed:
             break
         if not JOB.alive(ctx.gen):
             break
+        if text_only:
+            # a text document has no scan queue to recover: its pages are words
+            # the viewer already answered for. Retrying images that do not
+            # exist would only cost the reader another two minutes.
+            break
         if round_number > 1 and recovered_last == 0:
             JOB.say(f"retry {round_number - 1} recovered nothing — not resting again")
             break
+        # the budget is measured in real seconds, not in sleeps: the rests the
+        # breaker takes are part of what the document waits for
+        spent = time.time() - retry_started
         if spent + pause > RETRY_BUDGET:
             JOB.say(f"retry budget spent ({spent:.0f}s of {RETRY_BUDGET:.0f}s) — "
                     f"building the PDF with {len(failed)} placeholder page(s)")
             break
         JOB.say(f"retry {round_number}: {len(failed)} page(s), resting {pause:.0f}s")
         time.sleep(pause)
-        spent += pause
         # a retry with the same names and the same token is the same request
         ctx.reload_names()
         ctx.dead.clear()
@@ -3195,6 +3514,12 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                     + ("the PDF is complete, no placeholder"
                        if not failed else
                        f"{len(failed)} page(s) still have neither a scan nor words"))
+        if failed and not rescued:
+            # nothing came from the text either: keep what Scribd actually sent
+            saved = ctx.save_viewer_page()
+            if saved:
+                JOB.say(f"viewer page saved to {saved} (no cookie in it) — that "
+                        f"file says what the viewer really sends")
 
     # ---- pictures that arrived, but not as a full scan -------------------
     previews = sorted(number for number, page in collected.items()
@@ -4761,8 +5086,10 @@ def selftest() -> str:
     # the command line still begins its own job
     job3 = Job()
     assert job3.begin() == 1 and job3.state == "running"
-    # a document may spend at most RETRY_BUDGET seconds being retried
+    # a document may spend at most RETRY_BUDGET seconds being retried, and
+    # only REST_BUDGET of it resting
     assert 0 < RETRY_BUDGET <= 300, RETRY_BUDGET
+    assert 0 < REST_BUDGET <= RETRY_BUDGET, REST_BUDGET
 
     # ---- the disk guard: a small plan must not fill up in silence -------
     keep_root = os.path.join(work, "keep")
@@ -4911,6 +5238,7 @@ def selftest() -> str:
     assert ctx.refused(12) is True
     # the ladder is capped, and a run of good answers steps it back down
     ctx.rest_until = 0.0
+    ctx.rested = 0.0                      # a fresh resting budget for this run
     ctx.rests = 99
     ctx.refused(20), ctx.refused(21), ctx.refused(22)
     assert PAUSE_LADDER[-1] - 0.5 <= ctx.rest_until - time.time() <= PAUSE_LADDER[-1] + 0.5
@@ -4918,9 +5246,17 @@ def selftest() -> str:
     for _ in range(8):
         ctx.answered()
     assert ctx.rests == 1, ctx.rests
+    assert len(spoken) == 4, spoken          # one line per rest, not one per 403
+    # resting is bounded: a document cannot spend minutes of the reader's time
+    # waiting for refusals that are not clearing
+    ctx.rest_until, ctx.rested, ctx.said_no_hope = 0.0, REST_BUDGET, False
+    ctx.refused_pages.clear()
+    for page in (30, 31, 32, 33):
+        stopped = ctx.refused(page)
+    assert stopped is False, "the resting budget must stop the ladder"
+    assert any("rested" in line for line in spoken), spoken
     JOB.say = before_say
     assert any("throttling" in line for line in spoken), spoken
-    assert len(spoken) == 4, spoken          # one line per rest, not one per 403
 
     # ---- the text layer: the words, not just the pictures -------------------
     assert html_to_text("<div>One</div><br><div>Two &amp; three</div>") == "One\nTwo & three"
@@ -5044,6 +5380,63 @@ def selftest() -> str:
         assert rows[0]["bytes"] == 12 and rows[0]["when"] > 0
         assert panel_files(os.path.join(shelf, "gone")) == []
 
+    # ---- the viewer's own pages, where a converted document's words live --
+    viewer = (
+        b'<div id="page-1" class="outer_page" data-page-number="1">'
+        b'<div class="text_layer"><p>First page words</p><p>more of page one</p>'
+        b'</div><img src="//html.scribdassets.com/h7/images/1-aa7.jpg">'
+        b'<div class="ad"><a href="https://www.scribd.com/oauth/signup">'
+        b'Download to read ad-free</a></div></div>'
+        b'<div id="page-2" class="outer_page" data-page-number="2">'
+        b'<div class="text_layer"><p>Second page words</p></div>'
+        b'<div class="share">Share this document</div></div>'
+        b'<div id="page-3" class="outer_page" data-page-number="3">'
+        b'<style>.x{}</style><div class="text_layer"><p>Third page words</p>'
+        b'</div></div>')
+    pages = embed_text_pages(viewer)
+    assert sorted(pages) == [1, 2, 3], pages
+    assert pages[1].split("\n") == ["First page words", "more of page one"], pages[1]
+    assert pages[2] == "Second page words", pages[2]
+    assert pages[3] == "Third page words", pages[3]
+    # the chrome of every page is dropped, and no half tag survives
+    for words in pages.values():
+        assert "ad-free" not in words and "Share this" not in words
+        assert "page-" not in words and "outer_page" not in words, words
+        assert "<" not in words and "class=" not in words, words
+    # a viewer that prints no page numbers but one text block per page
+    bare = b"".join(b'<div class="text_layer"><p>Word %d</p></div>' % n
+                    for n in range(1, 6))
+    bare_pages = embed_text_pages(bare)
+    assert sorted(bare_pages) == [1, 2, 3, 4, 5], bare_pages
+    assert bare_pages[4] == "Word 4"
+    # a JS-only shell carries nothing: say so instead of inventing pages
+    assert embed_text_pages(b'<html><div id="viewer"></div>'
+                            b'<script>boot()</script></html>') == {}
+    assert embed_text_pages(b"") == {}
+    # a script full of markup must not be read as the book
+    assert embed_text_pages(b'<script>var h=\'<div class="text_layer">x</div>\''
+                            b'</script>') == {}
+    assert is_boilerplate("Download to read ad-free")
+    assert is_boilerplate("12") and not is_boilerplate("Mutu wa nkhani")
+    assert tidy_page_text("ad\nreal words here\nShare this document") == \
+        "real words here"
+    assert "text block(s)" in viewer_fingerprint(viewer)
+
+    # ---- the same name, however the page wrote it ------------------------
+    assert full_url("//html.scribdassets.com/h/images/1-a.jpg") == \
+        "https://html.scribdassets.com/h/images/1-a.jpg"
+    assert full_url("https://x/y.jpg") == "https://x/y.jpg"
+    assert full_url("/relative/thing") == "" and full_url("") == ""
+    schemeless = Sources()
+    schemeless.merge(b'var p="//html.scribdassets.com/h7/images/2-bb7.jpg";')
+    schemeless.merge(b'var q="https:\\/\\/html.scribdassets.com\\/h7'
+                     b'\\/pages\\/2-bb7.jsonp";')
+    assert schemeless.images_for(2) == [
+        "https://html.scribdassets.com/h7/images/2-bb7.jpg"], schemeless.images_for(2)
+    assert schemeless.jsonps_for(2) == [
+        "https://html.scribdassets.com/h7/pages/2-bb7.jsonp"], schemeless.jsonps_for(2)
+    assert schemeless.count() == 1
+
     # ---- building a descriptor address nothing printed ------------------
     named = (b'var p1="https:\\/\\/html.scribdassets.com\\/h7\\/images'
              b'\\/1-aa7.jpg";')
@@ -5113,7 +5506,7 @@ def selftest() -> str:
             "layer, panel key and CORS, cookies, token, names, pasted links, "
             "bookmarklet, scribd search, relevance, channels, the document "
             "queue, signed links, the disk guard, token shapes, redaction, "
-            "page wiring, text pages, built names")
+            "page wiring, text pages, built names, viewer pages")
 
 def main(argv: list[str]) -> int:
     global BASE

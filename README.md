@@ -173,6 +173,17 @@ Search, then download — that is the whole flow; there is no link box to fill i
   labelled as a placeholder — `PDF PARTIAL`, never a lost book. **Nothing that
   arrives is discarded**: thumbnails, odd-shaped spreads, cut-short transfers and
   tiny scans all go in, scaled to the sheet. Only sub-16 px noise is refused.
+- **A blank page is looked for in three places before it is given up on**
+  (v2.18): the page's own descriptor, the address built from a name the document
+  did print, and **the viewer's own scroll page** — the page a browser reads,
+  which carries the whole book's text in one answer. The viewer's chrome (ads,
+  "Share this document", page numbers) is stripped, so it is never drawn as if it
+  were the book. If even that page is a JavaScript shell, the panel saves it to
+  `downloads/debug/viewer-<id>.html` — no cookie in it — instead of guessing.
+- **Waiting is capped.** A document may rest at most `SCRIBD_REST_BUDGET` (60 s)
+  in total, and stops resting after two turns if not one page has ever arrived:
+  a refused 6-page document went from 2 m 50 s to under a minute with the same
+  report at the end.
 - **A document that is text, not scans, is still a full PDF.** Most Scribd
   uploads are converted documents: the viewer lays out each page's *words* and
   there is no image for them at all. The panel now reads those pages as text and
