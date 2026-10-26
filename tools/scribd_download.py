@@ -211,7 +211,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.26"
+VERSION = "2.27"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -1920,7 +1920,8 @@ def text_body_page(words: str, sheet: tuple[float, float],
     stays a contents page), and the type is sized against the sheet.
 
     Returns (content stream, lines actually drawn). `report`, if given, gets a
-    1 appended when the page had to be cut short to fit the sheet.
+    1 appended when the page's spacing or type had to be squeezed to fit the
+    sheet — squeezed, never cut: every line the document has gets drawn.
     """
     scale = sheet_scale(sheet)
     margin = 46.0 * scale
@@ -1950,21 +1951,39 @@ def text_body_page(words: str, sheet: tuple[float, float],
             size = min(size, usable_w / widest)
         size = max(3.5 * scale, size)
         top = sheet[1] - margin - size
+        entries: list[tuple[float, int, str]] = []
         for line, place in zip(lines, places):
             if not line.strip():
                 continue
             # the row of a contents page is spaced with spaces; keep them
             pieces = ([line] if text_width(line, size) <= usable_w
                       else wrap_to_width(line, usable_w, size))
-            for offset, piece in enumerate(pieces):
-                y = top - place * (usable_h - size) - offset * size * 1.30
-                if y < margin:
-                    if report is not None:
-                        report.append(1)
-                    break
-                body.append(f"/F1 {size:.2f} Tf 1 0 0 1 {margin:.2f} {y:.2f} Tm "
-                            f"({pdf_visible_text(piece)}) Tj")
-                drawn += 1
+            entries += [(place, offset, piece)
+                        for offset, piece in enumerate(pieces)]
+        # Every line the viewer placed gets drawn. A page whose last line sits
+        # below this sheet used to lose it (and everything after it) to a cut;
+        # now the whole column squeezes proportionally instead — the lines keep
+        # their order and their relative places, the page keeps its words.
+        drops = [place * (usable_h - size) + offset * size * 1.30
+                 for place, offset, _ in entries]
+        allowed = usable_h - size
+        deepest = max(drops) if drops else 0.0
+        k = min(1.0, allowed / deepest) if deepest > allowed else 1.0
+        if k < 0.80:
+            # squeeze the type a little before squeezing the spacing hard
+            size = max(3.5 * scale, size * k / 0.80)
+            drops = [place * (usable_h - size) + offset * size * 1.30
+                     for place, offset, _ in entries]
+            deepest = max(drops) if drops else 0.0
+            allowed = usable_h - size
+            k = min(1.0, allowed / deepest) if deepest > allowed else 1.0
+        if k < 1.0 and report is not None:
+            report.append(1)
+        for (_place, _offset, piece), drop in zip(entries, drops):
+            y = top - drop * k
+            body.append(f"/F1 {size:.2f} Tf 1 0 0 1 {margin:.2f} {y:.2f} Tm "
+                        f"({pdf_visible_text(piece)}) Tj")
+            drawn += 1
         body.append("ET")
         return "\n".join(body).encode("cp1252", "replace"), drawn
 
@@ -1982,8 +2001,13 @@ def text_body_page(words: str, sheet: tuple[float, float],
     # what a browser does with plain paragraphs too. The corner-of-the-sheet
     # look was never the spacing — it was the type, sized against the sheet now.
     room = max(1, int(usable_h / leading))
-    if len(flow) > room and report is not None:
-        report.append(1)
+    if len(flow) > room:
+        # tighten the leading until every line fits: the lines are the page,
+        # and dropping the last ones to keep the spacing pretty was the old bug
+        leading = usable_h / len(flow)
+        room = len(flow)
+        if report is not None:
+            report.append(1)
     drawn_lines = flow[:room]
     top = sheet[1] - margin - chosen
     body.append(f"/F1 {chosen:.2f} Tf")
@@ -2162,7 +2186,8 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
                   + (f", {blanks} placeholder" if blanks else "")
                   + (f", {with_text} page(s) with searchable text" if texts
                      and with_text else "")
-                  + (f", {len(short)} page(s) whose text runs past the sheet"
+                  + (f", {len(short)} page(s) squeezed to fit the sheet "
+                   f"(nothing dropped)"
                      if short else ""))
 
 # ---------------------------------------------------------------------------
@@ -6394,6 +6419,24 @@ def selftest() -> str:
     assert flat.split("\n") == ["a", "b", "c"], flat
     # a page with no placement keeps normal line spacing (not one line per
     # sheet, not a single run)
+    # a page whose last viewer lines sit below the sheet keeps every one of
+    # them: the column squeezes, the words stay. Page 38 of a real document
+    # lost its last four lines — signature and contact details — to the old
+    # cut, and page 3 lost the author's name.
+    over = "\n".join(f"{LINE_MARK}{place:.3f}|line number {i}"
+                      for i, place in enumerate((0.0, 0.4, 0.9, 1.0, 1.08)))
+    squeeze: list[int] = []
+    over_body, over_lines = text_body_page(over, (595.0, 842.0), squeeze)
+    assert over_lines == 5 and squeeze, (over_lines, squeeze)
+    assert over_body.count(b"Tj") == 5, over_body
+    over_ys = [float(m.group(1)) for m in
+               re.finditer(rb"1 0 0 1 \d+\.\d\d (\d+\.\d\d) Tm", over_body)]
+    assert len(over_ys) == 5 and min(over_ys) >= 45.99, over_ys
+    # and a page that fits is untouched: same size, same places, k = 1
+    fits = "\n".join(f"{LINE_MARK}{place:.3f}|row {i}"
+                      for i, place in enumerate((0.0, 0.5, 1.0)))
+    fit_body, fit_lines = text_body_page(fits, (595.0, 842.0), [])
+    assert fit_lines == 3 and b"Tj" in fit_body
     sparse = "\n".join(f"line {n}" for n in range(1, 5))
     sparse_body, sparse_lines = text_body_page(sparse, (595.0, 842.0))
     assert sparse_lines == 4
@@ -6807,7 +6850,7 @@ def selftest() -> str:
             "that is not there, the browser found by asking the addresses "
             "written into the file, the picture that was not a page, "
             "the second door, the name that was never asked, "
-            "the lock map in the token")
+            "the lock map in the token, the last line of every page")
 
 def main(argv: list[str]) -> int:
     global BASE
