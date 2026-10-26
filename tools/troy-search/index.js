@@ -28,7 +28,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "1.4";
+const VERSION = "1.6";
 // The port to listen on. A host like this one hands its container the public
 // port it assigned in SERVER_PORT — PORT on some boxes — and there is no
 // translation behind it: whatever this listens on IS the port the world
@@ -448,9 +448,15 @@ const SHOT_WIDTH = Number(process.env.SHOT_WIDTH || 1000);
 // deliberately taller than A4: the viewer can put furniture above the page, and
 // a window with room to spare means the page itself is never the thing cut off
 const SHOT_HEIGHT = Number(process.env.SHOT_HEIGHT || 1500);
-const SHOT_SCALE = Number(process.env.SHOT_SCALE || 2);
+// 1x is standard quality: the page at the size the viewer draws it. 2x was the
+// same page at twice the detail — four times the pixels to draw, encode, send
+// and embed, for a sheet that is placed at the same size in the PDF anyway.
+const SHOT_SCALE = Number(process.env.SHOT_SCALE || 1);
 const SHOT_WAIT_MS = Number(process.env.SHOT_WAIT_MS || 8000);
-const SHOT_TABS = Number(process.env.SHOT_TABS || 6);
+const SHOT_TABS = Number(process.env.SHOT_TABS || 8);
+// the most the one pass may spend loading the column: a viewer that never stops
+// growing must not cost a book ten minutes of scrolling before it gives up
+const SHOT_BOOK_MS = Number(process.env.SHOT_BOOK_MS || 30000);
 // a page of writing costs hundreds of bytes per row of png; a sheet with nothing
 // drawn on it costs a handful. Same rule the download panel uses.
 const BLANK_BYTES_PER_ROW = 12;
@@ -708,110 +714,261 @@ export function scrollUrl(doc) {
 }
 
 /**
- * The page blocks of the scroll viewer, in reading order, in document pixels.
+ * Every page-shaped box on the screen, in document pixels.
  *
- * Known viewer selectors first; if the viewer changes its clothes, the fallback
- * measures what a page actually is: the block that carries a full-size page
- * image. Rectangles are returned raw — checkPageRun is what judges them.
+ * Nothing here knows Scribd's class names, because the viewer changes its
+ * clothes and a selector that stops matching photographs nothing at all — which
+ * is what "only 0 page block(s) found" was, on every book. A page is MEASURED,
+ * with the same shape the single-page route has proved on the live viewer: a box
+ * 1.1 to 1.8 times as tall as it is wide, at least 40% of the window wide and
+ * 20% of it tall, and smaller than the window itself. Furniture pinned to the
+ * window is left out, because it is measured again at every scroll and would
+ * otherwise look like a column of pages.
+ *
+ * The window's scroll is added so the boxes are in document pixels: this runs at
+ * every window of the scroll, and a viewer that keeps only the pages near the
+ * window is then still measured in full. Choosing which boxes are the column is
+ * pickPageColumn's work, in Node, where it can be tested.
  */
 const JS_PAGE_RECTS = `() => {
-  const selectors = ['.page', '.page_container', '[data-pageid]', '.text_page'];
-  let els = [];
-  for (const sel of selectors) {
-    els = [...document.querySelectorAll(sel)];
-    if (els.length > 1) break;
-  }
-  if (els.length < 2) {
-    const seen = new Set();
-    els = [];
-    for (const img of document.querySelectorAll('img.absimg, img.orig_image, img[src*="scribdassets"]')) {
-      let el = img.parentElement;
-      for (let up = 0; up < 3 && el; up++) {
-        const r = el.getBoundingClientRect();
-        if (r.height > r.width * 1.05 && r.width > 300) break;
-        el = el.parentElement;
-      }
-      if (el && !seen.has(el)) { seen.add(el); els.push(el); }
-    }
-  }
+  const view = { width: window.innerWidth || 0, height: window.innerHeight || 0 };
+  if (!(view.width > 0) || !(view.height > 0)) return { boxes: [], seen: 0 };
   const sx = window.scrollX || 0, sy = window.scrollY || 0;
-  return els.map((el) => {
+  const windowArea = view.width * view.height;
+  const seen = [];
+  const tags = 'img, canvas, div, section, article, main, li, figure';
+  for (const el of document.querySelectorAll(tags)) {
     const r = el.getBoundingClientRect();
-    return { x: r.x + sx, y: r.y + sy, width: r.width, height: r.height };
-  }).filter((r) => r.width > 200 && r.height > 200);
+    if (!(r.width >= 200) || !(r.height >= 200)) continue;
+    if (!(r.width >= view.width * 0.4) || !(r.height >= view.height * 0.2)) continue;
+    const tall = r.height / r.width;
+    if (!(tall >= 1.1) || !(tall <= 1.8)) continue;
+    if (r.width * r.height >= windowArea * 0.97) continue;
+    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    if (style && (style.position === 'fixed' || style.position === 'sticky')) continue;
+    seen.push({ x: r.x + sx, y: r.y + sy, width: r.width, height: r.height });
+  }
+  // one page met twice — the page block and the picture filling it exactly — is
+  // one box, not two, and neither of them is a wrapper around the other
+  const boxes = [];
+  for (const r of seen) {
+    if (!boxes.some((b) => Math.abs(b.x - r.x) <= 1 && Math.abs(b.y - r.y) <= 1 &&
+        Math.abs(b.width - r.width) <= 1 && Math.abs(b.height - r.height) <= 1))
+      boxes.push(r);
+  }
+  // a box that holds another by more than a hair is furniture around a page
+  const holds = (a, b) => b.x >= a.x - 1 && b.y >= a.y - 1 &&
+    b.x + b.width <= a.x + a.width + 1 &&
+    b.y + b.height <= a.y + a.height + 1 &&
+    a.width * a.height > b.width * b.height * 1.05;
+  return { boxes: boxes.filter((a) => !boxes.some((b) => b !== a && holds(a, b))),
+           seen: seen.length };
 }`;
 
 /**
- * Is this run of rectangles one book's pages, cut by gaps?
+ * Is this run of measured boxes one book's pages, and which page is which?
  *
- * Uniform width and height (within 2%) and a real gap of background between
- * consecutive blocks: that is a column of pages. Overlap, a stray size or a
- * missing gap means the rectangles are not pages and cutting them would crop
- * somebody's page differently from the rest — refuse instead.
+ * Uniform blocks, a real gap of background between two neighbours, and — the
+ * part that keeps the pictures on their own pages — one PITCH: the distance from
+ * a page to the next, taken from the run itself, with every box sitting in a
+ * whole-number slot of it. A box out of place, a size of its own, or a first box
+ * that is not in the first slot would put the wrong picture on the wrong page,
+ * so the run is refused and the caller photographs page by page. A slot holding
+ * no box is a page this pass did not reach: it is named in `missing`, and the
+ * caller fills it, so a hole costs a page's own photograph and never the book.
+ *
+ * -> { ok, count, rects, slots, missing, width, height, pitch, pad, note }
  */
-export function checkPageRun(rects) {
+export function checkPageRun(rects, want = 0, tall = 0) {
   const run = (Array.isArray(rects) ? rects : [])
     .filter((r) => r && r.width > 0 && r.height > 0)
-    .sort((a, b) => a.y - b.y);
-  if (run.length < 2) {
-    return { ok: false, count: run.length,
-             note: `only ${run.length} page block(s) found — nothing to cut` };
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  const refuse = (note) => ({ ok: false, count: run.length, rects: run,
+                              slots: [], missing: [], note });
+  if (!run.length) {
+    return refuse("only 0 page block(s) found — nothing to cut");
   }
   const width = run[0].width, height = run[0].height;
-  // every block but the last must be the column's size; the last may end
-  // short — that is the document ending, and its clip is padded with the
-  // background after the last page, so every page of the book still comes
-  // out at exactly the same size
+  // every block but the last must be the column's size; the last may end short —
+  // that is the document ending, and its clip is padded with the background after
+  // the last page, so every page of the book still comes out at the same size
   let pad = 0;
   for (let i = 0; i < run.length; i++) {
     const r = run[i];
     const last = i === run.length - 1;
     if (Math.abs(r.width - width) > width * 0.02) {
-      return { ok: false, count: run.length,
-               note: `page block ${i + 1} is ${Math.round(r.width)} wide ` +
-                     `against ${Math.round(width)} — not one column of pages` };
+      return refuse(`page block ${i + 1} is ${Math.round(r.width)} wide against ` +
+                    `${Math.round(width)} — not one column of pages`);
     }
     if (Math.abs(r.height - height) > height * 0.02) {
       if (last && r.height >= height * 0.6 && r.height < height) {
         pad = height - r.height;
         continue;
       }
-      return { ok: false, count: run.length,
-               note: `page block ${i + 1} is ${Math.round(r.height)} tall ` +
-                     `against ${Math.round(height)} — not one column of pages` };
+      return refuse(`page block ${i + 1} is ${Math.round(r.height)} tall against ` +
+                    `${Math.round(height)} — not one column of pages`);
     }
+  }
+  if (run.length === 1) {
+    // one block alone cannot be checked against a neighbour, so it is only cut
+    // when it is the whole document the caller asked for
+    if (want !== 1) return refuse("only 1 page block found — nothing beside it to judge it by");
+    return { ok: true, count: 1, rects: run, slots: [0], missing: [],
+             width: Math.round(width), height: Math.round(height), pitch: 0,
+             pad: 0, gapMin: 0, gapMax: 0,
+             note: "1 page block, the whole document — nothing beside it to bleed into" };
+  }
+  const deltas = [];
+  for (let i = 1; i < run.length; i++) deltas.push(run[i].y - run[i - 1].y);
+  if (deltas.some((d) => d <= height)) {
+    return refuse(`two page blocks overlap — no gap of background to cut at, ` +
+                  `a clip there would crop two pages at once`);
+  }
+  // the pitch is the step the run itself repeats: a step seen once proves nothing
+  const times = {};
+  for (const d of deltas) {
+    const key = Math.round(d);
+    times[key] = (times[key] || 0) + 1;
+  }
+  const repeated = Object.keys(times).filter((k) => times[k] >= 2).map(Number);
+  let pitch = repeated.length ? Math.min(...repeated) : 0;
+  if (!pitch) {
+    const sorted = [...deltas].sort((a, b) => a - b);
+    pitch = sorted[Math.floor(sorted.length / 2)];
+    // a step nobody repeats is only believed while it looks like a page's gap
+    if (pitch - height > 400) {
+      return refuse(`a ${Math.round(pitch - height)}px hole between two blocks — ` +
+                    `that is not the gap between two pages`);
+    }
+  }
+  if (pitch - height > 400) {
+    return refuse(`the column's own step leaves a ${Math.round(pitch - height)}px ` +
+                  `hole — that is not the gap between two pages`);
+  }
+  const slots = [];
+  for (let i = 0; i < run.length; i++) {
+    const step = (run[i].y - run[0].y) / pitch;
+    const slot = Math.round(step);
+    if (Math.abs(step - slot) > 0.08) {
+      return refuse(`page block ${i + 1} sits ${Math.round(run[i].y - run[0].y)}px ` +
+                    `into the column, which is no whole number of the ` +
+                    `${Math.round(pitch)}px step — the blocks are not one column`);
+    }
+    if (slots.includes(slot)) {
+      return refuse(`two page blocks share slot ${slot + 1} of the column — ` +
+                    `one of them is not a page`);
+    }
+    slots.push(slot);
+  }
+  if (run[0].y > pitch * 1.25) {
+    return refuse(`the first block is ${Math.round(run[0].y)}px down, more than a ` +
+                  `page's step — the column does not start at its first page, so ` +
+                  `numbering it would shift every picture`);
+  }
+  const top = slots[slots.length - 1] + 1;
+  if (want > 0 && top > want) {
+    return refuse(`the column holds ${top} page slots and the document asks for ` +
+                  `${want} page(s) — not cut, that would put the wrong picture on ` +
+                  `the wrong page`);
+  }
+  if (want > 0 && tall > 0 && pitch * want > tall * 1.3) {
+    return refuse(`a step of ${Math.round(pitch)}px over ${want} page(s) is ` +
+                  `${Math.round(pitch * want)}px, but the whole column is ` +
+                  `${Math.round(tall)}px tall — the step is not the page's`);
+  }
+  const lastSlot = want > 0 ? want - 1 : top - 1;
+  const missing = [];
+  for (let slot = 0; slot <= lastSlot; slot++) {
+    if (!slots.includes(slot)) missing.push(slot + 1);
   }
   let gapMin = Infinity, gapMax = -Infinity;
-  for (let i = 1; i < run.length; i++) {
-    const gap = run[i].y - (run[i - 1].y + run[i - 1].height);
-    if (gap <= 0) {
-      return { ok: false, count: run.length,
-               note: `blocks ${i} and ${i + 1} overlap by ${-gap}px — no gap ` +
-                     `to cut at, a clip would crop two pages at once` };
-    }
-    if (gap > 400) {
-      return { ok: false, count: run.length,
-               note: `a ${Math.round(gap)}px hole between blocks ${i} and ` +
-                     `${i + 1} — that is not the gap between two pages` };
-    }
-    gapMin = Math.min(gapMin, gap); gapMax = Math.max(gapMax, gap);
-  }
-  return { ok: true, count: run.length, width: Math.round(width),
-           height: Math.round(height), pad: Math.round(pad),
+  for (const d of deltas) { gapMin = Math.min(gapMin, d - height); gapMax = Math.max(gapMax, d - height); }
+  return { ok: true, count: run.length, rects: run, slots, missing,
+           width: Math.round(width), height: Math.round(height),
+           pitch: Math.round(pitch), pad: Math.round(pad),
            gapMin: Math.round(gapMin), gapMax: Math.round(gapMax),
            note: `${run.length} page block(s), each ${Math.round(width)}x` +
-                 `${Math.round(height)}, gaps ${Math.round(gapMin)}–` +
-                 `${Math.round(gapMax)}px — every cut the same` +
+                 `${Math.round(height)}, one step of ${Math.round(pitch)}px — ` +
+                 `every cut the same` +
                  (pad ? `, the last padded ${Math.round(pad)}px with the ` +
-                         `background so no page is a different size` : "") };
+                        `background so no page is a different size` : "") +
+                 (missing.length ? `, ${missing.length} slot(s) with no block ` +
+                   `(${missing.slice(0, 8).join(", ")}${missing.length > 8 ? ", …" : ""})`
+                   : "") };
 }
 
 /**
- * The wire format for a whole book: each png behind a 4-byte big-endian
- * length, a zero length to close the run, then the manifest as UTF-8 JSON.
- * One request, one response, no multipart ceremony, parseable with nothing
- * but a socket on the other end.
+ * Which of everything measured on the screen is the document's column of pages?
+ *
+ * The boxes arrive from every window of the scroll, so one page can be met more
+ * than once, and a viewer that keeps only the pages near the window is still
+ * measured in full. Boxes of one size are one candidate column: the candidate
+ * with the most boxes is judged first, then the one spanning more of the
+ * document, then the bigger picture — and the first candidate that is a real
+ * column wins. A candidate that is not (furniture of a page's shape, a stack of
+ * pictures inside the pages) is passed over, not believed.
  */
+export function pickPageColumn(boxes, want = 0, tall = 0) {
+  const all = (Array.isArray(boxes) ? boxes : [])
+    .filter((b) => b && b.width > 0 && b.height > 0);
+  const uniq = [];
+  for (const b of all) {
+    if (!uniq.some((u) => Math.abs(u.x - b.x) <= 1 && Math.abs(u.y - b.y) <= 1 &&
+        Math.abs(u.width - b.width) <= 1 && Math.abs(u.height - b.height) <= 1))
+      uniq.push(b);
+  }
+  const groups = [];
+  for (const box of uniq) {
+    const home = groups.find((group) => group.some((member) =>
+      Math.abs(member.width - box.width) <= box.width * 0.02 &&
+      Math.abs(member.height - box.height) <= box.height * 0.02));
+    if (home) home.push(box); else groups.push([box]);
+  }
+  const span = (group) => Math.max(...group.map((b) => b.y + b.height)) -
+                          Math.min(...group.map((b) => b.y));
+  groups.sort((a, b) => b.length - a.length || span(b) - span(a) ||
+                        b[0].width * b[0].height - a[0].width * a[0].height);
+  const tried = [];
+  for (const group of groups) {
+    const run = checkPageRun(group, want, tall);
+    if (run.ok) {
+      return { rects: run.rects, run, boxes: uniq.length, groups: groups.length,
+               note: run.note };
+    }
+    tried.push(`${group.length} at ${Math.round(group[0].width)}x` +
+               `${Math.round(group[0].height)}: ${run.note}`);
+  }
+  return { rects: [], run: groups.length ? checkPageRun(groups[0], want, tall) : null,
+           boxes: uniq.length, groups: groups.length,
+           note: `no column of pages among ${uniq.length} page-shaped box(es)` +
+                 (tried.length ? ` — ${tried.slice(0, 3).join(" | ")}`
+                               : " — nothing on the screen is page-shaped") };
+}
+
+/**
+ * The box on the screen now that is the page we mean.
+ *
+ * A page is cut while it is in the window, so its rectangle is measured again at
+ * that moment: the column can have shifted by a few pixels since the scroll that
+ * found it. The nearest box of the column's own size, within a small part of the
+ * step, is that page — and if there is none, the page is not guessed at, it is
+ * left for a photograph of its own.
+ */
+export function snapBox(boxes, expected, pitch) {
+  const step = Number(pitch) > 0 ? Number(pitch) : expected.height * 1.05;
+  const room = Math.max(24, step * 0.2);
+  let best = null, bestGap = Infinity;
+  for (const b of (Array.isArray(boxes) ? boxes : [])) {
+    if (!b || !(b.width > 0) || !(b.height > 0)) continue;
+    if (Math.abs(b.width - expected.width) > expected.width * 0.02) continue;
+    if (Math.abs(b.height - expected.height) > expected.height * 0.02) continue;
+    const gap = Math.abs(b.y - expected.y);
+    if (gap > room || gap >= bestGap) continue;
+    best = b; bestGap = gap;
+  }
+  return best;
+}
+
 export function encodeShots(pngs, manifest) {
   const parts = [];
   for (const png of pngs) {
@@ -848,13 +1005,19 @@ export function decodeShots(body) {
  * means the column of pages was not there to cut — the caller falls back to
  * photographing page by page, never to a grey sheet.
  */
-export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS) {
+export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
+                                wantPages = 0) {
   const ident = String(doc || "").replace(/[^0-9]/g, "");
   if (!/^\d{3,}$/.test(ident)) {
     return { pages: [], run: null, note: "a document id is needed" };
   }
   const ratio = Math.max(0.5, Math.min(4, Number(scale) || SHOT_SCALE));
-  const settle = Math.max(200, Math.min(4000, Number(waitMs) || SHOT_WAIT_MS)) / 10;
+  // a twentieth of the patience, not a tenth: the column is loaded a window at a
+  // time, and forty rounds of 800ms is half a minute of standing still
+  const settle = Math.max(150, Math.min(800,
+                                        (Number(waitMs) || SHOT_WAIT_MS) / 20));
+  const want = Number(wantPages) || 0;
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const release = await shotSlot();
   let tab = null;
   try {
@@ -867,82 +1030,157 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS) 
                    { waitUntil: "domcontentloaded", timeout: 45000 });
     await tab.addStyleTag({ content: SCROLL_CSS }).catch(() => {});
 
-    // load the whole column first: scroll it end to end until its height
-    // stops growing, forcing every lazy picture to fetch and decode
-    let last = -1, stable = 0, y = 0, rounds = 0;
-    while (rounds++ < 300) {
+    // ---- the column, found one window at a time --------------------------
+    // Every window is measured as it is scrolled past, because a viewer that
+    // keeps only the pages near the window would otherwise be measured as the
+    // handful of pages that happened to be left on the screen at the end.
+    // Loading stops when the column stops growing, when every page asked for is
+    // in hand, or when the one pass has spent what it is worth: the page-by-page
+    // route behind this works, and a book must not spend ten minutes finding out
+    // that the one pass was never going to.
+    const started = Date.now();
+    const deadline = started + Math.max(SHOT_BOOK_MS * 8, 60000);
+    const gathered = [];
+    let last = -1, stable = 0, y = 0, rounds = 0, tall = 0, sawSeen = 0, windows = 0;
+    const measure = async () => {
+      const found = await tab.evaluate(JS_PAGE_RECTS).catch(() => null);
+      windows += 1;
+      if (found && Array.isArray(found.boxes)) {
+        gathered.push(...found.boxes);
+        sawSeen = Math.max(sawSeen, found.seen || 0);
+      }
+      return found;
+    };
+    while (rounds++ < 400 && Date.now() - started < SHOT_BOOK_MS) {
       await tab.evaluate(`window.scrollTo(0, ${y})`);
-      await new Promise((resolve) => setTimeout(resolve, settle));
+      await sleep(settle);
       await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
+      await measure();
       const h = await tab.evaluate(JS_HEIGHT);
+      tall = Math.max(tall, h);
       if (y + SHOT_HEIGHT >= h) {
         stable = h === last ? stable + 1 : 0;
         if (stable >= 2) break;
         last = h;
         y = Math.max(0, h - SHOT_HEIGHT);
       } else {
-        stable = 0; last = h;
-        y += Math.max(SHOT_HEIGHT >> 1, 200);
+        stable = 0; last = h; y += SHOT_HEIGHT;
       }
+      // a full column already in hand is worth more scrolling than a book is
+      if (want > 0 && rounds % 3 === 0 &&
+          pickPageColumn(gathered, want, tall).rects.length >= want) break;
     }
+    const spent = Date.now() - started;
     await tab.evaluate("window.scrollTo(0, 0)");
-    await new Promise((resolve) => setTimeout(resolve, settle));
+    await sleep(settle);
     await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
+    await measure();
 
-    const rects = await tab.evaluate(JS_PAGE_RECTS);
-    const run = checkPageRun(rects);
-    if (!run.ok) return { pages: [], run, note: run.note };
+    const picked = pickPageColumn(gathered, want, tall);
+    const saw = `measured ${picked.rects.length} page block(s) of ${picked.boxes} ` +
+                `distinct page-shaped box(es) in ${windows} window(s) over ` +
+                `${(spent / 1000).toFixed(0)}s, the column ${tall}px tall, ` +
+                `${sawSeen} box(es) in the fullest window — ${picked.note}`;
+    if (!picked.rects.length) {
+      return { pages: [], run: picked.run, note: `${picked.note} — ${saw}` };
+    }
+    const run = picked.run, rects = picked.rects;
 
+    // ---- the cuts: one page at a time, each while it is in the window -----
     const cdp = await (tab.createCDPSession
       ? tab.createCDPSession() : tab.target().createCDPSession());
     const crypto = await import("node:crypto");
     const hash = (b) => crypto.createHash("sha256").update(b).digest("hex");
     const pages = [];
     const notes = [];
+    const missed = [];
     const clipH = Math.round(run.height);   // every clip the same height
     const wantW = Math.max(1, Math.round(run.width * ratio));
     const wantH = Math.max(1, Math.round(clipH * ratio));
+    const cutSettle = Math.max(80, Math.min(300, settle / 2));
+    let at = -1;
     for (let i = 0; i < rects.length; i++) {
-      const r = rects[i];
-      const padded = i === rects.length - 1 && run.pad > 0;
+      const number = run.slots[i] + 1;
+      if (want > 0 && number > want) break;
+      if (Date.now() > deadline) {
+        notes.push(`the one pass spent its ` +
+                   `${Math.round((deadline - started) / 1000)}s at page ${number} ` +
+                   `— the rest are left for photographs of their own`);
+        for (let k = i; k < rects.length; k++) missed.push(run.slots[k] + 1);
+        break;
+      }
+      // the page is scrolled into the window before it is cut and measured again
+      // there: a clip of a page the viewer has already forgotten is a grey sheet
+      const where = Math.max(0, Math.round(rects[i].y - 40));
+      if (where !== at) {
+        await tab.evaluate(`window.scrollTo(0, ${where})`);
+        await sleep(cutSettle);
+        at = where;
+      }
+      const here = await tab.evaluate(JS_PAGE_RECTS).catch(() => null);
+      const r = snapBox((here && here.boxes) || [], rects[i], run.pitch);
+      if (!r) {
+        missed.push(number);
+        notes.push(`page ${number}: its block was not on the screen to cut — ` +
+                   `left for a photograph of its own`);
+        continue;
+      }
       const clip = { x: Math.round(r.x), y: Math.round(r.y),
-                     width: Math.round(r.width), height: clipH,
-                     scale: ratio };
+                     width: Math.round(r.width), height: clipH, scale: ratio };
       const take = async () => {
         const res = await cdp.send("Page.captureScreenshot", {
           format: "png", fromSurface: true, captureBeyondViewport: true, clip });
         return Buffer.from(res.data, "base64");
       };
       let png = await take();
-      // a clip that came back the wrong size is a capture that lied: one
-      // retake, and if it still disagrees it is kept and named, because a
-      // named odd page beats a missing page
+      // a clip that came back the wrong size is a capture that lied: one retake,
+      // and if it still disagrees it is kept and named, because a named odd page
+      // beats a missing page
       let size = pngSize(png);
       if (size.width !== wantW || size.height !== wantH) {
-        notes.push(`page ${i + 1}: the clip came back ${size.width}x` +
+        notes.push(`page ${number}: the clip came back ${size.width}x` +
                    `${size.height}, asked ${wantW}x${wantH} — taken again`);
         png = await take();
       }
+      // a page that differs between two captures was still being drawn
       let unstable = false;
-      for (let tries = 0; tries < 3; tries++) {
+      for (let tries = 0; tries < 2; tries++) {
         const first = hash(png);
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        await sleep(120);
         png = await take();
         if (hash(png) === first) { unstable = false; break; }
         unstable = true;
       }
       size = pngSize(png);
       if (size.width !== wantW || size.height !== wantH) {
-        notes.push(`page ${i + 1}: kept at ${size.width}x${size.height} ` +
+        notes.push(`page ${number}: kept at ${size.width}x${size.height} ` +
                    `though the column is ${wantW}x${wantH}`);
       }
-      pages.push({ page: i + 1, png, width: size.width, height: size.height,
-                   unstable, blank: blankShot(png), padded });
-      if (unstable) notes.push(`page ${i + 1}: still moving between captures — kept the last one`);
-      if (blankShot(png)) notes.push(`page ${i + 1}: the clip looks empty — kept, an empty page is still that page`);
+      pages.push({ page: number, png, width: size.width, height: size.height,
+                   unstable, blank: blankShot(png),
+                   padded: i === rects.length - 1 && run.pad > 0 });
+      if (unstable) {
+        notes.push(`page ${number}: still moving between captures — kept the last one`);
+      }
+      if (blankShot(png)) {
+        notes.push(`page ${number}: the clip looks empty — kept, an empty page ` +
+                   `is still that page`);
+      }
+    }
+    for (const number of run.missing) missed.push(number);
+    const left = [...new Set(missed)].sort((a, b) => a - b);
+    if (!pages.length) {
+      return { pages: [], run, missed: left,
+               note: `the column was measured but not one page could be cut — ${saw}` };
+    }
+    if (left.length) {
+      notes.push(`${left.length} page(s) this pass did not cut ` +
+                 `(${left.slice(0, 8).join(", ")}${left.length > 8 ? ", …" : ""}) ` +
+                 `— each gets a photograph of its own`);
     }
     notes.push(run.note);
-    return { pages, run, note: notes.join(" · ") };
+    notes.push(saw);
+    return { pages, run, missed: left, note: notes.join(" · ") };
   } catch (exc) {
     const message = String((exc && exc.message) || exc).slice(0, 200);
     return { pages: [], run: null, note: `the browser failed — ${message}` };
@@ -1306,23 +1544,28 @@ export function serve(port = PORT) {
                               page: "1",
                               scale: url.searchParams.get("scale") });
         if (ask.error) return json(response, 400, { error: ask.error });
-        console.log(`shots ${ask.doc}: photographing the whole book at ` +
-                    `${ask.scale}x, cut at the gaps`);
-        const book = await shootBook(ask.doc, ask.scale);
+        const wanted = Number(url.searchParams.get("pages")) || 0;
+        console.log(`shots ${ask.doc}: photographing ` +
+                    `${wanted ? `the first ${wanted} page(s)` : "the whole book"} ` +
+                    `at ${ask.scale}x, cut at the gaps`);
+        const book = await shootBook(ask.doc, ask.scale, SHOT_WAIT_MS, wanted);
         if (!book.pages.length) {
           console.log(`  -> refused: ${book.note}`);
           return json(response, 502, { error: book.note });
         }
         const manifest = {
           doc: ask.doc, scale: ask.scale, count: book.pages.length,
-          run: book.run,
+          run: book.run, missed: book.missed || [],
           pages: book.pages.map((p) => ({ page: p.page, width: p.width,
                                           height: p.height,
                                           unstable: p.unstable, blank: p.blank,
                                           padded: Boolean(p.padded) })),
         };
         const body = encodeShots(book.pages.map((p) => p.png), manifest);
-        console.log(`  -> ok: ${book.pages.length} page(s), ${body.length} bytes`);
+        const left = (book.missed || []).length;
+        console.log(`  -> ok: ${book.pages.length} page(s)` +
+                    (left ? `, ${left} left for a photograph of their own` : "") +
+                    `, ${body.length} bytes`);
         response.writeHead(200, {
           "Content-Type": "application/x-page-shots",
           "Content-Length": body.length,
@@ -1584,7 +1827,115 @@ export function selftest() {
   assert(listenPort({ SERVER_PORT: "0" }) === FALLBACK_PORT, "port 0 is not a door");
   assert(PORT === listenPort(), "this copy listens where the host said");
 
-  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned";
+  // the one pass MEASURES pages: it does not know Scribd's class names, because
+  // a viewer that changes its clothes must not silently photograph nothing —
+  // "only 0 page block(s) found" on every book was exactly that. So the
+  // measuring itself is run here, against a made-up viewer and with no browser:
+  // a column of page blocks, each holding a picture at exactly the same
+  // rectangle, a wrapper around the column, furniture pinned to the window, a
+  // sidebar of thumbnails and a header inside every page.
+  assert(!/page_container|data-pageid|absimg|orig_image|text_page/.test(JS_PAGE_RECTS),
+    "the page measure went back to naming Scribd's classes");
+  assert(/getBoundingClientRect/.test(JS_PAGE_RECTS), "pages are measured, not named");
+  const viewer = (items, scrollY = 0) => {
+    const fakeDocument = {
+      querySelectorAll: (selector) => {
+        const wanted = selector.split(",").map((tag) => tag.trim().toLowerCase());
+        return items.filter((item) => wanted.includes(item.tag)).map((item) => ({
+          tagName: item.tag.toUpperCase(),
+          style: item.style || { position: "static" },
+          getBoundingClientRect: () => ({ x: item.x, y: item.y - scrollY,
+                                          width: item.width, height: item.height }),
+        }));
+      },
+    };
+    const fakeWindow = { scrollX: 0, scrollY, innerWidth: 1000, innerHeight: 1500,
+                         getComputedStyle: (element) => element.style };
+    return new Function("document", "window",
+      "return (" + JS_PAGE_RECTS + ")()")(fakeDocument, fakeWindow);
+  };
+  const madeUpColumn = (pages) => {
+    const items = [
+      { tag: "div", x: 0, y: 0, width: 1000, height: 80 + pages * 1440 },
+      { tag: "div", x: 0, y: 0, width: 1000, height: 1200,
+        style: { position: "fixed" } },                    // furniture
+    ];
+    for (let index = 0; index < pages; index++) {
+      const top = 20 + index * 1440;
+      items.push({ tag: "div", x: 50, y: top, width: 900, height: 1400 });
+      items.push({ tag: "img", x: 50, y: top, width: 900, height: 1400 });
+      items.push({ tag: "div", x: 50, y: top, width: 900, height: 300 });
+      items.push({ tag: "div", x: 960, y: top, width: 220, height: 300 });
+    }
+    return items;
+  };
+  const measured = viewer(madeUpColumn(6));
+  assert(measured.boxes.length === 6,
+    `a column of 6 page blocks measures as 6, got ${measured.boxes.length}`);
+  assert(measured.boxes.every((box) => box.width === 900 && box.height === 1400),
+    "the page is measured, not the picture inside it, not the furniture");
+  // a page block and the picture filling it exactly are one box, not two, and
+  // neither is a wrapper of the other: losing both was a column of nothing
+  assert(measured.seen >= 12, `the same rectangle was not deduped: ${measured.seen}`);
+  // the boxes are in document pixels, so a window further down the scroll
+  // measures the same page at the same place
+  const scrolled = viewer(madeUpColumn(6), 2880);
+  assert(scrolled.boxes.length === 6 &&
+         scrolled.boxes.every((box, index) => box.y === measured.boxes[index].y),
+    "a scrolled window measures in document pixels");
+  const column = pickPageColumn(measured.boxes.concat(scrolled.boxes), 6, 8720);
+  assert(column.run && column.run.ok && column.rects.length === 6, column.note);
+  assert(column.run.slots.join(",") === "0,1,2,3,4,5", column.run.slots.join(","));
+  assert(column.run.missing.length === 0, column.run.missing.join(","));
+  assert(column.run.pitch === 1440, `the column's step: ${column.run.pitch}`);
+  assert(column.run.width === 900 && column.run.height === 1400, column.note);
+  // a viewer that keeps only the pages near the window: a hole is a page this
+  // pass did not reach, numbered by the column's own step, never a shifted book
+  const withHole = measured.boxes.filter((box) => box.y !== 20 + 2 * 1440);
+  const holed = pickPageColumn(withHole, 6, 8720);
+  assert(holed.run && holed.run.ok, holed.note);
+  assert(holed.run.slots.join(",") === "0,1,3,4,5", holed.run.slots.join(","));
+  assert(holed.run.missing.join(",") === "3", holed.run.missing.join(","));
+  // a column that does not start at its first page would number every picture one
+  // page out, so it is refused instead
+  assert(pickPageColumn(measured.boxes.filter((box) => box.y > 1500), 5, 8720)
+           .rects.length === 0,
+    "a column missing its first page is not numbered from the second");
+  // two page-shaped pictures inside every page are not twice the pages: that
+  // candidate is judged, refused, and the real column is chosen instead
+  const noisy = [];
+  for (let index = 0; index < 6; index++) {
+    noisy.push({ x: 50, y: 20 + index * 1440, width: 900, height: 1400 });
+    noisy.push({ x: 100, y: 100 + index * 1440, width: 700, height: 900 });
+    noisy.push({ x: 100, y: 1050 + index * 1440, width: 700, height: 900 });
+  }
+  const throughNoise = pickPageColumn(noisy, 6, 8720);
+  assert(throughNoise.run && throughNoise.run.ok && throughNoise.run.width === 900,
+    throughNoise.note);
+  assert(throughNoise.run.slots.join(",") === "0,1,2,3,4,5",
+    throughNoise.run.slots.join(","));
+  // a screen with nothing page-shaped on it says so, and says what it did see
+  const empty = viewer([{ tag: "div", x: 0, y: 0, width: 1000, height: 300 }]);
+  assert(empty.boxes.length === 0, "a banner is not a page");
+  assert(pickPageColumn([], 6, 8720).rects.length === 0, "nothing measured, nothing cut");
+  assert(/nothing on the screen is page-shaped/.test(pickPageColumn([], 6, 8720).note),
+    pickPageColumn([], 6, 8720).note);
+  // the page cut is the box on the screen now that is the page we mean
+  const wantedBox = { x: 50, y: 1460, width: 900, height: 1400 };
+  assert(snapBox([{ x: 50, y: 1466, width: 900, height: 1400 }], wantedBox, 1440),
+    "a page that shifted a few pixels is still that page");
+  assert(snapBox([{ x: 50, y: 2900, width: 900, height: 1400 }], wantedBox, 1440) === null,
+    "the neighbour is not that page");
+  assert(snapBox([{ x: 50, y: 1460, width: 500, height: 1400 }], wantedBox, 1440) === null,
+    "a box of another size is not that page");
+  assert(snapBox([], wantedBox, 1440) === null, "nothing on the screen, no guess");
+  assert(SHOT_SCALE >= 0.5 && SHOT_SCALE <= 4, SHOT_SCALE);
+  assert(SHOT_SCALE === Number(process.env.SHOT_SCALE || 1),
+    "standard quality is the default: the page at the size the viewer draws it");
+  assert(SHOT_BOOK_MS >= 5000, "the one pass needs room to load a column");
+  assert(SHOT_TABS >= 4, "a book is not photographed one tab at a time");
+
+  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks";
 }
 
 // ---------------------------------------------------------------------------
