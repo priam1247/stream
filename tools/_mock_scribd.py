@@ -66,6 +66,12 @@ SMALL_PAGES = {int(part) for part in
 CUT_PAGES = {int(part) for part in
              os.environ.get("MOCK_CUT_PAGES", "").replace(" ", "").split(",")
              if part.isdigit()}
+# MOCK_BLANK_PAGES="1": that page's picture is an empty rectangle (a few hundred
+# bytes at full page size) — the shape Scribd names beside a converted page's
+# words, and the reason a text-first PDF must not draw that rectangle.
+BLANK_PAGES = {int(part) for part in
+               os.environ.get("MOCK_BLANK_PAGES", "").replace(" ", "").split(",")
+               if part.isdigit()}
 # MOCK_JUNK_PAGES="2": those pages answer with a picture far too small to be one
 JUNK_PAGES = {int(part) for part in
               os.environ.get("MOCK_JUNK_PAGES", "").replace(" ", "").split(",")
@@ -99,9 +105,28 @@ def fake_jpeg(width=1200, height=1600, fill=6000):
     return bytes(out)
 
 
+def toc_page_lines():
+    """Page 2 of the real document: its contents page, as the viewer shows it.
+
+    Reproduced here because it is the page that came out wrong: eight lines
+    spread down the sheet, columns, dotted leaders — and as one flat run it
+    becomes a paragraph in the corner.
+    """
+    return ["ZAM\u2019KATIMU",
+            "Mutu\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0\u00a0Tsamba",
+            "1.Mutu 1\u2026.....\u2026....Kubadwa kwake\u2026\u2026\u2026\u2026.4",
+            "2. Mutu 2..............Atate ake\u2026\u2026\u2026\u2026\u2026.6",
+            "3. Mutu 3\u2026........Ubwana wake\u2026\u2026\u2026\u2026.13",
+            "4. Mutu 4............\u2026Maulendo ake\u2026\u2026\u2026\u202618",
+            "5. Mutu 5.......... Ukulu wake\u2026\u2026\u2026\u202628",
+            "6. Mutu 6\u2026\u2026\u2026\u2026..Ufumu wake\u2026\u2026\u2026\u2026.36"]
+
+
 def page_text_lines(number, doc_id=0):
     """The words of one mock page — short for a scan, long for a text page."""
     if TEXT_DOC:
+        if number == 2:
+            return toc_page_lines()
         lines = [f"KUSANTHULA BUKU LA NTHONDO — page {number}",
                  "Ndondomeko ya buku ili ndi yotalikirapo pa nkhani za nthondo ndi "
                  "mmene anthu amapezera chithandizo ku chipatala cha boma."]
@@ -113,11 +138,46 @@ def page_text_lines(number, doc_id=0):
             f"Search for the word needle{number} to find this page"]
 
 
+def text_layer_spans(number, doc_id=0):
+    """The page as Scribd really sends it: one text_layer of placed spans.
+
+    Each line is its own `<span>` with an inline `top:` — that placement is the
+    only thing that says where a line ends. Strip the tags and the page is one
+    long run, which is exactly the PDF that came out a paragraph in a corner.
+    """
+    lines = page_text_lines(number, doc_id)
+    step = 62.0 / max(1, len(lines))
+    if number == 2 and lines and lines[1].startswith("Mutu"):
+        # a real contents row is two spans at one height: the column on the
+        # left and the column on the right
+        rows = []
+        for index, line in enumerate(lines):
+            if index == 1:
+                rows.append('<span class="a" style="left:8%%;top:%.2f%%">Mutu</span>'
+                            '<span class="a" style="left:60%%;top:%.2f%%">Tsamba</span>'
+                            % (4.0 + index * step, 4.0 + index * step))
+            else:
+                safe = line.replace("&", "&amp;").replace("<", "&lt;")
+                rows.append('<span class="a" style="left:8%%;top:%.2f%%">%s</span>'
+                            % (4.0 + index * step, safe))
+        return "".join(rows)
+    spans = ""
+    for index, line in enumerate(lines):
+        safe = line.replace("&", "&amp;").replace("<", "&lt;")
+        spans += ('<span class="a" style="left:8%%;top:%.2f%%">%s</span>'
+                  % (4.0 + index * step, safe))
+    return spans
+
+
 def page_jsonp(doc_id, number):
     """Scribd sends each page's text as window.pageN_callback([…]) of html."""
-    lines = page_text_lines(number, doc_id)
+    if TEXT_DOC:
+        body = '<div class="text_layer">%s</div>' % text_layer_spans(number, doc_id)
+    else:
+        body = "".join(f"<div>{line}</div>"
+                       for line in page_text_lines(number, doc_id))
     return ('window.page%d_callback(["%s"]);'
-            % (number, "<br>".join(f"<div>{line}</div>" for line in lines))).encode()
+            % (number, body.replace('"', '\\"'))).encode()
 
 
 def embed_page(doc_id, number):
@@ -127,8 +187,11 @@ def embed_page(doc_id, number):
     whose text is already in it. For a converted document it is the only place
     the words exist, so the mock has to produce it or the shape is not tested.
     """
-    lines = page_text_lines(number, doc_id)
-    body = "".join(f"<p>{line}</p>" for line in lines)
+    if TEXT_DOC:
+        body = text_layer_spans(number, doc_id)     # placed spans, the real shape
+    else:
+        body = "".join(f"<p>{line}</p>"
+                       for line in page_text_lines(number, doc_id))
     picture = ""
     if (not TEXT_DOC) or number == 1:
         picture = (f'<img src="//html.scribdassets.com/h{doc_id}/images/'
@@ -277,7 +340,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(b"<html>too many requests</html>", 403)
             else:
                 number = int(page) if page.isdigit() else 0
-                if number in JUNK_PAGES:
+                if number in BLANK_PAGES:
+                    self.send(fake_jpeg(1200, 1600, fill=40), ctype="image/jpeg")
+                elif TEXT_DOC and number == 1:
+                    # a real scanned cover: ~0.08 bytes per pixel, the size a
+                    # page of paper really compresses to
+                    self.send(fake_jpeg(1200, 1600, fill=150000), ctype="image/jpeg")
+                elif number in JUNK_PAGES:
                     self.send(fake_jpeg(60, 80, fill=400), ctype="image/jpeg")
                 elif number in CUT_PAGES:
                     self.send(fake_jpeg()[:900], ctype="image/jpeg")   # no EOI

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.18
+"""scribd_download.py — ONE file, standard library only.  Version 2.19
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -198,7 +198,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.18"
+VERSION = "2.19"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -235,6 +235,7 @@ TOKEN_SHAPES = (
                r"[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)"),
 )
 VIEWER_WINDOWS = 6          # how many windows of the viewer page to walk
+MAX_COVER_SCANS = 12        # pages with both words and a picture to try
 NO_HOPE_RESTS = 2           # rests before "nothing has ever arrived" is final
 RETRY_STATUS = (408, 425, 429, 500, 502, 503, 504)
 HARD_THROTTLE = (429, 503)
@@ -1582,48 +1583,140 @@ def _image_matrix(page: dict, box: tuple[float, float, float, float]) -> str:
         return f"{-width} 0 0 {-height} {left + width} {bottom + height} cm"
     return f"{width} 0 0 {height} {left} {bottom} cm"
 
-def pdf_visible_text(text: str) -> str:
-    """Escape a string for a PDF literal, and give up on what Helvetica cannot say.
+# Helvetica's own advance widths, in 1/1000 of the font size, for characters
+# 32..126 — the Adobe AFM numbers. A guessed average either runs a line off the
+# right edge of the sheet or leaves a third of it empty; these are the widths
+# the reader's PDF viewer will actually use.
+HELVETICA_WIDTHS = (
+    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278,
+    278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584,
+    584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556,
+    833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278,
+    278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222,
+    500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500,
+    500, 334, 260, 334, 584,
+)
+TEXT_CHAR_EM = 0.556          # a fallback for characters outside that table
 
-    The font is base-14 WinAnsi, so anything outside Latin-1 is dropped rather
-    than turned into a row of question marks. Brackets and backslashes must be
-    escaped or the string ends the content stream early.
-    """
-    out: list[str] = []
+
+def text_width(text: str, size: float) -> float:
+    """How wide this string really is in Helvetica at this size, in points."""
+    total = 0.0
     for char in text:
         code = ord(char)
-        if char in "()\\":
-            out.append("\\" + char)
-        elif 32 <= code <= 126 or 160 <= code <= 255:
-            out.append(char)
-        elif char in "\t":
-            out.append(" ")
-    return "".join(out)
+        if 32 <= code <= 126:
+            total += HELVETICA_WIDTHS[code - 32]
+        elif char in "\u00a0\u2018\u2019\u201c\u201d\u2013\u2014\u2026\u2022":
+            total += 556
+        else:
+            total += TEXT_CHAR_EM * 1000
+    return total / 1000.0 * size
 
 
-def wrap_words(words: str, per_line: int) -> list[str]:
-    """Break a page's words into lines that fit, keeping blank lines."""
-    if not (words or "").strip():
-        return []
+def wrap_to_width(words: str, width: float, size: float) -> list[str]:
+    """Break lines at spaces using the real widths, so nothing overflows."""
     lines: list[str] = []
     for paragraph in (words or "").replace("\r", "").split("\n"):
         paragraph = " ".join(paragraph.split())
         if not paragraph:
-            lines.append("")
-            continue
-        while len(paragraph) > per_line:
-            cut = paragraph.rfind(" ", 0, per_line)
-            cut = cut if cut > per_line // 2 else per_line
-            lines.append(paragraph[:cut].strip())
-            paragraph = paragraph[cut:].strip()
-        lines.append(paragraph)
+            continue                       # no blank lines: they only eat room
+        current = ""
+        for word in paragraph.split(" "):
+            # one word wider than the line still has to be broken somewhere,
+            # or it hangs over the right edge of the sheet
+            while text_width(word, size) > width and len(word) > 1:
+                if current:
+                    lines.append(current)
+                    current = ""
+                cut = len(word)
+                while cut > 1 and text_width(word[:cut], size) > width:
+                    cut -= 1
+                lines.append(word[:cut])
+                word = word[cut:]
+            candidate = f"{current} {word}".strip()
+            if not current or text_width(candidate, size) <= width:
+                current = candidate
+                continue
+            lines.append(current)
+            current = word
+        if current:
+            lines.append(current)
     return lines
+WINANSI_STAND_IN = {
+    0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2015: "-", 0x2212: "-",
+    0x00A0: " ", 0x2007: " ", 0x2008: " ", 0x2009: " ", 0x200A: " ",
+    0x200B: "", 0x200E: "", 0x200F: "", 0xFEFF: "",
+    0x2044: "/", 0x2219: "\xb7", 0x00AD: "",
+}
+
+
+# Helvetica is base-14 WinAnsi, which is cp1252 — not Latin-1. The curly quotes,
+# dashes and ellipsis a Word document is full of are cp1252 bytes, so a character
+# is kept whenever cp1252 can spell it. Dropped, they turned "ZAM’KATIMU" into
+# "ZAMKATIMU" and swallowed the dotted leaders of a contents page; written as
+# the wrong byte, they became "?".
+def can_winansi(char: str) -> bool:
+    """Can Helvetica's WinAnsi encoding spell this character at all?"""
+    try:
+        char.encode("cp1252")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def pdf_visible_text(text: str) -> str:
+    """Escape a string for a PDF literal, in the characters WinAnsi can spell.
+
+    Brackets and backslashes must be escaped or the string ends the content
+    stream early. Curly quotes, dashes and the ellipsis are kept exactly as
+    written — the stream is written as cp1252, which is what WinAnsi means.
+    """
+    out: list[str] = []
+    for char in text:
+        if char in "()\\":
+            out.append("\\" + char)
+        elif 32 <= ord(char) <= 126:
+            out.append(char)
+        elif can_winansi(char):
+            out.append(char)
+        elif ord(char) in WINANSI_STAND_IN:
+            out.append(WINANSI_STAND_IN[ord(char)])
+        elif char == "\t":
+            out.append(" ")
+    return "".join(out)
 
 
 TEXT_SIZES = (10.5, 9.5, 8.5, 7.5, 6.5, 5.5)
 
 
-def text_body_page(words: str, sheet: tuple[float, float]) -> tuple[bytes, int]:
+def looks_blank_scan(page: dict) -> bool:
+    """Is this picture an empty placeholder rather than a page of paper?
+
+    A real scan of a page compresses to roughly 0.3 bytes per pixel or more. A
+    black or white rectangle at the same size compresses to almost nothing, and
+    Scribd does name such a picture beside a converted page's words. Drawing the
+    words is better than drawing the empty rectangle.
+    """
+    width, height = int(page.get("width") or 0), int(page.get("height") or 0)
+    size = int(page.get("bytes") or 0)
+    if width <= 0 or height <= 0 or size <= 0:
+        return False                       # nothing to judge by: keep the picture
+    return size / (width * height) < 0.02
+
+
+def sheet_scale(sheet: tuple[float, float]) -> float:
+    """How big this sheet is against an A4 page, for sizes and margins.
+
+    A Word document's page comes through at whatever the viewer's scan was —
+    900x1200 pt is not rare — and 10.5 pt on a sheet that big looks like a
+    footnote in the corner. Type is sized against the sheet, not against an
+    absolute number, so a page reads the same at any page size.
+    """
+    return max(0.6, min(2.5, min(sheet[0] / 595.0, sheet[1] / 842.0)))
+
+
+def text_body_page(words: str, sheet: tuple[float, float],
+                   report: list[int] | None = None) -> tuple[bytes, int]:
     """A whole sheet of readable text — for a document page that is text.
 
     Not every Scribd document is a stack of scans. Plenty are converted
@@ -1632,35 +1725,86 @@ def text_body_page(words: str, sheet: tuple[float, float]) -> tuple[bytes, int]:
     "scan not available" placeholders while the same document read perfectly in
     a browser — because the words were one request away and nothing asked.
 
-    Returns (content stream, lines actually drawn).
+    Two things make the sheet look like the page and not like a paragraph:
+    the lines keep the vertical places the viewer gave them (a contents page
+    stays a contents page), and the type is sized against the sheet.
+
+    Returns (content stream, lines actually drawn). `report`, if given, gets a
+    1 appended when the page had to be cut short to fit the sheet.
     """
-    margin = 46.0
+    scale = sheet_scale(sheet)
+    margin = 46.0 * scale
     usable_w = max(40.0, sheet[0] - 2 * margin)
     usable_h = max(40.0, sheet[1] - 2 * margin)
-    if not words.strip():
+    if not words_plain(words).strip():
         return b"", 0
-    chosen = TEXT_SIZES[-1]
-    lines: list[str] = []
-    leading = 0.0
-    for size in TEXT_SIZES:
-        per_line = max(16, int(usable_w / (size * 0.5)))
+    lines, places = decode_page_lines(words)
+    lines = [line.rstrip() for line in lines]
+    if not any(line.strip() for line in lines):
+        return b"", 0
+
+    body = ["BT 0 0 0 rg"]
+    drawn = 0
+
+    if places is not None and len([line for line in lines if line.strip()]) >= 2:
+        # the viewer placed these lines: draw them where it placed them
+        gaps = sorted({round(b - a, 4) for a, b in zip(places, places[1:])
+                       if b - a > 0.0005})
+        step = (gaps[len(gaps) // 2] * usable_h) if gaps else usable_h / len(lines)
+        size = max(4.0 * scale, min(12.0 * scale, step / 1.30))
+        # a contents line is one line: shrink the type until the longest one
+        # fits the sheet instead of breaking its dots across two
+        widest = max((text_width(pdf_visible_text(line), 1.0) for line in lines),
+                     default=0.0)
+        if widest:
+            size = min(size, usable_w / widest)
+        size = max(3.5 * scale, size)
+        top = sheet[1] - margin - size
+        for line, place in zip(lines, places):
+            if not line.strip():
+                continue
+            # the row of a contents page is spaced with spaces; keep them
+            pieces = ([line] if text_width(line, size) <= usable_w
+                      else wrap_to_width(line, usable_w, size))
+            for offset, piece in enumerate(pieces):
+                y = top - place * (usable_h - size) - offset * size * 1.30
+                if y < margin:
+                    if report is not None:
+                        report.append(1)
+                    break
+                body.append(f"/F1 {size:.2f} Tf 1 0 0 1 {margin:.2f} {y:.2f} Tm "
+                            f"({pdf_visible_text(piece)}) Tj")
+                drawn += 1
+        body.append("ET")
+        return "\n".join(body).encode("cp1252", "replace"), drawn
+
+    chosen = TEXT_SIZES[-1] * scale
+    leading = chosen * 1.32
+    flow: list[str] = []
+    for base in TEXT_SIZES:
+        size = round(base * scale, 2)
         leading = round(size * 1.32, 2)
-        lines = wrap_words(words, per_line)
-        if len(lines) * leading <= usable_h:
-            chosen = size
-            break
+        flow = wrap_to_width("\n".join(lines), usable_w, size)
         chosen = size
+        if len(flow) * leading <= usable_h:
+            break
+    # a page with no placement keeps normal line spacing from the top: that is
+    # what a browser does with plain paragraphs too. The corner-of-the-sheet
+    # look was never the spacing — it was the type, sized against the sheet now.
     room = max(1, int(usable_h / leading))
-    drawn = lines[:room]
+    if len(flow) > room and report is not None:
+        report.append(1)
+    drawn_lines = flow[:room]
     top = sheet[1] - margin - chosen
-    body = [f"BT /F1 {chosen:.1f} Tf 0 0 0 rg"]
-    for index, line in enumerate(drawn):
+    body.append(f"/F1 {chosen:.2f} Tf")
+    for index, line in enumerate(drawn_lines):
         if not line:
             continue
         body.append(f"1 0 0 1 {margin:.2f} {top - index * leading:.2f} Tm "
                     f"({pdf_visible_text(line)}) Tj")
+    drawn = len([line for line in drawn_lines if line])
     body.append("ET")
-    return "\n".join(body).encode("latin-1", "replace"), len(drawn)
+    return "\n".join(body).encode("cp1252", "replace"), drawn
 
 
 def text_layer(words: str, box: tuple[float, float, float, float],
@@ -1699,7 +1843,7 @@ def text_layer(words: str, box: tuple[float, float, float, float],
         body.append(f"1 0 0 1 {left + 3:.2f} {top - index * leading:.2f} Tm "
                     f"({pdf_visible_text(line)}) Tj")
     body.append("ET")
-    return "\n".join(body).encode("latin-1", "replace")
+    return "\n".join(body).encode("cp1252", "replace")
 
 
 def build_pdf(pages: list[dict | None], path: str, title: str = "",
@@ -1733,13 +1877,12 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
     for index, page in enumerate(pages, start=1):
         if page is None and text_pages.get(index):
             sheet = house
-            content, drawn = text_body_page(text_pages[index], sheet)
+            cut: list[int] = []
+            content, drawn = text_body_page(text_pages[index], sheet, cut)
             if drawn:
                 from_text += 1
-                wrapped = len(wrap_words(
-                    text_pages[index], max(16, int((sheet[0] - 92) / 3.0))))
-                if wrapped > drawn:
-                    short.append(index)
+            if cut:
+                short.append(index)
             objects.append(b"<< /Length " + str(len(content)).encode()
                            + b" >>\nstream\n" + content + b"\nendstream")
             content_num = len(objects)
@@ -1781,7 +1924,7 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
                        + b"\nstream\n" + image + b"\nendstream")
         image_num = len(objects)
         body = [("q " + _image_matrix(page, box) + " /Im0 Do Q").encode()]
-        layer = text_layer(texts.get(index, ""), box) if texts else b""
+        layer = text_layer(words_plain(texts.get(index, "")), box) if texts else b""
         if layer:
             body.append(layer)
             with_text += 1
@@ -2322,7 +2465,7 @@ TAG_STRIP_RE = re.compile(r"<[^>]*>")
 SPACE_RE = re.compile(r"[ \t\u00a0]+")
 
 
-def html_to_text(html: str) -> str:
+def html_to_text(html: str, collapse: bool = True) -> str:
     """The words of one page out of Scribd's own HTML, line by line.
 
     Scribd sends each page's text as HTML with <br> and block tags, so breaks
@@ -2338,8 +2481,136 @@ def html_to_text(html: str) -> str:
         text = text.replace(a, b)
     # blank lines carry no words and only eat the little room a sheet has,
     # so they are dropped: one line of text per line of the page
-    lines = [SPACE_RE.sub(" ", line).strip() for line in text.split("\n")]
+    # `collapse=False` keeps runs of spaces, which is how a text layer with no
+    # CSS placement says where its lines end
+    lines = [(SPACE_RE.sub(" ", line) if collapse else line).strip()
+             for line in text.split("\n")]
     return "\n".join(line for line in lines if line)
+
+
+# ---------------------------------------------------------------------------
+# lines: the shape a browser actually lays out
+# ---------------------------------------------------------------------------
+# Scribd's page HTML is not a paragraph. Each line is its own element, placed
+# with inline CSS (`<span style="left:12%;top:34%">…`), and the tags carry the
+# only clue that a new line starts at all: strip them and the page becomes one
+# long run — a contents page turned into a paragraph in the corner of the
+# sheet. So the positioned elements are read for their vertical place, and the
+# page keeps its lines and their spacing.
+LINE_MARK = "\x01"           # "the line after this mark has a vertical place"
+WORDS_CACHE_TAG = "#words-v2"   # a cached page written with line placement
+STYLE_TAG_RE = re.compile(r"<(span|div|p|li|td|a|h[1-6])\b([^>]*)>", re.IGNORECASE)
+STYLE_ATTR_RE = re.compile(r"""style\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+TOP_RE = re.compile(r"top\s*:\s*(-?[\d.]+)\s*(px|pt|em|%|in)?", re.IGNORECASE)
+
+
+def positioned_lines(html: str) -> list[tuple[str, float]]:
+    """The page's lines in reading order, each with the vertical place it had.
+
+    Returns [] when the markup carries no placement at all, which is the
+    honest answer for plain paragraphs: then the words flow instead.
+    """
+    marks: list[tuple[int, float]] = []
+    for match in STYLE_TAG_RE.finditer(html or ""):
+        style = STYLE_ATTR_RE.search(match.group(2) or "")
+        if not style:
+            continue
+        found = TOP_RE.search(style.group(1))
+        if not found:
+            continue
+        try:
+            marks.append((match.end(), float(found.group(1))))
+        except ValueError:
+            continue
+    if len(marks) < 2:
+        return []
+    out: list[tuple[str, float]] = []
+    for index, (start, top) in enumerate(marks):
+        end = marks[index + 1][0] if index + 1 < len(marks) else len(html)
+        words = html_to_text(html[start:end])
+        if not words.strip():
+            continue
+        # an outer and an inner element can name the same line: keep one
+        if out and words.strip() == out[-1][0].strip():
+            continue
+        out.append((words, top))
+    # two columns on one row are two spans at the same height: join them into
+    # the row they belong to instead of writing them one under the other
+    rows: list[tuple[str, float]] = []
+    for text, top in out:
+        if rows and abs(top - rows[-1][1]) <= max(0.4, abs(top) * 0.01):
+            rows[-1] = (rows[-1][0] + "   " + text, rows[-1][1])
+        else:
+            rows.append((text, top))
+    return rows
+
+
+def encode_page_lines(lines: list[tuple[str, float | None]]) -> str:
+    """A page's words, with the vertical place of each line when it has one."""
+    tops = [top for _text, top in lines if top is not None]
+    low, high = (min(tops), max(tops)) if tops else (0.0, 0.0)
+    out: list[str] = []
+    for text, top in lines:
+        if top is None or high <= low:
+            out.append(text)
+            continue
+        out.append("%s%.4f|%s" % (LINE_MARK, (top - low) / (high - low), text))
+    return "\n".join(out)
+
+
+def decode_page_lines(words: str) -> tuple[list[str], list[float] | None]:
+    """Read back what encode_page_lines wrote: (lines, places or None)."""
+    lines: list[str] = []
+    places: list[float] = []
+    placed = False
+    for raw in (words or "").split("\n"):
+        if raw.startswith(LINE_MARK) and "|" in raw:
+            head, _, text = raw[len(LINE_MARK):].partition("|")
+            try:
+                places.append(float(head))
+                placed = True
+                lines.append(text)
+                continue
+            except ValueError:
+                pass
+        places.append(0.0)
+        lines.append(raw)
+    return lines, (places if placed else None)
+
+
+def words_plain(words: str) -> str:
+    """The page's words without the placement marks, for counting and display."""
+    lines, _places = decode_page_lines(words)
+    return "\n".join(lines)
+
+
+def lines_from_html(html: str, chrome: bool = True) -> str:
+    """One page's words, line by line, out of its markup.
+
+    Placed elements give the lines and their spacing. Failing that, block tags
+    give the lines. Failing that too (one flat run), runs of wide space are
+    treated as line ends — a text layer positioned with spaces rather than CSS
+    is otherwise a single unreadable line.
+    """
+    placed = positioned_lines(html)
+    if placed:
+        kept = []
+        for text, top in placed:
+            text = (tidy_page_text(text, keep_spacing=True) if chrome
+                    else html_to_text(text))
+            if text.strip():
+                kept.append((text, top))
+        if len(kept) >= 2:
+            return encode_page_lines(kept)
+    loose = html_to_text(html, collapse=False)
+    if "\n" not in loose and len(re.findall(r"[ \t\u00a0]{3,}", loose)) >= 2:
+        parts = [part.strip() for part in re.split(r"[ \t\u00a0]{3,}", loose)]
+        parts = [part for part in parts if part]
+        if len(parts) >= 3:
+            cleaned = [tidy_page_text(part) if chrome else html_to_text(part)
+                       for part in parts]
+            return "\n".join(line for line in cleaned if line)
+    return tidy_page_text(html_to_text(html)) if chrome else html_to_text(html)
 
 
 def text_from_jsonp(body: bytes) -> str:
@@ -2354,7 +2625,8 @@ def text_from_jsonp(body: bytes) -> str:
         return ""
     if not isinstance(parts, list):
         return ""
-    return html_to_text("".join(part for part in parts if isinstance(part, str)))
+    html = "".join(part for part in parts if isinstance(part, str))
+    return lines_from_html(html, chrome=False)
 
 
 # ---------------------------------------------------------------------------
@@ -2404,11 +2676,15 @@ def is_boilerplate(line: str) -> bool:
     return any(marker in plain for marker in BOILERPLATE)
 
 
-def tidy_page_text(words: str) -> str:
-    """One page's words with the viewer chrome taken out, lines kept."""
+def tidy_page_text(words: str, keep_spacing: bool = False) -> str:
+    """One page's words with the viewer chrome taken out, lines kept.
+
+    `keep_spacing` leaves runs of spaces alone: a row of a contents page spaces
+    its two columns with spaces, and collapsing them welds the columns together.
+    """
     out: list[str] = []
     for line in (words or "").split("\n"):
-        line = " ".join(line.split())
+        line = line.strip() if keep_spacing else " ".join(line.split())
         if line and not is_boilerplate(line):
             out.append(line)
     return "\n".join(out)
@@ -2457,7 +2733,7 @@ def embed_text_pages(body: bytes) -> dict[int, str]:
     pages: dict[int, str] = {}
     for index, (start, number) in enumerate(marks):
         end = tag_start(marks[index + 1][0]) if index + 1 < len(marks) else len(text)
-        words = tidy_page_text(html_to_text(text[tag_start(start):end]))
+        words = lines_from_html(text[tag_start(start):end], chrome=True)
         if words.strip():
             pages[number] = words
     return pages
@@ -2903,7 +3179,9 @@ class Ctx:
             if os.path.isfile(cached):
                 try:
                     with open(cached, encoding="utf-8", errors="replace") as handle:
-                        return handle.read()
+                        kept = handle.read()
+                    if kept.startswith(WORDS_CACHE_TAG + "\n"):
+                        return kept[len(WORDS_CACHE_TAG) + 1:]
                 except OSError:
                     pass
         words = self.descriptor_text(number)
@@ -2913,13 +3191,18 @@ class Ctx:
         return words
 
     def remember_text(self, number: int, words: str) -> None:
-        """Keep one page's words beside its scan, so a re-run reads no network."""
+        """Keep one page's words beside its scan, so a re-run reads no network.
+
+        The words now carry each line's vertical place, so a cache written by
+        an older version would draw the old paragraph again. The marker makes
+        that file stale instead of trusted.
+        """
         if not self.cache_dir or not (words or "").strip():
             return
         try:
             with open(os.path.join(self.cache_dir, f"{number:04d}.text"),
                       "w", encoding="utf-8") as handle:
-                handle.write(words)
+                handle.write(WORDS_CACHE_TAG + "\n" + words)
         except OSError:
             pass
 
@@ -3324,6 +3607,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     collected: dict[int, dict] = {}
     failed: list[int] = []
     text_pages: dict[int, str] = {}
+    texts: dict[int, str] = {}        # the invisible text layer of a scan page
     done = 0
     text_only = ctx.is_text_document()
     if text_only:
@@ -3378,6 +3662,32 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         # structurally valid but visually blank page. Only a page with no words
         # is asked for a scan — and only if it actually names one, because 37
         # requests for images that do not exist would just be refused 37 times.
+        # A page can carry both words and a picture (page 1 of a converted
+        # document is usually its scanned cover). The picture is shown when it
+        # is a real one — it is what the page looks like — and skipped when it
+        # is the empty rectangle Scribd sometimes names instead.
+        both = [number for number in range(1, with_limit + 1)
+                if number in text_pages and ctx.sources.images_for(number)]
+        for number in both[:MAX_COVER_SCANS]:
+            if not JOB.alive(ctx.gen):
+                break
+            _n, built, _m = ctx.grab(number)
+            if not built:
+                continue
+            if looks_blank_scan(built):
+                JOB.say(f"page {number}: the picture is an empty {built['width']}x"
+                        f"{built['height']} placeholder ({built['bytes']} B) — "
+                        f"its words are drawn instead")
+                continue
+            collected[number] = built
+        if both:
+            kept_cover = [n for n in both[:MAX_COVER_SCANS] if n in collected]
+            JOB.say(f"pictures: {len(kept_cover)} of {len(both[:MAX_COVER_SCANS])} "
+                    f"page(s) that name a scan are shown as that scan")
+            # a page shown as a scan keeps its words as the invisible text layer,
+            # so it is still searchable and copyable
+            for number in kept_cover:
+                texts.setdefault(number, text_pages[number])
         silent = [number for number in range(1, with_limit + 1)
                   if number not in text_pages]
         need_scan = [number for number in silent
@@ -3575,7 +3885,6 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             JOB.set_progress(ok=len(collected))
 
     # ---- the words of each page, so the PDF is not just photographs --------
-    texts: dict[int, str] = {}
     if text and collected:
         JOB.say("text: asking for each page's words (one extra request per page)")
         for number in sorted(collected):
@@ -5380,6 +5689,94 @@ def selftest() -> str:
         assert rows[0]["bytes"] == 12 and rows[0]["when"] > 0
         assert panel_files(os.path.join(shelf, "gone")) == []
 
+    # ---- the words keep their lines, their places and their characters ----
+    # Curly quotes and the ellipsis are cp1252, not Latin-1: written as the
+    # wrong byte they became "?", dropped they turned "ZAM’KATIMU" into
+    # "ZAMKATIMU" and ate the dotted leaders of a contents page.
+    for char in ("\u2019", "\u2018", "\u201c", "\u201d", "\u2013", "\u2014",
+                 "\u2026", "\u00e9", "\u00b7", "\u20ac"):
+        assert can_winansi(char), char
+        assert pdf_visible_text(char) == char, char
+        assert pdf_visible_text(char).encode("cp1252")
+    assert not can_winansi("\u4e2d")
+    assert pdf_visible_text("\u4e2d\u6587") == ""          # unspellable: dropped
+    assert pdf_visible_text("\u2010") == "-"                # no cp1252 byte
+    assert pdf_visible_text("a (b) c") == "a \\(b\\) c"
+    assert pdf_visible_text("back\\slash") == "back\\\\slash"
+    toc = ["ZAM\u2019KATIMU", "Mutu          Tsamba",
+           "1.Mutu 1\u2026.....\u2026....Kubadwa kwake\u2026\u2026\u2026\u2026.4"]
+    drawn_toc, lines_toc = text_body_page("\n".join(toc), (595.0, 842.0))
+    assert lines_toc == 3
+    shown_toc = " ".join(re.findall(r"\((.*?)\) Tj",
+                                    drawn_toc.decode("cp1252")))
+    assert "ZAM\u2019KATIMU" in shown_toc and "\u2026" in shown_toc, shown_toc
+    assert not re.search(r"\bZAMKATIMU\b", shown_toc)
+
+    # Helvetica's real widths, so a line cannot run off the sheet
+    assert text_width("", 12) == 0
+    assert abs(text_width("i", 1000) - 222) < 1.0          # narrow
+    assert abs(text_width("M", 1000) - 833) < 1.0          # wide
+    assert text_width("hello world", 24) > text_width("hello world", 12)
+    wrapped_real = wrap_to_width("word " * 40, 200.0, 11.0)
+    assert wrapped_real and all(text_width(line, 11.0) <= 200.0
+                                for line in wrapped_real), [
+        text_width(line, 11.0) for line in wrapped_real]
+    assert " ".join(wrapped_real).split() == ["word"] * 40
+    # one word wider than the sheet is broken, not left hanging over the edge
+    long_word = wrap_to_width("MM" * 40, 60.0, 11.0)
+    assert all(text_width(line, 11.0) <= 60.0 for line in long_word), long_word
+
+    # the placed lines of a page: rows, not one long run
+    placed = ('<div class="text_layer">'
+              '<span style="left:8%;top:4%">ZAM\u2019KATIMU</span>'
+              '<span style="left:8%;top:12%"><span style="left:8%;top:12%">Mutu</span>'
+              '<span style="left:60%;top:12%">Tsamba</span></span>'
+              '<span style="left:8%;top:50%">6. Mutu 6\u2026\u2026Ufumu wake\u2026\u202636</span>'
+              '</div>')
+    rows = positioned_lines(placed)
+    assert [row[0] for row in rows] == ["ZAM\u2019KATIMU", "Mutu   Tsamba",
+                                        "6. Mutu 6\u2026\u2026Ufumu wake\u2026\u202636"], rows
+    assert rows[0][1] < rows[1][1] < rows[2][1]
+    assert positioned_lines("<p>no placement at all</p>") == []
+    encoded = lines_from_html(placed)
+    lines_back, places_back = decode_page_lines(encoded)
+    assert len(lines_back) == 3 and places_back is not None
+    assert places_back[0] == 0.0 and 0.0 < places_back[1] < places_back[2] <= 1.0
+    # two columns on one row keep a gap between them
+    assert words_plain(encoded).split("\n")[1] == "Mutu   Tsamba", \
+        repr(words_plain(encoded))
+    # no placement in the markup: block tags give the lines
+    assert lines_from_html("<p>one</p><p>two</p>").split("\n") == ["one", "two"]
+    # nor block tags: runs of wide space are the line ends, not one flat run
+    flat = lines_from_html("a" + " " * 6 + "b" + " " * 6 + "c")
+    assert flat.split("\n") == ["a", "b", "c"], flat
+    # a page with no placement keeps normal line spacing (not one line per
+    # sheet, not a single run)
+    sparse = "\n".join(f"line {n}" for n in range(1, 5))
+    sparse_body, sparse_lines = text_body_page(sparse, (595.0, 842.0))
+    assert sparse_lines == 4
+    ys = [float(m.group(1)) for m in
+          re.finditer(r"1 0 0 1 [\d.]+ (-?[\d.]+) Tm", sparse_body.decode("cp1252"))]
+    gap = ys[0] - ys[1]
+    sparse_size = float(re.search(rb"/F1 ([\d.]+) Tf", sparse_body).group(1))
+    assert 1.1 * sparse_size <= gap <= 1.6 * sparse_size, (gap, sparse_size)
+    # a placed page keeps the spacing it was given, not a uniform leading
+    placed_lines = [("title", 0.0), ("body", 0.55), ("footnote", 0.95)]
+    spaced = encode_page_lines(placed_lines)
+    spaced_body, _ = text_body_page(spaced, (595.0, 842.0))
+    spaced_ys = [float(m.group(1)) for m in
+                 re.finditer(r"1 0 0 1 [\d.]+ (-?[\d.]+) Tm",
+                             spaced_body.decode("cp1252"))]
+    first_gap, second_gap = spaced_ys[0] - spaced_ys[1], spaced_ys[1] - spaced_ys[2]
+    # 0.55 - 0.0 of the sheet above, 0.95 - 0.55 below: the page's own spacing
+    assert abs(first_gap / second_gap - 0.55 / 0.40) < 0.15, (first_gap, second_gap)
+    # a page on a big sheet gets big type, not a footnote in the corner
+    big_body, _ = text_body_page("Mutu wa nkhani", (900.0, 1200.0))
+    big_size = float(re.search(rb"/F1 ([\d.]+) Tf", big_body).group(1))
+    small_body, _ = text_body_page("Mutu wa nkhani", (595.0, 842.0))
+    small_size = float(re.search(rb"/F1 ([\d.]+) Tf", small_body).group(1))
+    assert big_size > small_size * 1.3, (big_size, small_size)
+
     # ---- the viewer's own pages, where a converted document's words live --
     viewer = (
         b'<div id="page-1" class="outer_page" data-page-number="1">'
@@ -5456,11 +5853,8 @@ def selftest() -> str:
     # ---- a page that is text, not a scan --------------------------------
     # The case that made a 38-page document come out as 37 grey boxes: most of
     # its pages have words and no image at all. Those pages have to be drawn.
-    assert wrap_words("", 40) == []
-    assert wrap_words("one two three", 40) == ["one two three"]
-    wrapped = wrap_words("word " * 60, 20)
-    assert len(wrapped) > 1 and all(len(line) <= 20 for line in wrapped), wrapped
-    assert " ".join(wrapped).split() == ["word"] * 60
+    assert wrap_to_width("", 200.0, 11.0) == []
+    assert wrap_to_width("one two three", 200.0, 11.0) == ["one two three"]
 
     body_words = ("KUSANTHULA BUKU LA NTHONDO. " * 40).strip()
     content, drawn = text_body_page(body_words, (595.0, 842.0))
@@ -5506,7 +5900,8 @@ def selftest() -> str:
             "layer, panel key and CORS, cookies, token, names, pasted links, "
             "bookmarklet, scribd search, relevance, channels, the document "
             "queue, signed links, the disk guard, token shapes, redaction, "
-            "page wiring, text pages, built names, viewer pages")
+            "page wiring, text pages, built names, viewer pages, "
+            "typography, placed lines")
 
 def main(argv: list[str]) -> int:
     global BASE
