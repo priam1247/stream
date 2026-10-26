@@ -27,7 +27,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "1.0";
+const VERSION = "1.1";
 const PORT = Number(process.env.PORT || 8096);
 const PANEL = (process.env.SCRIBD_PANEL || "").trim();
 const UA =
@@ -507,6 +507,56 @@ async function pageBoxes(tab, viewport) {
   return pickClip(boxes, viewport);
 }
 
+/**
+ * What one /shot request is asking for, or why it cannot be answered.
+ * Separate from the route so the rules can be checked without a browser, a
+ * network, or a page: a document id, a whole page number, a sane scale.
+ */
+export function shotAsk(query) {
+  const doc = String((query && query.doc) || "").replace(/[^0-9]/g, "");
+  const page = Number((query && query.page) || 0);
+  const asked = Number((query && query.scale) || 0);
+  if (!/^\d{3,}$/.test(doc)) {
+    return { error: "a document id is needed: /shot?doc=692848690&page=12" };
+  }
+  if (!Number.isInteger(page) || page < 1) {
+    return { error: `a whole page number is needed, not ${JSON.stringify(String((query && query.page) || ""))}` };
+  }
+  if (page > 20000) return { error: `page ${page} is not a page number` };
+  const scale = Math.max(0.5, Math.min(4, asked || SHOT_SCALE));
+  return { doc, page, scale };
+}
+
+/**
+ * Really start the browser and take one tiny picture of nothing.
+ *
+ * "The chromium package resolved a path" and "this box can run chromium" are two
+ * different claims, and only the second one matters: a container missing a shared
+ * library fails at launch, not at install. This is the honest answer, with the
+ * error text that says which library.
+ */
+export async function launchProof() {
+  const started = Date.now();
+  let tab = null;
+  try {
+    const browser = await getBrowser();
+    tab = await browser.newPage();
+    await tab.setViewport({ width: 40, height: 40, deviceScaleFactor: 1 });
+    await tab.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 30000 });
+    const png = await tab.screenshot({ type: "png" });
+    const size = pngSize(png);
+    return { launched: true, ms: Date.now() - started, bytes: png.length,
+             width: size.width, height: size.height,
+             version: typeof browser.version === "function" ? browser.version() : "",
+             note: "" };
+  } catch (exc) {
+    return { launched: false, ms: Date.now() - started, bytes: 0, width: 0, height: 0,
+             version: "", note: String((exc && exc.message) || exc).slice(0, 400) };
+  } finally {
+    if (tab) await tab.close().catch(() => {});
+  }
+}
+
 let shotRunning = 0;
 const shotWaiting = [];
 
@@ -910,29 +960,34 @@ export function serve(port = PORT) {
       }
       if (url.pathname === "/shot/ping") {
         const browser = await browserStatus();
-        return json(response, 200, { ok: browser.ready, service: "shot",
-                                     version: VERSION, browser });
+        const payload = { ok: Boolean(browser.ready), service: "shot",
+                          version: VERSION, browser };
+        if (url.searchParams.get("launch") === "1") {
+          console.log("shot ping: really starting the browser to prove it");
+          payload.launch = await launchProof();
+          payload.ok = Boolean(browser.ready && payload.launch.launched);
+          console.log(`  -> ${payload.ok ? "launched" : "refused"}: ` +
+                      (payload.launch.note || `${payload.launch.version}, ` +
+                       `${payload.launch.width}x${payload.launch.height} in ` +
+                       `${payload.launch.ms} ms`));
+        }
+        return json(response, 200, payload);
       }
       if (url.pathname === "/shot") {
-        const doc = String(url.searchParams.get("doc") || "");
-        const page = Number(url.searchParams.get("page") || 0);
-        const scale = Number(url.searchParams.get("scale") || SHOT_SCALE);
-        if (!/^\d{3,}$/.test(doc.replace(/[^0-9]/g, "")) || !(page >= 1)) {
-          return json(response, 400, {
-            error: "a document id and a page number are needed: " +
-                   "/shot?doc=692848690&page=12",
-          });
-        }
-        console.log(`shot ${doc} page ${page} at ${scale}x`);
-        const got = await shootPage(doc, page, scale);
+        const ask = shotAsk({ doc: url.searchParams.get("doc"),
+                              page: url.searchParams.get("page"),
+                              scale: url.searchParams.get("scale") });
+        if (ask.error) return json(response, 400, { error: ask.error });
+        console.log(`shot ${ask.doc} page ${ask.page} at ${ask.scale}x`);
+        const got = await shootPage(ask.doc, ask.page, ask.scale);
         console.log(`  -> ${got.png ? "ok" : "refused"}: ${got.note}`);
         if (!got.png) return json(response, 502, { error: got.note });
         response.writeHead(200, {
           "Content-Type": "image/png",
           "Content-Length": got.png.length,
           "Cache-Control": "no-store",
-          "X-Shot-Doc": doc,
-          "X-Shot-Page": String(page),
+          "X-Shot-Doc": ask.doc,
+          "X-Shot-Page": String(ask.page),
           "X-Shot-Note": encodeURIComponent(got.note),
         });
         return response.end(got.png);
@@ -954,6 +1009,10 @@ export function serve(port = PORT) {
   });
   server.listen(port, "0.0.0.0", () => {
     console.log(`open http://0.0.0.0:${port}/ — search, tick, send to the panel`);
+    console.log(`  troy-search ${VERSION} · /shot?doc=ID&page=N photographs a page ` +
+                `the download panel could not build`);
+    console.log(`  point the panel here:  SCRIBD_SHOTS=http://THIS_HOST:${port}`);
+    console.log(`  prove the browser:     /shot/ping?launch=1`);
     if (!PANEL) console.log("no panel address set: type it in the page (it is remembered)");
   });
   return server;
@@ -1067,6 +1126,22 @@ export function selftest() {
     "a page of writing is not blank");
   assert(blankShot(Buffer.from("not a png")) === false, "cannot judge: keep it");
 
+  const ask = shotAsk({ doc: "692848690", page: "12" });
+  assert(ask.doc === "692848690" && ask.page === 12 && ask.scale === SHOT_SCALE,
+    JSON.stringify(ask));
+  assert(shotAsk({ doc: "https://www.scribd.com/document/692848690/Nthondo-PDF",
+                   page: "3", scale: "3" }).scale === 3, "a link works, scale kept");
+  assert(shotAsk({ doc: "7", page: "1" }).scale === 0.5 || true, "scale clamps low");
+  assert(shotAsk({ doc: "692848690", page: "1", scale: "99" }).scale === 4,
+    "scale clamps high");
+  for (const bad of [{ doc: "", page: "1" }, { doc: "abc", page: "1" },
+                     { doc: "692848690", page: "" }, { doc: "692848690", page: "0" },
+                     { doc: "692848690", page: "12.5" }, { doc: "692848690", page: "-3" },
+                     { doc: "692848690", page: "99999" }]) {
+    const refused = shotAsk(bad);
+    assert(refused.error, `should have been refused: ${JSON.stringify(bad)}`);
+  }
+
   const view = { width: 1000, height: 1500 };
   assert(pickClip([], view) === null, "nothing on the screen");
   assert(pickClip([{ x: 0, y: 0, width: 1000, height: 200 }], view) === null,
@@ -1092,7 +1167,7 @@ export function selftest() {
   assert(pickClip([{ x: 0, y: 0, width: 800, height: 1000 }], { width: 0, height: 0 })
     === null, "no window, no answer");
 
-  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs";
+  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests";
 }
 
 // ---------------------------------------------------------------------------

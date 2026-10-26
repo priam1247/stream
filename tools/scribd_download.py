@@ -209,7 +209,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.20"
+VERSION = "2.21"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -3642,7 +3642,47 @@ def shot_get(url: str, timeout: float) -> tuple[int, bytes, str]:
         except Exception:                       # noqa: BLE001
             return exc.code, b"", ""
     except Exception as exc:                    # noqa: BLE001
-        return 0, b"", repr(exc)[:160]
+        return 0, b"", plain_error(exc)
+
+
+def plain_error(exc: BaseException) -> str:
+    """A connection failure in words, not in a repr.
+
+    "URLError(ConnectionRefusedError(111, 'Connection refused'))" is what Python
+    knows. What the reader needs to know is that nothing is listening there —
+    because that is a service they have to start, not a bug in the document.
+    """
+    text = repr(exc)
+    lowered = text.lower()
+    if "connectionrefused" in lowered or "refused" in lowered:
+        return "nothing is listening there — is the /shot service running?"
+    if "timed out" in lowered or "timeout" in lowered:
+        return "it did not answer in time (a page can take a while to draw)"
+    if "gaierror" in lowered or "name or service not known" in lowered:
+        return "that host does not resolve — check the address"
+    if "connectionreset" in lowered or "brokenpipe" in lowered:
+        return "the connection was dropped mid-answer"
+    if "ssl" in lowered or "certificate" in lowered:
+        return "the TLS handshake failed — is it http:// and not https://?"
+    if "unreachable" in lowered:
+        return "that network is unreachable from here"
+    return text[:160]
+
+
+def refusal_reason(body: bytes, status: int) -> str:
+    """Why the browser service said no, in its own words."""
+    if body:
+        try:
+            answer = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            answer = None
+        if isinstance(answer, dict):
+            for key in ("error", "note", "message"):
+                text = str(answer.get(key) or "").strip()
+                if text:
+                    return text[:200]
+    text = body[:200].decode("utf-8", "replace").strip()
+    return text or f"http {status}"
 
 
 class Shooter:
@@ -3661,17 +3701,41 @@ class Shooter:
         self.note = ""
 
     def ping(self) -> bool:
-        """Is there a browser to ask? One cheap request, answered once."""
+        """Is there a browser to ask? One cheap request, answered once.
+
+        The answer has to be read, not sniffed: a service with no browser in it
+        still answers 200, still says "ok" — with `false` after it. Believing
+        that would send every missing page to a service that cannot help, and
+        the document would end up with the same placeholders, only slower.
+        """
         if not self.base:
             self.state = False
             self.note = ("no browser service configured — set SCRIBD_SHOTS or "
                          "pass --shots http://HOST:PORT")
             return False
         status, body, error = shot_get(self.base + "/shot/ping", 10.0)
-        self.state = status == 200 and b'"ok"' in body
-        self.note = "" if self.state else (
-            error or f"the browser service answered {status} to /shot/ping")
-        return self.state
+        answer: object = None
+        if body:
+            try:
+                answer = json.loads(body.decode("utf-8", "replace"))
+            except ValueError:
+                answer = None
+        ready = bool(answer.get("ok")) if isinstance(answer, dict) else False
+        self.state = status == 200 and ready
+        if self.state:
+            self.note = ""
+            return True
+        why = ""
+        if isinstance(answer, dict):
+            browser = answer.get("browser")
+            if isinstance(browser, dict):
+                why = str(browser.get("note") or "").strip()
+            why = why or str(answer.get("error") or "").strip()
+        self.note = (error or why[:200]
+                     or (f"the browser service answered {status} and said it is "
+                         f"not ready" if status == 200 else
+                         f"the browser service answered {status} to /shot/ping"))
+        return False
 
     def alive(self) -> bool:
         if self.state is None:
@@ -3687,9 +3751,7 @@ class Shooter:
         if error:
             return None, f"page {number}: the browser did not answer — {error}"
         if status != 200:
-            why = (body[:200].decode("utf-8", "replace").strip()
-                   or f"http {status}")
-            return None, f"page {number}: the browser refused — {why}"
+            return None, f"page {number}: the browser refused — {refusal_reason(body, status)}"
         page = scan_for_pdf(body)
         if page is None:
             return None, (f"page {number}: the browser sent "
@@ -3792,6 +3854,8 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 f"{ctx.rest_budget:.0f}s waiting for scans")
     elif shooter.base:
         JOB.say(f"no browser at {shooter.base}: {shooter.note}")
+        JOB.say("  pages this document cannot build will be labelled sheets; "
+                "start that service and run again to photograph them")
     if not ctx.ident:
         with JOB.lock:
             JOB.verdict = "BAD LINK"
@@ -4082,7 +4146,9 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         JOB.set_progress(ok=len(collected) + len(
             [n for n in text_pages if n not in collected]), skipped=len(failed))
     elif failed and shooter.note:
-        JOB.say(f"no browser to photograph {len(failed)} page(s): {shooter.note}")
+        JOB.say(f"no browser to photograph {len(failed)} page(s)"
+                + (f" at {shooter.base}" if shooter.base else "")
+                + f": {shooter.note}")
 
     # ---- pictures that arrived, but not as a full scan -------------------
     previews = sorted(number for number, page in collected.items()
@@ -6171,8 +6237,14 @@ def selftest() -> str:
             parsed = urllib.parse.urlsplit(self.path)
             query = urllib.parse.parse_qs(parsed.query)
             status, body, kind = 200, b"", "image/png"
-            if parsed.path == "/shot/ping":
-                body, kind = b'{"ok": true, "browser": "selftest"}', "application/json"
+            if parsed.path.endswith("/shot/ping"):
+                if "notready" in parsed.path:
+                    body = (b'{"ok": false, "service": "shot", "version": "1.1",'
+                            b' "browser": {"ready": false, "note": "Cannot find'
+                            b' package @sparticuz/chromium"}}')
+                else:
+                    body = b'{"ok": true, "service": "shot", "browser": {"ready": true}}'
+                kind = "application/json"
             elif parsed.path == "/shot":
                 number = int((query.get("page") or ["0"])[0])
                 if number == 4:
@@ -6208,6 +6280,8 @@ def selftest() -> str:
         assert page["url"].startswith("browser http://127.0.0.1:"), page
         refused, note = shooter.shoot("7", 4)
         assert refused is None and "refused" in note, note
+        # the reason arrives as json: the note is the service's own words
+        assert "not for this account" in note and "{" not in note, note
         empty, note = shooter.shoot("7", 5)
         assert empty and empty["shot"] and "looks empty" in note, (empty, note)
         assert "100x142" in note or "looks empty" in empty["label"], note
@@ -6220,9 +6294,28 @@ def selftest() -> str:
         assert sorted(kept) == [5] and notes and "looks empty" in notes[0], notes
         stopped, notes = shooter.capture("7", [1, 2], jobs=2, alive=lambda: False)
         assert stopped == {} and notes and "stopped" in notes[0], notes
+
+        # a service that answers 200 and says "ok": false is NOT a browser on
+        # hand. Believing it would send every missing page somewhere that cannot
+        # help, and the document would end up with the same placeholders, slower.
+        notready = Shooter(f"http://127.0.0.1:{service.server_address[1]}/notready")
+        assert notready.alive() is False, notready.note
+        assert "@sparticuz/chromium" in notready.note, notready.note
+        assert notready.capture("7", [1]) == ({}, [notready.note])
     finally:
         service.shutdown()
         service.server_close()
+
+    assert refusal_reason(b'{"error": "page 12: no browser"}', 502) == "page 12: no browser"
+    assert refusal_reason(b'<html>nope</html>', 502) == "<html>nope</html>"
+    assert refusal_reason(b"", 500) == "http 500"
+    assert "nothing is listening" in plain_error(
+        urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")))
+    assert "does not resolve" in plain_error(socket.gaierror(-2, "Name or service not known"))
+    assert "did not answer in time" in plain_error(TimeoutError("timed out"))
+    assert "http:// and not https://" in plain_error(urllib.error.URLError(
+        OSError(1, "[SSL: WRONG_VERSION_NUMBER] wrong version number")))
+    assert plain_error(ValueError("something odd")).startswith("ValueError")
 
     # no browser configured: everything still works, and says why once
     quiet = Shooter("")
@@ -6267,7 +6360,8 @@ def selftest() -> str:
             "bookmarklet, scribd search, relevance, channels, the document "
             "queue, signed links, the disk guard, token shapes, redaction, "
             "page wiring, text pages, built names, viewer pages, "
-            "typography, placed lines, photographed pages")
+            "typography, placed lines, photographed pages, a browser "
+            "that is not there")
 
 def main(argv: list[str]) -> int:
     global BASE
