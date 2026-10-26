@@ -227,7 +227,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.33"
+VERSION = "2.34"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -4145,18 +4145,45 @@ def entry_manifest(pages: list[dict]) -> str:
     return line
 
 
-_AUTOSTART = {"tried": False, "base": ""}
+_AUTOSTART = {"tried": 0.0, "base": "", "npm_tried": False}
+AUTOSTART_COOLDOWN = 300.0   # a failed start is retried, just not every page
+
+
+def shooter_log_path(proj: str) -> str:
+    return os.path.join(proj, "tmp", "shooter-start.log")
+
+
+def shooter_start_reason(proj: str) -> str:
+    """The service's own last words, from its start log — never a guess.
+
+    A browser service that dies at import time knows exactly why (a missing
+    package, a missing shared library). Swallowing that is what made a panel
+    say "nothing is listening" instead of the one line that fixes it.
+    """
+    try:
+        with open(shooter_log_path(proj), "rb") as handle:
+            lines = [ln.decode("utf-8", "replace").strip()
+                     for ln in handle.read().splitlines() if ln.strip()]
+    except Exception:                                   # noqa: BLE001
+        return ""
+    return " | ".join(lines[-3:])
 
 
 def autostart_shots() -> str:
     """Start tools/troy-search myself and wait for it to answer. '' if I cannot.
 
-    Tried once per process. SCRIBD_AUTOSHOOT=0 turns it off for hosts where a
-    browser must never be spawned; SCRIBD_SHOOTER_DIR points somewhere else.
+    Retried at most once per cooldown after a failure, cached forever once it
+    works. SCRIBD_AUTOSHOOT=0 turns it off for hosts where a browser must never
+    be spawned; SCRIBD_SHOOTER_DIR points somewhere else. If the service has no
+    packages installed, npm install runs once first — photographs need them,
+    and a panel box that runs node can fetch them.
     """
-    if _AUTOSTART["tried"]:
+    if _AUTOSTART["base"]:
         return _AUTOSTART["base"]
-    _AUTOSTART["tried"] = True
+    now = time.time()
+    if _AUTOSTART["tried"] and now - _AUTOSTART["tried"] < AUTOSTART_COOLDOWN:
+        return ""
+    _AUTOSTART["tried"] = now
     if os.environ.get("SCRIBD_AUTOSHOOT", "1") == "0":
         return ""
     node = shutil.which("node")
@@ -4169,11 +4196,35 @@ def autostart_shots() -> str:
                 f"{os.path.isfile(entry)}) — pages with no other source will "
                 f"be left out of the PDF and named, never greyed")
         return ""
+    os.makedirs(os.path.join(proj, "tmp"), exist_ok=True)
+    log = shooter_log_path(proj)
+    if not os.path.isdir(os.path.join(proj, "node_modules")) \
+            and not _AUTOSTART["npm_tried"]:
+        _AUTOSTART["npm_tried"] = True
+        npm = shutil.which("npm")
+        if npm:
+            JOB.say("the browser service has no packages installed — running "
+                    "npm install in tools/troy-search once, because the "
+                    "photographs need them")
+            try:
+                done = subprocess.run(
+                    [npm, "install", "--no-audit", "--no-fund",
+                     "--loglevel=error"],
+                    cwd=proj, capture_output=True, timeout=900)
+                with open(log, "ab") as handle:
+                    handle.write((done.stderr or done.stdout or b"")[-2000:])
+            except Exception as exc:  # noqa: BLE001
+                JOB.say(f"npm install for the browser service failed: {exc!r}")
+        else:
+            JOB.say("the browser service has no packages installed and npm is "
+                    "not on the PATH — run npm install in tools/troy-search "
+                    "once by hand")
     env = dict(os.environ)
     env.setdefault("TMPDIR", os.path.join(proj, "tmp"))
     try:
+        handle = open(log, "ab")
         subprocess.Popen([node, "index.js"], cwd=proj, env=env,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=handle,
                          start_new_session=True)
     except Exception as exc:  # noqa: BLE001
         JOB.say(f"starting the browser service myself failed: {exc!r}")
@@ -4187,7 +4238,10 @@ def autostart_shots() -> str:
             _AUTOSTART["base"] = base
             JOB.say(f"the browser service I started is up: {base}")
             return base
-    JOB.say("the browser service I started never answered in 45s")
+    reason = shooter_start_reason(proj)
+    JOB.say("the browser service I started never answered in 45s"
+            + (f" — its own last words: {reason}" if reason else
+               f" (start log: {log})"))
     return ""
 
 
@@ -4635,7 +4689,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                             f"its words are drawn instead")
                     continue
                 collected[number] = built
-            if both:
+            if both and SCANS_OK:
                 kept_cover = [n for n, _built, _sha in fetched if n in collected]
                 JOB.say(f"pictures: {len(kept_cover)} of {len(both[:MAX_COVER_SCANS])} "
                         f"page(s) that name a scan are shown as that scan")
@@ -7103,6 +7157,14 @@ def selftest() -> str:
     assert got[0]["width"] == 20 and got[0]["height"] == 8
     assert decode_shots(wire[:len(wire) - 20])[1], "a cut body is refused"
     assert decode_shots(b"\x00" * 4 + b"not json")[1], "a bad manifest is refused"
+    # the start log is the service's own voice: last lines, joined, never a guess
+    with tempfile.TemporaryDirectory() as shelf:
+        os.makedirs(os.path.join(shelf, "tmp"))
+        with open(shooter_log_path(shelf), "w") as handle:
+            handle.write("booting\nError: Cannot find package '@sparticuz/chromium'\n")
+        assert "Cannot find package" in shooter_start_reason(shelf)
+        os.remove(shooter_log_path(shelf))
+        assert shooter_start_reason(shelf) == ""
     padded_wire = b"\x00" * 4 + b'{"run": {"pad": 400, "count": 3}}'
     assert body_manifest(padded_wire).get("run", {}).get("pad") == 400
     assert body_manifest(b"\x00" * 4 + b"not json") == {}
