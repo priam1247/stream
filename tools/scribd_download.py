@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 3.0
+"""scribd_download.py — ONE file, standard library only.  Version 3.1
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -266,7 +266,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "3.0"
+VERSION = "3.1"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -3477,10 +3477,11 @@ def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12
         elif probe_page:
             _probe(urls[0], probe_page)
         elif len(urls) > 1:
-            _batch(urls, limit, out, jobs, check, placeholder, verify, text, gen)
+            _batch(urls, limit, out, jobs, check=check, placeholder=placeholder,
+                   verify=verify, text=text, gen=gen)
         else:
-            _download(urls[0], limit, out, jobs, name, check, placeholder,
-                      verify, text, gen)
+            _download(urls[0], limit, out, jobs, name=name, check=check,
+                      placeholder=placeholder, verify=verify, text=text, gen=gen)
     except Exception as exc:  # noqa: BLE001
         JOB.say(f"crashed: {exc!r}")
         with JOB.lock:
@@ -3526,9 +3527,15 @@ def run_queue(gen: int, out: str, note: str = "") -> None:
         JOB.say("")
         JOB.say(f"=== document {index} of {total}: {url}")
         try:
+            # Named, not positional. This call used to hand over a bare False
+            # for a parameter that no longer exists, and every document the panel
+            # was asked for died with "_download() takes from 3 to 10 positional
+            # arguments but 11 were given" — a row of True, True, True is how a
+            # removed parameter hides until the panel is running.
             _download(url, int(item.get("limit") or 0), out,
-                      int(item.get("jobs") or PANEL_JOBS), False, "",
-                      True, True, True, bool(item.get("text")), gen)
+                      jobs=int(item.get("jobs") or PANEL_JOBS), name="",
+                      check=True, placeholder=True, verify=True,
+                      text=bool(item.get("text")), gen=gen)
         except Exception as exc:  # noqa: BLE001
             JOB.say(f"crashed on {url}: {exc!r}")
             with JOB.lock:
@@ -3570,8 +3577,8 @@ def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
             JOB.url = link
             JOB.batch_left = total - index   # documents behind this one
         try:
-            _download(link, limit, out, jobs, "", check, placeholder,
-                      verify, text, gen)
+            _download(link, limit, out, jobs, name="", check=check,
+                      placeholder=placeholder, verify=verify, text=text, gen=gen)
         except Exception as exc:  # noqa: BLE001
             JOB.say(f"crashed on {link}: {exc!r}")
             broken += 1
@@ -6265,6 +6272,45 @@ def selftest() -> str:
             assert corners == {(7.0, 11.0), (307.0, 11.0), (7.0, 411.0),
                                (307.0, 411.0)}, (number, corners)
 
+    # ---- every caller of the download path binds to the signature it meets --
+    # A parameter removed from _download once left the panel's queue handing over
+    # a bare positional False for it, and every document the panel was asked for
+    # crashed with "takes from 3 to 10 positional arguments but 11 were given".
+    # The command line never showed it: only the queue calls _download directly.
+    # So every call site in this file is bound to the real signature here, and the
+    # arguments past `jobs` must be named — a row of positional booleans is how a
+    # removed parameter hides.
+    import ast as _ast
+    import inspect as _inspect
+    with open(__file__, encoding="utf-8") as handle:
+        _tree = _ast.parse(handle.read())
+    _signatures = {"run_job": _inspect.signature(run_job),
+                   "_batch": _inspect.signature(_batch),
+                   "_download": _inspect.signature(_download)}
+    _checked = 0
+    for _node in _ast.walk(_tree):
+        if not isinstance(_node, _ast.Call):
+            continue
+        _fn = _node.func
+        _name = _fn.id if isinstance(_fn, _ast.Name) else ""
+        if _name not in _signatures:
+            continue
+        assert not any(isinstance(arg, _ast.Starred) for arg in _node.args), \
+            f"{_name} is called with *args: this check cannot see its arguments"
+        assert all(keyword.arg for keyword in _node.keywords), \
+            f"{_name} is called with **kwargs: this check cannot see its arguments"
+        assert len(_node.args) <= 4, (
+            f"{_name} is handed {len(_node.args)} positional arguments — only "
+            f"url, limit, out and jobs may be positional, so a parameter that "
+            f"goes away cannot take a caller with it")
+        _signatures[_name].bind(*([None] * len(_node.args)),
+                                **{keyword.arg: None for keyword in _node.keywords})
+        _checked += 1
+    assert _checked >= 5, f"only {_checked} call site(s) checked: the download " \
+        "path is not being watched"
+    assert "refresh" not in _signatures["_download"].parameters, \
+        "refresh is still a parameter: there is no cache of page images to refresh"
+
     # ---- names: read from the document, never fetched as a page ----
     ctx = Ctx("https://www.scribd.com/document/750213011/Physics-12th")
     ctx.token.set(good)
@@ -7505,8 +7551,9 @@ def main(argv: list[str]) -> int:
         urls += links_from_text(links_text)
     urls = [item for item in dict.fromkeys(urls) if item]
     if urls:
-        run_job(urls, limit, out, jobs, name, check, placeholder, probe,
-                verify, text)
+        run_job(urls, limit, out, jobs, name=name, check=check,
+                placeholder=placeholder, probe_page=probe, verify=verify,
+                text=text)
         return 0 if JOB.verdict in ("PDF BUILT", "PDF PARTIAL", "PROBE DONE") else 1
     # 25811 is the port this panel is reached on; an egg that sets SERVER_PORT
     # still wins, and a bare `python scribd_download.py` now binds the right one
