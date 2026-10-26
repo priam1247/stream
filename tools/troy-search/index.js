@@ -28,7 +28,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "1.7";
+const VERSION = "1.8";
 // The port to listen on. A host like this one hands its container the public
 // port it assigned in SERVER_PORT — PORT on some boxes — and there is no
 // translation behind it: whatever this listens on IS the port the world
@@ -977,6 +977,22 @@ export function snapBox(boxes, expected, pitch) {
   return best;
 }
 
+/**
+ * How long the cuts of one pass may take, given how many pages there are to cut.
+ *
+ * Bounded by the length of the book, not by a flat number. The captured book is
+ * 389 pages; at under a second a page that is five minutes of work, and a flat
+ * four minutes would have handed the last eighty-nine pages back to the panel to
+ * photograph one navigation each — the slow route this pass exists to avoid. The
+ * ceiling stays inside the panel's own patience for one pass (its shot timeout
+ * times six, twelve minutes by default): a pass still cutting when the panel has
+ * hung up delivers nothing at all, which is worse than delivering most of a book.
+ */
+export function cutBudgetMs(pages) {
+  const book = Math.max(0, Number(pages) || 0);
+  return Math.min(Math.max(SHOT_BOOK_MS * 8, book * 1200 + 60000), 660000);
+}
+
 export function encodeShots(pngs, manifest) {
   const parts = [];
   for (const png of pngs) {
@@ -1047,7 +1063,6 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
     // route behind this works, and a book must not spend ten minutes finding out
     // that the one pass was never going to.
     const started = Date.now();
-    const deadline = started + Math.max(SHOT_BOOK_MS * 8, 60000);
     const gathered = [];
     const met = new Set();
     let last = -1, stable = 0, y = 0, rounds = 0, tall = 0, sawSeen = 0, windows = 0;
@@ -1105,6 +1120,7 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
       return { pages: [], run: picked.run, note: `${picked.note} — ${saw}` };
     }
     const run = picked.run, rects = picked.rects;
+    const deadline = started + cutBudgetMs(want || rects.length);
 
     // ---- the cuts: one page at a time, each while it is in the window -----
     const cdp = await (tab.createCDPSession
@@ -2060,6 +2076,16 @@ export function selftest() {
   assert(SHOT_SCALE === Number(process.env.SHOT_SCALE || 1),
     "standard quality is the default: the page at the size the viewer draws it");
   assert(SHOT_BOOK_MS >= 5000, "the one pass needs room to load a column");
+  // a budget that does not know how long the book is hands the tail of a long
+  // book back to the slow route; one that outruns the panel's patience hands it
+  // nothing at all
+  assert(cutBudgetMs(6) === SHOT_BOOK_MS * 8, `a short book: ${cutBudgetMs(6)}`);
+  assert(cutBudgetMs(LIVE.pages) === LIVE.pages * 1200 + 60000,
+    `the captured book gets its own time: ${cutBudgetMs(LIVE.pages)}`);
+  assert(cutBudgetMs(LIVE.pages) < 720000,
+    `and answers before the panel hangs up: ${cutBudgetMs(LIVE.pages)}`);
+  assert(cutBudgetMs(5000) === 660000, `a shelf of books: ${cutBudgetMs(5000)}`);
+  assert(cutBudgetMs(0) === SHOT_BOOK_MS * 8, "a book of unknown length keeps the floor");
   assert(SHOT_TABS >= 4, "a book is not photographed one tab at a time");
 
   return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks";

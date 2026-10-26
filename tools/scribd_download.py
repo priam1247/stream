@@ -245,7 +245,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.38"
+VERSION = "2.39"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -3954,7 +3954,12 @@ _SHOT_LOCK = threading.Lock()
 # and embed, for a sheet that is placed at the same size in the PDF anyway.
 SHOT_SCALE = float(os.environ.get("SCRIBD_SHOT_SCALE") or 1)
 SHOT_TIMEOUT = float(os.environ.get("SCRIBD_SHOT_TIMEOUT") or 120)
-MAX_SHOT_PAGES = 400        # a whole book can be photographed, but not forever
+# A whole book can be photographed, but not forever. One pass over the viewer is
+# what makes a long book fast; this caps the page-by-page route behind it, and a
+# cap that sits below the longest book on the shelf is a book that comes out
+# short — named, but short. 600 pages is above every book asked for so far (the
+# longest is 402) and still a bounded wait.
+MAX_SHOT_PAGES = 600
 MAX_SHOT_JOBS = 8           # tabs in one browser: past this it stops helping
 
 
@@ -6786,6 +6791,8 @@ def selftest() -> str:
     # standard quality, and enough tabs to keep a browser busy
     assert SHOT_SCALE == float(os.environ.get("SCRIBD_SHOT_SCALE") or 1), SHOT_SCALE
     assert MAX_SHOT_JOBS >= 6, MAX_SHOT_JOBS
+    # a cap below the longest book on the shelf is a book that comes out short
+    assert MAX_SHOT_PAGES >= 402, MAX_SHOT_PAGES
     # a document with a browser waiting rests less, and says so in its own voice
     quick = Ctx("https://www.scribd.com/document/7/x")
     assert quick.rest_budget == REST_BUDGET, quick.rest_budget
