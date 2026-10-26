@@ -150,10 +150,14 @@ How a document is downloaded, plain HTTPS with your cookies:
 
 A page that will not answer walks a short ladder: the name the document gave,
 the same name without the token, then the page's own descriptor, which names the
-real asset outright. Every url tried for a failed page is recorded.
+real asset outright. Every url tried for a failed page is recorded. A page that
+comes back with neither a scan nor its words is then photographed by a browser
+(--shots / SCRIBD_SHOTS), because a page nobody sent us is still a page somebody
+can see — and only if no browser is there does it fall back to a labelled sheet.
 
 Options: --find "TEXT", --pages N, --pick 1,3, --url LINK (repeatable), --links "TEXT",
          --limit N, --out DIR, --cookies PATH, --base URL, --jobs N (default 12),
+         --shots URL (a browser service that photographs a page we could not build),
          --text (put each page's words in the PDF, searchable and copyable),
          --refresh, --name TITLE, --no-check, --no-placeholder, --no-verify,
          --verify FILE, --probe N, --selftest
@@ -162,6 +166,11 @@ Panel options (environment, all optional):
   PANEL_KEY / SCRIBD_PANEL_KEY   lock the panel (X-Panel-Key, ?key=, or cookie)
   PANEL_ORIGIN                   comma-separated browser origins allowed by CORS
   SERVER_PORT / PORT             port to listen on
+  SCRIBD_SHOTS                   a browser service that photographs a page this
+                                 panel could not build (troy-search's /shot);
+                                 SCRIBD_SHOT_SCALE (default 2) and
+                                 SCRIBD_SHOT_TIMEOUT (default 120) tune it.
+                                 With none set, everything works as before.
 
 Endpoints, for a dashboard in front of this panel:
   GET  /health                   {"ok", "version", "locked", "state"} — no key
@@ -192,13 +201,15 @@ import struct
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.19"
+VERSION = "2.20"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -251,6 +262,12 @@ PAUSE_LADDER = (4.0, 12.0, 30.0)
 # whatever arrived. A page Scribd will not serve is not worth ten minutes of a
 # 100-page book: the placeholders are labelled, the PDF still lands.
 RETRY_BUDGET = float(os.environ.get("SCRIBD_RETRY_BUDGET", "75"))
+# With a browser to photograph what is left, resting a minute for scans that may
+# never come is a minute the reader waits for a page that could already be in the
+# PDF. One short round is still worth it — a real scan beats a photograph — and
+# then the browser takes over.
+SHOT_RETRY_BUDGET = float(os.environ.get("SCRIBD_SHOT_RETRY_BUDGET", "12"))
+SHOT_REST_BUDGET = float(os.environ.get("SCRIBD_SHOT_REST_BUDGET", "12"))
 # Resting is part of that budget and has its own cap, so a document whose pages
 # are simply not served cannot spend minutes of the reader's time being polite
 # to a refusal that never clears.
@@ -1532,7 +1549,8 @@ def house_sheet(pages: list[dict]) -> tuple[float, float]:
     Pages that only came as a small preview are left out of the median: a
     document served half in 96x130 copies must not end up with 96x130 sheets.
     """
-    real = [page for page in pages if not page.get("preview")] or pages
+    real = ([page for page in pages
+             if not page.get("preview") and not page.get("shot")] or pages)
     width, height = median_page(real)
     return round(width * 0.75, 2), round(height * 0.75, 2)
 
@@ -2802,6 +2820,10 @@ class Ctx:
         self.refused_pages: set[int] = set()
         self.arrived = 0             # pages that actually came back, ever
         self.rested = 0.0            # seconds this document has spent resting
+        # REST_BUDGET, unless a browser is waiting to photograph what is left:
+        # then resting a minute for scans that may never arrive is a minute the
+        # reader waits for a page that could already be in the PDF
+        self.rest_budget = REST_BUDGET
         self.said_no_hope = False
         self.rest_until = 0.0
         self.rests = 0
@@ -2843,14 +2865,15 @@ class Ctx:
                             "'not this account', not as throttling")
                 return False
             pause = PAUSE_LADDER[min(self.rests, len(PAUSE_LADDER) - 1)]
-            if self.rested + pause > REST_BUDGET:
+            if self.rested + pause > self.rest_budget:
                 # the whole document has already spent its resting budget on
                 # refusals that did not clear: more waiting is just more waiting
                 if not self.said_no_hope:
                     self.said_no_hope = True
-                    JOB.say(f"rested {self.rested:.0f}s of {REST_BUDGET:.0f}s "
-                            f"already and the refusals did not clear — not "
-                            f"resting again, the missing pages will be reported")
+                    JOB.say(f"rested {self.rested:.0f}s of "
+                            f"{self.rest_budget:.0f}s already and the refusals "
+                            f"did not clear — not resting again, the missing "
+                            f"pages will be reported")
                 return False
             self.rested += pause
             self.rests += 1
@@ -3571,6 +3594,184 @@ def _probe(url: str, number: int) -> None:
         JOB.verdict = "PROBE DONE"
         JOB.detail = f"page {number}"
 
+# ---------------------------------------------------------------------------
+# the browser that photographs a page nobody sent us
+# ---------------------------------------------------------------------------
+# A page can come back with neither a scan nor the words behind it: the viewer
+# builds that page's own token at runtime, and our requests never learn it. Text
+# drawing cannot invent words, so such a page is photographed instead — by a
+# browser, over one small HTTP request. That browser is a service (troy-search's
+# /shot); this is the client, and it is deliberately optional: with no service
+# configured, or one that will not answer, the document is built exactly as
+# before. A photograph is a rescue, never a requirement.
+SHOTS = os.environ.get("SCRIBD_SHOTS", "").rstrip("/")
+SHOT_SCALE = float(os.environ.get("SCRIBD_SHOT_SCALE") or 2)
+SHOT_TIMEOUT = float(os.environ.get("SCRIBD_SHOT_TIMEOUT") or 120)
+MAX_SHOT_PAGES = 400        # a whole book can be photographed, but not forever
+MAX_SHOT_JOBS = 6           # tabs in one browser: past this it stops helping
+
+
+def set_shots(value: str) -> None:
+    """Point the engine at a browser service (--shots URL, or SCRIBD_SHOTS)."""
+    global SHOTS
+    SHOTS = (value or "").strip().rstrip("/")
+    os.environ["SCRIBD_SHOTS"] = SHOTS
+
+
+def shot_request(base: str, ident: str, number: int, scale: float) -> str:
+    """The one request that asks a browser for one page of one document."""
+    return (f"{base.rstrip('/')}/shot?doc={ident}&page={int(number)}"
+            f"&scale={scale:g}")
+
+
+def shot_get(url: str, timeout: float) -> tuple[int, bytes, str]:
+    """A plain GET that is deliberately not `fetch()`.
+
+    `fetch()` is for Scribd: it carries the session jar and, in local tests,
+    rewrites every host onto --base. The browser service is neither of those,
+    and a rewrite here would send the request to the wrong machine.
+    """
+    request = urllib.request.Request(url, headers={"User-Agent": UA,
+                                                  "Accept": "image/png,*/*"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as answer:
+            return answer.status, answer.read(), ""
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, exc.read(), ""
+        except Exception:                       # noqa: BLE001
+            return exc.code, b"", ""
+    except Exception as exc:                    # noqa: BLE001
+        return 0, b"", repr(exc)[:160]
+
+
+class Shooter:
+    """One browser service, asked for the pages this document could not build.
+
+    The service stays warm between requests, so a document's missing pages are
+    asked for several at a time and each one costs a tab, not a browser.
+    """
+
+    def __init__(self, base: str = "", scale: float = 0.0,
+                 timeout: float = 0.0) -> None:
+        self.base = (base or SHOTS).rstrip("/")
+        self.scale = max(0.5, min(4.0, float(scale or SHOT_SCALE)))
+        self.timeout = float(timeout or SHOT_TIMEOUT)
+        self.state: bool | None = None     # asked once per document, not per page
+        self.note = ""
+
+    def ping(self) -> bool:
+        """Is there a browser to ask? One cheap request, answered once."""
+        if not self.base:
+            self.state = False
+            self.note = ("no browser service configured — set SCRIBD_SHOTS or "
+                         "pass --shots http://HOST:PORT")
+            return False
+        status, body, error = shot_get(self.base + "/shot/ping", 10.0)
+        self.state = status == 200 and b'"ok"' in body
+        self.note = "" if self.state else (
+            error or f"the browser service answered {status} to /shot/ping")
+        return self.state
+
+    def alive(self) -> bool:
+        if self.state is None:
+            self.ping()
+        return bool(self.state)
+
+    def shoot(self, ident: str, number: int) -> tuple[dict | None, str]:
+        """One page, photographed. -> (the page for the PDF, or why not)."""
+        if not self.base:
+            return None, self.note or "no browser service configured"
+        status, body, error = shot_get(
+            shot_request(self.base, ident, number, self.scale), self.timeout)
+        if error:
+            return None, f"page {number}: the browser did not answer — {error}"
+        if status != 200:
+            why = (body[:200].decode("utf-8", "replace").strip()
+                   or f"http {status}")
+            return None, f"page {number}: the browser refused — {why}"
+        page = scan_for_pdf(body)
+        if page is None:
+            return None, (f"page {number}: the browser sent "
+                          f"{describe_image(body)}, not a page")
+        page = dict(page)
+        page["bytes"] = len(body)
+        # a blank sheet is a warning, never a refusal: the browser already tried
+        # again with more patience, and an empty page that really is empty beats
+        # a sheet that says "scan not available"
+        blank = looks_blank_scan(page)
+        # a screenshot's pixel count says how finely the page was drawn, not how
+        # big the page is: at 2x it is the same page at twice the detail, so the
+        # size goes back to the screen's and the sharpness stays in the pixels
+        page["width"] = max(1, round(page["width"] / self.scale))
+        page["height"] = max(1, round(page["height"] / self.scale))
+        page["shot"] = True
+        page["phase"] = "shot"
+        page["url"] = f"browser {self.base} · page {number}"
+        page["label"] = (f"{page['width']}x{page['height']} photographed"
+                         + (f" at {self.scale:g}x" if self.scale != 1 else "")
+                         + (", and it looks empty" if blank else ""))
+        return page, (f"page {number}: photographed, but the sheet looks empty "
+                      f"({page['width']}x{page['height']} in "
+                      f"{size_text(len(body))})" if blank else "")
+
+    def capture(self, ident: str, pages, jobs: int = 4,
+                alive=None) -> tuple[dict[int, dict], list[str]]:
+        """Photograph a list of pages. -> (page -> picture, what went wrong)."""
+        wanted = sorted({int(number) for number in pages if number})[:MAX_SHOT_PAGES]
+        if not wanted:
+            return {}, []
+        if not self.alive():
+            return {}, [self.note or "no browser to ask"]
+        pictures: dict[int, dict] = {}
+        notes: list[str] = []
+        workers = max(1, min(int(jobs or 4), MAX_SHOT_JOBS, len(wanted)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(self.shoot, ident, number): number
+                       for number in wanted}
+            for future in as_completed(futures):
+                if alive is not None and not alive():
+                    for pending in futures:
+                        pending.cancel()
+                    notes.append("stopped — the job was closed")
+                    break
+                number = futures[future]
+                try:
+                    page, note = future.result()
+                except Exception as exc:        # noqa: BLE001
+                    page, note = None, (f"page {number}: the browser failed — "
+                                        f"{exc!r}"[:200])
+                if page:
+                    pictures[number] = page
+                    if note:
+                        notes.append(note)     # kept, and worth saying so
+                elif note:
+                    notes.append(note)
+        return pictures, notes
+
+
+def fit_shots(collected: dict[int, dict], sheet: tuple[float, float]) -> None:
+    """Put every photographed page on this document's sheet, shape kept.
+
+    A screenshot is the size of a screen, and a screen is not a piece of paper:
+    left alone it would make one page of the book a different size from the rest.
+    Scaling the picture's own dimensions to the sheet means the sheet stays the
+    document's, the page fills it, and nothing is stretched — the aspect ratio
+    is carried along, so a page that is not quite A4 is centred, not distorted.
+    """
+    if not (sheet[0] and sheet[1]):
+        return
+    for page in collected.values():
+        if not page.get("shot"):
+            continue
+        width, height = page["width"] * 0.75, page["height"] * 0.75
+        if not (width and height):
+            continue
+        factor = min(sheet[0] / width, sheet[1] / height)
+        page["width"] = max(1, round(page["width"] * factor))
+        page["height"] = max(1, round(page["height"] * factor))
+
+
 def _download(url: str, limit: int, out: str, jobs: int = 12,
               refresh: bool = False, name: str = "", check: bool = True,
               placeholder: bool = True, verify: bool = True,
@@ -3578,6 +3779,19 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     ctx = Ctx(url, jobs)
     ctx.refresh = refresh
     ctx.gen = gen or JOB.generation
+    # One cheap question before any page is asked for: is there a browser that
+    # can photograph a page this document cannot build? Knowing early is what
+    # makes it fast — the rests below are for scans that a browser could have
+    # replaced a minute ago.
+    shooter = Shooter()
+    photographed: list[int] = []
+    if shooter.base and shooter.alive():
+        ctx.rest_budget = min(REST_BUDGET, SHOT_REST_BUDGET)
+        JOB.say(f"browser on hand ({shooter.base}) — a page nobody sends will be "
+                f"photographed, so this document rests at most "
+                f"{ctx.rest_budget:.0f}s waiting for scans")
+    elif shooter.base:
+        JOB.say(f"no browser at {shooter.base}: {shooter.note}")
     if not ctx.ident:
         with JOB.lock:
             JOB.verdict = "BAD LINK"
@@ -3753,6 +3967,12 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     # placeholders, and the PDF still lands.
     recovered_last = -1
     retry_started = time.time()
+    budget = RETRY_BUDGET
+    if failed and shooter.alive():
+        budget = min(RETRY_BUDGET, SHOT_RETRY_BUDGET)
+        JOB.say(f"a browser can photograph what is left ({shooter.base}) — "
+                f"resting {budget:.0f}s for real scans instead of "
+                f"{RETRY_BUDGET:.0f}s")
     for round_number, pause in ((1, 2.0), (2, 8.0), (3, 20.0)):
         if not failed:
             break
@@ -3769,9 +3989,11 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         # the budget is measured in real seconds, not in sleeps: the rests the
         # breaker takes are part of what the document waits for
         spent = time.time() - retry_started
-        if spent + pause > RETRY_BUDGET:
-            JOB.say(f"retry budget spent ({spent:.0f}s of {RETRY_BUDGET:.0f}s) — "
-                    f"building the PDF with {len(failed)} placeholder page(s)")
+        if spent + pause > budget:
+            JOB.say(f"retry budget spent ({spent:.0f}s of {budget:.0f}s) — "
+                    + (f"{len(failed)} page(s) go to the browser"
+                       if budget < RETRY_BUDGET else
+                       f"building the PDF with {len(failed)} placeholder page(s)"))
             break
         JOB.say(f"retry {round_number}: {len(failed)} page(s), resting {pause:.0f}s")
         time.sleep(pause)
@@ -3831,6 +4053,37 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 JOB.say(f"viewer page saved to {saved} (no cookie in it) — that "
                         f"file says what the viewer really sends")
 
+    # ---- a page with neither a scan nor words: photograph it --------------
+    # This is the page that used to say "scan not available". Nothing arrived
+    # for it, so there is nothing to draw — but a browser can still see it, and
+    # what a browser sees is the page.
+    if failed and shooter.alive():
+        JOB.say(f"photographing {len(failed)} page(s) with a browser "
+                f"({shooter.base}) — a page nobody sent us is still a page "
+                f"somebody can see")
+        asked_for = len(failed)
+        pictures, shot_notes = shooter.capture(
+            ctx.ident, failed, jobs=ctx.jobs,
+            alive=lambda: JOB.alive(ctx.gen))
+        for number in sorted(pictures):
+            collected[number] = pictures[number]
+            photographed.append(number)
+        for note in shot_notes:
+            JOB.say("  " + note)
+        failed = [number for number in failed if number not in collected]
+        # a page photographed as an empty sheet is still that page: it is in the
+        # PDF, so it is not a placeholder — the note above says what it looks like
+        JOB.say(f"photographed: {len(photographed)} of {asked_for} page(s) the "
+                f"panel could not build"
+                + (" — no placeholder left in this document" if not failed else
+                   f" — {len(failed)} page(s) still have nothing")
+                + (f" · {sample['label']}" if (sample := next(
+                    (collected[n] for n in photographed), None)) else ""))
+        JOB.set_progress(ok=len(collected) + len(
+            [n for n in text_pages if n not in collected]), skipped=len(failed))
+    elif failed and shooter.note:
+        JOB.say(f"no browser to photograph {len(failed)} page(s): {shooter.note}")
+
     # ---- pictures that arrived, but not as a full scan -------------------
     previews = sorted(number for number, page in collected.items()
                       if page.get("preview"))
@@ -3853,13 +4106,14 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     reference = (0, 0)
     if collected:
         reference = median_page([page for page in collected.values()
-                                 if not page.get("preview")]
+                                 if not page.get("preview")
+                                 and not page.get("shot")]
                                 or list(collected.values()))
     mixed = False
     if check and reference[0] and len(collected) >= 8:
         offenders = [
             number for number, page in collected.items()
-            if not page.get("preview")
+            if not page.get("preview") and not page.get("shot")
             and (abs(page["width"] / reference[0] - 1) > SIZE_TOLERANCE
                  or abs(page["height"] / reference[1] - 1) > SIZE_TOLERANCE)]
         if len(offenders) > len(collected) * 0.2:
@@ -3893,7 +4147,11 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 texts[number] = words
         JOB.say(f"text: {len(texts)} of {len(collected)} page(s) had words")
 
-    uniform = check and not mixed and bool(collected)
+    # a document whose only pictures are photographs has no scan to agree a size
+    # with: its sheets stay the size the words were laid out on
+    uniform = (check and not mixed
+               and any(page for page in collected.values()
+                       if not page.get("shot")))
     sheets = sheet_list(collected, with_limit, placeholder)
     if not sheets:
         # a text document has no scans at all: one sheet per page, A4
@@ -3906,6 +4164,8 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         sheet = (595.0, 842.0)
     else:
         sheet = (0.0, 0.0)
+
+    fit_shots(collected, sheet)
 
     with open(os.path.join(out, "debug", "pages.txt"), "w") as handle:
         handle.write(f"document {ctx.ident} · title {ctx.title!r} · "
@@ -4027,6 +4287,8 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                       + (f" of {ctx.total} in the document" if limit and
                          with_limit < ctx.total else "")
                       + (f" · {drawn_text} from text" if drawn_text else "")
+                      + (f" · {len(photographed)} photographed"
+                         if photographed else "")
                       + (f" · {len(failed)} placeholder" if failed else "")
                       + (f" · {len(previews)} small preview" if previews else "")
                       + (f" · {len(cuts)} cut short" if cuts else "")
@@ -5399,6 +5661,15 @@ def selftest() -> str:
     # only REST_BUDGET of it resting
     assert 0 < RETRY_BUDGET <= 300, RETRY_BUDGET
     assert 0 < REST_BUDGET <= RETRY_BUDGET, REST_BUDGET
+    assert 0 < SHOT_RETRY_BUDGET <= RETRY_BUDGET, SHOT_RETRY_BUDGET
+    assert 0 < SHOT_REST_BUDGET <= REST_BUDGET, SHOT_REST_BUDGET
+    # a document with a browser waiting rests less, and says so in its own voice
+    quick = Ctx("https://www.scribd.com/document/7/x")
+    assert quick.rest_budget == REST_BUDGET, quick.rest_budget
+    quick.rest_budget = SHOT_REST_BUDGET
+    quick.rested = SHOT_REST_BUDGET
+    for page in (40, 41, 42, 43):
+        assert quick.refused(page) is False, "the shorter budget must stop it"
 
     # ---- the disk guard: a small plan must not fill up in silence -------
     keep_root = os.path.join(work, "keep")
@@ -5558,7 +5829,7 @@ def selftest() -> str:
     assert len(spoken) == 4, spoken          # one line per rest, not one per 403
     # resting is bounded: a document cannot spend minutes of the reader's time
     # waiting for refusals that are not clearing
-    ctx.rest_until, ctx.rested, ctx.said_no_hope = 0.0, REST_BUDGET, False
+    ctx.rest_until, ctx.rested, ctx.said_no_hope = 0.0, ctx.rest_budget, False
     ctx.refused_pages.clear()
     for page in (30, 31, 32, 33):
         stopped = ctx.refused(page)
@@ -5886,6 +6157,101 @@ def selftest() -> str:
                                   text_pages={1: "   "})
         assert not made and message == "no pages to write", message
 
+    # ---- a browser that photographs the pages nobody sent us --------------
+    assert shot_request("http://host:8096/", "7", 12, 2.0) == (
+        "http://host:8096/shot?doc=7&page=12&scale=2")
+    inked = make_png(200, 283, 2, bytes((index * 7 + 13) % 200
+                                        for index in range(200 * 283 * 3)))
+    white = make_png(200, 283, 2, b"\xff" * (200 * 283 * 3))
+    assert len(inked) > 1000 and len(white) < len(inked)
+
+    class ShotHandler(BaseHTTPRequestHandler):
+        """The service a real browser would be: one page per request."""
+        def do_GET(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            query = urllib.parse.parse_qs(parsed.query)
+            status, body, kind = 200, b"", "image/png"
+            if parsed.path == "/shot/ping":
+                body, kind = b'{"ok": true, "browser": "selftest"}', "application/json"
+            elif parsed.path == "/shot":
+                number = int((query.get("page") or ["0"])[0])
+                if number == 4:
+                    status, body, kind = 404, b"not for this account", "text/plain"
+                elif number == 5:
+                    body = white                     # drawn, but nothing on it
+                elif number == 6:
+                    body, kind = b"not an image", "text/plain"
+                else:
+                    body = inked
+            else:
+                status, body, kind = 404, b"no", "text/plain"
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    service = ThreadingHTTPServer(("127.0.0.1", 0), ShotHandler)
+    threading.Thread(target=service.serve_forever, daemon=True).start()
+    try:
+        shooter = Shooter(f"http://127.0.0.1:{service.server_address[1]}")
+        assert shooter.alive() is True and shooter.note == "", shooter.note
+        page, note = shooter.shoot("7", 1)
+        assert page and page["shot"] and page["phase"] == "shot", note
+        # 200x283 px photographed at 2x is a 100x142 px page at twice the detail
+        assert (page["width"], page["height"]) == (100, 142), page
+        assert "photographed" in page["label"] and "2x" in page["label"], page
+        assert page["bytes"] == len(inked) and not looks_blank_scan(page), page
+        assert page["url"].startswith("browser http://127.0.0.1:"), page
+        refused, note = shooter.shoot("7", 4)
+        assert refused is None and "refused" in note, note
+        empty, note = shooter.shoot("7", 5)
+        assert empty and empty["shot"] and "looks empty" in note, (empty, note)
+        assert "100x142" in note or "looks empty" in empty["label"], note
+        junk, note = shooter.shoot("7", 6)
+        assert junk is None and "not a page" in note, note
+        pictures, notes = shooter.capture("7", [1, 2, 3, 4], jobs=3)
+        assert sorted(pictures) == [1, 2, 3], sorted(pictures)
+        assert len(notes) == 1 and "page 4" in notes[0], notes
+        kept, notes = shooter.capture("7", [5], jobs=1)
+        assert sorted(kept) == [5] and notes and "looks empty" in notes[0], notes
+        stopped, notes = shooter.capture("7", [1, 2], jobs=2, alive=lambda: False)
+        assert stopped == {} and notes and "stopped" in notes[0], notes
+    finally:
+        service.shutdown()
+        service.server_close()
+
+    # no browser configured: everything still works, and says why once
+    quiet = Shooter("")
+    assert quiet.alive() is False and "SCRIBD_SHOTS" in quiet.note, quiet.note
+    assert quiet.capture("7", [1]) == ({}, [quiet.note])
+    assert Shooter("", scale=9).scale == 4.0 and Shooter("", scale=0.1).scale == 0.5
+    dead = Shooter("http://127.0.0.1:1")
+    assert dead.alive() is False and dead.note, dead.note
+    held = SHOTS
+    set_shots("http://host:8096/")
+    assert SHOTS == "http://host:8096" and os.environ["SCRIBD_SHOTS"] == SHOTS
+    assert Shooter().base == "http://host:8096"
+    set_shots(held)
+
+    # a photograph follows the document's sheet — it never sets it
+    assert house_sheet([{"width": 2000, "height": 2828, "shot": True},
+                        {"width": 1200, "height": 1600}]) == (900.0, 1200.0)
+    pages = {1: {"width": 1000, "height": 1414, "shot": True},
+             2: {"width": 1200, "height": 1600}}
+    fit_shots(pages, (900.0, 1200.0))
+    assert pages[2] == {"width": 1200, "height": 1600}, pages[2]
+    fitted = pages[1]
+    assert fitted["height"] * 0.75 <= 1200.01, fitted
+    assert abs(fitted["height"] * 0.75 - 1200.0) < 1.5, fitted
+    assert abs(fitted["width"] / fitted["height"] - 1000 / 1414) < 0.004, fitted
+    before = dict(fitted)
+    fit_shots(pages, (0.0, 0.0))            # no sheet yet: nothing is moved
+    assert pages[1] == before, pages[1]
+
     gate = Gate(rate=24.0, floor=8.0, ceiling=60.0)
     for _ in range(40):
         gate.complaint(403)
@@ -5901,7 +6267,7 @@ def selftest() -> str:
             "bookmarklet, scribd search, relevance, channels, the document "
             "queue, signed links, the disk guard, token shapes, redaction, "
             "page wiring, text pages, built names, viewer pages, "
-            "typography, placed lines")
+            "typography, placed lines, photographed pages")
 
 def main(argv: list[str]) -> int:
     global BASE
@@ -5927,7 +6293,7 @@ def main(argv: list[str]) -> int:
         arg = argv[index]
         if arg in ("--url", "--links", "--limit", "--out", "--cookies", "--base",
                    "--jobs", "--name", "--probe", "--find", "--pages",
-                   "--pick") and index + 1 < len(argv):
+                   "--pick", "--shots") and index + 1 < len(argv):
             value = argv[index + 1]
             if arg == "--find":
                 find_text = value.strip()
@@ -5953,6 +6319,8 @@ def main(argv: list[str]) -> int:
             elif arg == "--jobs":
                 jobs = as_page(value, 12)
                 jobs = max(1, min(jobs, 32))
+            elif arg == "--shots":
+                set_shots(value)
             else:
                 BASE = value.rstrip("/")
             index += 2
@@ -5979,6 +6347,8 @@ def main(argv: list[str]) -> int:
             return 0 if sound else 1
         elif arg.startswith("--base="):
             BASE = arg.split("=", 1)[1].rstrip("/")
+        elif arg.startswith("--shots="):
+            set_shots(arg.split("=", 1)[1])
         index += 1
     if cookies:
         os.environ["COOKIES"] = cookies

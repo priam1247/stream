@@ -410,6 +410,189 @@ export async function search(query, mode = "auto") {
 // ---------------------------------------------------------------------------
 // sending to the panel — the panel does the downloading, we only pass links
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// photographing a page the download panel could not build
+// ---------------------------------------------------------------------------
+/**
+ * Some pages come back to the panel with neither a scan nor the words behind
+ * them: the viewer builds that page's own token at runtime, which is exactly
+ * what a browser has and a plain request never gets. There is nothing left to
+ * draw, so the page is photographed here instead.
+ *
+ * One request is one page, so the panel can ask for several at once and each one
+ * costs a tab in a browser that is already warm — not a browser of its own.
+ *
+ *   GET /shot/ping                          {"ok": true, …}
+ *   GET /shot?doc=692848690&page=12         image/png, or a status and why not
+ */
+const SHOT_WIDTH = Number(process.env.SHOT_WIDTH || 1000);
+// deliberately taller than A4: the viewer can put furniture above the page, and
+// a window with room to spare means the page itself is never the thing cut off
+const SHOT_HEIGHT = Number(process.env.SHOT_HEIGHT || 1500);
+const SHOT_SCALE = Number(process.env.SHOT_SCALE || 2);
+const SHOT_WAIT_MS = Number(process.env.SHOT_WAIT_MS || 8000);
+const SHOT_TABS = Number(process.env.SHOT_TABS || 6);
+// a page of writing costs hundreds of bytes per row of png; a sheet with nothing
+// drawn on it costs a handful. Same rule the download panel uses.
+const BLANK_BYTES_PER_ROW = 12;
+
+export function shotUrl(doc, page) {
+  const ident = String(doc || "").replace(/[^0-9]/g, "");
+  return `https://www.scribd.com/embeds/${ident}/content` +
+    `?start_page=${Number(page) || 1}&view_mode=scroll`;
+}
+
+/** The size a png claims, read out of its header — no decoding, no library. */
+export function pngSize(buffer) {
+  const png = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
+  if (png.length < 24 || png.readUInt32BE(0) !== 0x89504e47) return { width: 0, height: 0 };
+  return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
+}
+
+/** Did the browser hand back an empty white sheet? */
+export function blankShot(buffer) {
+  const size = pngSize(buffer);
+  const bytes = Buffer.isBuffer(buffer) ? buffer.length : (buffer || []).length;
+  if (!(size.width > 0) || !(size.height > 0)) return false;  // cannot judge: keep it
+  return bytes / size.height < BLANK_BYTES_PER_ROW;
+}
+
+/**
+ * Which rectangle on the screen is the page of paper.
+ *
+ * Page-shaped means taller than wide by a page's proportion, wide enough to be
+ * the page and not a thumbnail. The largest such rectangle wins, except that a
+ * rectangle covering the whole window loses to one inside it: that is the
+ * difference between photographing the viewer and photographing the page.
+ * Returns null when nothing on the screen is a page — the caller then shoots the
+ * whole window rather than losing the page.
+ */
+export function pickClip(boxes, viewport) {
+  const view = { width: Number(viewport && viewport.width) || 0,
+                 height: Number(viewport && viewport.height) || 0 };
+  if (!(view.width > 0) || !(view.height > 0)) return null;
+  const shaped = (Array.isArray(boxes) ? boxes : [])
+    .filter((box) => box && box.width > 0 && box.height > 0)
+    .map((box) => ({ ...box, area: box.width * box.height }))
+    .filter((box) => box.width >= view.width * 0.4 &&
+                     box.height >= view.height * 0.2 &&
+                     box.height / box.width >= 1.1 &&
+                     box.height / box.width <= 1.8 &&
+                     box.y > -view.height)
+    .sort((left, right) => right.area - left.area);
+  if (!shaped.length) return null;
+  const window = view.width * view.height;
+  const inside = shaped.filter((box) => box.area < window * 0.97);
+  const chosen = inside.length ? inside[0] : shaped[0];
+  const x = Math.max(0, Math.min(Math.round(chosen.x), view.width - 1));
+  const y = Math.max(0, Math.min(Math.round(chosen.y), view.height - 1));
+  return { x, y,
+           width: Math.max(1, Math.min(Math.round(chosen.width), view.width - x)),
+           height: Math.max(1, Math.min(Math.round(chosen.height), view.height - y)) };
+}
+
+/** Every rectangle on the screen that could be a page, as the browser sees it. */
+async function pageBoxes(tab, viewport) {
+  const boxes = await tab.evaluate(() => {
+    const found = [];
+    const selector = "img, canvas, div, section, article, main";
+    for (const element of document.querySelectorAll(selector)) {
+      const box = element.getBoundingClientRect();
+      if (!(box.width > 0) || !(box.height > 0)) continue;
+      found.push({ x: box.x, y: box.y, width: box.width, height: box.height,
+                   tag: element.tagName.toLowerCase() });
+    }
+    return found;
+  });
+  return pickClip(boxes, viewport);
+}
+
+let shotRunning = 0;
+const shotWaiting = [];
+
+/** At most SHOT_TABS tabs at once: a small box runs out of memory before that. */
+function shotSlot(max = SHOT_TABS) {
+  const limit = Math.max(1, Number(max) || 1);
+  return new Promise((resolve) => {
+    const enter = () => {
+      shotRunning += 1;
+      resolve(() => {
+        shotRunning -= 1;
+        const next = shotWaiting.shift();
+        if (next) next();
+      });
+    };
+    if (shotRunning < limit) enter();
+    else shotWaiting.push(enter);
+  });
+}
+
+/**
+ * Photograph one page. -> { png: Buffer|null, note: string }
+ *
+ * The page is opened at the viewer's own ?start_page=N, so the picture is that
+ * page and no other. A sheet that comes back empty is taken again with twice the
+ * patience before it is believed — and even then it is kept, because an empty
+ * page that really is empty still beats a sheet that says "scan not available".
+ */
+export async function shootPage(doc, page, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS) {
+  const ident = String(doc || "").replace(/[^0-9]/g, "");
+  const number = Number(page);
+  if (!/^\d{3,}$/.test(ident) || !(number >= 1)) {
+    return { png: null, note: "a document id and a page number are needed" };
+  }
+  const viewport = { width: SHOT_WIDTH, height: SHOT_HEIGHT };
+  const ratio = Math.max(0.5, Math.min(4, Number(scale) || SHOT_SCALE));
+  const release = await shotSlot();
+  let tab = null;
+  try {
+    const browser = await getBrowser();
+    tab = await browser.newPage();
+    await tab.setUserAgent(UA);
+    await tab.setViewport({ width: viewport.width, height: viewport.height,
+                            deviceScaleFactor: ratio });
+    let kept = null;
+    for (const patience of [Number(waitMs) || SHOT_WAIT_MS,
+                            (Number(waitMs) || SHOT_WAIT_MS) * 2]) {
+      await tab.goto(shotUrl(ident, number),
+                     { waitUntil: "domcontentloaded", timeout: 45000 });
+      const deadline = Date.now() + patience;
+      let clip = null;
+      do {
+        clip = await pageBoxes(tab, viewport).catch(() => null);
+        if (clip) break;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      } while (Date.now() < deadline);
+      if (clip) {
+        // the box is there; give the picture inside it a moment to paint, then
+        // ask again in case it grew into its final size
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        clip = (await pageBoxes(tab, viewport).catch(() => null)) || clip;
+      }
+      const png = await tab.screenshot(clip
+        ? { type: "png", clip, captureBeyondViewport: false }
+        : { type: "png", captureBeyondViewport: false });
+      const size = pngSize(png);
+      const where = clip ? `the page box ${clip.width}x${clip.height}`
+                         : "the whole window — no page box was found";
+      if (!blankShot(png)) {
+        return { png,
+                 note: `page ${number}: ${size.width}x${size.height} png, ` +
+                       `${where}, at ${ratio}x` };
+      }
+      kept = { png, note: `page ${number}: photographed, but the sheet looks ` +
+                          `empty (${size.width}x${size.height}, ${where})` };
+    }
+    return kept || { png: null, note: `page ${number}: nothing was drawn` };
+  } catch (exc) {
+    const message = String((exc && exc.message) || exc).slice(0, 200);
+    return { png: null, note: `page ${number}: the browser failed — ${message}` };
+  } finally {
+    if (tab) await tab.close().catch(() => {});
+    release();
+  }
+}
+
 export function panelOrigin(text) {
   const raw = String(text || "").trim();
   if (!raw) return "";
@@ -725,6 +908,35 @@ export function serve(port = PORT) {
         console.log(`send -> ${result.ok ? "ok" : "refused"}: ${result.message}`);
         return json(response, result.ok ? 200 : 502, result);
       }
+      if (url.pathname === "/shot/ping") {
+        const browser = await browserStatus();
+        return json(response, 200, { ok: browser.ready, service: "shot",
+                                     version: VERSION, browser });
+      }
+      if (url.pathname === "/shot") {
+        const doc = String(url.searchParams.get("doc") || "");
+        const page = Number(url.searchParams.get("page") || 0);
+        const scale = Number(url.searchParams.get("scale") || SHOT_SCALE);
+        if (!/^\d{3,}$/.test(doc.replace(/[^0-9]/g, "")) || !(page >= 1)) {
+          return json(response, 400, {
+            error: "a document id and a page number are needed: " +
+                   "/shot?doc=692848690&page=12",
+          });
+        }
+        console.log(`shot ${doc} page ${page} at ${scale}x`);
+        const got = await shootPage(doc, page, scale);
+        console.log(`  -> ${got.png ? "ok" : "refused"}: ${got.note}`);
+        if (!got.png) return json(response, 502, { error: got.note });
+        response.writeHead(200, {
+          "Content-Type": "image/png",
+          "Content-Length": got.png.length,
+          "Cache-Control": "no-store",
+          "X-Shot-Doc": doc,
+          "X-Shot-Page": String(page),
+          "X-Shot-Note": encodeURIComponent(got.note),
+        });
+        return response.end(got.png);
+      }
       return json(response, 404, { error: "unknown endpoint" });
     } catch (exc) {
       console.error("error:", exc);
@@ -832,7 +1044,55 @@ export function selftest() {
   const urls = ENGINES[1].url("physics 12th");
   assert(urls.includes("site%3Ascribd.com+physics+12th"), urls);
 
-  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order";
+  // ---- photographing a page ------------------------------------------------
+  assert(shotUrl("692848690", 12) ===
+    "https://www.scribd.com/embeds/692848690/content?start_page=12&view_mode=scroll",
+    shotUrl("692848690", 12));
+  assert(shotUrl("https://www.scribd.com/document/692848690/Nthondo-PDF", 1)
+    .includes("/embeds/692848690/content?start_page=1"), "a link works too");
+  assert(shotUrl("abc", 2).includes("/embeds//content"), "nonsense makes no id");
+
+  const header = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from([0, 0, 0, 13]), Buffer.from("IHDR"),
+    (() => { const size = Buffer.alloc(8);
+             size.writeUInt32BE(2000, 0); size.writeUInt32BE(2828, 4); return size; })(),
+  ]);
+  assert(pngSize(header).width === 2000 && pngSize(header).height === 2828, "png header");
+  assert(pngSize(Buffer.from("not a png at all")).width === 0, "not a png");
+  assert(pngSize(Buffer.alloc(4)).height === 0, "too short to be a png");
+  assert(blankShot(Buffer.concat([header, Buffer.alloc(2828 * 4)])) === true,
+    "a white sheet is blank");
+  assert(blankShot(Buffer.concat([header, Buffer.alloc(2828 * 400)])) === false,
+    "a page of writing is not blank");
+  assert(blankShot(Buffer.from("not a png")) === false, "cannot judge: keep it");
+
+  const view = { width: 1000, height: 1500 };
+  assert(pickClip([], view) === null, "nothing on the screen");
+  assert(pickClip([{ x: 0, y: 0, width: 1000, height: 200 }], view) === null,
+    "a banner is not a page");
+  assert(pickClip([{ x: 0, y: 0, width: 100, height: 141 }], view) === null,
+    "a thumbnail is not the page");
+  // the page wins over the window that holds it: furniture is not photographed
+  const clipped = pickClip([
+    { x: 0, y: 0, width: 1000, height: 1500, tag: "div" },
+    { x: 60, y: 48, width: 880, height: 1245, tag: "div" },
+    { x: 60, y: 48, width: 880, height: 300, tag: "div" },
+  ], view);
+  assert(clipped && clipped.x === 60 && clipped.y === 48 &&
+         clipped.width === 880 && clipped.height === 1245, JSON.stringify(clipped));
+  // with nothing inside the window, the window itself is the page
+  const whole = pickClip([{ x: 0, y: 0, width: 1000, height: 1414, tag: "div" }],
+                         { width: 1000, height: 1414 });
+  assert(whole && whole.width === 1000 && whole.height === 1414, JSON.stringify(whole));
+  // a rectangle that hangs off the screen is cut back to what can be shot
+  const cut = pickClip([{ x: -40, y: 10, width: 2000, height: 2600, tag: "div" }], view);
+  assert(cut && cut.x === 0 && cut.width === 1000 && cut.height === 1490,
+    JSON.stringify(cut));
+  assert(pickClip([{ x: 0, y: 0, width: 800, height: 1000 }], { width: 0, height: 0 })
+    === null, "no window, no answer");
+
+  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs";
 }
 
 // ---------------------------------------------------------------------------
