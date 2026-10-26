@@ -148,7 +148,13 @@ How a document is downloaded, plain HTTPS with your cookies:
      as-is, PNG as its own filtered stream (predictor 15, no pixel loop)
   4. read the finished PDF back and validate it before calling it done
 
-A page that will not answer walks a short ladder: the name the document gave,
+Every page of every document is photographed: one pass over the scroll viewer,
+each page clipped at the gap between it and the next, then page by page for
+whatever the pass missed. Scanning is off — the browser is the source of every
+page, and the document's words travel underneath as the searchable layer. Only
+a box with no browser at all falls back to the words ladder (SCRIBD_SCANS=1
+brings the old scan ladder back for that case). A page that will not answer
+walks a short ladder: the name the document gave,
 the same name without the token, then the page's own descriptor, which names the
 real asset outright. Every url tried for a failed page is recorded. A page that
 comes back with neither a scan nor its words is then photographed by a browser
@@ -394,6 +400,10 @@ def cookie_sentence(jar: dict[str, str]) -> str:
 
 BASE = os.environ.get("SCRIBD_BASE", "").rstrip("/")   # only for local tests
 SHOTS_ONLY = os.environ.get("SCRIBD_SHOTS_ONLY", "") == "1"
+# Scanning is off. Every page is photographed; the scan ladder only runs if
+# somebody forces it back with SCRIBD_SCANS=1 / --scans, for a box with no
+# browser at all where the words ladder is not enough.
+SCANS_OK = os.environ.get("SCRIBD_SCANS", "") == "1"
 _POOL = threading.local()
 
 def rebase(url: str) -> str:
@@ -4454,12 +4464,13 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     texts: dict[int, str] = {}        # the invisible text layer of a scan page
     book_pages: dict[int, dict] = {}
     book_shot: list[int] = []
-    if SHOTS_ONLY and not ctx.skip_now:
+    if not ctx.skip_now:
         shooter = ensure_shooter(shooter)
         if shooter.alive():
-            JOB.say(f"shots only: photographing the whole viewer in one pass "
+            JOB.say(f"photographing the whole viewer in one pass "
                     f"({shooter.base}) — every page clipped at the gap between "
-                    f"it and the next, no scan asked for at all")
+                    f"it and the next; scanning is off, the browser is the "
+                    f"source of every page")
             book_pages, book_note = shooter.shoot_book(ctx.ident, shooter.scale)
             if book_pages:
                 JOB.say(book_note)
@@ -4467,9 +4478,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 JOB.say(f"the one-pass photograph came back empty: {book_note} "
                         f"— falling back to page by page")
         else:
-            JOB.say("shots only was asked, but no browser is reachable"
+            JOB.say("no browser is reachable"
                     + (f" at {shooter.base}" if shooter.base else "")
-                    + f": {shooter.note} — the normal ladder runs instead")
+                    + f": {shooter.note} — the words ladder runs instead; "
+                    f"scanning is off (SCRIBD_SCANS=1 brings it back)")
     if book_pages:
         collected.update(book_pages)
         book_shot = sorted(book_pages)
@@ -4502,9 +4514,24 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             for note in shot_notes:
                 JOB.say("  " + note)
             failed = [n for n in failed if n not in collected]
+        if failed and not ctx.skip_now:
+            JOB.say(f"{len(failed)} page(s) no photograph reached — asking the "
+                    f"document for their words instead")
+            with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
+                futures = {pool.submit(ctx.descriptor_text, number): number
+                           for number in list(failed)}
+                for future in as_completed(futures):
+                    number = futures[future]
+                    try:
+                        words = future.result()
+                    except Exception:                      # noqa: BLE001
+                        words = ""
+                    if words and words.strip():
+                        text_pages[number] = words
+                        failed = [n for n in failed if n != number]
         if failed:
-            JOB.say(f"pages left out of the PDF (no photograph reached them): "
-                    f"{', '.join(map(str, failed[:12]))}"
+            JOB.say(f"pages left out of the PDF (no photograph and no words "
+                    f"reached them): {', '.join(map(str, failed[:12]))}"
                     + (" …" if len(failed) > 12 else ""))
         JOB.set_progress(page=with_limit, ok=len(collected),
                          skipped=len(failed))
@@ -4582,7 +4609,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                     if number in text_pages and number not in locked
                     and ctx.sources.images_for(number)]
             fetched: list[tuple[int, dict, str]] = []
-            for number in both[:MAX_COVER_SCANS]:
+            for number in (both[:MAX_COVER_SCANS] if SCANS_OK else []):
                 if not JOB.alive(ctx.gen) or ctx.skip_now:
                     break
                 _n, built, _m = ctx.grab(number)
@@ -4622,9 +4649,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             # images/N-x.jpg are siblings), so a page whose words were refused still
             # has a picture to ask for — the same picture the browser shows. Only a
             # page nobody named at all is left to the browser alone.
-            need_scan = [number for number in silent
-                         if ctx.sources.images_for(number)
-                         or ctx.sources.jsonps_for(number)]
+            need_scan = ([number for number in silent
+                          if ctx.sources.images_for(number)
+                          or ctx.sources.jsonps_for(number)]
+                         if SCANS_OK else [])
             if need_scan:
                 JOB.say(f"scan fallback: {len(need_scan)} page(s) have no words but "
                         f"do name a picture ({', '.join(str(n) for n in need_scan[:8])}"
@@ -4661,7 +4689,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             # not one scan request when the document is text: the old code queued
             # every page here and then threw the queue away, which is what made a
             # text document ask for 38 images that never existed
-            futures = ([] if text_only else
+            futures = ([] if (text_only or not SCANS_OK) else
                        [pool.submit(ctx.grab, number)
                         for number in range(1, with_limit + 1)
                         if number not in locked])
@@ -5038,15 +5066,17 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                           sorted(ctx.rejected.items(), key=lambda row: -row[1]))
         if ctx.rejected:
             why = (f"{sum(ctx.rejected.values())} page file(s) arrived but none could "
-                   f"be read as a scan ({kinds})")
+                   f"be read as a page image ({kinds})")
             if "webp" in ctx.rejected:
                 why += (" · webp needs Pillow: this build reads jpeg and png alone. "
                         "Run --probe 1 to see the file that arrived")
         else:
-            why = ("no page scan could be fetched — see downloads/debug/"
+            why = ("no page could be photographed and no page's words could be "
+                   "read — see downloads/debug/"
                    + ("" if ctx.token.get() else
-                      " · no image token was on the page: open the document while "
-                      "logged in, then reload it"))
+                      " · no browser answered and the document named no words: "
+                      "start the /shot service, or bring the scan ladder back "
+                      "with SCRIBD_SCANS=1"))
         waited, aged = JOB.waiting(), ctx.age()
         with JOB.lock:
             if ctx.skip_now:
@@ -7420,8 +7450,10 @@ def main(argv: list[str]) -> int:
         elif arg in ("--text", "--text-layer"):
             text = True
         elif arg == "--shots-only":
-            global SHOTS_ONLY
-            SHOTS_ONLY = True
+            pass                      # photographs are the default now
+        elif arg == "--scans":
+            global SCANS_OK
+            SCANS_OK = True
         elif arg == "--selftest":
             print(selftest())
             return 0
