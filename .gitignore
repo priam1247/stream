@@ -55,3 +55,4 @@ cookies.txt
 # Lambda-style scratch folder used by the bot's JS runtime (TMPDIR=./tmp)
 tmp/
 tools/troy-search/tmp/
+tools/shooter-found.txt

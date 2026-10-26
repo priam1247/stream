@@ -227,7 +227,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.34"
+VERSION = "2.35"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -3906,6 +3906,12 @@ SHOTS = os.environ.get("SCRIBD_SHOTS", "").rstrip("/")
 #                    separate Pterodactyl servers on the same machine
 SHOT_HOSTS = ("http://127.0.0.1:8096", "http://localhost:8096",
               "http://195.123.189.187:8096")
+# The shooter lives in its own egg, in its own container, and a container
+# cannot see the public port Pterodactyl mapped to it — so the panel asks the
+# host once, port by port, and remembers the answer in shooter-found.txt.
+# One sweep per install, never a setting to touch.
+SHOOTER_SCAN_HOST = os.environ.get("SCRIBD_SHOOTER_HOST", "195.123.189.187")
+SHOOTER_SCAN_RANGES = ((25000, 26000), (20000, 30000))
 SHOT_FOUND_FOR = 300.0      # a service that answered is trusted for this long
 SHOT_RETRY_AFTER = 60.0     # one that did not is looked for again after this
 _SHOT_CACHE: dict = {"base": "", "note": "", "when": 0.0}
@@ -4003,6 +4009,84 @@ def ping_answer(status: int, body: bytes, error: str) -> tuple[bool, str]:
     return False, (why[:200] or f"answered {status} and said it is not ready")
 
 
+def shooter_cache_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "shooter-found.txt")
+
+
+def read_shooter_cache() -> str:
+    try:
+        with open(shooter_cache_path()) as handle:
+            text = handle.read().strip()
+    except Exception:                                   # noqa: BLE001
+        return ""
+    return text if text.startswith("http") else ""
+
+
+def write_shooter_cache(base: str) -> None:
+    try:
+        with open(shooter_cache_path(), "w") as handle:
+            handle.write(base + "\n")
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
+def ping_ok(base: str, timeout: float = 1.5) -> bool:
+    """One cheap question: is a browser service actually home at this address?"""
+    status, body, error = shot_get(base.rstrip("/") + "/shot/ping", timeout)
+    if error or status != 200:
+        return False
+    try:
+        return bool(json.loads(body).get("ok"))
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
+def scan_for_shooter(host: str = "") -> str:
+    """Find the shooter egg by asking the host's allocation ports, once.
+
+    A closed port answers instantly, so a thousand ports cost about a second
+    and the wide range a few. The first address that answers /shot/ping with
+    ok:true is the browser service; it is written to shooter-found.txt so no
+    later run, and no later restart, ever sweeps again.
+    """
+    cached = read_shooter_cache()
+    if cached and ping_ok(cached):
+        return cached
+    host = host or SHOOTER_SCAN_HOST
+    found = ""
+    for low, high in SHOOTER_SCAN_RANGES:
+        open_ports: list[int] = []
+
+        def try_port(port: int) -> int | None:
+            sock = socket.socket()
+            sock.settimeout(0.12)
+            try:
+                return port if sock.connect_ex((host, port)) == 0 else None
+            except Exception:                           # noqa: BLE001
+                return None
+            finally:
+                sock.close()
+
+        with ThreadPoolExecutor(max_workers=300) as pool:
+            for port in pool.map(try_port, range(low, high + 1)):
+                if port:
+                    open_ports.append(port)
+        for port in sorted(open_ports):
+            base = f"http://{host}:{port}"
+            if ping_ok(base):
+                found = base
+                break
+        if found:
+            break
+    if found:
+        write_shooter_cache(found)
+        JOB.say(f"found the browser service at {found} by asking the host's "
+                f"ports once — remembered in tools/shooter-found.txt, never "
+                f"swept again")
+    return found
+
+
 def discover_shots(hosts: tuple | list | None = None, force: bool = False,
                    timeout: float = 3.0) -> tuple[str, str]:
     """The browser service to use, found by asking — nothing to configure.
@@ -4013,7 +4097,8 @@ def discover_shots(hosts: tuple | list | None = None, force: bool = False,
     restart of this one.
     """
     candidates = list(hosts if hosts is not None else
-                      ([SHOTS] if SHOTS else []) + list(SHOT_HOSTS))
+                      ([SHOTS] if SHOTS else []) + list(SHOT_HOSTS) +
+                      ([read_shooter_cache()] if read_shooter_cache() else []))
     with _SHOT_LOCK:
         age = time.time() - _SHOT_CACHE["when"]
         fresh = ((_SHOT_CACHE["base"] and age < SHOT_FOUND_FOR)
@@ -4250,6 +4335,8 @@ def ensure_shooter(shooter: "Shooter") -> "Shooter":
     if shooter.alive():
         return shooter
     base, _note = discover_shots(force=True)
+    if not base:
+        base = scan_for_shooter()
     if not base:
         base = autostart_shots()
     if not base:
@@ -7157,6 +7244,17 @@ def selftest() -> str:
     assert got[0]["width"] == 20 and got[0]["height"] == 8
     assert decode_shots(wire[:len(wire) - 20])[1], "a cut body is refused"
     assert decode_shots(b"\x00" * 4 + b"not json")[1], "a bad manifest is refused"
+    # the found-address cache round-trips, and a non-address is not one
+    cache_at = shooter_cache_path()
+    try:
+        write_shooter_cache("http://127.0.0.1:25877")
+        assert read_shooter_cache() == "http://127.0.0.1:25877"
+        with open(cache_at, "w") as handle:
+            handle.write("nonsense\n")
+        assert read_shooter_cache() == ""
+    finally:
+        if os.path.exists(cache_at):
+            os.remove(cache_at)
     # the start log is the service's own voice: last lines, joined, never a guess
     with tempfile.TemporaryDirectory() as shelf:
         os.makedirs(os.path.join(shelf, "tmp"))
