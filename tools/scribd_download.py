@@ -211,7 +211,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.24"
+VERSION = "2.25"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -3363,10 +3363,14 @@ class Ctx:
         # nothing names this page? build its address from a page that is named.
         # This is what a converted document needs: it names one asset, page 1's
         # scan, and its 37 other pages are words behind a name nobody printed.
-        for pattern in self.sources.asset_patterns()[:4]:
-            borrowed = jsonp_for_page(pattern, number)
-            if borrowed and borrowed not in names:
-                names.append(borrowed)
+        # Only then, though: a borrowed name carries another page's content
+        # hash, so on a page that IS named it is four requests that can only
+        # answer 403 — and 403s are exactly what gets an address throttled.
+        if not names:
+            for pattern in self.sources.asset_patterns()[:4]:
+                borrowed = jsonp_for_page(pattern, number)
+                if borrowed and borrowed not in names:
+                    names.append(borrowed)
         names = names[:6]
         for jsonp in names:
             for variant in ([with_token(jsonp, token), strip_token(jsonp)]
@@ -4185,8 +4189,13 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 texts.setdefault(number, text_pages[number])
         silent = [number for number in range(1, with_limit + 1)
                   if number not in text_pages]
+        # a page's descriptor name is also its scan's name (pages/N-x.jsonp and
+        # images/N-x.jpg are siblings), so a page whose words were refused still
+        # has a picture to ask for — the same picture the browser shows. Only a
+        # page nobody named at all is left to the browser alone.
         need_scan = [number for number in silent
-                     if ctx.sources.images_for(number)]
+                     if ctx.sources.images_for(number)
+                     or ctx.sources.jsonps_for(number)]
         if need_scan:
             JOB.say(f"scan fallback: {len(need_scan)} page(s) have no words but "
                     f"do name a picture ({', '.join(str(n) for n in need_scan[:8])}"
@@ -6417,6 +6426,13 @@ def selftest() -> str:
     assert jsonp_for_page("https://h/images/3-cc.webp", 11) == \
         "https://h/pages/11-cc.jsonp"
     assert jsonp_for_page("https://h/nothing", 5) == "https://h/nothing"
+    # a descriptor's name is its scan's name: siblings on one asset host. This
+    # is why a page whose words were refused still has a picture to ask for.
+    assert image_url_for("https://h/pages/16-abc123.jsonp") == \
+        "https://h/images/16-abc123.jpg"
+    assert jsonp_from_image("https://h/images/16-abc123.jpg") == \
+        "https://h/pages/16-abc123.jsonp"
+    assert image_url_for("https://h/images/16-abc123.jpg") == ""
 
     # ---- a page that is text, not a scan --------------------------------
     # The case that made a 38-page document come out as 37 grey boxes: most of
@@ -6698,7 +6714,7 @@ def selftest() -> str:
             "typography, placed lines, photographed pages, a browser "
             "that is not there, the browser found by asking the addresses "
             "written into the file, the picture that was not a page, "
-            "the second door")
+            "the second door, the name that was never asked")
 
 def main(argv: list[str]) -> int:
     global BASE
