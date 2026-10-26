@@ -7073,6 +7073,9 @@ def selftest() -> str:
     assert got[0]["width"] == 20 and got[0]["height"] == 8
     assert decode_shots(wire[:len(wire) - 20])[1], "a cut body is refused"
     assert decode_shots(b"\x00" * 4 + b"not json")[1], "a bad manifest is refused"
+    padded_wire = b"\x00" * 4 + b'{"run": {"pad": 400, "count": 3}}'
+    assert body_manifest(padded_wire).get("run", {}).get("pad") == 400
+    assert body_manifest(b"\x00" * 4 + b"not json") == {}
     assert entry_manifest(got).startswith("2 page(s) clipped at the gaps, every sheet 20x8")
     assert shot_request("http://host:8096/", "7", 12, 2.0) == (
         "http://host:8096/shot?doc=7&page=12&scale=2")
