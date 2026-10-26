@@ -211,7 +211,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.28"
+VERSION = "2.29"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -261,6 +261,14 @@ HARD_THROTTLE = (429, 503)
 # that name again.
 REFUSALS_IN_A_ROW = 3
 PAUSE_LADDER = (4.0, 12.0, 30.0)
+# How long one document in a bulk queue may spend getting nothing but refusals
+# before it drops itself. Twenty seconds is long enough to prove the refusals
+# are not a momentary throttle — three pages refused, or a rest already taken
+# that changed nothing — and short enough that 38 waiting books do not spend
+# the evening on one that will never come. Zero switches the whole queue
+# impatience off — the drop and the shortened retry — and every document then
+# fights to the end even with a queue behind it, which is how 2.27 behaved.
+QUEUE_DROP_AFTER = float(os.environ.get("SCRIBD_QUEUE_DROP_AFTER", "20"))
 # How long one document may spend resting and retrying before it is built with
 # whatever arrived. A page Scribd will not serve is not worth ten minutes of a
 # 100-page book: the placeholders are labelled, the PDF still lands.
@@ -2370,8 +2378,8 @@ class Job:
         self.queue: list[dict] = []
         self.queue_done = 0
         self.queue_total = 0
+        self.batch_left = 0            # a CLI batch: documents still to come
         self.current = ""
-        self.requeue = False           # this document yielded: one more pass
         self.results: list[dict] = []
 
     def say(self, text: str) -> None:
@@ -2448,6 +2456,16 @@ class Job:
         with self.lock:
             return len(self.queue)
 
+    def waiting(self) -> int:
+        """Documents waiting behind the one in flight, on either bulk path.
+
+        The panel queues into self.queue; a CLI batch walks a plain list and
+        keeps its count here. Both mean the same thing to a document that is
+        only refusals: somebody is waiting, so stop being polite.
+        """
+        with self.lock:
+            return len(self.queue) + self.batch_left
+
     def enqueue(self, items: list[dict]) -> tuple[bool, int, str]:
         """Queue these documents. Start the worker only if nobody is working.
 
@@ -2512,10 +2530,11 @@ class Job:
                 return
             built = sum(1 for row in self.results if row["verdict"] == "PDF BUILT")
             partial = sum(1 for row in self.results if row["verdict"] == "PDF PARTIAL")
-            other = len(self.results) - built - partial
+            dropped = sum(1 for row in self.results if row["verdict"] == "DROPPED")
+            other = len(self.results) - built - partial - dropped
             last_file = next((row["file"] for row in reversed(self.results)
                               if row["file"]), "")
-            if built and not partial and not other:
+            if built and not partial and not other and not dropped:
                 self.verdict = "PDF BUILT"
             elif built or partial:
                 self.verdict = "PDF PARTIAL"
@@ -2528,6 +2547,8 @@ class Job:
             else:
                 self.detail = (f"{built} of {len(self.results)} document(s) built"
                                + (f", {partial} partial" if partial else "")
+                               + (f", {dropped} dropped by the queue"
+                                  if dropped else "")
                                + (f", {other} failed" if other else ""))
             self.file = last_file
             self.current = ""
@@ -3019,6 +3040,7 @@ class Ctx:
         self.refused_pages: set[int] = set()
         self.arrived = 0             # pages that actually came back, ever
         self.rested = 0.0            # seconds this document has spent resting
+        self.t0 = time.time()        # this document's own clock, for the drop
         # REST_BUDGET, unless a browser is waiting to photograph what is left:
         # then resting a minute for scans that may never arrive is a minute the
         # reader waits for a page that could already be in the PDF
@@ -3051,6 +3073,14 @@ class Ctx:
             if number in self.refused_pages:
                 return False               # the same page again: it is not ours
             self.refused_pages.add(number)
+            proved = (len(self.refused_pages) >= REFUSALS_IN_A_ROW
+                      or self.rests > 0)
+            if (self.arrived == 0 and proved and QUEUE_DROP_AFTER > 0
+                    and self.age() >= QUEUE_DROP_AFTER):
+                # past the drop line with nothing but refusals to show for it
+                self._queue_drop()
+                if self.skip_now:
+                    return False       # no rest, no retry, no second pass
             if len(self.refused_pages) < REFUSALS_IN_A_ROW:
                 return False
             if self.arrived == 0 and self.rests >= NO_HOPE_RESTS:
@@ -3063,7 +3093,7 @@ class Ctx:
                     JOB.say("nothing in this document has arrived and resting "
                             "has not changed that — treating these 403s as "
                             "'not this account', not as throttling")
-                self._queue_skip()
+                self._queue_drop()
                 return False
             pause = PAUSE_LADDER[min(self.rests, len(PAUSE_LADDER) - 1)]
             if self.rested + pause > self.rest_budget:
@@ -3075,7 +3105,7 @@ class Ctx:
                             f"{self.rest_budget:.0f}s already and the refusals "
                             f"did not clear — not resting again, the missing "
                             f"pages will be reported")
-                self._queue_skip()
+                self._queue_drop()
                 return False
             self.rested += pause
             self.rests += 1
@@ -3088,21 +3118,33 @@ class Ctx:
                 f"not a locked page)")
         return True
 
-    def _queue_skip(self) -> None:
-        """Yield to the queue: a document that is only refusals while other
-        documents wait holds up every book behind it, for nothing.
+    def age(self) -> float:
+        """Seconds since this document started, rests and retries included."""
+        return time.time() - self.t0
 
-        What arrived gets written, the queue moves on, and this document gets
-        one more pass at the end — its finished pages are cached by then, so
-        the second pass asks only for what is missing. With no queue behind
-        it, a document keeps fighting to the end: there is nothing to yield to.
+    def _queue_drop(self) -> None:
+        """Drop this document and let the queue through.
+
+        A book that answers nothing but refusals for twenty seconds is not a
+        throttle that will clear — it is a book this address will not be
+        served. While other documents wait, fighting it further buys nothing
+        and costs every book behind it, so it drops itself: what arrived is
+        written, the missing pages are labelled for what they are, and the
+        queue moves on. There is no second pass — a document that refused
+        everything for twenty seconds refuses everything a second time, and
+        the reader should not wait twice for the same answer.
+
+        With no queue behind it, nothing is dropped: a lone document fights to
+        the end, retries, words and a browser included, because there is
+        nothing to yield to.
         """
-        if self.skip_now or JOB.pending() <= 0:
-            return
+        if self.skip_now or QUEUE_DROP_AFTER <= 0 or JOB.waiting() <= 0:
+            return       # nothing to yield to, or the impatience is switched off
         self.skip_now = True
-        JOB.say(f"the queue has {JOB.pending()} document(s) waiting and this "
-                f"one is only refusals — writing what arrived, moving on, and "
-                f"giving this one another pass at the end of the queue")
+        JOB.say(f"dropping this document: {self.age():.0f}s of refusals with "
+                f"nothing arrived and {JOB.waiting()} document(s) waiting — "
+                f"writing what arrived and moving on (not retried: it will "
+                f"refuse the same way again)")
 
     def answered(self) -> None:
         """A page arrived: start counting refusals again from zero.
@@ -3696,12 +3738,6 @@ def run_queue(gen: int, out: str, note: str = "") -> None:
                 JOB.file = ""
         with JOB.lock:
             verdict, detail, file = JOB.verdict, JOB.detail, JOB.file
-            requeue = JOB.requeue
-            JOB.requeue = False
-        if requeue and not item.get("requeued"):
-            JOB.enqueue([dict(item, requeued=1)])
-            JOB.say("queued again for one more pass, behind the documents that "
-                    f"are waiting: {url}")
         JOB.finish_item(gen, item, verdict, detail, file)
 
     if not JOB.alive(gen):
@@ -3722,7 +3758,7 @@ def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
     a batch can never behave differently from the one-document case.
     """
     total = len(urls)
-    built = partial = broken = 0
+    built = partial = broken = dropped = 0
     lines: list[str] = []
     last_file = ""
     for index, link in enumerate(urls, start=1):
@@ -3733,6 +3769,7 @@ def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
         JOB.say(f"=== document {index} of {total}: {link}")
         with JOB.lock:
             JOB.url = link
+            JOB.batch_left = total - index   # documents behind this one
         try:
             _download(link, limit, out, jobs, refresh, "", check, placeholder,
                       verify, text, gen)
@@ -3748,6 +3785,9 @@ def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
         elif verdict == "PDF PARTIAL":
             partial += 1
             last_file = JOB.file or last_file
+        elif verdict == "DROPPED":
+            dropped += 1               # let go on purpose, not a crash
+            last_file = JOB.file or last_file
         else:
             broken += 1
         lines.append(f"{index}. {verdict} — {os.path.basename(JOB.file or '') or link}")
@@ -3755,8 +3795,11 @@ def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
         with JOB.lock:
             JOB.title = f"document {index} of {total}"
     if gen and not JOB.alive(gen):
+        with JOB.lock:
+            JOB.batch_left = 0
         return                       # a reset ended this batch; leave it ended
     with JOB.lock:
+        JOB.batch_left = 0
         if built == total:
             JOB.verdict = "PDF BUILT"
         elif built or partial:
@@ -3766,6 +3809,7 @@ def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
         JOB.file = last_file
         JOB.detail = (f"{built} of {total} document(s) built"
                       + (f", {partial} partial" if partial else "")
+                      + (f", {dropped} dropped by the queue" if dropped else "")
                       + (f", {broken} failed" if broken else ""))
     JOB.say("")
     for line in lines:
@@ -4379,6 +4423,20 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                         + f" · {rate:.1f} pages/s · gate {ctx.gate.rate:.1f}/s"
                         + (f" · about {left:.0f} s left" if left > 1 else ""))
 
+    if ctx.skip_now:
+        # The drop cancelled requests that had not been made yet. A page nobody
+        # asked for is still a page the reader does not have, and it must be
+        # counted: otherwise a dropped book reports itself as built with a
+        # handful of placeholder sheets inside it.
+        never_asked = [number for number in range(1, with_limit + 1)
+                       if number not in collected and number not in text_pages
+                       and number not in failed and number not in texts]
+        if never_asked:
+            failed = sorted(set(failed) | set(never_asked))
+            JOB.say(f"{len(never_asked)} page(s) were never asked for — the "
+                    f"queue moved on without them: they are labelled in the "
+                    f"PDF, not hidden")
+
     # ---- retries, on a budget -------------------------------------------
     # A page Scribd refuses is refused for a reason (not this account, or the
     # address is throttled). Retrying is worth a minute; it is not worth ten.
@@ -4396,7 +4454,18 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         JOB.say(f"a browser can photograph what is left ({shooter.base}) — "
                 f"resting {budget:.0f}s for real scans instead of "
                 f"{RETRY_BUDGET:.0f}s")
-    for round_number, pause in ((1, 2.0), (2, 8.0), (3, 20.0)):
+    rounds = ((1, 2.0), (2, 8.0), (3, 20.0))
+    waiting = JOB.waiting()
+    if (waiting > 0 and failed and not ctx.skip_now
+            and QUEUE_DROP_AFTER > 0):
+        # three rounds of resting to recover a page that has already been
+        # refused three ways is thirty seconds of every other book's evening.
+        # With a queue behind this one, the retry is one quick round.
+        rounds = ((1, 2.0),)
+        JOB.say(f"the queue has {waiting} document(s) waiting — one quick "
+                f"retry for {len(failed)} missing page(s) instead of three "
+                f"rounds of resting")
+    for round_number, pause in rounds:
         if not failed:
             break
         if not JOB.alive(ctx.gen) or ctx.skip_now:
@@ -4667,12 +4736,16 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                    + ("" if ctx.token.get() else
                       " · no image token was on the page: open the document while "
                       "logged in, then reload it"))
+        waited, aged = JOB.waiting(), ctx.age()
         with JOB.lock:
-            JOB.verdict = "NO PAGES"
-            JOB.detail = why
             if ctx.skip_now:
-                JOB.requeue = True     # nothing arrived, but the queue deserves
-                                       # a second look at this one, later
+                JOB.verdict = "DROPPED"
+                JOB.detail = (f"{aged:.0f}s of refusals, nothing arrived, "
+                              f"{waited} document(s) waiting — dropped by the "
+                              f"queue and moved on; not retried")
+            else:
+                JOB.verdict = "NO PAGES"
+                JOB.detail = why
         for number in sorted(ctx.tried)[:3]:
             JOB.say(f"page {number}: {len(ctx.tried[number])} name(s) tried")
             for line in ctx.trace.get(number, [])[:3]:
@@ -4707,7 +4780,8 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
 
     with JOB.lock:
         JOB.file = target
-        JOB.verdict = "PDF BUILT" if not failed else "PDF PARTIAL"
+        JOB.verdict = ("DROPPED" if ctx.skip_now and failed else
+                       "PDF BUILT" if not failed else "PDF PARTIAL")
         asked = with_limit if limit else ctx.total
         real_pages = len(set(collected) | set(text_pages))
         drawn_text = sum(1 for number in text_pages if number not in collected)
@@ -4719,6 +4793,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                          if photographed else "")
                       + (f" · {len(failed)} placeholder" if failed else "")
                       + (f" · {len(previews)} small preview" if previews else "")
+                      + (" · dropped by the queue" if ctx.skip_now else "")
                       + (f" · {len(cuts)} cut short" if cuts else "")
                       + (" · verified" if verify else ""))
     if failed:
@@ -4726,11 +4801,9 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 + (" …" if len(failed) > 60 else ""))
         JOB.say("why, page by page: downloads/debug/failed-pages.txt")
     if ctx.skip_now:
-        with JOB.lock:
-            JOB.requeue = True
-        JOB.say("this document goes to the back of the queue for one more pass "
-                "— the finished pages are cached, so the next pass asks only "
-                "for what is missing")
+        JOB.say(f"dropped itself after {ctx.age():.0f}s: {len(failed)} page(s) "
+                f"were only refusals and the queue was waiting — they are "
+                f"labelled in the PDF and this document is not retried")
 
     # a small disk fills up quietly; say what was cleaned instead of hiding it
     for line in prune_out(out):
@@ -6882,19 +6955,31 @@ def selftest() -> str:
     for _ in range(40):
         hard.complaint(429)
     assert abs(hard.rate - 8.0) < 0.01, hard.rate
-    # a document that is only refusals yields to a waiting queue; alone, it
-    # fights to the end — there is nothing to yield to
+    # past the drop line with nothing but refusals, a queued document drops
+    # itself: no rest, no retry ladder, no second pass at the back
     stuck = Ctx("https://www.scribd.com/document/7/stuck")
-    stuck.rest_budget = 0.0
+    stuck.t0 = time.time() - (QUEUE_DROP_AFTER + 1.0)
     JOB.queue.append({"url": "https://www.scribd.com/document/9/waiting"})
     try:
-        for number in (1, 2, 3):
-            stuck.refused(number)
+        assert [stuck.refused(n) for n in (1, 2, 3)] == [False, False, False], \
+            "an aged document must not ask anybody to rest for it"
         assert stuck.skip_now is True, "a waiting queue should free itself"
     finally:
         JOB.queue.clear()
+    # the drop is a twenty-second judgement, not a hair trigger: a young
+    # document with the same refusals still gets its first rest, because a
+    # throttle that clears is worth four seconds
+    fresh = Ctx("https://www.scribd.com/document/7/fresh")
+    JOB.queue.append({"url": "https://www.scribd.com/document/9/waiting"})
+    try:
+        assert [fresh.refused(n) for n in (1, 2, 3)] == [False, False, True], \
+            "a young document still takes its first rest"
+        assert fresh.skip_now is False, "a young document has not proved it"
+    finally:
+        JOB.queue.clear()
+    # alone, a document keeps fighting to the end: there is nothing to yield to
     alone = Ctx("https://www.scribd.com/document/8/alone")
-    alone.rest_budget = 0.0
+    alone.t0 = time.time() - (QUEUE_DROP_AFTER + 1.0)
     for number in (1, 2, 3):
         alone.refused(number)
     assert alone.skip_now is False, "alone, a document keeps fighting"
@@ -6910,7 +6995,7 @@ def selftest() -> str:
             "written into the file, the picture that was not a page, "
             "the second door, the name that was never asked, "
             "the lock map in the token, the last line of every page, "
-            "the queue that skips ahead")
+            "the queue that drops what will not come")
 
 def main(argv: list[str]) -> int:
     global BASE

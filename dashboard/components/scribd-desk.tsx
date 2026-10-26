@@ -45,7 +45,8 @@ function whenText(seconds: number): string {
 
 function verdictTone(verdict: string): 'ok' | 'warn' | 'bad' | 'idle' {
   if (verdict === 'PDF BUILT') return 'ok';
-  if (verdict === 'PDF PARTIAL' || verdict === 'PROBE DONE') return 'warn';
+  if (verdict === 'PDF PARTIAL' || verdict === 'PROBE DONE' ||
+      verdict === 'DROPPED') return 'warn';
   if (verdict) return 'bad';
   return 'idle';
 }
@@ -776,7 +777,8 @@ export function ScribdDesk() {
                   className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
                     row.verdict === 'PDF BUILT'
                       ? 'bg-teal-50 text-teal-700'
-                      : row.verdict === 'PDF PARTIAL'
+                      : row.verdict === 'PDF PARTIAL' ||
+                          row.verdict === 'DROPPED'
                         ? 'bg-amber-50 text-amber-700'
                         : 'bg-rose-50 text-rose-700'
                   }`}
