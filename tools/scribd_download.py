@@ -185,7 +185,12 @@ Panel options (environment, all optional):
                                  panel could not build (troy-search's /shot);
                                  SCRIBD_SHOT_SCALE (default 2) and
                                  SCRIBD_SHOT_TIMEOUT (default 120) tune it.
-                                 With none set, everything works as before.
+                                 With none set, everything works as before — the
+                                 addresses written into SHOT_HOSTS are asked in
+                                 order (the browser egg's own assigned endpoint
+                                 among them), the egg's host is swept once if
+                                 none of them answers, and the answer is kept in
+                                 tools/shooter-found.txt.
   SCRIBD_SCRAPE_DO               token for the scrape route asked after a 403;
                                  empty closes that door
 
@@ -227,7 +232,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.35"
+VERSION = "2.36"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -3896,25 +3901,50 @@ def _probe(url: str, number: int) -> None:
 # configured, or one that will not answer, the document is built exactly as
 # before. A photograph is a rescue, never a requirement.
 SHOTS = os.environ.get("SCRIBD_SHOTS", "").rstrip("/")
-# The browser service is deployed beside this panel, so its address is written
-# down here instead of wired by hand: these are tried in order and the first one
-# that answers `"ok": true` is the browser. SCRIBD_SHOTS still comes first when
-# it is set, for a box that is not this box — but nothing needs setting.
-#   127.0.0.1  the same container / the same machine
-#   localhost  the same, on a box where that resolves differently
-#   195.123.189.187  this panel's own public address, when the two apps are
-#                    separate Pterodactyl servers on the same machine
+# The browser service is not deployed beside this panel: it is its own server,
+# on its own host, with its own assigned endpoint. So every door it could be
+# behind is written down here instead of wired by hand — tried in order, and the
+# first one that answers `"ok": true` is the browser. SCRIBD_SHOTS still comes
+# first when it is set, for a box that is not this box, but nothing needs setting.
+#   127.0.0.1 / localhost   the same container, or the same machine. Asked first
+#                           because a door with nobody behind it answers at once,
+#                           and one box does run both halves together.
+#   node6.botkeep.cloud:45009
+#                           THE browser egg. Its own control panel names this as
+#                           the endpoint assigned to it, so this — not any port
+#                           of this panel's machine — is the door to knock on.
+#   77.90.45.110:45009      the same door by number, for a container whose name
+#                           service cannot resolve the host above.
+#   195.123.189.187         this panel's own address, kept for the day the two
+#                           eggs share a machine again, and asked last: a port
+#                           nobody answers there costs the whole timeout.
 SHOT_HOSTS = ("http://127.0.0.1:8096", "http://localhost:8096",
+              "http://node6.botkeep.cloud:45009",
+              "http://77.90.45.110:45009",
               "http://195.123.189.187:8096",
-              # the address handed over from the panel, hard-coded as asked:
-              # probed like the rest, one cheap ping, kept out of the way
               "http://195.123.189.187:25811")
-# The shooter lives in its own egg, in its own container, and a container
-# cannot see the public port Pterodactyl mapped to it — so the panel asks the
-# host once, port by port, and remembers the answer in shooter-found.txt.
-# One sweep per install, never a setting to touch.
-SHOOTER_SCAN_HOST = os.environ.get("SCRIBD_SHOOTER_HOST", "195.123.189.187")
-SHOOTER_SCAN_RANGES = ((25000, 26000), (20000, 30000))
+# The door a copy started beside this panel takes. Read off the first address
+# above, so starting one can never put the browser somewhere nobody looks.
+SHOT_LOCAL_PORT = int(urllib.parse.urlparse(SHOT_HOSTS[0]).port or 8096)
+# A server cannot see the public port its own panel mapped to it, so if every
+# written-down door is shut, this one asks the browser egg's host port by port —
+# once — and remembers the answer in shooter-found.txt. The endpoint above is
+# today's; a host that moves it to another port is still found, with no setting
+# to touch and no second sweep ever.
+SHOOTER_SCAN_RANGES = ((25000, 26000), (20000, 30000), (44000, 46000))
+_scan_host = os.environ.get("SCRIBD_SHOOTER_HOST", "").strip()
+# (host, the bands of its ports to ask), in the order worth asking them: the
+# narrow shelf around the endpoint it has today first, because a host that hands
+# out ports from one shelf is found in about a hundred questions.
+SHOOTER_SCAN_HOSTS = (((_scan_host, SHOOTER_SCAN_RANGES),) if _scan_host else
+                      (("node6.botkeep.cloud", ((45000, 45100), (44000, 46000))),
+                       ("77.90.45.110", ((45000, 45100), (44000, 46000))),
+                       ("195.123.189.187", ((25000, 26000), (20000, 30000)))))
+SCAN_RETRY_AFTER = 900.0    # a sweep that found nothing is not repeated at once
+SCAN_BUDGET = 120.0         # the most a sweep may take: documents are waiting
+SCAN_LIE_RATIO = 4          # a host that says yes to every 4th port is lying
+_SCAN_LOCK = threading.Lock()
+_SCAN_TRIED: dict = {"when": 0.0}
 SHOT_FOUND_FOR = 300.0      # a service that answered is trusted for this long
 SHOT_RETRY_AFTER = 60.0     # one that did not is looked for again after this
 _SHOT_CACHE: dict = {"base": "", "note": "", "when": 0.0}
@@ -4045,49 +4075,122 @@ def ping_ok(base: str, timeout: float = 1.5) -> bool:
         return False
 
 
-def scan_for_shooter(host: str = "") -> str:
-    """Find the shooter egg by asking the host's allocation ports, once.
+def scan_for_shooter(host: str = "", announce=None) -> str:
+    """Find the browser egg by asking its host's ports, once.
 
-    A closed port answers instantly, so a thousand ports cost about a second
-    and the wide range a few. The first address that answers /shot/ping with
-    ok:true is the browser service; it is written to shooter-found.txt so no
-    later run, and no later restart, ever sweeps again.
+    The egg cannot say which port its own panel mapped to it, and nothing on
+    this machine is it, so the ports are asked directly: a closed one answers at
+    once, so a band of a thousand costs a couple of seconds even across a
+    network. The first address that answers /shot/ping with ok:true is the
+    browser, and it is written to shooter-found.txt so no later run, and no
+    later restart, ever sweeps again. A sweep that finds nothing is not repeated
+    for SCAN_RETRY_AFTER, so an egg that is simply stopped cannot slow down
+    every document that asks for it.
     """
-    cached = read_shooter_cache()
-    if cached and ping_ok(cached):
-        return cached
-    host = host or SHOOTER_SCAN_HOST
-    found = ""
-    for low, high in SHOOTER_SCAN_RANGES:
-        open_ports: list[int] = []
-
-        def try_port(port: int) -> int | None:
-            sock = socket.socket()
-            sock.settimeout(0.12)
-            try:
-                return port if sock.connect_ex((host, port)) == 0 else None
-            except Exception:                           # noqa: BLE001
-                return None
-            finally:
-                sock.close()
-
-        with ThreadPoolExecutor(max_workers=300) as pool:
-            for port in pool.map(try_port, range(low, high + 1)):
-                if port:
-                    open_ports.append(port)
-        for port in sorted(open_ports):
-            base = f"http://{host}:{port}"
-            if ping_ok(base):
-                found = base
+    say = announce or (lambda text: JOB.say(text))
+    with _SCAN_LOCK:
+        cached = read_shooter_cache()
+        if cached and ping_ok(cached, 3.0):
+            return cached
+        if time.time() - _SCAN_TRIED["when"] < SCAN_RETRY_AFTER:
+            return ""
+        targets = (((host, SHOOTER_SCAN_RANGES),) if host
+                   else SHOOTER_SCAN_HOSTS)
+        found = ""
+        ran_out = ""
+        deadline = time.time() + SCAN_BUDGET
+        for name, bands in targets:
+            if time.time() >= deadline:
+                ran_out = name
                 break
-        if found:
-            break
+            try:                       # a name is looked up once, not per port
+                address = socket.gethostbyname(name)
+            except OSError:
+                say(f"cannot look up the name {name}, so its ports cannot be "
+                    f"asked")
+                continue
+            for low, high in bands:
+                if time.time() >= deadline:
+                    ran_out = ran_out or name
+                    break
+                open_ports: list[int] = []
+
+                def try_port(port: int, where: str = address) -> int | None:
+                    sock = socket.socket()
+                    sock.settimeout(0.5)   # a host across a network, not a
+                    try:                   # container next door: it needs room
+                        return (port if sock.connect_ex((where, port)) == 0
+                                else None)
+                    except Exception:                      # noqa: BLE001
+                        return None
+                    finally:
+                        sock.close()
+
+                with ThreadPoolExecutor(max_workers=200) as pool:
+                    for port in pool.map(try_port, range(low, high + 1)):
+                        if port:
+                            open_ports.append(port)
+                if len(open_ports) * SCAN_LIE_RATIO > high - low + 1:
+                    # every door "open" is a host, or a firewall in front of it,
+                    # that says yes to everything — which is no answer about any
+                    # one port. Asking them all would take the rest of the day.
+                    say(f"{name} answered on {len(open_ports)} of "
+                        f"{high - low + 1} ports asked — a host that opens "
+                        f"every door is not telling the truth about any of "
+                        f"them, so they are not asked one by one")
+                    continue
+                for port in sorted(open_ports):
+                    base = f"http://{name}:{port}"
+                    if ping_ok(base, 5.0):
+                        found = base
+                        break
+                if found:
+                    break
+            if found:
+                break
+        _SCAN_TRIED["when"] = time.time()
     if found:
         write_shooter_cache(found)
-        JOB.say(f"found the browser service at {found} by asking the host's "
-                f"ports once — remembered in tools/shooter-found.txt, never "
-                f"swept again")
+        say(f"found the browser service at {found} by asking its host's ports "
+            f"once — remembered in tools/shooter-found.txt, never swept again")
+    elif ran_out:
+        say(f"the search for the browser service ran out of its "
+            f"{int(SCAN_BUDGET)} seconds at {ran_out} — pages will come as "
+            f"words until it is found, and its ports are not asked again for "
+            f"{int(SCAN_RETRY_AFTER // 60)} minutes")
+    else:
+        say(f"asked {', '.join(name for name, _b in targets)} port by port and "
+            f"no port is the browser service — pages will come as words until "
+            f"that egg is running, and its ports are not asked again for "
+            f"{int(SCAN_RETRY_AFTER // 60)} minutes")
     return found
+
+
+def boot_shots_report() -> None:
+    """Ask for the browser at boot, off the serving thread, and say the answer.
+
+    The browser is another host now, so the panel opens its own door first and
+    asks afterwards: whether a page nobody sends can be photographed is still
+    said before anybody presses download, but a host that does not answer cannot
+    hold the panel shut while it times out.
+    """
+    def say(text: str) -> None:
+        print(text, flush=True)
+
+    try:
+        found, note = discover_shots(timeout=6.0)
+        if not found:
+            found = scan_for_shooter(announce=say)
+            if found:
+                # asked once more, so the note is the browser's own words and the
+                # answer is warm in the cache before the first document asks
+                again, why = discover_shots(hosts=[found], force=True,
+                                            timeout=6.0)
+                note = why if again else found
+        say(("photographing pages: " + note) if found else
+            ("photographing pages: none — " + note))
+    except Exception as trouble:                          # noqa: BLE001
+        say(f"photographing pages: unknown — asking failed ({plain_error(trouble)})")
 
 
 def discover_shots(hosts: tuple | list | None = None, force: bool = False,
@@ -4309,6 +4412,13 @@ def autostart_shots() -> str:
                     "once by hand")
     env = dict(os.environ)
     env.setdefault("TMPDIR", os.path.join(proj, "tmp"))
+    # A copy started beside this panel is a local one, so it takes the local
+    # door — never the port the host assigned to THIS container, which is the
+    # panel's own and already taken. Without this, a host that hands every
+    # container its public port in SERVER_PORT would have the browser try to
+    # sit on the panel's door and die there.
+    env.pop("SERVER_PORT", None)
+    env["PORT"] = str(SHOT_LOCAL_PORT)
     try:
         handle = open(log, "ab")
         subprocess.Popen([node, "index.js"], cwd=proj, env=env,
@@ -4319,13 +4429,27 @@ def autostart_shots() -> str:
         return ""
     JOB.say("no browser service was running — starting tools/troy-search "
             "myself and waiting for it, because a grey page is not an option")
-    for _ in range(45):
+    local = f"http://127.0.0.1:{SHOT_LOCAL_PORT}"
+    for waited in range(45):
         time.sleep(1.0)
-        base, _note = discover_shots(force=True)
-        if base:
-            _AUTOSTART["base"] = base
-            JOB.say(f"the browser service I started is up: {base}")
-            return base
+        # The copy started here is the one being waited for, so it is the one
+        # asked: walking the whole ladder every second spends minutes on
+        # addresses across a network that answer nothing at all, while the
+        # browser being waited for is next door and refuses in a millisecond.
+        if ping_ok(local, 2.0):
+            _AUTOSTART["base"] = local
+            JOB.say(f"the browser service I started is up: {local}")
+            return local
+        if waited in (19, 44):
+            # twice, though, the world is asked as well: a service that came up
+            # somewhere else while this one was starting is worth more than the
+            # copy being waited for, and must not be missed
+            base, _note = discover_shots(force=True)
+            if base:
+                _AUTOSTART["base"] = base
+                JOB.say(f"a browser service answered while this one was "
+                        f"starting: {base}")
+                return base
     reason = shooter_start_reason(proj)
     JOB.say("the browser service I started never answered in 45s"
             + (f" — its own last words: {reason}" if reason else
@@ -4343,7 +4467,21 @@ def ensure_shooter(shooter: "Shooter") -> "Shooter":
     if not base:
         base = autostart_shots()
     if not base:
-        return shooter
+        # Asked after the attempt, not before it. A copy has just been started,
+        # so the local door is one cheap question away from the truth: if it
+        # came up late it is used, and if it came up and cannot help, its own
+        # answer joins what the document says — because a stale "nothing is
+        # listening" beside a service that did answer sends anybody reading it
+        # looking in the wrong place.
+        local = f"http://127.0.0.1:{SHOT_LOCAL_PORT}"
+        status, body, error = shot_get(local + "/shot/ping", 3.0)
+        ready, why = ping_answer(status, body, error)
+        if not ready:
+            shooter.state = False
+            shooter.note = (f"{shooter.note or 'no browser service answered'}; "
+                            f"the copy started here says: {why}")
+            return shooter
+        base = local
     fresh = Shooter(base, discover=False)
     return fresh if fresh.alive() else shooter
 
@@ -6221,10 +6359,10 @@ def serve(port: int, out: str) -> None:
           flush=True)
     print(f"cookies: {cookie_report(find_cookies())}", flush=True)
     # said at boot, not at the first document: whether a page nobody sends can be
-    # photographed is the one thing worth knowing before you press download
-    found, note = discover_shots()
-    print(("photographing pages: " + note) if found else
-          ("photographing pages: none — " + note), flush=True)
+    # photographed is the one thing worth knowing before you press download. Said
+    # from its own thread, because the browser is a second server on a second
+    # host, and asking it must not keep this panel's door shut while it answers.
+    threading.Thread(target=boot_shots_report, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -7247,6 +7385,62 @@ def selftest() -> str:
     assert got[0]["width"] == 20 and got[0]["height"] == 8
     assert decode_shots(wire[:len(wire) - 20])[1], "a cut body is refused"
     assert decode_shots(b"\x00" * 4 + b"not json")[1], "a bad manifest is refused"
+    # the browser egg's own endpoint is written down, so a panel that was never
+    # told anything still knocks on the right door — and knocks next door first,
+    # because a shut door beside you answers instantly while one across a
+    # network costs the whole timeout
+    assert "http://node6.botkeep.cloud:45009" in SHOT_HOSTS, SHOT_HOSTS
+    assert "http://77.90.45.110:45009" in SHOT_HOSTS, SHOT_HOSTS
+    assert SHOT_HOSTS.index("http://127.0.0.1:8096") < SHOT_HOSTS.index(
+        "http://node6.botkeep.cloud:45009"), SHOT_HOSTS
+    assert SHOT_HOSTS.index("http://node6.botkeep.cloud:45009") < SHOT_HOSTS.index(
+        "http://195.123.189.187:25811"), SHOT_HOSTS
+    # the copy started beside the panel takes the door the ladder asks first, so
+    # starting one can never put the browser somewhere nobody looks
+    assert SHOT_HOSTS[0] == f"http://127.0.0.1:{SHOT_LOCAL_PORT}", SHOT_HOSTS[0]
+    # the sweep asks the egg's own host, and the shelf around today's endpoint
+    # before the wide band, so a host that moved the port is still found fast
+    assert SHOOTER_SCAN_HOSTS[0] == ("node6.botkeep.cloud",
+                                     ((45000, 45100), (44000, 46000))), \
+        SHOOTER_SCAN_HOSTS[0]
+    assert any(name == "77.90.45.110" for name, _bands in SHOOTER_SCAN_HOSTS), \
+        SHOOTER_SCAN_HOSTS
+    # a sweep that finds nothing says so in words, and then rests: an egg that
+    # is simply stopped must not slow down every document that asks for it, and
+    # must not leave anybody guessing whether it was ever looked for
+    held_tried = dict(_SCAN_TRIED)
+    held_ranges = SHOOTER_SCAN_RANGES
+    held_cache = read_shooter_cache()
+    said: list[str] = []
+    try:
+        if os.path.exists(shooter_cache_path()):
+            os.remove(shooter_cache_path())
+        globals()["SHOOTER_SCAN_RANGES"] = ((1, 2),)      # two ports nobody is behind
+        _SCAN_TRIED["when"] = 0.0
+        assert scan_for_shooter(host="127.0.0.1", announce=said.append) == ""
+        assert any("port by port" in line for line in said), said
+        assert any("minutes" in line for line in said), said
+        said.clear()
+        assert scan_for_shooter(host="127.0.0.1", announce=said.append) == ""
+        assert not said, f"a rested sweep ran again: {said}"
+        # a sweep is given a budget, because documents are waiting on it: with
+        # no time left it says so at once rather than asking ports for an hour
+        held_budget = SCAN_BUDGET
+        try:
+            globals()["SCAN_BUDGET"] = 0.0
+            _SCAN_TRIED["when"] = 0.0
+            said.clear()
+            assert scan_for_shooter(host="127.0.0.1", announce=said.append) == ""
+            assert any("ran out" in line for line in said), said
+        finally:
+            globals()["SCAN_BUDGET"] = held_budget
+    finally:
+        globals()["SHOOTER_SCAN_RANGES"] = held_ranges
+        _SCAN_TRIED.update(held_tried)
+        if held_cache:
+            write_shooter_cache(held_cache)
+        elif os.path.exists(shooter_cache_path()):
+            os.remove(shooter_cache_path())
     # the found-address cache round-trips, and a non-address is not one
     cache_at = shooter_cache_path()
     try:
