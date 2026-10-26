@@ -211,7 +211,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.25"
+VERSION = "2.26"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -665,6 +665,55 @@ def jwt_exp(token: str) -> int:
         return int(json.loads(raw).get("exp") or 0)
     except Exception:  # noqa: BLE001
         return 0
+
+def jwt_claims(token: str) -> dict:
+    """What a Scribd asset token says besides its expiry: the CDN folder
+    (`format_uuid`) and the window of pages the CDN will actually serve
+    (`page_min`, `page_max`, `enforce`).
+
+    Read, not trusted: the payload is plain base64url json that Scribd hands to
+    every anonymous viewer, and it is used for one decision only — which pages
+    are worth asking for. A preview-limited document says so here, in its own
+    token, before a single request is spent finding out the hard way.
+    """
+    parts = (token or "").split(".")
+    if len(parts) < 2:
+        return {}
+    try:
+        raw = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        claims = json.loads(raw.decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
+def unlocked_range(claims: dict, total: int) -> tuple[int, int]:
+    """The pages the CDN serves: all of them, unless the token enforces a
+    preview window. Garbage in the claims means no window at all."""
+    if not claims.get("enforce"):
+        return 1, total
+    try:
+        low = max(1, int(claims.get("page_min") or 1))
+        high = min(total, int(claims.get("page_max") or total))
+    except (TypeError, ValueError):
+        return 1, total
+    return (low, high) if low <= high else (1, total)
+
+
+def jsonp_variants_of(jsonp: str, token: str) -> list[str]:
+    """The names to ask a descriptor by, no-token FIRST.
+
+    The CDN's /pages/ path wants no token at all, and a token that has expired
+    is not neutral: carrying it is a 403 that counts against the address. So
+    the bare name goes first and the tokened one is the fallback, never the
+    other way round.
+    """
+    out: list[str] = []
+    for candidate in (strip_token(jsonp), with_token(jsonp, token)):
+        if candidate and candidate not in out:
+            out.append(candidate)
+    return out
+
 
 def jwt_ok(token: str) -> bool:
     """Both leading segments must really decode to JSON.
@@ -2916,6 +2965,7 @@ class Ctx:
         self.embed_url = f"https://www.scribd.com/embeds/{self.ident}/content"
         self.sources = Sources()
         self.token = Token()
+        self.lock_window = (1, 0)      # unknown until the token is read
         self.gate = Gate()
         self.dead: set[str] = set()
         self.notes: list[str] = []
@@ -3137,6 +3187,13 @@ class Ctx:
                         self.token.set(late)
                         break
         JOB.say(token_note(self.token.get()))
+        self.lock_window = unlocked_range(jwt_claims(self.token.get()),
+                                          self.total)
+        if self.lock_window != (1, self.total):
+            JOB.say(f"preview lock: the document's own token says the CDN "
+                    f"serves pages {self.lock_window[0]}–{self.lock_window[1]} "
+                    f"of {self.total} — the rest are locked by Scribd, and will "
+                    f"be labelled or photographed, never asked for")
 
         meta = oembed(self.ident, self.jar)
         self.author = safe_name(str(meta.get("author_name") or ""), "")
@@ -3147,6 +3204,13 @@ class Ctx:
         JOB.say(f"title: {self.title!r}"
                 + (f" · author: {self.author}" if self.author else ""))
         return True
+
+    def locked_pages(self, limit: int) -> set[int]:
+        """Pages the token says the CDN will refuse: not worth one request."""
+        low, high = self.lock_window
+        if high <= 0 or (low, high) == (1, limit):
+            return set()
+        return {n for n in range(1, limit + 1) if n < low or n > high}
 
     def primaries_for(self, number: int) -> list[str]:
         """Every plausible name for this page's scan, best first.
@@ -3183,12 +3247,7 @@ class Ctx:
         return list(dict.fromkeys(urls))
 
     def jsonp_variants(self, jsonp: str) -> list[str]:
-        token = self.token.get()
-        out: list[str] = []
-        for candidate in (with_token(jsonp, token), strip_token(jsonp)):
-            if candidate:
-                out.append(candidate)
-        return list(dict.fromkeys(out))
+        return jsonp_variants_of(jsonp, self.token.get())
 
     def assets_in(self, body: bytes, number: int, token: str) -> list[str]:
         """Every scan name in a body that belongs to this page number."""
@@ -3373,8 +3432,7 @@ class Ctx:
                     names.append(borrowed)
         names = names[:6]
         for jsonp in names:
-            for variant in ([with_token(jsonp, token), strip_token(jsonp)]
-                            if token else [strip_token(jsonp)]):
+            for variant in jsonp_variants_of(jsonp, token):
                 if not variant:
                     continue
                 self.rest()
@@ -4075,6 +4133,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         return
 
     with_limit = min(ctx.total, limit) if limit else ctx.total
+    locked = ctx.locked_pages(with_limit)
     JOB.say(("downloading the first %d" % with_limit) if limit
             else "downloading the whole document")
     JOB.set_progress(page=0, of=with_limit, ok=0, skipped=0, blank=0)
@@ -4109,7 +4168,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                     text_pages[number] = viewer[number]
                     ctx.remember_text(number, viewer[number])
         missing = [number for number in range(1, with_limit + 1)
-                   if number not in text_pages]
+                   if number not in text_pages and number not in locked]
         done = len(text_pages)
         JOB.set_progress(page=done, ok=len(text_pages), skipped=len(missing))
         if missing and done:
@@ -4151,7 +4210,8 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         # is a real one — it is what the page looks like — and skipped when it
         # is the empty rectangle Scribd sometimes names instead.
         both = [number for number in range(1, with_limit + 1)
-                if number in text_pages and ctx.sources.images_for(number)]
+                if number in text_pages and number not in locked
+                and ctx.sources.images_for(number)]
         fetched: list[tuple[int, dict, str]] = []
         for number in both[:MAX_COVER_SCANS]:
             if not JOB.alive(ctx.gen):
@@ -4188,7 +4248,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             for number in kept_cover:
                 texts.setdefault(number, text_pages[number])
         silent = [number for number in range(1, with_limit + 1)
-                  if number not in text_pages]
+                  if number not in text_pages and number not in locked]
         # a page's descriptor name is also its scan's name (pages/N-x.jsonp and
         # images/N-x.jpg are siblings), so a page whose words were refused still
         # has a picture to ask for — the same picture the browser shows. Only a
@@ -4234,7 +4294,8 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         # text document ask for 38 images that never existed
         futures = ([] if text_only else
                    [pool.submit(ctx.grab, number)
-                    for number in range(1, with_limit + 1)])
+                    for number in range(1, with_limit + 1)
+                    if number not in locked])
         for future in as_completed(futures):
             if not JOB.alive(ctx.gen):
                 for pending in futures:
@@ -4267,6 +4328,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     recovered_last = -1
     retry_started = time.time()
     budget = RETRY_BUDGET
+    if locked:
+        # a locked page is a failed page: labelled honestly, photographed if a
+        # browser is on hand, and never counted as something we dropped
+        failed = sorted(set(failed) | locked)
     if failed and shooter.alive():
         budget = min(RETRY_BUDGET, SHOT_RETRY_BUDGET)
         JOB.say(f"a browser can photograph what is left ({shooter.base}) — "
@@ -6433,6 +6498,33 @@ def selftest() -> str:
     assert jsonp_from_image("https://h/images/16-abc123.jpg") == \
         "https://h/pages/16-abc123.jsonp"
     assert image_url_for("https://h/images/16-abc123.jpg") == ""
+    # the token is also a map: which pages the CDN will serve at all
+    head = base64.urlsafe_b64encode(b'{"alg":"HS256"}').rstrip(b"=").decode()
+    pay = base64.urlsafe_b64encode(json.dumps(
+        {"iss": "scribd-monolith", "format_uuid": "4171k03itcblvzxd",
+         "page_min": 1, "page_max": 10, "enforce": True}).encode()).rstrip(b"=").decode()
+    preview_jwt = f"{head}.{pay}.sig"
+    assert jwt_claims(preview_jwt).get("page_max") == 10, jwt_claims(preview_jwt)
+    assert jwt_claims(preview_jwt).get("format_uuid") == "4171k03itcblvzxd"
+    assert jwt_claims("not.a.jwt") == {} and jwt_claims("") == {}
+    claims = jwt_claims(preview_jwt)
+    assert unlocked_range(claims, 38) == (1, 10)
+    assert unlocked_range({}, 38) == (1, 38)
+    assert unlocked_range({"enforce": True, "page_max": 99}, 38) == (1, 38)
+    assert unlocked_range({"enforce": True, "page_min": "x"}, 38) == (1, 38)
+    assert unlocked_range({"enforce": True, "page_min": 5, "page_max": 4}, 38) == (1, 38)
+    # no-token FIRST: the token the HTML embedded is the one minted for this
+    # asset and rides along on the fallback — so if it has expired, that
+    # fallback is a 403, and the bare name is the variant that still works
+    stale, fresh = "0123456789abcdef0123", "fedcba9876543210fedc"
+    named = "https://h/pages/4-x.jsonp?token=" + stale
+    pair = jsonp_variants_of(named, fresh)
+    assert pair[0] == "https://h/pages/4-x.jsonp", pair
+    assert pair[1] == named, pair          # embedded token rides the fallback
+    assert jsonp_variants_of("https://h/pages/4-x.jsonp", fresh)[0] == \
+        "https://h/pages/4-x.jsonp"
+    assert jsonp_variants_of("https://h/pages/4-x.jsonp", "") == \
+        ["https://h/pages/4-x.jsonp"]
 
     # ---- a page that is text, not a scan --------------------------------
     # The case that made a 38-page document come out as 37 grey boxes: most of
@@ -6714,7 +6806,8 @@ def selftest() -> str:
             "typography, placed lines, photographed pages, a browser "
             "that is not there, the browser found by asking the addresses "
             "written into the file, the picture that was not a page, "
-            "the second door, the name that was never asked")
+            "the second door, the name that was never asked, "
+            "the lock map in the token")
 
 def main(argv: list[str]) -> int:
     global BASE
