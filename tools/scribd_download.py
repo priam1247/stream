@@ -209,11 +209,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.21"
+VERSION = "2.22"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 OUT = "downloads"
+PANEL_PORT = int(os.environ.get("SCRIBD_PANEL_PORT") or 25811)
 DOC_MARKERS = (b"docManager", b"page_count", b"document_detail", b"outer_page")
 CHALLENGE = (b"just a moment", b"cf-chl", b"attention required")
 # Scribd writes an asset name with a scheme, without one (`//html.scribdassets…`)
@@ -1720,6 +1721,24 @@ def looks_blank_scan(page: dict) -> bool:
     if width <= 0 or height <= 0 or size <= 0:
         return False                       # nothing to judge by: keep the picture
     return size / (width * height) < 0.02
+
+
+SHOT_BLANK_ROWS = 12.0
+
+
+def looks_blank_shot(size: int, height: int) -> bool:
+    """Is a photographed sheet nothing but paper?
+
+    Bytes per row, not bytes per pixel — the browser side judges the very same
+    PNG at the very same number, and a pixel measure moves with the width of the
+    shot, so one page would look four times emptier at 2x than at 1x. Rows are
+    stable: a white sheet compresses to a handful of bytes per row whatever its
+    width, and a page with writing on it stays an order of magnitude above that.
+    A page with one paragraph on it is sparse, not empty, and is kept in silence.
+    """
+    if size <= 0 or height <= 0:
+        return False                       # nothing to judge by: keep the picture
+    return size / height < SHOT_BLANK_ROWS
 
 
 def sheet_scale(sheet: tuple[float, float]) -> float:
@@ -3605,6 +3624,20 @@ def _probe(url: str, number: int) -> None:
 # configured, or one that will not answer, the document is built exactly as
 # before. A photograph is a rescue, never a requirement.
 SHOTS = os.environ.get("SCRIBD_SHOTS", "").rstrip("/")
+# The browser service is deployed beside this panel, so its address is written
+# down here instead of wired by hand: these are tried in order and the first one
+# that answers `"ok": true` is the browser. SCRIBD_SHOTS still comes first when
+# it is set, for a box that is not this box — but nothing needs setting.
+#   127.0.0.1  the same container / the same machine
+#   localhost  the same, on a box where that resolves differently
+#   195.123.189.187  this panel's own public address, when the two apps are
+#                    separate Pterodactyl servers on the same machine
+SHOT_HOSTS = ("http://127.0.0.1:8096", "http://localhost:8096",
+              "http://195.123.189.187:8096")
+SHOT_FOUND_FOR = 300.0      # a service that answered is trusted for this long
+SHOT_RETRY_AFTER = 60.0     # one that did not is looked for again after this
+_SHOT_CACHE: dict = {"base": "", "note": "", "when": 0.0}
+_SHOT_LOCK = threading.Lock()
 SHOT_SCALE = float(os.environ.get("SCRIBD_SHOT_SCALE") or 2)
 SHOT_TIMEOUT = float(os.environ.get("SCRIBD_SHOT_TIMEOUT") or 120)
 MAX_SHOT_PAGES = 400        # a whole book can be photographed, but not forever
@@ -3669,6 +3702,72 @@ def plain_error(exc: BaseException) -> str:
     return text[:160]
 
 
+def ping_answer(status: int, body: bytes, error: str) -> tuple[bool, str]:
+    """What a /shot/ping answer means: (is a browser ready, and in what words).
+
+    Read, not sniffed: a service with no browser in it still answers 200 and
+    still says "ok" — with false after it. Believing that sends every missing
+    page somewhere that cannot help, and the document ends up with the same
+    placeholders, only slower.
+    """
+    if error:
+        return False, error
+    answer = None
+    if body:
+        try:
+            answer = json.loads(body.decode("utf-8", "replace"))
+        except ValueError:
+            answer = None
+    if not isinstance(answer, dict):
+        return False, (f"answered {status} with something that is not json"
+                       if status == 200 else f"answered {status}")
+    if answer.get("ok"):
+        version = str(answer.get("version") or "").strip()
+        return True, (f"troy-search {version}" if version else "ready")
+    browser = answer.get("browser")
+    why = (str(browser.get("note") or "").strip()
+           if isinstance(browser, dict) else "")
+    why = why or str(answer.get("error") or "").strip()
+    return False, (why[:200] or f"answered {status} and said it is not ready")
+
+
+def discover_shots(hosts: tuple | list | None = None, force: bool = False,
+                   timeout: float = 3.0) -> tuple[str, str]:
+    """The browser service to use, found by asking — nothing to configure.
+
+    Cached, because a panel runs for days and a document asks once: a service
+    that answered is trusted for SHOT_FOUND_FOR, and one that did not is looked
+    for again after SHOT_RETRY_AFTER, so starting it later still works without a
+    restart of this one.
+    """
+    candidates = list(hosts if hosts is not None else
+                      ([SHOTS] if SHOTS else []) + list(SHOT_HOSTS))
+    with _SHOT_LOCK:
+        age = time.time() - _SHOT_CACHE["when"]
+        fresh = ((_SHOT_CACHE["base"] and age < SHOT_FOUND_FOR)
+                 or (not _SHOT_CACHE["base"] and age < SHOT_RETRY_AFTER))
+        if _SHOT_CACHE["when"] and fresh and not force:
+            return _SHOT_CACHE["base"], _SHOT_CACHE["note"]
+    tried: list[str] = []
+    for candidate in candidates:
+        base = str(candidate or "").strip().rstrip("/")
+        if not base:
+            continue
+        status, body, error = shot_get(base + "/shot/ping", timeout)
+        ready, why = ping_answer(status, body, error)
+        if ready:
+            note = f"{base} · {why}"
+            with _SHOT_LOCK:
+                _SHOT_CACHE.update(base=base, note=note, when=time.time())
+            return base, note
+        tried.append(f"{base} — {why}")
+    note = ("no browser service answered: " + "; ".join(tried)
+            if tried else "no browser service address to try")
+    with _SHOT_LOCK:
+        _SHOT_CACHE.update(base="", note=note, when=time.time())
+    return "", note
+
+
 def refusal_reason(body: bytes, status: int) -> str:
     """Why the browser service said no, in its own words."""
     if body:
@@ -3693,8 +3792,9 @@ class Shooter:
     """
 
     def __init__(self, base: str = "", scale: float = 0.0,
-                 timeout: float = 0.0) -> None:
+                 timeout: float = 0.0, discover: bool = True) -> None:
         self.base = (base or SHOTS).rstrip("/")
+        self.discover = discover
         self.scale = max(0.5, min(4.0, float(scale or SHOT_SCALE)))
         self.timeout = float(timeout or SHOT_TIMEOUT)
         self.state: bool | None = None     # asked once per document, not per page
@@ -3703,39 +3803,25 @@ class Shooter:
     def ping(self) -> bool:
         """Is there a browser to ask? One cheap request, answered once.
 
-        The answer has to be read, not sniffed: a service with no browser in it
-        still answers 200, still says "ok" — with `false` after it. Believing
-        that would send every missing page to a service that cannot help, and
-        the document would end up with the same placeholders, only slower.
+        With no address given, the written-down list is asked in order — that is
+        what makes this work with nothing configured.
         """
+        if not self.base and self.discover:
+            self.base, found = discover_shots()
+            if not self.base:
+                self.state = False
+                self.note = found
+                return False
         if not self.base:
             self.state = False
-            self.note = ("no browser service configured — set SCRIBD_SHOTS or "
-                         "pass --shots http://HOST:PORT")
+            self.note = ("no browser service to ask — the addresses written into "
+                         "SHOT_HOSTS did not answer, and SCRIBD_SHOTS is not set")
             return False
         status, body, error = shot_get(self.base + "/shot/ping", 10.0)
-        answer: object = None
-        if body:
-            try:
-                answer = json.loads(body.decode("utf-8", "replace"))
-            except ValueError:
-                answer = None
-        ready = bool(answer.get("ok")) if isinstance(answer, dict) else False
-        self.state = status == 200 and ready
-        if self.state:
-            self.note = ""
-            return True
-        why = ""
-        if isinstance(answer, dict):
-            browser = answer.get("browser")
-            if isinstance(browser, dict):
-                why = str(browser.get("note") or "").strip()
-            why = why or str(answer.get("error") or "").strip()
-        self.note = (error or why[:200]
-                     or (f"the browser service answered {status} and said it is "
-                         f"not ready" if status == 200 else
-                         f"the browser service answered {status} to /shot/ping"))
-        return False
+        ready, why = ping_answer(status, body, error)
+        self.state = ready
+        self.note = "" if ready else why
+        return ready
 
     def alive(self) -> bool:
         if self.state is None:
@@ -3760,8 +3846,9 @@ class Shooter:
         page["bytes"] = len(body)
         # a blank sheet is a warning, never a refusal: the browser already tried
         # again with more patience, and an empty page that really is empty beats
-        # a sheet that says "scan not available"
-        blank = looks_blank_scan(page)
+        # a sheet that says "scan not available". Judged on the shot's own rows,
+        # before the size goes back to the screen's.
+        blank = looks_blank_shot(len(body), page["height"])
         # a screenshot's pixel count says how finely the page was drawn, not how
         # big the page is: at 2x it is the same page at twice the detail, so the
         # size goes back to the screen's and the sharpness stays in the pixels
@@ -3775,18 +3862,26 @@ class Shooter:
                          + (", and it looks empty" if blank else ""))
         return page, (f"page {number}: photographed, but the sheet looks empty "
                       f"({page['width']}x{page['height']} in "
-                      f"{size_text(len(body))})" if blank else "")
+                      f"{size_text(len(body))}) — kept, it is the only picture of "
+                      f"that page" if blank else "")
 
     def capture(self, ident: str, pages, jobs: int = 4,
                 alive=None) -> tuple[dict[int, dict], list[str]]:
         """Photograph a list of pages. -> (page -> picture, what went wrong)."""
-        wanted = sorted({int(number) for number in pages if number})[:MAX_SHOT_PAGES]
+        asked = sorted({int(number) for number in pages if number})
+        wanted = asked[:MAX_SHOT_PAGES]
         if not wanted:
             return {}, []
+        notes: list[str] = []
+        if len(asked) > len(wanted):
+            # a cap that quietly drops pages is how a document ends up short
+            notes.append(
+                f"{len(asked)} page(s) need a browser and one pass photographs "
+                f"{MAX_SHOT_PAGES} — pages {wanted[-1] + 1} to {asked[-1]} will be "
+                f"labelled sheets; run again for those")
         if not self.alive():
             return {}, [self.note or "no browser to ask"]
         pictures: dict[int, dict] = {}
-        notes: list[str] = []
         workers = max(1, min(int(jobs or 4), MAX_SHOT_JOBS, len(wanted)))
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(self.shoot, ident, number): number
@@ -5281,6 +5376,11 @@ def serve(port: int, out: str) -> None:
     print(f"open http://0.0.0.0:{port}/ — find documents, or paste a link",
           flush=True)
     print(f"cookies: {cookie_report(find_cookies())}", flush=True)
+    # said at boot, not at the first document: whether a page nobody sends can be
+    # photographed is the one thing worth knowing before you press download
+    found, note = discover_shots()
+    print(("photographing pages: " + note) if found else
+          ("photographing pages: none — " + note), flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -6226,10 +6326,33 @@ def selftest() -> str:
     # ---- a browser that photographs the pages nobody sent us --------------
     assert shot_request("http://host:8096/", "7", 12, 2.0) == (
         "http://host:8096/shot?doc=7&page=12&scale=2")
-    inked = make_png(200, 283, 2, bytes((index * 7 + 13) % 200
-                                        for index in range(200 * 283 * 3)))
+    # a page's ink does not repeat and a picture of it does not compress, so the
+    # fixtures are built that way too: a pattern zlib can eat would make a page
+    # full of writing look like a blank sheet, and the test would pass on a lie
+    def noise(count: int, seed: int = 7) -> bytes:
+        """Bytes nothing can compress — what a picture of writing behaves like."""
+        out = bytearray()
+        while len(out) < count:
+            seed += 1
+            out += hashlib.sha256(str(seed).encode()).digest()
+        return bytes(out[:count])
+
+    ink = noise(200 * 283 * 3)
+    inked = make_png(200, 283, 2, ink)
     white = make_png(200, 283, 2, b"\xff" * (200 * 283 * 3))
+    # a title page: paper, and one band of writing on it. Sparse is not empty,
+    # and calling it empty is how a good page ends up sounding like a failure.
+    paper = bytearray(b"\xff" * (200 * 283 * 3))
+    for row in range(24, 41):
+        paper[row * 600:(row + 1) * 600] = ink[row * 600:(row + 1) * 600]
+    sparse = make_png(200, 283, 2, bytes(paper))
     assert len(inked) > 1000 and len(white) < len(inked)
+    assert looks_blank_shot(len(white), 283) is True, len(white)
+    assert looks_blank_shot(len(inked), 283) is False, len(inked)
+    assert looks_blank_shot(len(sparse), 283) is False, (len(sparse), len(sparse) / 283)
+    assert looks_blank_shot(0, 283) is False and looks_blank_shot(len(white), 0) is False
+    # a pixel measure would call this page empty at 2x and not at 1x; rows do not
+    assert looks_blank_shot(len(sparse), 283) == looks_blank_shot(len(sparse) * 4, 566)
 
     class ShotHandler(BaseHTTPRequestHandler):
         """The service a real browser would be: one page per request."""
@@ -6253,6 +6376,8 @@ def selftest() -> str:
                     body = white                     # drawn, but nothing on it
                 elif number == 6:
                     body, kind = b"not an image", "text/plain"
+                elif number == 7:
+                    body = sparse                    # paper, and a little writing
                 else:
                     body = inked
             else:
@@ -6284,14 +6409,30 @@ def selftest() -> str:
         assert "not for this account" in note and "{" not in note, note
         empty, note = shooter.shoot("7", 5)
         assert empty and empty["shot"] and "looks empty" in note, (empty, note)
+        assert "only picture of that page" in note, note
         assert "100x142" in note or "looks empty" in empty["label"], note
         junk, note = shooter.shoot("7", 6)
         assert junk is None and "not a page" in note, note
+        sparse_page, note = shooter.shoot("7", 7)
+        assert sparse_page and sparse_page["shot"] and note == "", (note,)
+        assert "empty" not in sparse_page["label"], sparse_page["label"]
         pictures, notes = shooter.capture("7", [1, 2, 3, 4], jobs=3)
         assert sorted(pictures) == [1, 2, 3], sorted(pictures)
         assert len(notes) == 1 and "page 4" in notes[0], notes
         kept, notes = shooter.capture("7", [5], jobs=1)
         assert sorted(kept) == [5] and notes and "looks empty" in notes[0], notes
+        assert "only picture of that page" in notes[0], notes
+        # a cap that photographs fewer pages than were asked for has to say so,
+        # or the document quietly comes back short
+        held_cap = MAX_SHOT_PAGES
+        try:
+            globals()["MAX_SHOT_PAGES"] = 2
+            capped, notes = shooter.capture("7", [1, 2, 3], jobs=2)
+            assert sorted(capped) == [1, 2], sorted(capped)
+            assert any("labelled sheets" in note and "pages 3 to 3" in note
+                       for note in notes), notes
+        finally:
+            globals()["MAX_SHOT_PAGES"] = held_cap
         stopped, notes = shooter.capture("7", [1, 2], jobs=2, alive=lambda: False)
         assert stopped == {} and notes and "stopped" in notes[0], notes
 
@@ -6302,6 +6443,30 @@ def selftest() -> str:
         assert notready.alive() is False, notready.note
         assert "@sparticuz/chromium" in notready.note, notready.note
         assert notready.capture("7", [1]) == ({}, [notready.note])
+
+        # the addresses are written down, so nothing has to be configured: a
+        # Shooter told nothing still finds the service by asking the list
+        held_hosts = SHOT_HOSTS
+        try:
+            globals()["SHOT_HOSTS"] = (
+                f"http://127.0.0.1:{service.server_address[1]}",
+                "http://127.0.0.1:1")
+            _SHOT_CACHE.update(base="", note="", when=0.0)
+            auto = Shooter()
+            assert auto.alive() is True, auto.note
+            assert auto.base == f"http://127.0.0.1:{service.server_address[1]}", auto.base
+            assert "ready" in auto.note or auto.note == "", auto.note
+            # a found service is trusted, so a worse list does not lose it
+            again, _note = discover_shots(hosts=["http://127.0.0.1:1"])
+            assert again == auto.base, again
+            # the first address that answers wins, and the answer is named
+            first, note = discover_shots(
+                hosts=["http://127.0.0.1:1",
+                       f"http://127.0.0.1:{service.server_address[1]}"], force=True)
+            assert first == auto.base and auto.base in note, (first, note)
+        finally:
+            globals()["SHOT_HOSTS"] = held_hosts
+            _SHOT_CACHE.update(base="", note="", when=0.0)
     finally:
         service.shutdown()
         service.server_close()
@@ -6317,9 +6482,18 @@ def selftest() -> str:
         OSError(1, "[SSL: WRONG_VERSION_NUMBER] wrong version number")))
     assert plain_error(ValueError("something odd")).startswith("ValueError")
 
-    # no browser configured: everything still works, and says why once
-    quiet = Shooter("")
+    # nothing anywhere: everything still works, and says why once
+    none_found, note = discover_shots(hosts=["http://127.0.0.1:1"], force=True)
+    assert none_found == "" and "no browser service answered" in note, note
+    assert "http://127.0.0.1:1" in note, note
+    quiet = Shooter("", discover=False)
     assert quiet.alive() is False and "SCRIBD_SHOTS" in quiet.note, quiet.note
+    assert ping_answer(200, b'{"ok": true, "version": "1.1"}', "") == (
+        True, "troy-search 1.1")
+    assert ping_answer(200, b'{"ok": false, "browser": {"note": "no chromium"}}',
+                       "") == (False, "no chromium")
+    assert ping_answer(200, b"<html>not json</html>", "")[0] is False
+    assert ping_answer(0, b"", "nothing is listening there")[0] is False
     assert quiet.capture("7", [1]) == ({}, [quiet.note])
     assert Shooter("", scale=9).scale == 4.0 and Shooter("", scale=0.1).scale == 0.5
     dead = Shooter("http://127.0.0.1:1")
@@ -6361,7 +6535,8 @@ def selftest() -> str:
             "queue, signed links, the disk guard, token shapes, redaction, "
             "page wiring, text pages, built names, viewer pages, "
             "typography, placed lines, photographed pages, a browser "
-            "that is not there")
+            "that is not there, the browser found by asking the addresses "
+            "written into the file")
 
 def main(argv: list[str]) -> int:
     global BASE
@@ -6476,7 +6651,10 @@ def main(argv: list[str]) -> int:
         run_job(urls, limit, out, jobs, refresh, name, check, placeholder, probe,
                 verify, text)
         return 0 if JOB.verdict in ("PDF BUILT", "PDF PARTIAL", "PROBE DONE") else 1
-    port = int(os.environ.get("SERVER_PORT") or os.environ.get("PORT") or 8090)
+    # 25811 is the port this panel is reached on; an egg that sets SERVER_PORT
+    # still wins, and a bare `python scribd_download.py` now binds the right one
+    port = int(os.environ.get("SERVER_PORT") or os.environ.get("PORT")
+               or PANEL_PORT)
     serve(port, out)
     return 0
 
