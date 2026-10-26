@@ -28,7 +28,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "1.9";
+const VERSION = "2.0";
 // The port to listen on. A host like this one hands its container the public
 // port it assigned in SERVER_PORT — PORT on some boxes — and there is no
 // translation behind it: whatever this listens on IS the port the world
@@ -454,6 +454,16 @@ const SHOT_HEIGHT = Number(process.env.SHOT_HEIGHT || 1500);
 const SHOT_SCALE = Number(process.env.SHOT_SCALE || 1);
 const SHOT_WAIT_MS = Number(process.env.SHOT_WAIT_MS || 8000);
 const SHOT_TABS = Number(process.env.SHOT_TABS || 8);
+// One pass over the viewer used to cut every page one after another: 389 pages at
+// about a second each is six minutes of a browser standing in one place. The
+// column is measured once and its rectangles are the DOCUMENT's, so more than one
+// window can cut it at the same time — each lane loads the same viewer at the same
+// window size and cuts its own stretch of pages. A lane that dies is not a book
+// that fails: its pages are missed, and the panel photographs them one by one.
+const SHOT_LANES = Number(process.env.SHOT_LANES || 4);
+// below this many pages a second window costs more in loading the viewer than it
+// saves in cutting it
+const LANE_FLOOR = Number(process.env.LANE_FLOOR || 50);
 // the most the one pass may spend loading the column: a viewer that never stops
 // growing must not cost a book ten minutes of scrolling before it gives up
 const SHOT_BOOK_MS = Number(process.env.SHOT_BOOK_MS || 30000);
@@ -994,6 +1004,46 @@ export function snapBox(boxes, expected, pitch) {
  * times six, twelve minutes by default): a pass still cutting when the panel has
  * hung up delivers nothing at all, which is worse than delivering most of a book.
  */
+/**
+ * How many windows cut this book at once. -> 1..SHOT_TABS
+ *
+ * A small book stays in one window: opening a second viewer costs a navigation
+ * and a settle, which is more than the cutting it would have shared. Past that,
+ * one window per LANE_FLOOR pages, and never more windows than the tab budget.
+ */
+export function lanePlan(count, lanes = SHOT_LANES, floor = LANE_FLOOR) {
+  const pages = Math.max(0, Math.floor(Number(count) || 0));
+  const most = Math.max(1, Math.min(Math.floor(Number(lanes) || 1),
+                                    Math.max(1, Math.floor(SHOT_TABS) || 1)));
+  const step = Math.max(1, Math.floor(Number(floor) || 1));
+  if (pages < step * 2) return 1;
+  return Math.max(1, Math.min(most, Math.floor(pages / step)));
+}
+
+/**
+ * Cut `count` blocks into `lanes` contiguous stretches. -> [[from, to], ...]
+ *
+ * Contiguous on purpose: a window scrolls one way down its own stretch and never
+ * jumps back. Every index lands in exactly one lane — a block in two lanes would
+ * be cut twice, and a block in none would go missing without anybody saying so.
+ */
+export function laneSplit(count, lanes) {
+  const pages = Math.max(0, Math.floor(Number(count) || 0));
+  if (!pages) return [];
+  const k = Math.max(1, Math.min(Math.floor(Number(lanes) || 1), pages));
+  const out = [];
+  const base = Math.floor(pages / k);
+  let extra = pages % k;
+  let at = 0;
+  for (let lane = 0; lane < k; lane++) {
+    const size = base + (extra > 0 ? 1 : 0);
+    if (extra > 0) extra -= 1;
+    out.push([at, at + size - 1]);
+    at += size;
+  }
+  return out;
+}
+
 export function cutBudgetMs(pages) {
   const book = Math.max(0, Number(pages) || 0);
   return Math.min(Math.max(SHOT_BOOK_MS * 8, book * 1200 + 60000), 660000);
@@ -1128,9 +1178,12 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
     const run = picked.run, rects = picked.rects;
     const deadline = started + cutBudgetMs(want || rects.length);
 
-    // ---- the cuts: one page at a time, each while it is in the window -----
-    const cdp = await (tab.createCDPSession
-      ? tab.createCDPSession() : tab.target().createCDPSession());
+    // ---- the cuts: every page while it is in a window, several windows at once
+    // The column was measured once and its rectangles are positions in the
+    // DOCUMENT, not in a window, so more than one window can cut it: each lane
+    // loads the same viewer at the same window size and cuts its own stretch. A
+    // page is still cut while it is in ITS window, measured again there, and
+    // judged there — the lanes share the rectangles and nothing else.
     const crypto = await import("node:crypto");
     const hash = (b) => crypto.createHash("sha256").update(b).digest("hex");
     const pages = [];
@@ -1145,95 +1198,173 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
     // here is the full settle, not half of one: it is the difference between a
     // page drawn and a page asked for again.
     const cutSettle = Math.max(150, Math.min(600, settle));
-    let at = -1;
+    // the blocks that are this book's pages, in the column's own order
+    const cuts = [];
     for (let i = 0; i < rects.length; i++) {
-      const number = run.slots[i] + 1;
-      if (want > 0 && number > want) break;
-      if (Date.now() > deadline) {
-        notes.push(`the one pass spent its ` +
-                   `${Math.round((deadline - started) / 1000)}s at page ${number} ` +
-                   `— the rest are left for photographs of their own`);
-        for (let k = i; k < rects.length; k++) missed.push(run.slots[k] + 1);
-        break;
-      }
-      // the page is scrolled into the window before it is cut and measured again
-      // there: a clip of a page the viewer has already forgotten is a grey sheet
-      const where = Math.max(0, Math.round(rects[i].y - 40));
-      if (where !== at) {
-        await tab.evaluate(`window.scrollTo(0, ${where})`);
-        await sleep(cutSettle);
-        at = where;
-      }
-      const here = await tab.evaluate(JS_PAGE_RECTS).catch(() => null);
-      const r = snapBox((here && here.boxes) || [], rects[i], run.pitch);
-      if (!r) {
-        missed.push(number);
-        notes.push(`page ${number}: its block was not on the screen to cut — ` +
-                   `left for a photograph of its own`);
-        continue;
-      }
-      const clip = { x: Math.round(r.x), y: Math.round(r.y),
-                     width: Math.round(r.width), height: clipH, scale: ratio };
-      const take = async () => {
-        const res = await cdp.send("Page.captureScreenshot", {
-          format: "png", fromSurface: true, captureBeyondViewport: true, clip });
-        return Buffer.from(res.data, "base64");
-      };
-      let png = await take();
-      // a clip that came back the wrong size is a capture that lied: one retake,
-      // and if it still disagrees it is kept and named, because a named odd page
-      // beats a missing page
-      let size = pngSize(png);
-      if (size.width !== wantW || size.height !== wantH) {
-        notes.push(`page ${number}: the clip came back ${size.width}x` +
-                   `${size.height}, asked ${wantW}x${wantH} — taken again`);
-        png = await take();
-      }
-      // a page that differs between two captures was still being drawn
-      let unstable = false;
-      for (let tries = 0; tries < 2; tries++) {
-        const first = hash(png);
-        await sleep(120);
-        png = await take();
-        if (hash(png) === first) { unstable = false; break; }
-        unstable = true;
-      }
-      size = pngSize(png);
-      if (size.width !== wantW || size.height !== wantH) {
-        notes.push(`page ${number}: kept at ${size.width}x${size.height} ` +
-                   `though the column is ${wantW}x${wantH}`);
-      }
-      // An empty sheet is the one thing this must never hand back. In the live
-      // capture only 46 of 389 page blocks carried any content at load: the rest
-      // are shells the viewer fills as they are scrolled to. So an empty clip is
-      // asked for again with the pictures forced eager — and a page that stays
-      // empty is left out and named, for the panel to photograph on its own. If
-      // the page is empty in the document itself, that route says so honestly and
-      // the book gets what the book has; what it never gets is a page this pass
-      // cut too early.
-      let blank = blankShot(png);
-      for (let tries = 0; blank && tries < 3; tries++) {
-        notes.push(`page ${number}: the clip looks empty — the viewer is asked ` +
-                   `to draw it again`);
-        await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
-        await sleep(400 * (tries + 1));
-        png = await take();
+      if (want > 0 && run.slots[i] + 1 > want) continue;
+      cuts.push(i);
+    }
+    const lanes = lanePlan(cuts.length);
+    const ranges = laneSplit(cuts.length, lanes)
+      .map(([from, to]) => cuts.slice(from, to + 1));
+
+    const cutLane = async (laneTab, indices) => {
+      const found = { pages: [], notes: [], missed: [] };
+      if (!laneTab || !indices.length) return found;
+      const cdp = await (laneTab.createCDPSession
+        ? laneTab.createCDPSession() : laneTab.target().createCDPSession());
+      let at = -1;
+      for (let place = 0; place < indices.length; place++) {
+        const i = indices[place];
+        const number = run.slots[i] + 1;
+        if (Date.now() > deadline) {
+          found.notes.push(`the one pass spent its ` +
+                           `${Math.round((deadline - started) / 1000)}s at page ` +
+                           `${number} — the rest are left for photographs of ` +
+                           `their own`);
+          for (let rest = place; rest < indices.length; rest++) {
+            found.missed.push(run.slots[indices[rest]] + 1);
+          }
+          break;
+        }
+        // the page is scrolled into this window before it is cut, and measured
+        // again there: a clip of a page the viewer has already forgotten is a
+        // grey sheet
+        const where = Math.max(0, Math.round(rects[i].y - 40));
+        if (where !== at) {
+          await laneTab.evaluate(`window.scrollTo(0, ${where})`);
+          await sleep(cutSettle);
+          at = where;
+        }
+        const here = await laneTab.evaluate(JS_PAGE_RECTS).catch(() => null);
+        const r = snapBox((here && here.boxes) || [], rects[i], run.pitch);
+        if (!r) {
+          found.missed.push(number);
+          found.notes.push(`page ${number}: its block was not on the screen to ` +
+                           `cut — left for a photograph of its own`);
+          continue;
+        }
+        const clip = { x: Math.round(r.x), y: Math.round(r.y),
+                       width: Math.round(r.width), height: clipH, scale: ratio };
+        const take = async () => {
+          const res = await cdp.send("Page.captureScreenshot", {
+            format: "png", fromSurface: true, captureBeyondViewport: true,
+            clip });
+          return Buffer.from(res.data, "base64");
+        };
+        let png = await take();
+        // a clip that came back the wrong size is a capture that lied: one
+        // retake, and if it still disagrees it is kept and named, because a
+        // named odd page beats a missing page
+        let size = pngSize(png);
+        if (size.width !== wantW || size.height !== wantH) {
+          found.notes.push(`page ${number}: the clip came back ${size.width}x` +
+                           `${size.height}, asked ${wantW}x${wantH} — taken again`);
+          png = await take();
+        }
+        // a page that differs between two captures was still being drawn
+        let unstable = false;
+        for (let tries = 0; tries < 2; tries++) {
+          const first = hash(png);
+          await sleep(120);
+          png = await take();
+          if (hash(png) === first) { unstable = false; break; }
+          unstable = true;
+        }
         size = pngSize(png);
-        blank = blankShot(png);
+        if (size.width !== wantW || size.height !== wantH) {
+          found.notes.push(`page ${number}: kept at ${size.width}x${size.height} ` +
+                           `though the column is ${wantW}x${wantH}`);
+        }
+        // An empty sheet is the one thing this must never hand back. In the live
+        // capture only 46 of 389 page blocks carried any content at load: the
+        // rest are shells the viewer fills as they are scrolled to. So an empty
+        // clip is asked for again with the pictures forced eager — and a page
+        // that stays empty is left out and named, for the panel to photograph on
+        // its own. If the page is empty in the document itself, that route says
+        // so honestly and the book gets what the book has; what it never gets is
+        // a page this pass cut too early.
+        let blank = blankShot(png);
+        for (let tries = 0; blank && tries < 3; tries++) {
+          found.notes.push(`page ${number}: the clip looks empty — the viewer is ` +
+                           `asked to draw it again`);
+          await laneTab.evaluate(JS_FORCE_EAGER).catch(() => {});
+          await sleep(400 * (tries + 1));
+          png = await take();
+          size = pngSize(png);
+          blank = blankShot(png);
+        }
+        if (blank) {
+          found.missed.push(number);
+          found.notes.push(`page ${number}: still an empty sheet — left for a ` +
+                           `photograph of its own`);
+          continue;
+        }
+        found.pages.push({ page: number, png, width: size.width,
+                           height: size.height, unstable, blank: false,
+                           padded: i === rects.length - 1 && run.pad > 0 });
+        if (unstable) {
+          found.notes.push(`page ${number}: still moving between captures — ` +
+                           `kept the last one`);
+        }
       }
-      if (blank) {
-        missed.push(number);
-        notes.push(`page ${number}: still an empty sheet — left for a photograph ` +
-                   `of its own`);
-        continue;
-      }
-      pages.push({ page: number, png, width: size.width, height: size.height,
-                   unstable, blank: false,
-                   padded: i === rects.length - 1 && run.pad > 0 });
-      if (unstable) {
-        notes.push(`page ${number}: still moving between captures — kept the last one`);
+      return found;
+    };
+
+    // Lane 1 keeps the window that found the column. The others open their own
+    // and load the same viewer at the same window size. Each one measures its own
+    // page again before cutting it, so a viewer that lays a second window out
+    // differently costs a missed page — never a page cut in the wrong place.
+    const laneTabs = new Array(ranges.length).fill(null);
+    laneTabs[0] = tab;
+    for (let lane = 1; lane < ranges.length; lane++) {
+      if (!ranges[lane].length) continue;
+      try {
+        const extra = await browser.newPage();
+        await extra.setUserAgent(UA);
+        await extra.setViewport({ width: SHOT_WIDTH, height: SHOT_HEIGHT,
+                                  deviceScaleFactor: ratio });
+        await extra.goto(scrollUrl(ident),
+                         { waitUntil: "domcontentloaded", timeout: 45000 });
+        await extra.addStyleTag({ content: SCROLL_CSS }).catch(() => {});
+        laneTabs[lane] = extra;
+      } catch (exc) {
+        const message = String((exc && exc.message) || exc).slice(0, 200);
+        notes.push(`window ${lane + 1} could not open — ${message}: its ` +
+                   `${ranges[lane].length} page(s) are left for photographs of ` +
+                   `their own`);
+        missed.push(...ranges[lane].map((i) => run.slots[i] + 1));
+        ranges[lane] = [];
       }
     }
+    const settled = await Promise.allSettled(
+      ranges.map((indices, lane) => cutLane(laneTabs[lane], indices)));
+    for (let lane = 0; lane < settled.length; lane++) {
+      const done = settled[lane];
+      if (done.status === "fulfilled") {
+        pages.push(...done.value.pages);
+        notes.push(...done.value.notes);
+        missed.push(...done.value.missed);
+      } else {
+        const message = String((done.reason && done.reason.message) ||
+                               done.reason).slice(0, 200);
+        notes.push(`window ${lane + 1} failed — ${message}: its ` +
+                   `${ranges[lane].length} page(s) are left for photographs of ` +
+                   `their own`);
+        missed.push(...ranges[lane].map((i) => run.slots[i] + 1));
+      }
+    }
+    for (let lane = 1; lane < laneTabs.length; lane++) {
+      if (laneTabs[lane]) await laneTabs[lane].close().catch(() => {});
+    }
+    pages.sort((a, b) => a.page - b.page);
+    const cutting = ranges.filter((range) => range.length).length;
+    if (cutting > 1) {
+      notes.push(`${cutting} window(s) cut this book at once — ${pages.length} ` +
+                 `of ${cuts.length} page(s) in ` +
+                 `${((Date.now() - started) / 1000).toFixed(0)}s`);
+    }
+
     for (const number of run.missing) missed.push(number);
     const left = [...new Set(missed)].sort((a, b) => a - b)
       .filter((number) => !pages.some((page) => page.page === number));
@@ -2109,7 +2240,68 @@ export function selftest() {
   assert(cutBudgetMs(0) === SHOT_BOOK_MS * 8, "a book of unknown length keeps the floor");
   assert(SHOT_TABS >= 4, "a book is not photographed one tab at a time");
 
-  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks";
+  // ---- lanes: a long book is cut by several windows at the same time -------
+  // One window cutting 389 pages one after another is six minutes of a browser
+  // standing in one place, and the panel is waiting for all of it. The column is
+  // measured once and its rectangles belong to the document, so the cutting can
+  // be shared — but a small book must stay in one window, because a second viewer
+  // costs a navigation and a settle that is more than the cutting it would share.
+  assert(lanePlan(0) === 1, lanePlan(0));
+  assert(lanePlan(6) === 1, `a short book: ${lanePlan(6)}`);
+  assert(lanePlan(99) === 1, `under two floors of pages: ${lanePlan(99)}`);
+  assert(lanePlan(100) === 2, `two floors of pages: ${lanePlan(100)}`);
+  assert(lanePlan(LIVE.pages) === 4,
+    `the captured book of ${LIVE.pages} pages: ${lanePlan(LIVE.pages)} window(s)`);
+  assert(lanePlan(LIVE.pages, 8) === 7, lanePlan(LIVE.pages, 8));
+  assert(lanePlan(5000, 8) === 8, `a shelf of books: ${lanePlan(5000, 8)}`);
+  assert(lanePlan(5000, 1) === 1, "one window asked for is one window used");
+  assert(lanePlan(5000, 99) <= SHOT_TABS,
+    `never more windows than the tab budget: ${lanePlan(5000, 99)}`);
+  // Every block is cut exactly once. A block in two windows is a sheet twice, and
+  // a block in none is a page that goes missing without anybody saying so.
+  for (const [blocks, lanes] of [[1, 4], [7, 3], [50, 2], [100, 2],
+                                 [LIVE.pages, 4], [LIVE.pages, 8], [402, 4]]) {
+    const ranges = laneSplit(blocks, lanes);
+    const walked = [];
+    for (const [from, to] of ranges) {
+      assert(from <= to && from >= 0 && to < blocks,
+        `a window was handed blocks ${from}..${to} of a ${blocks}-block column ` +
+        `(${lanes} windows asked for)`);
+      for (let i = from; i <= to; i++) walked.push(i);
+    }
+    assert(walked.length === blocks,
+      `${lanes} window(s) were handed ${walked.length} of ${blocks} blocks — ` +
+      `a block nobody cuts is a page nobody photographs`);
+    assert(walked.every((value, place) => value === place),
+      `lanes must cover the column in order with no gap: ${blocks}/${lanes}`);
+    assert(ranges.length <= Math.max(1, lanes),
+      `${ranges.length} windows opened for ${lanes} asked for`);
+  }
+  assert(laneSplit(0, 4).length === 0, "nothing to cut, no window opened");
+  assert(JSON.stringify(laneSplit(10, 3)) === "[[0,3],[4,6],[7,9]]", laneSplit(10, 3));
+  assert(JSON.stringify(laneSplit(LIVE.pages, 4)) ===
+         "[[0,97],[98,194],[195,291],[292,388]]", laneSplit(LIVE.pages, 4));
+  // and the one pass really cuts in lanes — the source is the proof, because a
+  // browser cannot be opened here
+  const onePass = String(shootBook);
+  assert(/lanePlan\(/.test(onePass) && /laneSplit\(/.test(onePass),
+    "the one pass does not plan lanes: a long book is cut one page at a time");
+  assert(/Promise\.allSettled/.test(onePass),
+    "the lanes are not cut at the same time, so nothing was gained");
+  assert(/const cutLane = async \(laneTab, indices\)/.test(onePass),
+    "the cutting is not in a lane of its own window");
+  assert(onePass.indexOf("Page.captureScreenshot") >
+         onePass.indexOf("const cutLane"),
+    "a page is not cut inside its own window");
+  assert(/missed\.push\(\.\.\.ranges\[lane\]/.test(onePass),
+    "a window that dies must hand its pages back as missed, not lose them");
+  assert(/laneTabs\[lane\]\.close\(\)/.test(onePass),
+    "a lane's window is left open, and the browser fills up with viewers");
+  assert(/laneTabs\[0\] = tab;/.test(onePass),
+    "the window that found the column must be the first one to cut it");
+  assert(SHOT_LANES >= 2, `one window at a time is the slow route: ${SHOT_LANES}`);
+
+  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks, the lanes that cut a long book at the same time";
 }
 
 // ---------------------------------------------------------------------------

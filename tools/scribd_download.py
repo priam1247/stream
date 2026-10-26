@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.19
+"""scribd_download.py — ONE file, standard library only.  Version 3.0
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -33,12 +33,36 @@ Why the finding is done by Scribd and not by a search engine: the engines refuse
 this address (this was measured — the old check_deployment.py printed "Search
 engines are blocked from this IP as well"), and they refuse it whether the
 request comes from the panel or from a browser on the same network. Scribd does
-not refuse it: the panel already reads Scribd pages and scans to build the PDFs.
+not refuse it: the panel already reads Scribd pages to build the PDFs.
 The old failure was asking Google/Bing/DuckDuckGo for `site:scribd.com`; this
 asks Scribd directly, which is the same thing its own search box does. The one
 honest caveat: /search/query is not a documented API — it is the endpoint the
 site's own JavaScript calls. If Scribd changes it, the page says so in plain
 words instead of pretending there are no results.
+
+What 3.0 removed: SCANNING. Every page of every document is photographed.
+  There used to be two loads and one request decided which: a document that
+  answered with words was photographed, a document that named page images had
+  those images fetched from Scribd. That choice was a guess about a document, and
+  a wrong guess was a whole book that came out blank or failed outright. So the
+  second load is gone — deleted, not switched off:
+  1. No SCRIBD_SCANS, no SCRIBD_SHOTS_ONLY, no --scans. A switch that turns a
+     route off leaves the route in the file, and the next reader cannot tell
+     whether it runs. --scans now prints that it is gone and carries on.
+  2. Gone with it: the name ladder that fetched a page as an image
+     (primaries_for, candidates_for, descriptor, deep, attempt, grab), the page
+     image cache, the cover-scan block, the parallel scan pool, the stand-in
+     fingerprint list and the repeated-picture test, the size offenders and their
+     refetch, and the preview/cut-short reports. 400 lines of a route nothing
+     takes any more.
+  3. What is kept is what a photograph needs: the viewer's own words for each
+     page (laid underneath, invisible, so the PDF stays searchable), the image
+     reader that turns a picture into a PDF stream, and the throttle breaker.
+  4. Speed is the point of having one load: a browser photographs the whole
+     column in one pass, measuring the page blocks a window at a time, and a page
+     that pass could not cut is photographed on its own. Nothing is fetched twice
+     and nothing is refetched, because there is no second copy of a photograph to
+     ask for.
 
 What 2.12 added: WIRING THIS PANEL INTO ANOTHER DASHBOARD
   The panel is a plain HTTP service, so another site can drive it without a line
@@ -135,8 +159,9 @@ What 2.4 fixed in the OUTPUT (2.3 is kept everywhere else)
   4. Every sheet is the document's own page size and each scan is fitted to fill
      it, aspect preserved, nothing cropped, never blown up more than 2x.
      EXIF rotation is applied by the page matrix (lossless, no re-encode).
-  5. Nothing re-fetches in bulk: if more than a fifth of the pages disagree on
-     size, that is a mixed-size document and each sheet keeps its own size.
+  5. Nothing re-fetches in bulk, and nothing re-fetches at all: every page is a
+     photograph cut at the column's own size, so there is no second copy of a
+     page to go and ask for.
 
 What 2.4 fixed in your COOKIES
   2.3 sent every cookie in the file to scribd.com (on one export: 46 scribd
@@ -146,33 +171,29 @@ What 2.4 fixed in your COOKIES
 
 How a document is downloaded, plain HTTPS with your cookies:
   1. read the document page and the embed viewer
-  2. collect the per-page names: scans already named in the HTML, and the
-     per-page descriptor  <hash>/pages/<n>-<token>.jsonp
-  3. fetch pages 1..N in parallel over keep-alive connections, cache every scan
-     in ./downloads/cache/, then assemble the PDF in page order: JPEG goes in
-     as-is, PNG as its own filtered stream (predictor 15, no pixel loop)
-  4. read the finished PDF back and validate it before calling it done
+  2. photograph every page: one pass over the scroll viewer that measures the
+     column of page blocks a window at a time, numbers every block by the
+     column's own step, and clips each page while it is in the window
+  3. read the document's own words for each page and lay them underneath its
+     photograph, invisible, so the finished PDF is searchable and copyable
+  4. assemble the pages in order — a picture goes in as its own filtered stream
+     (predictor 15, no pixel loop) — then read the finished PDF back and
+     validate it before calling it done
 
-There are two loads, and every document goes down the one that fits it — one
-request decides which. A converted document (a docx, a pdf of text) has no
-image behind any of its pages, so its pages are PHOTOGRAPHED: one pass over the
-scroll viewer that measures the column of page blocks a window at a time,
-numbers every block by the column's own step, and clips each page while it is in
-the window — then page by page for whatever the pass could not cut, and the
-document's own words travel underneath as the searchable layer. A document of page scans is the other load:
-its scans are fetched straight from Scribd, twelve pages at a time, with no
-browser opened for them at all — and a page no scan reached is photographed
-rather than left out. SCRIBD_SCANS=1 forces the scan load on every document,
-SCRIBD_SHOTS_ONLY=1 the screenshot load. A page that will not answer
-walks a short ladder: the name the document gave,
-the same name without the token, then the page's own descriptor, which names the
-real asset outright. Every url tried for a failed page is recorded. A page that
-comes back with neither a scan nor its words is then photographed by a browser
-(--shots / SCRIBD_SHOTS), because a page nobody sent us is still a page somebody
+There is ONE load, and every document goes down it: a browser photographs what
+the viewer shows. A converted upload (a docx, a pdf of text) and a scanned
+upload are drawn by the same viewer, so the photograph is the page for both, and
+no page of either is fetched from Scribd as an image. That second load is gone —
+removed, not switched off: no environment word and no flag brings it back,
+because two routes meant two ways to be wrong about a page, and which one ran
+was decided by a guess. A page the one pass could not cut is photographed on its
+own; a page no photograph reached is asked for its words and drawn with them; a
+page with neither is left out of the PDF and named in the verdict. Every url
+tried for a failed page is recorded. A browser photographs a page nobody sent us
+(--shots / SCRIBD_SHOTS), because a page nobody sent is still a page somebody
 can see — and if that browser is not running, the engine starts it itself. Only
-when no browser can exist at all is the page left out of the PDF and named in
-the verdict. A page is never grey: no sheet is ever drawn for a page that has
-nothing on it.
+when no browser can exist at all is the page left out of the PDF and named. A
+page is never grey: no sheet is ever drawn for a page that has nothing on it.
 
 A document that is text rather than scans gets the same care: the viewer's own
 look is photographed page by page whenever a browser runs or can be started,
@@ -184,7 +205,7 @@ Options: --find "TEXT", --pages N, --pick 1,3, --url LINK (repeatable), --links 
          --limit N, --out DIR, --cookies PATH, --base URL, --jobs N (default 12),
          --shots URL (a browser service that photographs a page we could not build),
          --text (put each page's words in the PDF, searchable and copyable),
-         --refresh, --name TITLE, --no-check, --no-placeholder, --no-verify,
+         --name TITLE, --no-check, --no-placeholder, --no-verify,
          --verify FILE, --probe N, --selftest
 
 Panel options (environment, all optional):
@@ -245,7 +266,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.39"
+VERSION = "3.0"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -283,7 +304,6 @@ TOKEN_SHAPES = (
                r"[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)"),
 )
 VIEWER_WINDOWS = 6          # how many windows of the viewer page to walk
-MAX_COVER_SCANS = 12        # pages with both words and a picture to try
 NO_HOPE_RESTS = 2           # rests before "nothing has ever arrived" is final
 RETRY_STATUS = (408, 425, 429, 500, 502, 503, 504)
 HARD_THROTTLE = (429, 503)
@@ -332,8 +352,6 @@ MIN_PAGE_PX = 200
 PREVIEW_MIN_PX = 80                # below this a picture is a small preview
 ABSOLUTE_MIN_PX = 16               # below this it is noise, not a page
 ASPECT_RANGE = (0.4, 3.0)          # width / height
-SIZE_TOLERANCE = 0.06              # 6% either way counts as the same page
-MAX_REFETCH = 40                   # pages whose wrong size we will pay to redo
 
 # ---------------------------------------------------------------------------
 # http — keep-alive, so 400 page files do not mean 400 TLS handshakes
@@ -415,14 +433,11 @@ def cookie_sentence(jar: dict[str, str]) -> str:
             + (f", session '{session[0]}'" if session else ", NO session"))
 
 BASE = os.environ.get("SCRIBD_BASE", "").rstrip("/")   # only for local tests
-# Two loads, and every document goes down the one that fits it (decided in
-# _download, one request): a converted document is photographed, a document of
-# page scans is fetched from Scribd directly. These two switches only force the
-# choice — SCRIBD_SHOTS_ONLY=1 sends every document down the screenshot load and
-# asks for no scan at all; SCRIBD_SCANS=1 / --scans brings the scan ladder back
-# for every document, for a box with no browser at all.
-SHOTS_ONLY = os.environ.get("SCRIBD_SHOTS_ONLY", "") == "1"
-SCANS_OK = os.environ.get("SCRIBD_SCANS", "") == "1"
+# One load: a browser photographs what the viewer shows, for every document.
+# Fetching Scribd's own page images was the other load, and it is gone — not
+# switched off, removed. There is no SCRIBD_SCANS, no SCRIBD_SHOTS_ONLY and no
+# --scans: a switch that turns a route off leaves the route in the file, and the
+# next reader cannot tell whether it runs.
 _POOL = threading.local()
 
 def rebase(url: str) -> str:
@@ -1030,7 +1045,7 @@ def prune_out(folder: str) -> list[str]:
     """Keep the output folder from filling a small disk.
 
     A 10 GB plan holds maybe forty 150 MB books, and every document also leaves
-    its page scans in `cache/` — which is what makes re-running a partial cheap,
+    its pages' words in `cache/` — which is what makes re-running a partial cheap,
     so it is kept for a few days rather than thrown away at once. Rules, in
     order:
 
@@ -1566,7 +1581,10 @@ def with_flags(page: dict | None, complete: bool = True) -> dict | None:
 
 
 def scan_for_pdf(data: bytes) -> dict | None:
-    """One page scan -> {'payload','params','width','height','rotate','label'}.
+    """One page picture -> {'payload','params','width','height','rotate','label'}.
+
+    The picture is a browser's photograph of a page; nothing else feeds this any
+    more.
 
     Two facts ride along with the picture, because both decide what the report
     can honestly say about it:
@@ -1877,53 +1895,6 @@ def pdf_visible_text(text: str) -> str:
 TEXT_SIZES = (10.5, 9.5, 8.5, 7.5, 6.5, 5.5)
 
 
-def looks_blank_scan(page: dict) -> bool:
-    """Is this picture an empty placeholder rather than a page of paper?
-
-    A real scan of a page compresses to roughly 0.3 bytes per pixel or more. A
-    black or white rectangle at the same size compresses to almost nothing, and
-    Scribd does name such a picture beside a converted page's words. Drawing the
-    words is better than drawing the empty rectangle.
-    """
-    width, height = int(page.get("width") or 0), int(page.get("height") or 0)
-    size = int(page.get("bytes") or 0)
-    if width <= 0 or height <= 0 or size <= 0:
-        return False                       # nothing to judge by: keep the picture
-    return size / (width * height) < 0.02
-
-
-PLACEHOLDER_SCANS = {
-    # Found named as "the scan" of page 2 and page 3 of two different documents,
-    # byte for byte the same file in all four places: white paper and a thin
-    # border, 25807 bytes of jpeg noise — noise enough to sit just above a blank
-    # test that counts bytes, while carrying no page at all. The words Scribd
-    # serves beside it are the page; the picture is a stand-in.
-    "c5e69118836612a03ad263e3c9e29dfc2bf539fb1a3ea43d1065264a8bcc673b":
-        "Scribd's blank sheet with a border, not a scan of any page",
-}
-
-
-def placeholder_scan(payload: bytes) -> str:
-    """Is this picture Scribd's stand-in rather than a page? -> why, or ''."""
-    if not payload:
-        return ""
-    return PLACEHOLDER_SCANS.get(hashlib.sha256(payload).hexdigest(), "")
-
-
-def repeated_pages(shas: dict[int, str]) -> set[int]:
-    """The pages whose picture is byte for byte another page's picture.
-
-    Two pages of paper never scan to the same file, so a picture that arrives
-    twice inside one document is not a picture of either page — it is the
-    stand-in again, at a size nobody has fingerprinted yet.
-    """
-    seen: dict[str, list[int]] = {}
-    for number, sha in shas.items():
-        seen.setdefault(sha, []).append(number)
-    return {number for numbers in seen.values() if len(numbers) > 1
-            for number in numbers}
-
-
 SHOT_BLANK_ROWS = 12.0
 
 
@@ -2115,12 +2086,11 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
     """pages: [{'payload','params','width','height','rotate'}|None] in sheet order.
 
     None with words in `text_pages` becomes a readable text sheet. None with
-    nothing — no scan, no words, no browser that could photograph it — is
-    OMITTED: the sheet is not drawn and the note says how many went missing.
-    A grey "scan not available" sheet is never drawn again, because a book
-    that silently contains grey leaves is worse than a book that says which
-    pages it could not get.
-    uniform=False gives every sheet the MediaBox of its own scan.
+    nothing — no photograph, no words — is OMITTED: the sheet is not drawn and
+    the note says how many went missing. A grey placeholder sheet is never drawn,
+    because a book that silently contains grey leaves is worse than a book that
+    says which pages it could not get.
+    uniform=False gives every sheet the MediaBox of the page on it.
     """
     real = [page for page in pages if page]
     text_pages = {number: words for number, words in (text_pages or {}).items()
@@ -2219,8 +2189,8 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
     return True, (f"{len(kids)} sheet(s), {len(out) / 1_000_000:.2f} MB"
                   + (f", {from_text} page(s) from the document's text"
                      if from_text else "")
-                  + (f", {blanks} page(s) omitted — no scan, no words, no "
-                     f"browser" if blanks else "")
+                  + (f", {blanks} page(s) omitted — no photograph, no "
+                     f"words" if blanks else "")
                   + (f", {with_text} page(s) with searchable text" if texts
                      and with_text else "")
                   + (f", {len(short)} page(s) squeezed to fit the sheet "
@@ -3059,7 +3029,6 @@ class Ctx:
         self.trace_lock = threading.Lock()
         self.cache_dir = ""
         self.debug_dir = ""
-        self.refresh = False
         self.gen = 0                 # 0 = a job that was not started from the panel
         self.total = 0
         self.title = ""
@@ -3071,7 +3040,7 @@ class Ctx:
         self.rested = 0.0            # seconds this document has spent resting
         self.t0 = time.time()        # this document's own clock, for the drop
         # REST_BUDGET, unless a browser is waiting to photograph what is left:
-        # then resting a minute for scans that may never arrive is a minute the
+        # then resting a minute for pages that may never arrive is a minute the
         # reader waits for a page that could already be in the PDF
         self.rest_budget = REST_BUDGET
         self.said_no_hope = False
@@ -3234,19 +3203,16 @@ class Ctx:
             self.rejected[kind] = self.rejected.get(kind, 0) + 1
         return kind
 
-    def is_text_document(self) -> bool:
-        """Does this document give words instead of page scans?
+    def gives_words(self) -> bool:
+        """Does this document have words worth one request per page?
 
-        Plenty of Scribd uploads are converted documents: the viewer lays out
-        each page's *text*, and there is no image to fetch for it. Reading the
-        second page's descriptor answers this in one request, before 38 page
-        ladders are wasted on images that do not exist.
+        This never decides how a page is BUILT: every page of every document is
+        photographed. It decides only whether the document's own words are worth
+        asking for, page by page, to lay underneath the photographs — because a
+        scanned page has none, and hundreds of refused descriptor requests would
+        trip the throttle breaker and rest the job for nothing. One request
+        answers it: the second page's descriptor.
         """
-        # A page may name both a low-quality/empty scan and its native text.
-        # Treat useful text as authoritative even when an image URL exists: the
-        # image may be a black placeholder, while the text is what the viewer
-        # actually lays out. The download path then prefers text per page and
-        # falls back to a scan only for pages whose text is unavailable.
         words = self.page_text(2)
         return len(words.strip()) > 120
 
@@ -3315,45 +3281,11 @@ class Ctx:
             return set()
         return {n for n in range(1, limit + 1) if n < low or n > high}
 
-    def primaries_for(self, number: int) -> list[str]:
-        """Every plausible name for this page's scan, best first.
-
-        Only names the document itself gave: the scan already in the HTML, and
-        the sibling of a descriptor. Each with the real token, and with none.
-        """
-        token = self.token.get()
-        raw_urls = list(self.sources.images_for(number)) + [
-            image_url_for(name) for name in self.sources.jsonps_for(number)]
-        out: list[str] = []
-        for raw in raw_urls:
-            if not raw:
-                continue
-            for candidate in (with_token(raw, token), strip_token(raw)):
-                if candidate and candidate not in out:
-                    out.append(candidate)
-        return out
-
-    def candidates_for(self, number: int, wide: bool = False) -> list[str]:
-        """The names above, then the same path on the other asset host.
-
-        wide adds that for every variant. Nothing is invented: no extension
-        flips, no folder swaps, no thumbnails pretending to be pages.
-        """
-        primaries = self.primaries_for(number)
-        urls = list(primaries)
-        for candidate in primaries:
-            other = alternate_host(candidate)
-            if other:
-                urls.append(other)
-                if wide:
-                    urls.append(strip_token(other))
-        return list(dict.fromkeys(urls))
-
     def jsonp_variants(self, jsonp: str) -> list[str]:
         return jsonp_variants_of(jsonp, self.token.get())
 
     def assets_in(self, body: bytes, number: int, token: str) -> list[str]:
-        """Every scan name in a body that belongs to this page number."""
+        """Every image name in a body that belongs to this page number."""
         out: list[str] = []
         for match in ASSET_RE.finditer(text_of(body)):
             url = match.group(0)
@@ -3365,40 +3297,6 @@ class Ctx:
             if derived:
                 out.append(derived)
         return list(dict.fromkeys(out))
-
-    def descriptor(self, number: int) -> list[str]:
-        """The page's own descriptor — where the real asset name is written."""
-        found: list[str] = []
-        token = self.token.get()
-        for jsonp in self.sources.jsonps_for(number):
-            for variant in self.jsonp_variants(jsonp):
-                got = fetch(variant, self.jar, referer=self.document_url, timeout=20)
-                if got["status"] == 200 and got["body"]:
-                    self.sources.merge(got["body"])
-                    found += self.assets_in(got["body"], number, token)
-                    break
-                self.note(f"page {number}: descriptor {variant[:110]} -> "
-                          + (got["error"] or http_reason(got)))
-        return found
-
-    def deep(self, number: int) -> list[str]:
-        """Network fallbacks: the page's own descriptor, then the embed window."""
-        found = self.descriptor(number)
-        token = self.token.get()
-        window = fetch(f"{self.embed_url}?start_page={number}&view_mode=scroll",
-                       self.jar, referer=self.document_url, timeout=25)
-        if window["status"] == 200 and window["body"]:
-            self.sources.merge(window["body"])
-            fresh = harvest_token(window["body"])
-            if fresh:
-                self.token.set(fresh)
-                token = self.token.get()
-            found += self.assets_in(window["body"], number, token)
-        else:
-            self.note(f"page {number}: window -> "
-                      + (window["error"] or http_reason(window)))
-        found += self.primaries_for(number)
-        return list(dict.fromkeys(found))
 
     def viewer_pages(self) -> dict[int, str]:
         """Every page's words from the viewer's own scroll page.
@@ -3499,7 +3397,8 @@ class Ctx:
         return words
 
     def remember_text(self, number: int, words: str) -> None:
-        """Keep one page's words beside its scan, so a re-run reads no network.
+        """Keep one page's words in this document's cache, so a re-run reads
+        no network.
 
         The words now carry each line's vertical place, so a cache written by
         an older version would draw the old paragraph again. The marker makes
@@ -3518,13 +3417,13 @@ class Ctx:
         """This page's words out of its own descriptor, if one is served."""
         token = self.token.get()
         names = list(self.sources.jsonps_for(number))
-        if not names:                       # scans named, descriptors not
+        if not names:                       # pictures named, descriptors not
             names = [jsonp for jsonp in
                      (jsonp_from_image(url) for url in self.sources.images_for(number))
                      if jsonp]
         # nothing names this page? build its address from a page that is named.
         # This is what a converted document needs: it names one asset, page 1's
-        # scan, and its 37 other pages are words behind a name nobody printed.
+        # picture, and its 37 other pages are words behind a name nobody printed.
         # Only then, though: a borrowed name carries another page's content
         # hash, so on a page that IS named it is four requests that can only
         # answer 403 — and 403s are exactly what gets an address throttled.
@@ -3549,123 +3448,8 @@ class Ctx:
                     return words
         return ""
 
-    def cache_path(self, number: int) -> str:
-        source = self.sources.get(number)
-        stem = (source.get("image") or source.get("jsonp") or str(number)).split("?")[0]
-        stem = re.sub(r"[^0-9A-Za-z]+", "-", stem.rsplit("/", 1)[-1])[:48]
-        return os.path.join(self.cache_dir, f"{number:04d}-{stem}.bin")
-
-    def attempt(self, url: str, tries: int,
-                number: int = 0) -> tuple[dict | None, str, int]:
-        """Ask for one name, with the breaker deciding what a 403 means.
-
-        A single 403 with pages succeeding around it is a locked page: give up
-        now, quietly. A 403 that arrives with its neighbours is throttling: rest
-        the whole job and try that same name again, because it was never dead.
-        """
-        reason = "no attempt"
-        delay = 0.7
-        status = 0
-        attempt = 0
-        budget = tries + REFUSALS_IN_A_ROW      # a rest earns at most this many
-        while attempt < budget:
-            attempt += 1
-            self.rest()
-            self.gate.acquire()
-            got = fetch(url, self.jar, referer=self.document_url, timeout=25)
-            status = got["status"]
-            if status == 200 and looks_like_image(got["body"]):
-                built = scan_for_pdf(got["body"])
-                if built:
-                    if built.get("complete") is False and attempt < min(tries, 2):
-                        # the CDN cut the transfer: the picture is here but its
-                        # tail is not, so ask once more before keeping it
-                        reason = "cut short mid-transfer — asking again"
-                        time.sleep(delay)
-                        continue
-                    self.gate.clean_answer()
-                    self.answered()
-                    built["url"] = url
-                    built["bytes"] = len(got["body"])
-                    built["raw"] = got["body"]
-                    return built, "", status
-                self.reject(got["body"])
-                self.answered()
-                self.keep_reject(number, got["body"])
-                return None, f"HTTP 200 — {describe_image(got['body'])}", status
-            if got["error"]:
-                reason = got["error"]
-            else:
-                reason = http_reason(got)
-                self.gate.complaint(status)
-                if status == 403:
-                    if not self.refused(number):
-                        return None, reason, status   # a locked page
-                    continue                           # throttled: rest, then again
-                if status not in RETRY_STATUS:
-                    return None, reason, status
-            if attempt >= tries:
-                break
-            time.sleep(retry_after(got["headers"]) or delay)
-            delay = min(6.0, delay * 1.8)
-        return None, reason, status
-
-    def grab(self, number: int, force: bool = False,
-             wide: bool = False) -> tuple[int, dict | None, str]:
-        if self.gen and not JOB.alive(self.gen):
-            return number, None, ""      # a stopped job asks the network for nothing
-        path = self.cache_path(number)
-        if not force and not self.refresh and os.path.isfile(path):
-            try:
-                with open(path, "rb") as handle:
-                    data = handle.read()
-            except OSError:
-                data = b""
-            built = scan_for_pdf(data)
-            if built and (plausible_page(built) or built.get("preview")):
-                built["url"] = "cache"
-                built["bytes"] = len(data)
-                return number, built, ""
-            if data:
-                try:
-                    os.remove(path)        # a cache file that will not parse
-                except OSError:
-                    pass
-
-        reason = "no candidate name"
-        seen: set[str] = set()
-        for phase in ("ladder", "deep"):
-            candidates = (self.candidates_for(number, wide) if phase == "ladder"
-                          else self.deep(number))
-            for url in candidates:
-                if url in seen:
-                    continue
-                seen.add(url)
-                tries = 1 if url in self.dead else 2
-                built, reason, status = self.attempt(url, tries, number)
-                self.record(number, url, status)
-                if built and (plausible_page(built) or built.get("preview")):
-                    raw = built.pop("raw", b"")
-                    if raw:
-                        try:
-                            with open(path, "wb") as handle:
-                                handle.write(raw)
-                        except OSError:
-                            pass
-                    built["phase"] = phase
-                    return number, built, ""
-                if built:
-                    self.note(f"page {number}: {built['width']}x{built['height']} "
-                              f"from {url[:100]} is not a page scan — ignored")
-                    reason = f"{built['width']}x{built['height']} is not a page"
-                if status == 403:
-                    self.dead.add(url)
-        self.note(f"page {number}: {len(seen)} name(s) tried, nothing usable came "
-                  f"back ({reason})")
-        return number, None, f"page {number}: {reason}"
-
 def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12,
-            refresh: bool = False, name: str = "", check: bool = True,
+            name: str = "", check: bool = True,
             placeholder: bool = True, probe_page: int = 0,
             verify: bool = True, text: bool = False, gen: int = 0,
             note: str = "") -> None:
@@ -3693,10 +3477,9 @@ def run_job(url: str | list[str], limit: int = 0, out: str = OUT, jobs: int = 12
         elif probe_page:
             _probe(urls[0], probe_page)
         elif len(urls) > 1:
-            _batch(urls, limit, out, jobs, refresh, check, placeholder, verify,
-                   text, gen)
+            _batch(urls, limit, out, jobs, check, placeholder, verify, text, gen)
         else:
-            _download(urls[0], limit, out, jobs, refresh, name, check, placeholder,
+            _download(urls[0], limit, out, jobs, name, check, placeholder,
                       verify, text, gen)
     except Exception as exc:  # noqa: BLE001
         JOB.say(f"crashed: {exc!r}")
@@ -3766,7 +3549,7 @@ def run_queue(gen: int, out: str, note: str = "") -> None:
 
 
 def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
-           refresh: bool = False, check: bool = True, placeholder: bool = True,
+           check: bool = True, placeholder: bool = True,
            verify: bool = True, text: bool = False, gen: int = 0) -> None:
     """Several documents, one after another, with one honest verdict at the end.
 
@@ -3787,7 +3570,7 @@ def _batch(urls: list[str], limit: int, out: str, jobs: int = 12,
             JOB.url = link
             JOB.batch_left = total - index   # documents behind this one
         try:
-            _download(link, limit, out, jobs, refresh, "", check, placeholder,
+            _download(link, limit, out, jobs, "", check, placeholder,
                       verify, text, gen)
         except Exception as exc:  # noqa: BLE001
             JOB.say(f"crashed on {link}: {exc!r}")
@@ -3859,9 +3642,18 @@ def _probe(url: str, number: int) -> None:
         JOB.say("        " + redact(words, 300))
     elif viewer:
         JOB.say(f"probe: the viewer page has no words for page {number}")
+    # The names the document gives are reported, and the descriptor beside an
+    # image name is derived — that is where a page's WORDS are. No image is
+    # fetched: a page is a photograph, and the probe says so further down.
+    jsonps = list(ctx.sources.jsonps_for(number))
     for name in ctx.sources.images_for(number):
         JOB.say(f"probe: document name  {redact(name, 160)}")
-    for jsonp in ctx.sources.jsonps_for(number):
+        derived = jsonp_from_image(name)
+        if derived and derived not in jsonps:
+            jsonps.append(derived)
+            JOB.say(f"probe: its descriptor {redact(derived, 160)} — derived: a "
+                    "page's words sit beside its picture, under one hash")
+    for jsonp in jsonps:
         JOB.say(f"probe: descriptor     {redact(jsonp, 160)}")
         for variant in ctx.jsonp_variants(jsonp):
             got = fetch(variant, ctx.jar, referer=ctx.document_url, timeout=20)
@@ -3872,20 +3664,20 @@ def _probe(url: str, number: int) -> None:
                 # what the descriptor itself offers, by host and name only
                 for url in ctx.assets_in(got["body"], number, ctx.token.get())[:4]:
                     JOB.say(f"        offers: {redact(url, 160)}")
-    for candidate in ctx.deep(number) + ctx.candidates_for(number, True):
-        got = fetch(candidate, ctx.jar, referer=ctx.document_url, timeout=20)
-        size = len(got["body"])
-        mark = "IMAGE" if looks_like_image(got["body"]) else "     "
-        detail = ""
-        if mark == "IMAGE":
-            built = scan_for_pdf(got["body"])
-            detail = (f"  {built['width']}x{built['height']}"
-                      f" rot {built.get('rotate', 1)}"
-                      + (", small preview" if built.get("preview") else "")
-                      + ("" if built.get("complete", True) else ", cut short")
-                      if built else f"  {describe_image(got['body'])}")
-        JOB.say(f"  {mark} {got['status']:>3} {size / 1000:8.1f} kB  {redact(candidate, 150)}"
-                + (detail or (f"   {http_reason(got)}" if mark == "     " else "")))
+    # The browser is the only thing that builds a page now, so it is the thing
+    # worth probing: does one answer, and what does it make of this page?
+    shooter = Shooter()
+    if not shooter.alive():
+        JOB.say("probe: browser " + (shooter.base or "none")
+                + f" — does not answer: {shooter.note}")
+    else:
+        JOB.say(f"probe: browser {shooter.base} answers")
+        page, note = shooter.shoot(ctx.ident, number)
+        if page:
+            JOB.say(f"probe: the browser's own picture of page {number}: "
+                    f"{page['label']} — that is the page")
+        else:
+            JOB.say(f"probe: the browser has no picture of page {number}: {note}")
     with JOB.lock:
         JOB.verdict = "PROBE DONE"
         JOB.detail = f"page {number}"
@@ -3954,12 +3746,14 @@ _SHOT_LOCK = threading.Lock()
 # and embed, for a sheet that is placed at the same size in the PDF anyway.
 SHOT_SCALE = float(os.environ.get("SCRIBD_SHOT_SCALE") or 1)
 SHOT_TIMEOUT = float(os.environ.get("SCRIBD_SHOT_TIMEOUT") or 120)
-# A whole book can be photographed, but not forever. One pass over the viewer is
-# what makes a long book fast; this caps the page-by-page route behind it, and a
-# cap that sits below the longest book on the shelf is a book that comes out
-# short — named, but short. 600 pages is above every book asked for so far (the
-# longest is 402) and still a bounded wait.
-MAX_SHOT_PAGES = 600
+# Every page of every document is a photograph now, so this is no longer a cap on
+# a rescue — it is a cap on a WHOLE BOOK going page by page. One pass over the
+# viewer is what makes a long book fast; this bounds the slow route behind it, for
+# the book whose column the pass could not cut at all. A cap below the longest book
+# on the shelf is a book that comes out short — named, but short — so it sits above
+# every book asked for so far (the longest is 402), and 2000 pages one at a time
+# over 8 tabs is still a wait of minutes, not hours.
+MAX_SHOT_PAGES = 2000
 MAX_SHOT_JOBS = 8           # tabs in one browser: past this it stops helping
 
 
@@ -4619,6 +4413,9 @@ class Shooter:
             built["bytes"] = len(payload)
             built["shot"] = True
             built["blank"] = bool(entry.get("blank"))
+            built["phase"] = "one pass"
+            built["url"] = (f"browser {base} · cut out of the column at the gap "
+                            f"between this page and the next")
             out[number] = built
         manifest = entry_manifest(pages)
         pad = 0
@@ -4697,28 +4494,28 @@ def fit_shots(collected: dict[int, dict], sheet: tuple[float, float]) -> None:
 
 
 def _download(url: str, limit: int, out: str, jobs: int = 12,
-              refresh: bool = False, name: str = "", check: bool = True,
+              name: str = "", check: bool = True,
               placeholder: bool = True, verify: bool = True,
               text: bool = False, gen: int = 0) -> None:
     ctx = Ctx(url, jobs)
-    ctx.refresh = refresh
     ctx.gen = gen or JOB.generation
-    # One cheap question before any page is asked for: is there a browser that
-    # can photograph a page this document cannot build? Knowing early is what
-    # makes it fast — the rests below are for scans that a browser could have
-    # replaced a minute ago.
+    # One cheap question before any page is asked for: is there a browser to
+    # photograph with? There is one route now and it runs through a browser, so
+    # knowing early is what makes the rest of the job honest — with no browser,
+    # only a page that has words of its own can still be built.
     shooter = Shooter()
     photographed: list[int] = []
     if shooter.base and shooter.alive():
         ctx.rest_budget = min(REST_BUDGET, SHOT_REST_BUDGET)
-        JOB.say(f"browser on hand ({shooter.base}) — a page nobody sends will be "
-                f"photographed, so this document rests at most "
-                f"{ctx.rest_budget:.0f}s waiting for scans")
+        JOB.say(f"browser on hand ({shooter.base}) — every page of this document "
+                f"is photographed with it, so it rests at most "
+                f"{ctx.rest_budget:.0f}s waiting on a page that is refusing")
     elif shooter.base:
         JOB.say(f"no browser at {shooter.base}: {shooter.note}")
-        JOB.say("  pages this document cannot build will be left out of the PDF "
-                "and named, never greyed; when pages are missing I will try to "
-                "start that service myself")
+        JOB.say("  with no browser there is nothing to photograph a page with, so "
+                "only a page that has words of its own can still be built; the "
+                "rest are left out of the PDF and named, never greyed. When pages "
+                "are missing I will try to start that service myself")
     if not ctx.ident:
         with JOB.lock:
             JOB.verdict = "BAD LINK"
@@ -4749,27 +4546,22 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     os.makedirs(ctx.cache_dir, exist_ok=True)
     os.makedirs(os.path.join(out, "debug"), exist_ok=True)
 
-    # ---- which load is this document? --------------------------------------
-    # One request answers it: does the second page come back as words? A
-    # converted document — a docx, a pdf of text — has no image to fetch for any
-    # of its pages, so its pages are photographed: the viewer's own look, with
-    # the words kept underneath. A document of page scans is the other load: its
-    # scans come straight from Scribd, twelve at a time, and no browser is opened
-    # for them at all. Sending a scan document down the screenshot load is what
-    # made a 38-page book take ten minutes, and a scanned exam paper come out
-    # with nothing in it: the viewer has no page blocks to cut, and the scans
-    # that would have built the book were never asked for.
-    text_only = ctx.is_text_document()
-    shot_load = text_only or SHOTS_ONLY
-    scans_on = SCANS_OK or (not text_only and not SHOTS_ONLY)
-    JOB.say(("route: a converted document — no image exists for its pages, so "
-             "the SCREENSHOT load runs: every page is photographed at standard "
-             "quality and its words stay underneath, searchable") if text_only
-            else ("route: a document of page scans — the SCAN load runs: the "
-                  "scans are fetched from Scribd directly and no browser is "
-                  "opened for them; only a page no scan reached is photographed")
-            + ("" if scans_on else " (scans forced off: SCRIBD_SHOTS_ONLY=1)"))
-    # ---- the screenshot load: one pass over the viewer, cut at the gaps ----
+    # ---- every document is photographed ------------------------------------
+    # There is one load and one way a page is built: a browser photographs what
+    # the viewer shows. A scanned upload and a converted upload are drawn by the
+    # same viewer, so the photograph is the page for both.
+    #
+    # Whether the document's WORDS are worth one request per page is a separate
+    # question, and one request answers it: a scan has none, and asking anyway
+    # would spend hundreds of refusals and rest the job for nothing.
+    has_words = ctx.gives_words()
+    JOB.say("route: every page is photographed — one pass over the viewer, then "
+            "a photograph of its own for whatever that pass could not cut"
+            + (" · this document carries words, so they stay underneath every "
+               "page, searchable" if has_words else
+               " · this document carries no words of its own, so the "
+               "photograph is the page"))
+    # ---- one pass over the viewer, cut at the gaps between its pages ------
     # The browser opens the scroll viewer once, measures the column of page
     # blocks a window at a time and clips each page while it is in the window:
     # every page arrives at exactly its own size, and no page can be cut or
@@ -4780,10 +4572,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     collected: dict[int, dict] = {}
     failed: list[int] = []
     text_pages: dict[int, str] = {}
-    texts: dict[int, str] = {}        # the invisible text layer of a scan page
+    texts: dict[int, str] = {}     # the invisible text layer of a photographed page
     book_pages: dict[int, dict] = {}
     book_shot: list[int] = []
-    if not ctx.skip_now and shot_load:
+    if not ctx.skip_now:
         shooter = ensure_shooter(shooter)
         if shooter.alive():
             JOB.say(f"photographing the whole viewer in one pass "
@@ -4800,27 +4592,30 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         else:
             JOB.say("no browser is reachable"
                     + (f" at {shooter.base}" if shooter.base else "")
-                    + f": {shooter.note} — the words ladder runs instead"
-                    + ("" if scans_on else ", and scans are forced off "
-                                          "(SCRIBD_SCANS=1 brings them back)"))
+                    + f": {shooter.note} — the words ladder runs instead, and a "
+                    "page with no words and no photograph is left out and named")
     if book_pages:
         collected.update(book_pages)
         book_shot = sorted(book_pages)
-        # the look came from the browser; the words come from the document,
-        # underneath every photograph, so the book stays searchable
-        with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
-            futures = {pool.submit(ctx.page_text, number): number
-                       for number in sorted(book_pages)}
-            for future in as_completed(futures):
-                number = futures[future]
-                try:
-                    words = future.result()
-                except Exception:                      # noqa: BLE001
-                    words = ""
-                if words and words.strip():
-                    texts[number] = words
-        JOB.say(f"words underneath: {len(texts)} of {len(book_pages)} "
-                f"photographed page(s) are searchable")
+        # The look came from the browser; the words come from the document,
+        # underneath every photograph, so the book stays searchable. Only when
+        # the document has words to give: a scanned page has none, and one
+        # refused request per page would trip the throttle breaker and rest the
+        # job for nothing.
+        if has_words:
+            with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
+                futures = {pool.submit(ctx.page_text, number): number
+                           for number in sorted(book_pages)}
+                for future in as_completed(futures):
+                    number = futures[future]
+                    try:
+                        words = future.result()
+                    except Exception:                      # noqa: BLE001
+                        words = ""
+                    if words and words.strip():
+                        texts[number] = words
+            JOB.say(f"words underneath: {len(texts)} of {len(book_pages)} "
+                    f"photographed page(s) are searchable")
         failed = [number for number in range(1, with_limit + 1)
                   if number not in collected and number not in locked]
         if failed and shooter.alive() and not ctx.skip_now:
@@ -4858,14 +4653,14 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                          skipped=len(failed))
         photographed.extend(book_shot)
     if not book_pages:
-        pass  # the ladder below runs: words first, then scans, then shots
-        # ---- is this a document of words, or of page scans? ------------------
-        collected: dict[int, dict] = {}
-        failed: list[int] = []
-        text_pages: dict[int, str] = {}
-        texts: dict[int, str] = {}        # the invisible text layer of a scan page
+        # ---- the ladder behind the one pass --------------------------------
+        # Not one page was cut, so every page is built one at a time. A document
+        # that has words reads them — they are drawn as pages, and photographed
+        # over the top when a browser is there. A document with no words of its
+        # own has every page photographed instead: the viewer's picture is the
+        # page, and there is nothing else to fetch it from.
         done = 0
-        if text_only:
+        if has_words:
             JOB.say("reading the pages the viewer renders — that is what a "
                     "browser shows you, and what this document is made of")
             # ONE request first: the viewer's scroll page carries every page's
@@ -4916,130 +4711,29 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                     if done % 10 == 0 or done == with_limit:
                         JOB.say(f"… {done}/{with_limit} pages, "
                                 f"{len(text_pages)} with words")
-            # Text first, then a picture. Scribd sometimes names a black/empty
-            # placeholder image beside usable text, and using that image made a
-            # structurally valid but visually blank page. Only a page with no words
-            # is asked for a scan — and only if it actually names one, because 37
-            # requests for images that do not exist would just be refused 37 times.
-            # A page can carry both words and a picture (page 1 of a converted
-            # document is usually its scanned cover). The picture is shown when it
-            # is a real one — it is what the page looks like — and skipped when it
-            # is the empty rectangle Scribd sometimes names instead.
-            both = [number for number in range(1, with_limit + 1)
-                    if number in text_pages and number not in locked
-                    and ctx.sources.images_for(number)]
-            fetched: list[tuple[int, dict, str]] = []
-            for number in (both[:MAX_COVER_SCANS] if scans_on else []):
-                if not JOB.alive(ctx.gen) or ctx.skip_now:
-                    break
-                _n, built, _m = ctx.grab(number)
-                if built:
-                    fetched.append(
-                        (number, built,
-                         hashlib.sha256(built.get("payload") or b"").hexdigest()))
-            twice = repeated_pages({number: sha for number, _built, sha in fetched})
-            for number, built, sha in fetched:
-                stand_in = placeholder_scan(built.get("payload") or b"")
-                if stand_in:
-                    JOB.say(f"page {number}: the picture named for it is {stand_in} "
-                            f"({built['bytes']} B) — its words are drawn instead")
-                    continue
-                if number in twice:
-                    JOB.say(f"page {number}: the picture named for it is byte for byte "
-                            f"the same file as another page's — no two pages of paper "
-                            f"scan alike, so its words are drawn instead")
-                    continue
-                if looks_blank_scan(built):
-                    JOB.say(f"page {number}: the picture is an empty {built['width']}x"
-                            f"{built['height']} placeholder ({built['bytes']} B) — "
-                            f"its words are drawn instead")
-                    continue
-                collected[number] = built
-            if both and scans_on:
-                kept_cover = [n for n, _built, _sha in fetched if n in collected]
-                JOB.say(f"pictures: {len(kept_cover)} of {len(both[:MAX_COVER_SCANS])} "
-                        f"page(s) that name a scan are shown as that scan")
-                # a page shown as a scan keeps its words as the invisible text layer,
-                # so it is still searchable and copyable
-                for number in kept_cover:
-                    texts.setdefault(number, text_pages[number])
+            # A page with no words is still a page the viewer draws, so it is
+            # photographed below. Nothing here asks Scribd for an image of a page
+            # any more: that was the scan ladder, and it is gone.
             silent = [number for number in range(1, with_limit + 1)
                       if number not in text_pages and number not in locked]
-            # a page's descriptor name is also its scan's name (pages/N-x.jsonp and
-            # images/N-x.jpg are siblings), so a page whose words were refused still
-            # has a picture to ask for — the same picture the browser shows. Only a
-            # page nobody named at all is left to the browser alone.
-            need_scan = ([number for number in silent
-                          if ctx.sources.images_for(number)
-                          or ctx.sources.jsonps_for(number)]
-                         if scans_on else [])
-            if need_scan:
-                JOB.say(f"scan fallback: {len(need_scan)} page(s) have no words but "
-                        f"do name a picture ({', '.join(str(n) for n in need_scan[:8])}"
-                        f"{' …' if len(need_scan) > 8 else ''})")
-            still_missing: list[int] = [number for number in silent
-                                        if number not in need_scan]
-            for number in need_scan:
-                if not JOB.alive(ctx.gen) or ctx.skip_now:
-                    break
-                _n, built, message = ctx.grab(number)
-                stand_in = placeholder_scan(built.get("payload") or b"") if built else ""
-                if stand_in:
-                    # a page with no words and only a stand-in picture has no page in
-                    # it: leaving it out is honest, and a browser may yet photograph
-                    # what a person sees
-                    JOB.say(f"page {number}: the only picture named for it is "
-                            f"{stand_in} — left out for now, and a browser can still "
-                            f"photograph the real page")
-                    built, message = None, ""
-                if built:
-                    collected[number] = built
-                    if number in failed:
-                        failed.remove(number)
-                else:
-                    still_missing.append(number)
-                    if message:
-                        JOB.say(message)
-            failed = still_missing
+            failed = sorted(silent)
             JOB.say(f"text: {len(text_pages)} of {with_limit} page(s) have words"
-                    + (f", {len(collected)} scan fallback(s)" if collected else ""))
-            JOB.set_progress(ok=len(text_pages) + len(collected), skipped=len(failed))
+                    + (f" — {len(failed)} have none, and are photographed as the "
+                       f"pages they are" if failed else ""))
+            JOB.set_progress(ok=len(text_pages), skipped=len(failed))
 
-        with ThreadPoolExecutor(max_workers=ctx.jobs) as pool:
-            # not one scan request when the document is text: the old code queued
-            # every page here and then threw the queue away, which is what made a
-            # text document ask for 38 images that never existed
-            futures = ([] if (text_only or not scans_on) else
-                       [pool.submit(ctx.grab, number)
-                        for number in range(1, with_limit + 1)
-                        if number not in locked])
-            for future in as_completed(futures):
-                if not JOB.alive(ctx.gen):
-                    for pending in futures:
-                        pending.cancel()
-                    JOB.say("stopped — no more pages requested")
-                    return
-                if ctx.skip_now:
-                    for pending in futures:
-                        pending.cancel()
-                    break
-                number, built, message = future.result()
-                done += 1
-                if message:
-                    JOB.say(message)
-                if built:
-                    collected[number] = built
-                else:
-                    failed.append(number)
-                JOB.set_progress(page=done, ok=len(collected), skipped=len(failed))
-                if done % 25 == 0 or done == with_limit:
-                    spent = max(0.001, time.time() - JOB.started)
-                    rate = done / spent
-                    left = (with_limit - done) / rate if rate else 0
-                    JOB.say(f"… {done}/{with_limit} pages, {len(collected)} ok"
-                            + (f", {len(failed)} failed" if failed else "")
-                            + f" · {rate:.1f} pages/s · gate {ctx.gate.rate:.1f}/s"
-                            + (f" · about {left:.0f} s left" if left > 1 else ""))
+        if not has_words:
+            # No words to read and no image to fetch: what a page is, is what the
+            # viewer draws, so every page of it is photographed one at a time —
+            # the same route that stands behind the one pass, and the only route
+            # there is now.
+            failed = [number for number in range(1, with_limit + 1)
+                      if number not in collected and number not in locked]
+            JOB.say(f"{len(failed)} page(s) to photograph one at a time — this "
+                    f"document has no words of its own, so the viewer's own "
+                    f"picture is the page")
+            JOB.set_progress(page=0, of=with_limit, ok=len(collected), skipped=0)
+
 
         if ctx.skip_now:
             # The drop cancelled requests that had not been made yet. A page nobody
@@ -5063,42 +4757,6 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     # hand, left out and named if not), and the book is built now.
     if locked:
         failed = sorted(set(failed) | locked)
-
-    # ---- a refused page may still have words: use them --------------------
-    # This is the case that made a 38-page document come out blank. Most of its
-    # pages are text the viewer renders; no image exists for them, so every one
-    # of them used to become "scan not available". One descriptor request per
-    # missing page turns them into pages you can actually read.
-    if failed and not text_only:
-        JOB.say(f"no scan for {len(failed)} page(s) — asking for their words")
-        rescued: list[int] = []
-        for number in sorted(failed):
-            if not JOB.alive(ctx.gen):
-                break
-            words = ctx.page_text(number)
-            if words.strip():
-                text_pages[number] = words
-                rescued.append(number)
-        if rescued:
-            for number in rescued:
-                rows = [line for line in ctx.trace.get(number, [])
-                        if "403" in line or "AccessDenied" in line]
-                JOB.say(f"page {number}: no scan (it is text in this document) — "
-                        f"wrote its words instead"
-                        + ("" if not rows else " · the scan was refused with 403"))
-            failed = [number for number in failed if number not in text_pages]
-            JOB.set_progress(ok=len(collected) + len(text_pages),
-                             skipped=len(failed))
-            JOB.say(f"{len(rescued)} page(s) came from the document's text — "
-                    + ("the PDF is complete, no placeholder"
-                       if not failed else
-                       f"{len(failed)} page(s) still have neither a scan nor words"))
-        if failed and not rescued:
-            # nothing came from the text either: keep what Scribd actually sent
-            saved = ctx.save_viewer_page()
-            if saved:
-                JOB.say(f"viewer page saved to {saved} (no cookie in it) — that "
-                        f"file says what the viewer really sends")
 
     # ---- fidelity pass: photograph the pages that only arrived as words ---
     # Words keep a page's content but lose the document: a retypeset sheet is
@@ -5136,10 +4794,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         JOB.set_progress(ok=len(collected) + len(
             [n for n in text_pages if n not in collected]), skipped=len(failed))
 
-    # ---- a page with neither a scan nor words: photograph it --------------
-    # This is the page that used to say "scan not available". Nothing arrived
-    # for it, so there is nothing to draw — but a browser can still see it, and
-    # what a browser sees is the page.
+    # ---- a page nothing reached yet: photograph it ------------------------
+    # This is the page that used to say "scan not available". Nothing arrived for
+    # it and nothing was drawn for it — but a browser can still see it, and what
+    # a browser sees is the page.
     if failed and not ctx.skip_now:
         # not alive at the start of the job is not an answer: ask past the
         # cache and, if nobody runs one, start the browser service myself
@@ -5173,59 +4831,53 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 + (f" at {shooter.base}" if shooter.base else "")
                 + f": {shooter.note}")
 
-    # ---- pictures that arrived, but not as a full scan -------------------
-    previews = sorted(number for number, page in collected.items()
-                      if page.get("preview"))
-    cuts = sorted(number for number, page in collected.items()
-                  if page.get("complete") is False)
-    if previews:
-        sample = collected[previews[0]]
-        JOB.say(f"{len(previews)} page(s) were only served as a small preview "
-                f"({sample['width']}x{sample['height']}) — no larger copy came "
-                "under any name; they are in the PDF, filled to the sheet")
-    if cuts:
-        JOB.say(f"{len(cuts)} page(s) still arrived cut short after a retry — "
-                "kept, but part of each picture may show grey")
+    # ---- a page no photograph reached may still have words: use them -------
+    # This is the case that made a 38-page document come out blank: its pages are
+    # text the viewer renders, and each one of them used to be reported as "scan
+    # not available". One descriptor request per page that is still missing turns
+    # it into a page you can actually read. It runs AFTER the photographs, not
+    # before: a photograph is the page, and asking for words first only spends
+    # requests on pages a browser was about to draw.
+    if failed and not has_words:
+        JOB.say(f"no photograph for {len(failed)} page(s) — asking the document "
+                f"for their words")
+        rescued: list[int] = []
+        for number in sorted(failed):
+            if not JOB.alive(ctx.gen):
+                break
+            words = ctx.page_text(number)
+            if words.strip():
+                text_pages[number] = words
+                rescued.append(number)
+        if rescued:
+            for number in rescued:
+                rows = [line for line in ctx.trace.get(number, [])
+                        if "403" in line or "AccessDenied" in line]
+                JOB.say(f"page {number}: no photograph (it is text in this "
+                        f"document) — wrote its words instead"
+                        + ("" if not rows else " · its picture was refused with 403"))
+            failed = [number for number in failed if number not in text_pages]
+            JOB.set_progress(ok=len(collected) + len(text_pages),
+                             skipped=len(failed))
+            JOB.say(f"{len(rescued)} page(s) came from the document's text — "
+                    + ("the PDF is complete, no placeholder"
+                       if not failed else
+                       f"{len(failed)} page(s) still have neither a photograph "
+                       f"nor words"))
+        if failed and not rescued:
+            # nothing came from the text either: keep what Scribd actually sent
+            saved = ctx.save_viewer_page()
+            if saved:
+                JOB.say(f"viewer page saved to {saved} (no cookie in it) — that "
+                        f"file says what the viewer really sends")
 
-    # ---- one document, one page size ------------------------------------
-    # The size is the MEDIAN of the scans, so a single odd page cannot shape the
-    # book. Pages that miss it are refetched once; if most pages miss it, the
-    # document simply has mixed page sizes and every sheet keeps its own.
-    # Previews are excluded: a low-resolution copy is not this book's page size.
-    reference = (0, 0)
-    if collected:
-        reference = median_page([page for page in collected.values()
-                                 if not page.get("preview")
-                                 and not page.get("shot")]
-                                or list(collected.values()))
-    mixed = False
-    if check and reference[0] and len(collected) >= 8:
-        offenders = [
-            number for number, page in collected.items()
-            if not page.get("preview") and not page.get("shot")
-            and (abs(page["width"] / reference[0] - 1) > SIZE_TOLERANCE
-                 or abs(page["height"] / reference[1] - 1) > SIZE_TOLERANCE)]
-        if len(offenders) > len(collected) * 0.2:
-            mixed = True
-            JOB.say(f"size check: {len(offenders)} of {len(collected)} pages differ "
-                    f"from {reference[0]}x{reference[1]} — this document has mixed "
-                    "page sizes, so every sheet keeps its own size")
-        elif offenders:
-            JOB.say(f"size check: {len(offenders)} page(s) are not "
-                    f"{reference[0]}x{reference[1]} — refetching")
-            for number in sorted(offenders)[:MAX_REFETCH]:
-                _n, built, _m = ctx.grab(number, force=True, wide=True)
-                if not built:
-                    continue
-                old = collected[number]
-                if (abs(built["width"] / reference[0] - 1)
-                        + abs(built["height"] / reference[1] - 1)) < (
-                        abs(old["width"] / reference[0] - 1)
-                        + abs(old["height"] / reference[1] - 1)):
-                    collected[number] = built
-                    JOB.say(f"  page {number}: {old['width']}x{old['height']}"
-                            f" -> {built['width']}x{built['height']}")
-            JOB.set_progress(ok=len(collected))
+
+    # ---- the size of this book -------------------------------------------
+    # Every page is a photograph cut at the column's own size, so the book's size
+    # is the MEDIAN of those photographs: one odd page cannot shape it. Nothing is
+    # refetched, because there is no second copy of a photograph to go and ask
+    # for — what the viewer showed is what the page is.
+    reference = median_page(list(collected.values())) if collected else (0, 0)
 
     # ---- the words of each page, so the PDF is not just photographs --------
     if text and collected:
@@ -5236,18 +4888,13 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 texts[number] = words
         JOB.say(f"text: {len(texts)} of {len(collected)} page(s) had words")
 
-    # a document whose only pictures are photographs has no scan to agree a size
-    # with: its sheets stay the size the words were laid out on
-    uniform = (check and not mixed
-               and any(page for page in collected.values()
-                       if not page.get("shot")))
+    # A book of photographs has no scan to agree a size with, so no sheet is made
+    # uniform: each one keeps the size of the page on it.
     sheets = sheet_list(collected, with_limit, placeholder)
     if not sheets:
-        # a text document has no scans at all: one sheet per page, A4
+        # a document with no pictures at all: one sheet per page, A4
         sheets = [None] * with_limit
-    if uniform and any(sheets):
-        sheet = house_sheet([page for page in sheets if page])
-    elif reference[0]:
+    if reference[0]:
         sheet = (round(reference[0] * 0.75, 2), round(reference[1] * 0.75, 2))
     elif text_pages:
         sheet = (595.0, 842.0)
@@ -5259,11 +4906,16 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     with open(os.path.join(out, "debug", "pages.txt"), "w") as handle:
         handle.write(f"document {ctx.ident} · title {ctx.title!r} · "
                      f"author {ctx.author!r}\n")
-        handle.write(f"pages in document: {ctx.total} · used: {len(collected)}"
-                     f" · placeholder: {sum(1 for s in sheets if s is None)}\n")
+        word_sheets = sum(1 for pos, sh in enumerate(sheets, start=1)
+                          if sh is None and (text_pages.get(pos) or "").strip())
+        left_out = sum(1 for pos, sh in enumerate(sheets, start=1)
+                       if sh is None and not (text_pages.get(pos) or "").strip())
+        handle.write(f"pages in document: {ctx.total} · photographed: "
+                     f"{len(collected)} · drawn from their own words: "
+                     f"{word_sheets} · left out and named: {left_out}\n")
         handle.write(f"page size: {reference[0]}x{reference[1]} px · "
-                     f"sheet {sheet[0]}x{sheet[1]} pt · "
-                     f"uniform: {uniform}\n")
+                     f"sheet {sheet[0]}x{sheet[1]} pt · every sheet keeps "
+                     f"the size of the page on it\n")
         if ctx.rejected:
             handle.write("arrived but unreadable: "
                          + ", ".join(f"{count} {kind}" for kind, count in
@@ -5276,8 +4928,13 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                              f"  {page.get('bytes', 0) / 1000:7.0f} kB"
                              f"  [{page.get('phase', '?')}]"
                              f"  {page.get('url', '')[:130]}\n")
+            elif (text_pages.get(number) or "").strip():
+                handle.write(f"{number:4d}  WORDS    drawn as a text sheet "
+                             f"({len(text_pages[number])} chars) — no photograph "
+                             f"reached this page, and its words are on it\n")
             else:
-                handle.write(f"{number:4d}  PLACEHOLDER\n")
+                handle.write(f"{number:4d}  LEFT OUT no photograph, no words — "
+                             f"not in the PDF, and named in the verdict\n")
         if ctx.notes:
             handle.write("\nnotes:\n" + "\n".join(sorted(ctx.notes)) + "\n")
 
@@ -5367,8 +5024,11 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         target = os.path.join(out, f"{stem} ({suffix}).pdf")
         suffix += 1
 
+    # uniform=False: every sheet keeps the MediaBox of the page on it. A book of
+    # photographs was cut at one column's size, so the sheets agree anyway; a page
+    # photographed on its own may not, and it must not be stretched to match.
     ok, note_text = build_pdf(sheets, target, title=ctx.title, author=ctx.author,
-                              uniform=uniform, texts=texts, text_pages=text_pages)
+                              uniform=False, texts=texts, text_pages=text_pages)
     if not ok:
         with JOB.lock:
             JOB.verdict = "FAILED"
@@ -5379,7 +5039,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         drawn = len(sheets) - sum(1 for pos, sh in enumerate(sheets, start=1)
                                   if sh is None and not text_pages.get(pos))
         sound, report = verify_pdf(target, expect_pages=drawn,
-                                   expect_images=len(collected), uniform=uniform)
+                                   expect_images=len(collected), uniform=False)
         JOB.say("verify: " + report)
         if not sound:
             with JOB.lock:
@@ -5402,12 +5062,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                       + (f" · {len(photographed)} photographed"
                          if photographed else "")
                       + (f" · {len(failed)} omitted" if failed else "")
-                      + (f" · {len(previews)} small preview" if previews else "")
                       + (" · dropped by the queue" if ctx.skip_now else "")
-                      + (f" · {len(cuts)} cut short" if cuts else "")
                       + (" · verified" if verify else ""))
     if failed:
-        JOB.say("pages left out of the PDF (no scan, no words, no browser): "
+        JOB.say("pages left out of the PDF (no photograph, no words): "
                 + ", ".join(str(n) for n in failed[:60])
                 + (" …" if len(failed) > 60 else ""))
         JOB.say("why, page by page: downloads/debug/failed-pages.txt")
@@ -6607,7 +6265,7 @@ def selftest() -> str:
             assert corners == {(7.0, 11.0), (307.0, 11.0), (7.0, 411.0),
                                (307.0, 411.0)}, (number, corners)
 
-    # ---- names: taken from the document, never invented ----
+    # ---- names: read from the document, never fetched as a page ----
     ctx = Ctx("https://www.scribd.com/document/750213011/Physics-12th")
     ctx.token.set(good)
     ctx.sources.merge(
@@ -6617,12 +6275,22 @@ def selftest() -> str:
         b'var i="https:\\/\\/html.scribdassets.com\\/abc123def456\\/images\\/8-cafebabe.jpg'
         b'?token=' + placeholder.encode() + b'";</script>')
     assert page_count(b'{"page_count":402}', ctx.sources) == 402
-    names = ctx.candidates_for(8)
-    assert names[0] == ("https://html.scribdassets.com/abc123def456/images/"
-                        "8-cafebabe.jpg?token=" + good), names[0]
-    assert names[1] == "https://html.scribdassets.com/abc123def456/images/8-cafebabe.jpg"
-    assert not any(n.endswith(".png") for n in names)      # no extension guessing
-    assert not any("/pages/" in n for n in names)          # no thumbnail guessing
+    # The names a document gives are still read: a page's descriptor is where its
+    # WORDS come from. Nothing turns them into an image request any more.
+    assert ctx.sources.jsonps_for(7) and ctx.sources.jsonps_for(7)[0].endswith(
+        "/pages/7-deadbeef.jsonp?token=" + placeholder), ctx.sources.jsonps_for(7)
+    assert ctx.sources.images_for(8) and ctx.sources.images_for(8)[0].endswith(
+        "/images/8-cafebabe.jpg?token=" + placeholder), ctx.sources.images_for(8)
+    # and the ladder that fetched a page by name is not in the file to be called
+    for gone in ("candidates_for", "primaries_for", "descriptor", "deep",
+                 "attempt", "grab", "cache_path"):
+        assert not hasattr(ctx, gone), f"{gone} is still there: a page is a " \
+            "photograph now, and nothing may go and fetch one as an image"
+    for gone in ("SCANS_OK", "SHOTS_ONLY", "MAX_COVER_SCANS", "MAX_REFETCH",
+                 "SIZE_TOLERANCE", "PLACEHOLDER_SCANS"):
+        assert gone not in globals(), f"{gone} is still there"
+    assert not hasattr(Ctx, "is_text_document"), \
+        "is_text_document is still there: it used to pick a route, and there is one"
 
     page_html = (b'<html><head><meta property="og:title" '
                  b'content="Excel &amp; Succeed: Biology | Scribd">'
@@ -7471,18 +7139,12 @@ def selftest() -> str:
     assert looks_blank_shot(len(inked), 283) is False, len(inked)
     assert looks_blank_shot(len(sparse), 283) is False, (len(sparse), len(sparse) / 283)
     assert looks_blank_shot(0, 283) is False and looks_blank_shot(len(white), 0) is False
-    # the stand-in: known by its fingerprint, and any picture that arrives twice
-    # inside one document is not a picture of either page
-    assert placeholder_scan(b"") == "" and placeholder_scan(inked) == ""
-    held_scans = dict(PLACEHOLDER_SCANS)
-    try:
-        globals()["PLACEHOLDER_SCANS"] = {
-            hashlib.sha256(white).hexdigest(): "a stand-in, not a scan"}
-        assert placeholder_scan(white) == "a stand-in, not a scan"
-        assert placeholder_scan(inked) == ""
-    finally:
-        globals()["PLACEHOLDER_SCANS"] = held_scans
-    assert repeated_pages({1: "a", 2: "b", 3: "b"}) == {2, 3}
+    # No stand-in, no fingerprint list, no repeated-picture test. A page is a
+    # photograph of what the viewer showed: a photograph is never a stand-in for a
+    # scan, because there is no scan to stand in for.
+    for gone in ("placeholder_scan", "PLACEHOLDER_SCANS", "repeated_pages",
+                 "looks_blank_scan"):
+        assert gone not in globals(), f"{gone} is still there"
     # the second door: built only for Scribd's public hosts, budgeted, and the
     # target arrives inside the route's own url, encoded whole
     assert scrape_url("https://www.scribd.com/a?b=c d").startswith(
@@ -7499,8 +7161,6 @@ def selftest() -> str:
         assert _scrape_take() is True and _scrape_take() is False
     finally:
         _scrape_left[0] = held_left
-    assert repeated_pages({1: "a", 2: "b"}) == set()
-    assert repeated_pages({}) == set()
     # a pixel measure would call this page empty at 2x and not at 1x; rows do not
     assert looks_blank_shot(len(sparse), 283) == looks_blank_shot(len(sparse) * 4, 566)
 
@@ -7554,7 +7214,7 @@ def selftest() -> str:
         # 200x283 px photographed at 2x is a 100x142 px page at twice the detail
         assert (page["width"], page["height"]) == (100, 142), page
         assert "photographed" in page["label"] and "2x" in page["label"], page
-        assert page["bytes"] == len(inked) and not looks_blank_scan(page), page
+        assert page["bytes"] == len(inked) and page["blank"] is False, page
         assert page["url"].startswith("browser http://127.0.0.1:"), page
         # and the default is standard quality: the page at the size the viewer
         # draws it, not twice the pixels for a sheet placed at the same size
@@ -7716,8 +7376,9 @@ def selftest() -> str:
         alone.refused(number)
     assert alone.skip_now is False, "alone, a document keeps fighting"
 
-    return ("selftest: every check passed — sheet maths, EXIF rotation, "
-            "jpeg size traps, previews and cut transfers, pdf verify, text "
+    return ("selftest: every check passed — one route only (no scan ladder, no "
+            "stand-in, no refetch), sheet maths, EXIF rotation, "
+            "jpeg size traps, pdf verify, text "
             "layer, panel key and CORS, cookies, token, names, pasted links, "
             "bookmarklet, scribd search, relevance, channels, the document "
             "queue, signed links, the disk guard, token shapes, redaction, "
@@ -7738,7 +7399,6 @@ def main(argv: list[str]) -> int:
     out = OUT
     cookies = ""
     jobs = 12
-    refresh = False
     name = ""
     check = True
     placeholder = True
@@ -7786,9 +7446,7 @@ def main(argv: list[str]) -> int:
                 BASE = value.rstrip("/")
             index += 2
             continue
-        if arg == "--refresh":
-            refresh = True
-        elif arg == "--no-check":
+        if arg == "--no-check":
             check = False
         elif arg == "--no-placeholder":
             placeholder = False
@@ -7797,10 +7455,12 @@ def main(argv: list[str]) -> int:
         elif arg in ("--text", "--text-layer"):
             text = True
         elif arg == "--shots-only":
-            pass                      # photographs are the default now
+            pass                      # there is only one route now: photographs
         elif arg == "--scans":
-            global SCANS_OK
-            SCANS_OK = True
+            # Removed, not switched off. Say so once and carry on with the route
+            # there is, rather than aborting a job somebody started.
+            print("--scans is gone: every page of every document is "
+                  "photographed, and nothing brings scanning back.")
         elif arg == "--selftest":
             print(selftest())
             return 0
@@ -7845,7 +7505,7 @@ def main(argv: list[str]) -> int:
         urls += links_from_text(links_text)
     urls = [item for item in dict.fromkeys(urls) if item]
     if urls:
-        run_job(urls, limit, out, jobs, refresh, name, check, placeholder, probe,
+        run_job(urls, limit, out, jobs, name, check, placeholder, probe,
                 verify, text)
         return 0 if JOB.verdict in ("PDF BUILT", "PDF PARTIAL", "PROBE DONE") else 1
     # 25811 is the port this panel is reached on; an egg that sets SERVER_PORT
