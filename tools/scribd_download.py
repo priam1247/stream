@@ -171,6 +171,8 @@ Panel options (environment, all optional):
                                  SCRIBD_SHOT_SCALE (default 2) and
                                  SCRIBD_SHOT_TIMEOUT (default 120) tune it.
                                  With none set, everything works as before.
+  SCRIBD_SCRAPE_DO               token for the scrape route asked after a 403;
+                                 empty closes that door
 
 Endpoints, for a dashboard in front of this panel:
   GET  /health                   {"ok", "version", "locked", "state"} — no key
@@ -209,7 +211,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.23"
+VERSION = "2.24"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -422,6 +424,66 @@ def _forget(scheme: str, netloc: str) -> None:
         except Exception:  # noqa: BLE001
             pass
 
+# The scrape route: a second door for the moments Scribd's front door refuses
+# the address this panel runs on (a 403 that is about the address, not about the
+# page). Direct requests stay first and carry the session; the route is asked
+# only after a refusal, only for Scribd's own public hosts, never in local
+# tests, and at most SCRAPE_BUDGET times per document so a blocked address
+# cannot spend the route's quota forever. It carries NO cookies — the tokens a
+# page needs ride inside the URL, and a session is not a thing to hand a
+# third party. SCRIBD_SCRAPE_DO replaces the written-down token; an empty one
+# ("SCRIBD_SCRAPE_DO=") closes the door altogether.
+SCRAPE_DO = os.environ.get("SCRIBD_SCRAPE_DO",
+                           "08f4411be1ab4315a77eabfa981d4f3f277af459e57").strip()
+SCRAPE_REFUSED = (403, 429, 503)
+SCRAPE_BUDGET = 40
+SCRAPE_HOSTS = ("scribd.com", "scribdassets.com")
+_scrape_left = [SCRAPE_BUDGET]
+_scrape_lock = threading.Lock()
+_scrape_said = [False]
+
+
+def scrape_url(target: str) -> str:
+    """The route's own address for one target page."""
+    return ("https://api.scrape.do/?token=" + SCRAPE_DO +
+            "&url=" + urllib.parse.quote(target, safe=""))
+
+
+def _scrape_open(netloc: str) -> bool:
+    """May this host be asked through the route at all?"""
+    if not SCRAPE_DO:
+        return False
+    host = netloc.split("@")[-1].split(":")[0].lower()
+    return any(host == wanted or host.endswith("." + wanted)
+               for wanted in SCRAPE_HOSTS)
+
+
+def _scrape_take() -> bool:
+    """One unit of the per-document budget. -> still allowed."""
+    with _scrape_lock:
+        if _scrape_left[0] <= 0:
+            return False
+        _scrape_left[0] -= 1
+        return True
+
+
+def _scrape_get(target: str, timeout: float) -> dict | None:
+    """One answer through the route, or None when the route itself failed."""
+    if not _scrape_take():
+        return None
+    status, body, error = shot_get(scrape_url(target), timeout)
+    if status == 200 and body:
+        return {"status": 200, "body": body, "headers": {}, "error": "",
+                "via": "scrape route"}
+    with _scrape_lock:
+        said = _scrape_said[0]
+        _scrape_said[0] = True
+    if not said:
+        JOB.say(f"the scrape route could not help either — "
+                f"{error or ('http ' + str(status))}"[:200])
+    return None
+
+
 def _decompress(raw: bytes, encoding: str) -> bytes:
     if encoding == "gzip":
         try:
@@ -482,6 +544,16 @@ def fetch(url: str, jar: dict[str, str] | None = None, referer: str = "",
         if status in (301, 302, 303, 307, 308) and location:
             target = urllib.parse.urljoin(target, location)
             continue
+        if status in SCRAPE_REFUSED and _scrape_open(parsed.netloc):
+            through = _scrape_get(target, timeout)
+            if through is not None:
+                with _scrape_lock:
+                    said = _scrape_said[0]
+                    _scrape_said[0] = True
+                if not said:
+                    JOB.say(f"the front door answered {status} — the same page "
+                            f"came through the scrape route instead")
+                return through
         return {"status": status, "body": body, "headers": answer, "error": ""}
     return {"status": 0, "body": b"", "headers": {}, "error": "too many redirects"}
 
@@ -4003,6 +4075,9 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             else "downloading the whole document")
     JOB.set_progress(page=0, of=with_limit, ok=0, skipped=0, blank=0)
 
+    with _scrape_lock:
+        _scrape_left[0] = SCRAPE_BUDGET
+        _scrape_said[0] = False
     ctx.cache_dir = os.path.join(out, "cache", ctx.ident)
     ctx.debug_dir = os.path.join(out, "debug")
     os.makedirs(ctx.cache_dir, exist_ok=True)
@@ -6419,6 +6494,22 @@ def selftest() -> str:
     finally:
         globals()["PLACEHOLDER_SCANS"] = held_scans
     assert repeated_pages({1: "a", 2: "b", 3: "b"}) == {2, 3}
+    # the second door: built only for Scribd's public hosts, budgeted, and the
+    # target arrives inside the route's own url, encoded whole
+    assert scrape_url("https://www.scribd.com/a?b=c d").startswith(
+        "https://api.scrape.do/?token=")
+    assert "url=https%3A%2F%2Fwww.scribd.com%2Fa%3Fb%3Dc%20d" in scrape_url(
+        "https://www.scribd.com/a?b=c d")
+    assert _scrape_open("www.scribd.com") is bool(SCRAPE_DO)
+    assert _scrape_open("html.scribdassets.com") is bool(SCRAPE_DO)
+    assert _scrape_open("127.0.0.1:9181") is False      # never in local tests
+    assert _scrape_open("api.scrape.do") is False       # and never recursively
+    held_left = _scrape_left[0]
+    try:
+        _scrape_left[0] = 1
+        assert _scrape_take() is True and _scrape_take() is False
+    finally:
+        _scrape_left[0] = held_left
     assert repeated_pages({1: "a", 2: "b"}) == set()
     assert repeated_pages({}) == set()
     # a pixel measure would call this page empty at 2x and not at 1x; rows do not
@@ -6606,7 +6697,8 @@ def selftest() -> str:
             "page wiring, text pages, built names, viewer pages, "
             "typography, placed lines, photographed pages, a browser "
             "that is not there, the browser found by asking the addresses "
-            "written into the file, the picture that was not a page")
+            "written into the file, the picture that was not a page, "
+            "the second door")
 
 def main(argv: list[str]) -> int:
     global BASE
