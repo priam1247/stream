@@ -53,6 +53,12 @@ DELAY_MS = float(os.environ.get("MOCK_DELAY_MS", "0"))
 LOCK_PAGE = int(os.environ.get("MOCK_LOCK_PAGE", "0"))
 # MOCK_LOCK_PAGES="3,7,9": several locked pages, the way a scan-only document
 # behaves when Scribd will not serve some of its pages to this account
+# MOCK_REFUSE_DOC=<id>: every descriptor and scan request that arrives with
+# that document in the Referer is refused 403, forever — a document the CDN
+# will not serve to this address at all. This is what a bulk queue meets when
+# one book is locked or throttled beyond hope: the queue must skip it, let the
+# waiting books through, and come back to it once at the end.
+REFUSE_DOC = os.environ.get("MOCK_REFUSE_DOC", "").strip()
 LOCK_PAGES = {int(part) for part in
               os.environ.get("MOCK_LOCK_PAGES", "").replace(" ", "").split(",")
               if part.isdigit()}
@@ -297,6 +303,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         path = self.path.split("?")[0]
+        referer = self.headers.get("Referer") or ""
+        if REFUSE_DOC and f"/document/{REFUSE_DOC}" in referer and (
+                "/images/" in path or "/pages/" in path):
+            self.send(b"<Error><Code>AccessDenied</Code></Error>", 403,
+                      "application/xml")
+            return
         if path == "/search/query":
             query = urllib.parse.parse_qs(self.path.split("?")[1])
             words = (query.get("query") or [""])[0]

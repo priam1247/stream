@@ -211,7 +211,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.27"
+VERSION = "2.28"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -2371,6 +2371,7 @@ class Job:
         self.queue_done = 0
         self.queue_total = 0
         self.current = ""
+        self.requeue = False           # this document yielded: one more pass
         self.results: list[dict] = []
 
     def say(self, text: str) -> None:
@@ -3023,6 +3024,7 @@ class Ctx:
         # reader waits for a page that could already be in the PDF
         self.rest_budget = REST_BUDGET
         self.said_no_hope = False
+        self.skip_now = False          # the queue is waiting: yield to it
         self.rest_until = 0.0
         self.rests = 0
         self.reliefs = 0
@@ -3061,6 +3063,7 @@ class Ctx:
                     JOB.say("nothing in this document has arrived and resting "
                             "has not changed that — treating these 403s as "
                             "'not this account', not as throttling")
+                self._queue_skip()
                 return False
             pause = PAUSE_LADDER[min(self.rests, len(PAUSE_LADDER) - 1)]
             if self.rested + pause > self.rest_budget:
@@ -3072,6 +3075,7 @@ class Ctx:
                             f"{self.rest_budget:.0f}s already and the refusals "
                             f"did not clear — not resting again, the missing "
                             f"pages will be reported")
+                self._queue_skip()
                 return False
             self.rested += pause
             self.rests += 1
@@ -3083,6 +3087,22 @@ class Ctx:
                 f"resting {pause:.0f}s and slowing down (that is throttling, "
                 f"not a locked page)")
         return True
+
+    def _queue_skip(self) -> None:
+        """Yield to the queue: a document that is only refusals while other
+        documents wait holds up every book behind it, for nothing.
+
+        What arrived gets written, the queue moves on, and this document gets
+        one more pass at the end — its finished pages are cached by then, so
+        the second pass asks only for what is missing. With no queue behind
+        it, a document keeps fighting to the end: there is nothing to yield to.
+        """
+        if self.skip_now or JOB.pending() <= 0:
+            return
+        self.skip_now = True
+        JOB.say(f"the queue has {JOB.pending()} document(s) waiting and this "
+                f"one is only refusals — writing what arrived, moving on, and "
+                f"giving this one another pass at the end of the queue")
 
     def answered(self) -> None:
         """A page arrived: start counting refusals again from zero.
@@ -3676,6 +3696,12 @@ def run_queue(gen: int, out: str, note: str = "") -> None:
                 JOB.file = ""
         with JOB.lock:
             verdict, detail, file = JOB.verdict, JOB.detail, JOB.file
+            requeue = JOB.requeue
+            JOB.requeue = False
+        if requeue and not item.get("requeued"):
+            JOB.enqueue([dict(item, requeued=1)])
+            JOB.say("queued again for one more pass, behind the documents that "
+                    f"are waiting: {url}")
         JOB.finish_item(gen, item, verdict, detail, file)
 
     if not JOB.alive(gen):
@@ -4212,6 +4238,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                         pending.cancel()
                     JOB.say("stopped — no more pages read")
                     return
+                if ctx.skip_now:
+                    for pending in futures:
+                        pending.cancel()
+                    break
                 number = futures[future]
                 try:
                     words = future.result()
@@ -4239,7 +4269,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 and ctx.sources.images_for(number)]
         fetched: list[tuple[int, dict, str]] = []
         for number in both[:MAX_COVER_SCANS]:
-            if not JOB.alive(ctx.gen):
+            if not JOB.alive(ctx.gen) or ctx.skip_now:
                 break
             _n, built, _m = ctx.grab(number)
             if built:
@@ -4288,7 +4318,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         still_missing: list[int] = [number for number in silent
                                     if number not in need_scan]
         for number in need_scan:
-            if not JOB.alive(ctx.gen):
+            if not JOB.alive(ctx.gen) or ctx.skip_now:
                 break
             _n, built, message = ctx.grab(number)
             stand_in = placeholder_scan(built.get("payload") or b"") if built else ""
@@ -4327,6 +4357,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                     pending.cancel()
                 JOB.say("stopped — no more pages requested")
                 return
+            if ctx.skip_now:
+                for pending in futures:
+                    pending.cancel()
+                break
             number, built, message = future.result()
             done += 1
             if message:
@@ -4357,7 +4391,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         # a locked page is a failed page: labelled honestly, photographed if a
         # browser is on hand, and never counted as something we dropped
         failed = sorted(set(failed) | locked)
-    if failed and shooter.alive():
+    if failed and shooter.alive() and not ctx.skip_now:
         budget = min(RETRY_BUDGET, SHOT_RETRY_BUDGET)
         JOB.say(f"a browser can photograph what is left ({shooter.base}) — "
                 f"resting {budget:.0f}s for real scans instead of "
@@ -4365,7 +4399,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     for round_number, pause in ((1, 2.0), (2, 8.0), (3, 20.0)):
         if not failed:
             break
-        if not JOB.alive(ctx.gen):
+        if not JOB.alive(ctx.gen) or ctx.skip_now:
             break
         if text_only:
             # a text document has no scan queue to recover: its pages are words
@@ -4446,7 +4480,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     # This is the page that used to say "scan not available". Nothing arrived
     # for it, so there is nothing to draw — but a browser can still see it, and
     # what a browser sees is the page.
-    if failed and shooter.alive():
+    if failed and shooter.alive() and not ctx.skip_now:
         JOB.say(f"photographing {len(failed)} page(s) with a browser "
                 f"({shooter.base}) — a page nobody sent us is still a page "
                 f"somebody can see")
@@ -4636,6 +4670,9 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         with JOB.lock:
             JOB.verdict = "NO PAGES"
             JOB.detail = why
+            if ctx.skip_now:
+                JOB.requeue = True     # nothing arrived, but the queue deserves
+                                       # a second look at this one, later
         for number in sorted(ctx.tried)[:3]:
             JOB.say(f"page {number}: {len(ctx.tried[number])} name(s) tried")
             for line in ctx.trace.get(number, [])[:3]:
@@ -4688,6 +4725,12 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         JOB.say("placeholder pages: " + ", ".join(str(n) for n in failed[:60])
                 + (" …" if len(failed) > 60 else ""))
         JOB.say("why, page by page: downloads/debug/failed-pages.txt")
+    if ctx.skip_now:
+        with JOB.lock:
+            JOB.requeue = True
+        JOB.say("this document goes to the back of the queue for one more pass "
+                "— the finished pages are cached, so the next pass asks only "
+                "for what is missing")
 
     # a small disk fills up quietly; say what was cleaned instead of hiding it
     for line in prune_out(out):
@@ -6839,6 +6882,22 @@ def selftest() -> str:
     for _ in range(40):
         hard.complaint(429)
     assert abs(hard.rate - 8.0) < 0.01, hard.rate
+    # a document that is only refusals yields to a waiting queue; alone, it
+    # fights to the end — there is nothing to yield to
+    stuck = Ctx("https://www.scribd.com/document/7/stuck")
+    stuck.rest_budget = 0.0
+    JOB.queue.append({"url": "https://www.scribd.com/document/9/waiting"})
+    try:
+        for number in (1, 2, 3):
+            stuck.refused(number)
+        assert stuck.skip_now is True, "a waiting queue should free itself"
+    finally:
+        JOB.queue.clear()
+    alone = Ctx("https://www.scribd.com/document/8/alone")
+    alone.rest_budget = 0.0
+    for number in (1, 2, 3):
+        alone.refused(number)
+    assert alone.skip_now is False, "alone, a document keeps fighting"
 
     return ("selftest: every check passed — sheet maths, EXIF rotation, "
             "jpeg size traps, previews and cut transfers, pdf verify, text "
@@ -6850,7 +6909,8 @@ def selftest() -> str:
             "that is not there, the browser found by asking the addresses "
             "written into the file, the picture that was not a page, "
             "the second door, the name that was never asked, "
-            "the lock map in the token, the last line of every page")
+            "the lock map in the token, the last line of every page, "
+            "the queue that skips ahead")
 
 def main(argv: list[str]) -> int:
     global BASE
