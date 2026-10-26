@@ -3905,7 +3905,10 @@ SHOTS = os.environ.get("SCRIBD_SHOTS", "").rstrip("/")
 #   195.123.189.187  this panel's own public address, when the two apps are
 #                    separate Pterodactyl servers on the same machine
 SHOT_HOSTS = ("http://127.0.0.1:8096", "http://localhost:8096",
-              "http://195.123.189.187:8096")
+              "http://195.123.189.187:8096",
+              # the address handed over from the panel, hard-coded as asked:
+              # probed like the rest, one cheap ping, kept out of the way
+              "http://195.123.189.187:25811")
 # The shooter lives in its own egg, in its own container, and a container
 # cannot see the public port Pterodactyl mapped to it — so the panel asks the
 # host once, port by port, and remembers the answer in shooter-found.txt.
