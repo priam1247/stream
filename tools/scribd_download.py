@@ -209,7 +209,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.22"
+VERSION = "2.23"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -1721,6 +1721,38 @@ def looks_blank_scan(page: dict) -> bool:
     if width <= 0 or height <= 0 or size <= 0:
         return False                       # nothing to judge by: keep the picture
     return size / (width * height) < 0.02
+
+
+PLACEHOLDER_SCANS = {
+    # Found named as "the scan" of page 2 and page 3 of two different documents,
+    # byte for byte the same file in all four places: white paper and a thin
+    # border, 25807 bytes of jpeg noise — noise enough to sit just above a blank
+    # test that counts bytes, while carrying no page at all. The words Scribd
+    # serves beside it are the page; the picture is a stand-in.
+    "c5e69118836612a03ad263e3c9e29dfc2bf539fb1a3ea43d1065264a8bcc673b":
+        "Scribd's blank sheet with a border, not a scan of any page",
+}
+
+
+def placeholder_scan(payload: bytes) -> str:
+    """Is this picture Scribd's stand-in rather than a page? -> why, or ''."""
+    if not payload:
+        return ""
+    return PLACEHOLDER_SCANS.get(hashlib.sha256(payload).hexdigest(), "")
+
+
+def repeated_pages(shas: dict[int, str]) -> set[int]:
+    """The pages whose picture is byte for byte another page's picture.
+
+    Two pages of paper never scan to the same file, so a picture that arrives
+    twice inside one document is not a picture of either page — it is the
+    stand-in again, at a size nobody has fingerprinted yet.
+    """
+    seen: dict[str, list[int]] = {}
+    for number, sha in shas.items():
+        seen.setdefault(sha, []).append(number)
+    return {number for numbers in seen.values() if len(numbers) > 1
+            for number in numbers}
 
 
 SHOT_BLANK_ROWS = 12.0
@@ -4041,11 +4073,26 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         # is the empty rectangle Scribd sometimes names instead.
         both = [number for number in range(1, with_limit + 1)
                 if number in text_pages and ctx.sources.images_for(number)]
+        fetched: list[tuple[int, dict, str]] = []
         for number in both[:MAX_COVER_SCANS]:
             if not JOB.alive(ctx.gen):
                 break
             _n, built, _m = ctx.grab(number)
-            if not built:
+            if built:
+                fetched.append(
+                    (number, built,
+                     hashlib.sha256(built.get("payload") or b"").hexdigest()))
+        twice = repeated_pages({number: sha for number, _built, sha in fetched})
+        for number, built, sha in fetched:
+            stand_in = placeholder_scan(built.get("payload") or b"")
+            if stand_in:
+                JOB.say(f"page {number}: the picture named for it is {stand_in} "
+                        f"({built['bytes']} B) — its words are drawn instead")
+                continue
+            if number in twice:
+                JOB.say(f"page {number}: the picture named for it is byte for byte "
+                        f"the same file as another page's — no two pages of paper "
+                        f"scan alike, so its words are drawn instead")
                 continue
             if looks_blank_scan(built):
                 JOB.say(f"page {number}: the picture is an empty {built['width']}x"
@@ -4054,7 +4101,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 continue
             collected[number] = built
         if both:
-            kept_cover = [n for n in both[:MAX_COVER_SCANS] if n in collected]
+            kept_cover = [n for n, _built, _sha in fetched if n in collected]
             JOB.say(f"pictures: {len(kept_cover)} of {len(both[:MAX_COVER_SCANS])} "
                     f"page(s) that name a scan are shown as that scan")
             # a page shown as a scan keeps its words as the invisible text layer,
@@ -4075,6 +4122,15 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             if not JOB.alive(ctx.gen):
                 break
             _n, built, message = ctx.grab(number)
+            stand_in = placeholder_scan(built.get("payload") or b"") if built else ""
+            if stand_in:
+                # a page with no words and only a stand-in picture has no page in
+                # it: a labelled sheet is honest, and a browser may yet photograph
+                # what a person sees
+                JOB.say(f"page {number}: the only picture named for it is "
+                        f"{stand_in} — labelled instead, and a browser can still "
+                        f"photograph the real page")
+                built, message = None, ""
             if built:
                 collected[number] = built
                 if number in failed:
@@ -6351,6 +6407,20 @@ def selftest() -> str:
     assert looks_blank_shot(len(inked), 283) is False, len(inked)
     assert looks_blank_shot(len(sparse), 283) is False, (len(sparse), len(sparse) / 283)
     assert looks_blank_shot(0, 283) is False and looks_blank_shot(len(white), 0) is False
+    # the stand-in: known by its fingerprint, and any picture that arrives twice
+    # inside one document is not a picture of either page
+    assert placeholder_scan(b"") == "" and placeholder_scan(inked) == ""
+    held_scans = dict(PLACEHOLDER_SCANS)
+    try:
+        globals()["PLACEHOLDER_SCANS"] = {
+            hashlib.sha256(white).hexdigest(): "a stand-in, not a scan"}
+        assert placeholder_scan(white) == "a stand-in, not a scan"
+        assert placeholder_scan(inked) == ""
+    finally:
+        globals()["PLACEHOLDER_SCANS"] = held_scans
+    assert repeated_pages({1: "a", 2: "b", 3: "b"}) == {2, 3}
+    assert repeated_pages({1: "a", 2: "b"}) == set()
+    assert repeated_pages({}) == set()
     # a pixel measure would call this page empty at 2x and not at 1x; rows do not
     assert looks_blank_shot(len(sparse), 283) == looks_blank_shot(len(sparse) * 4, 566)
 
@@ -6536,7 +6606,7 @@ def selftest() -> str:
             "page wiring, text pages, built names, viewer pages, "
             "typography, placed lines, photographed pages, a browser "
             "that is not there, the browser found by asking the addresses "
-            "written into the file")
+            "written into the file, the picture that was not a page")
 
 def main(argv: list[str]) -> int:
     global BASE
