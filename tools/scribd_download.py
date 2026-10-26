@@ -198,7 +198,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.17"
+VERSION = "2.18"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -2484,8 +2484,11 @@ class Ctx:
         second page's descriptor answers this in one request, before 38 page
         ladders are wasted on images that do not exist.
         """
-        if len(self.sources.images_for(2)) > 0:
-            return False
+        # A page may name both a low-quality/empty scan and its native text.
+        # Treat useful text as authoritative even when an image URL exists: the
+        # image may be a black placeholder, while the text is what the viewer
+        # actually lays out. The download path then prefers text per page and
+        # falls back to a scan only for pages whose text is unavailable.
         words = self.page_text(2)
         return len(words.strip()) > 120
 
@@ -3064,24 +3067,31 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 if done % 10 == 0 or done == with_limit:
                     JOB.say(f"… {done}/{with_limit} pages, "
                             f"{len(text_pages)} with words")
-        # a text page can still carry a scan (page 1 of many such documents),
-        # but only ask where the page actually names an image: 37 requests for
-        # images that do not exist would only be refused 37 times
-        with_scan = [number for number in sorted(text_pages)
-                     if ctx.sources.images_for(number)]
-        if with_scan:
-            JOB.say(f"scan: {len(with_scan)} page(s) also name a picture "
-                    f"({', '.join(str(n) for n in with_scan[:8])}"
-                    f"{' …' if len(with_scan) > 8 else ''}) — fetching those too")
-        for number in with_scan:
+        # Prefer native page text over a named picture. Scribd sometimes names
+        # a black/empty placeholder image alongside usable text; using that
+        # image made a structurally valid but visually blank PDF. Only fall
+        # back to scans for pages whose text request returned nothing.
+        need_scan = [number for number in range(1, with_limit + 1)
+                     if number not in text_pages]
+        if need_scan:
+            JOB.say(f"scan fallback: {len(need_scan)} page(s) have no usable text")
+        still_missing: list[int] = []
+        for number in need_scan:
             if not JOB.alive(ctx.gen):
                 break
-            _n, built, _m = ctx.grab(number)
+            _n, built, message = ctx.grab(number)
             if built:
                 collected[number] = built
+                if number in failed:
+                    failed.remove(number)
+            else:
+                still_missing.append(number)
+                if message:
+                    JOB.say(message)
+        failed = still_missing
         JOB.say(f"text: {len(text_pages)} of {with_limit} page(s) have words"
-                + (f", {len(collected)} also have a scan" if collected else ""))
-        JOB.set_progress(ok=len(text_pages), skipped=len(failed))
+                + (f", {len(collected)} scan fallback(s)" if collected else ""))
+        JOB.set_progress(ok=len(text_pages) + len(collected), skipped=len(failed))
 
     with ThreadPoolExecutor(max_workers=ctx.jobs) as pool:
         # not one scan request when the document is text: the old code queued

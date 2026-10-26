@@ -43,7 +43,7 @@ something nobody asked.
    printed, and only `scribd.com` / `scribdassets.com` cookies are ever sent —
    the rest of a browser export stays out of the request.
 3. Start it: `PY_FILE=scribd_download.py`, restart.
-4. Open the server address. The line under the title must read **v2.17**.
+4. Open the server address. The line under the title must read **v2.18**.
 
 ## 2. Find links: five ways
 
@@ -276,15 +276,17 @@ Until v2.17 the panel only asked for images, so those pages came out as grey
 `page 4 - scan not available` boxes while the same book read perfectly in a
 browser — a 38-page document became one real page and 37 empty ones.
 
-What the panel does now:
+What the panel does now (v2.18 makes this text-first to avoid blank scan PDFs):
 
 - **It looks first, then downloads.** One descriptor request for page 2 answers
-  "is this a document of words or of page scans?" — the words settle it before a
-  single page ladder is spent on images that do not exist.
+  "is this a document of words or of page scans?" — useful native text takes
+  priority even if Scribd also advertises an image URL. Some such images are
+  blank/placeholder renders. The PDF uses the readable words for those pages,
+  and only fetches scan images for pages whose text is unavailable.
 - **A text page is drawn as a page.** Its words go on the sheet in Helvetica,
   wrapped to the width, with the font stepping down (10.5 → 5.5 pt) until the
-  whole page fits. Every sheet is A4 unless page 1 (or another page) has a scan,
-  in which case the book keeps the scans' size.
+  whole page fits. Text-only sheets are A4; scan fallback sheets use the scan's
+  dimensions.
 - **A refused page still gets its words.** On a scan document, any page that
   fails three retry rounds is asked for its words before it is given up on. If
   it has them, the page is drawn — `page 9: no scan (it is text in this document)
@@ -299,6 +301,38 @@ What the panel does now:
 
 Nothing about this needs a new dependency, and it costs one request per page —
 the same order of traffic as the scans it replaces.
+
+## Browser-render fallback and screenshot recovery
+
+I checked current community approaches. The strongest browser-side option I found
+is [Scribd Preview to PDF](https://github.com/ergs0204/scribd-pdf-downloader), an
+MIT-licensed Chrome/Edge Manifest V3 extension (release 1.4.8). It runs locally
+in the user's desktop browser session, reads Scribd's page manifest, reconstructs
+page images/sprites at their document dimensions, and preserves Scribd's supplied
+text layer when possible. This is generally better than taking screen-sized
+screenshots: it avoids browser chrome, keeps page geometry, and can produce
+selectable text without OCR. It only works for pages the active Scribd session is
+authorized to view; this repository has not bundled or independently validated
+the extension against a particular document. Chrome on Android does not support
+standard Chrome extensions, so this route needs desktop Chrome or Edge.
+
+A literal screenshot workflow is a last resort when a page renders correctly in
+the browser but the downloader misses its source. Capture **one complete page per
+image** at the largest available resolution, without the browser controls, name
+files in page order (`page-001.png`, `page-002.png`, …), then compile and verify:
+
+```bash
+python tools/screenshots_to_pdf.py ./page-shots --out ./recovered.pdf
+# or pass files explicitly in the right order:
+python tools/screenshots_to_pdf.py page-001.png page-002.jpg --out ./recovered.pdf
+```
+
+The compiler natural-sorts directory names, preserves JPEG data without
+recompression, keeps each page's aspect ratio, and refuses to write a PDF if any
+input is unreadable. It cannot restore content that is already blank in the
+screenshot, infer omitted pages, or upscale a low-resolution phone capture into
+new detail. For a long book, use the browser-render extension rather than
+manually capturing hundreds of phone screens.
 
 ## Testing without the network
 
@@ -317,12 +351,15 @@ that is the shape that used to produce grey sheets:
 ```
 MOCK_PAGES=38 MOCK_TEXT_DOC=1 python3 tools/_mock_scribd.py 8912   # page 1 scan, 37 text pages
 MOCK_PAGES=38 MOCK_TEXT_DOC=2 python3 tools/_mock_scribd.py 8913   # only page 1 is named at all
+MOCK_PAGES=5 MOCK_TEXT_DOC=3 python3 tools/_mock_scribd.py 8914    # every page names both words and an image
 python3 tools/scribd_download.py --base http://127.0.0.1:8912 --out /tmp/t1 \
     --url https://www.scribd.com/document/681599722/NTHONDO
 ```
 
 Expect `38 sheet(s) … 37 page(s) from the document's text · 38 of 38 page(s)
-real`, `--verify` clean, and no request for the 37 images that do not exist.
+real`, `--verify` clean, and no request for the 37 images that do not exist. With
+`MOCK_TEXT_DOC=3`, expect 5 text pages, 0 image streams, and no attempts to use
+the image URLs: this covers Scribd naming both text and a blank-looking image.
 
 `--selftest` covers the rest offline: sheet maths, all four EXIF rotations, JPEG
 header traps, previews and cut transfers, PDF verification, the text layer (including brackets, backslashes
@@ -467,9 +504,10 @@ history: on a 10 GB plan lower `SCRIBD_KEEP_FILES` to about 20.
 
 ## Limits, stated plainly
 
-- **A page whose words exist is never a placeholder (v2.17).** If Scribd refuses
-  the image but serves the page's descriptor, the page is drawn as text. The log
-  says `no scan (it is text in this document) — wrote its words instead`.
+- **Readable native text takes priority over a named scan (v2.18).** Scribd can
+  expose both page words and an empty/black image URL. The PDF now draws the real
+  text instead, and only falls back to a scan when a page has no usable words.
+  On scan-only documents, pages with words still rescue otherwise missing scans.
 - **Nothing that arrives is thrown away any more (v2.16).** A small scan, a
   thumbnail, a double-page spread, a page whose shape is nothing like a book page
   — all of it goes into the PDF and is scaled to the sheet. Only a picture under
