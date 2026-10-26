@@ -28,7 +28,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "1.8";
+const VERSION = "1.9";
 // The port to listen on. A host like this one hands its container the public
 // port it assigned in SERVER_PORT — PORT on some boxes — and there is no
 // translation behind it: whatever this listens on IS the port the world
@@ -846,7 +846,13 @@ export function checkPageRun(rects, want = 0, tall = 0) {
                     `that is not the gap between two pages`);
     }
   }
-  if (pitch - height > 400) {
+  // A uniform column can leave more than 400px between two pages: the live
+  // capture has an ad portal between every pair of them, and a portal is as tall
+  // as the ad inside it. What makes a gap a page's gap is that the column repeats
+  // it, so a step the column repeats is allowed two fifths of a page of room, and
+  // a step nobody repeats is still held to 400px.
+  const gapRoom = repeated.length ? Math.max(400, height * 0.4) : 400;
+  if (pitch - height > gapRoom) {
     return refuse(`the column's own step leaves a ${Math.round(pitch - height)}px ` +
                   `hole — that is not the gap between two pages`);
   }
@@ -2056,6 +2062,21 @@ export function selftest() {
   // for a day, would have thrown away all 389 pages of the capture above
   assert(!/windowArea|0\.97/.test(JS_PAGE_RECTS),
     "the measure went back to comparing a page with the window");
+
+  // the live viewer puts an ad portal between every pair of pages, and a portal
+  // is as tall as the ad in it: a column that repeats its own step is believed
+  // with two fifths of a page between blocks, and a step nobody repeats is not
+  const portaled = [];
+  for (let index = 0; index < 4; index++) {
+    portaled.push({ x: 0, y: index * (LIVE.height + 700), width: LIVE.width,
+                    height: LIVE.height });
+  }
+  const withPortal = checkPageRun(portaled, 4, 4 * (LIVE.height + 700));
+  assert(withPortal.ok && withPortal.pitch === LIVE.height + 700, withPortal.note);
+  assert(checkPageRun([{ x: 0, y: 0, width: LIVE.width, height: LIVE.height },
+                       { x: 0, y: 6000, width: LIVE.width,
+                         height: LIVE.height }], 2, 8000).ok === false,
+    "a step nobody repeats, with a canyon for a gap, is still refused");
 
   // a screen with nothing page-shaped on it says so, and says what it did see
   const empty = viewer([{ tag: "div", x: 0, y: 0, width: 1000, height: 300 }]);
