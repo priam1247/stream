@@ -5,7 +5,8 @@
  *     @sparticuz/chromium, puppeteer-core
  *
  * Run:
- *     node index.js                       # a small page on http://0.0.0.0:8096/
+ *     node index.js                       # a small page on the port this
+ *                                         # server was assigned, else :8096
  *     node index.js --selftest            # offline check, no network
  *     node index.js "physics 12th"        # search in the terminal, print links
  *     node index.js "physics 12th" --pick 1,3 --panel http://IP:25811
@@ -27,8 +28,22 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "1.3";
-const PORT = Number(process.env.PORT || 8096);
+const VERSION = "1.4";
+// The port to listen on. A host like this one hands its container the public
+// port it assigned in SERVER_PORT — PORT on some boxes — and there is no
+// translation behind it: whatever this listens on IS the port the world
+// reaches. Listening on a number of our own is what left the assigned endpoint
+// with nothing behind it, so the panel's requests went nowhere and every page
+// came back as words. 8096 stays the fallback for a box that assigns nothing,
+// and for the copy the panel starts beside itself — there, the assigned port is
+// the panel's own door and already taken, and 8096 is the door it asks.
+export const FALLBACK_PORT = 8096;
+export function listenPort(env = process.env) {
+  const assigned = Number(env.SERVER_PORT || env.PORT || 0);
+  return Number.isFinite(assigned) && assigned > 0 ? assigned : FALLBACK_PORT;
+}
+const ASSIGNED_PORT = listenPort();
+const PORT = ASSIGNED_PORT;
 // The download panel this box sends links to, written down rather than wired:
 // SCRIBD_PANEL still wins when it is set, and the page still lets you type a
 // different one — but a fresh restart now works with nothing configured.
@@ -1325,6 +1340,15 @@ export function serve(port = PORT) {
     }
   });
   server.on("error", (exc) => {
+    if (exc && exc.code === "EADDRINUSE" && port !== FALLBACK_PORT) {
+      // started beside the panel, in the panel's own container: the port the
+      // host assigned is the panel's door, and two listeners cannot share one.
+      // Take the local door instead — it is the one the panel asks first.
+      console.error(`port ${port} is already in use — that is the panel's own ` +
+                    `door, so this copy takes ${FALLBACK_PORT} instead`);
+      setTimeout(() => serve(FALLBACK_PORT), 25);
+      return;
+    }
     if (exc && exc.code === "EADDRINUSE") {
       console.error(`port ${port} is already in use — stop the other copy, or ` +
                     `start this one with PORT=8097 node index.js`);
@@ -1337,7 +1361,14 @@ export function serve(port = PORT) {
     console.log(`open http://0.0.0.0:${port}/ — search, tick, send to the panel`);
     console.log(`  troy-search ${VERSION} · /shot?doc=ID&page=N photographs a page ` +
                 `the download panel could not build`);
-    console.log(`  point the panel here:  SCRIBD_SHOTS=http://THIS_HOST:${port}`);
+    console.log(`  listening on ${port}: ` +
+      (port === ASSIGNED_PORT && ASSIGNED_PORT !== FALLBACK_PORT
+        ? `the port this server was assigned (SERVER_PORT) — a host does not ` +
+          `translate behind it, so this service is reached from anywhere at ` +
+          `http://<this server's address>:${port}, the address written into the panel`
+        : `the local door the panel asks when the two run together`));
+    console.log(`  nothing to wire: the panel finds this service on its own, and ` +
+                `asks this host's ports once if the address it has ever moves`);
     console.log(`  prove the browser:     /shot/ping?launch=1`);
     console.log(`  links go to the panel: ${PANEL}` +
                 (process.env.SCRIBD_PANEL ? " (SCRIBD_PANEL)" : " (written into index.js)"));
@@ -1541,7 +1572,19 @@ export function selftest() {
   assert(pickClip([{ x: 0, y: 0, width: 800, height: 1000 }], { width: 0, height: 0 })
     === null, "no window, no answer");
 
-  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests";
+  // the port the host assigned is the port to listen on, because nothing
+  // translates behind it: our own number there is an endpoint with no service
+  assert(listenPort({ SERVER_PORT: "45009" }) === 45009, "the assigned port wins");
+  assert(listenPort({ SERVER_PORT: "45009", PORT: "8097" }) === 45009,
+    "SERVER_PORT is the host's word, PORT is ours");
+  assert(listenPort({ PORT: "8097" }) === 8097, "PORT still works where it is the word");
+  assert(listenPort({}) === FALLBACK_PORT, "a box that assigns nothing gets 8096");
+  assert(listenPort({ SERVER_PORT: "nonsense" }) === FALLBACK_PORT,
+    "a word that is not a number is not a port");
+  assert(listenPort({ SERVER_PORT: "0" }) === FALLBACK_PORT, "port 0 is not a door");
+  assert(PORT === listenPort(), "this copy listens where the host said");
+
+  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned";
 }
 
 // ---------------------------------------------------------------------------

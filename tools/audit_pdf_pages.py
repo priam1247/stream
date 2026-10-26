@@ -4,13 +4,14 @@
 
 Usage:  python3 tools/audit_pdf_pages.py <file-or-directory> ...
 
-A page is flagged when it carries placeholder wording, when a real page is
-missing from the sheet sequence, or when one image dominates the whole book
-(the same picture pasted everywhere). A clean book exits 0; any finding exits
-1, so this can stand at the end of any test or any download folder.
+A page is flagged when it carries placeholder wording, when a sheet carries
+neither a picture nor any words, when a real page is missing from the sheet
+sequence, or when one image dominates the whole book (the same picture pasted
+everywhere). A clean book exits 0; any finding exits 1, so this can stand at
+the end of any test or any download folder.
 
-No dependencies. Pillow is used for a pixel check when it happens to be
-installed; without it the structural and text checks still run.
+No dependencies. Pillow is used for the ink measure --compare prints when it
+happens to be installed; without it the structural and text checks still run.
 """
 import os
 import re
@@ -52,6 +53,12 @@ def audit(path):
 
     text = []
     for chunk in decode_streams(data):
+        # A photographed page carries megabytes of pixels, and a lazy regex over
+        # all of them takes longer than building the book did. Only a content
+        # stream can hold the words a sheet draws, and one is a few kilobytes —
+        # so the pixel streams are skipped, not read and searched.
+        if len(chunk) > 262144 or (b"Tj" not in chunk and b"TJ" not in chunk):
+            continue
         try:
             text.append(chunk.decode("latin-1", "replace"))
         except Exception:
@@ -70,8 +77,14 @@ def audit(path):
     if hits:
         findings.append("PLACEHOLDER WORDS: " + " | ".join(sorted(hits)[:5]))
 
-    images = re.findall(rb"/Subtype\s*/Image[^>]*?>>\s*stream\r?\n(.*?)endstream",
-                        data, re.S)
+    # Parsed as objects, not matched with one regex: an image dictionary carries
+    # a nested /DecodeParms << … >>, and a pattern that stops at the first ">>"
+    # finds no images at all in a PDF this engine writes — which quietly disarmed
+    # the very check below, the one that catches a stub picture pasted on every
+    # page of a book.
+    objs = parse_objects(data)
+    images = [body for head, body in objs.values()
+              if b"/Subtype" in head and b"/Image" in head and body]
     if images:
         sizes = [len(i) for i in images]
         biggest = max(sizes)
@@ -82,6 +95,32 @@ def audit(path):
         if same >= 3 and same >= len(sizes) * 0.6 and biggest < 2048:
             findings.append(f"UNIFORM TINY IMAGE x{same} of {len(sizes)} "
                             f"({biggest} B — one stub picture everywhere)")
+
+    # A sheet with no picture on it and no words drawn on it is a blank page —
+    # the one thing that must never reach a finished book. Read off the page's
+    # own content stream, so it costs no pixels and still holds on a 400-page
+    # book: a picture is an XObject Do, and words are a Tj or a TJ.
+    kids = re.search(rb"/Kids\s*\[(.*?)\]", data, re.S)
+    blanks = []
+    if kids:
+        numbers = [int(x) for x in re.findall(rb"(\d+)\s+0\s+R", kids.group(1))]
+        for index, number in enumerate(numbers, 1):
+            head, _body = objs.get(number, (b"", b""))
+            mcon = re.search(rb"/Contents\s+(\d+)\s+0\s+R", head)
+            content = objs[int(mcon.group(1))][1] \
+                if mcon and int(mcon.group(1)) in objs else b""
+            try:
+                content = zlib.decompress(content)
+            except zlib.error:
+                pass
+            if b" Do" not in content and b"Tj" not in content \
+                    and b"TJ" not in content:
+                blanks.append(index)
+    if blanks:
+        shown = ", ".join(str(n) for n in blanks[:8])
+        findings.append(f"BLANK SHEET: page(s) {shown}"
+                        + (f" and {len(blanks) - 8} more" if len(blanks) > 8 else "")
+                        + " carry no picture and no words")
 
     return findings, pages, len(images)
 
@@ -158,30 +197,66 @@ def page_rows(path):
             w = int(mw.group(1)) if mw else 0
             h = int(mh.group(1)) if mh else 0
             nb = len(ibody)
-            ink = pixel_ink(ibody, w, h)
+            mc = re.search(rb"/Colors\s+(\d+)", idict)
+            colors = int(mc.group(1)) if mc else (1 if b"/DeviceGray" in idict else 3)
+            mp = re.search(rb"/Indexed\s*/DeviceRGB\s+\d+\s*<([0-9A-Fa-f\s]+)>",
+                           idict)
+            palette = b""
+            if mp:
+                try:
+                    palette = bytes.fromhex(re.sub(rb"\s+", b"", mp.group(1)).decode())
+                except ValueError:
+                    palette = b""
+            ink = pixel_ink(ibody, w, h, colors=colors, palette=palette,
+                            predictor=b"/Predictor" in idict)
         rows.append({"page": i, "kind": kind, "w": w, "h": h,
                      "bytes": nb, "strings": strings, "ink": ink})
     return rows
 
 
-def pixel_ink(body, w, h):
+def pixel_ink(body, w, h, colors=3, palette=b"", predictor=False):
     """Share of pixels darker than near-white, if Pillow is installed."""
     try:
         import io
+        import struct
         from PIL import Image
         if body[:2] == b"\xff\xd8":
             im = Image.open(io.BytesIO(body)).convert("L")
+        elif predictor and w and h:
+            # /Predictor 15 rows are PNG scanlines, filter byte and all, so they
+            # go back inside a PNG and Pillow undoes the filters. Guessing a
+            # stride instead reads a real page as noise — and an ink measure
+            # that is always None is a grey page nobody would ever catch.
+            def chunk(tag, payload):
+                return (struct.pack(">I", len(payload)) + tag + payload +
+                        struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+
+            # IDAT holds a zlib stream of the filtered rows, which is exactly
+            # what a PDF /FlateDecode stream already is — so the body goes in as
+            # it came, and only a stream that is not zlib gets compressed here.
+            try:
+                zlib.decompress(body)
+                idat = body
+            except zlib.error:
+                idat = zlib.compress(body)
+            head = struct.pack(">IIBBBBB", w, h, 8,
+                               3 if palette else (2 if colors == 3 else 0), 0, 0, 0)
+            png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", head) +
+                   (chunk(b"PLTE", palette) if palette else b"") +
+                   chunk(b"IDAT", idat) + chunk(b"IEND", b""))
+            im = Image.open(io.BytesIO(png)).convert("L")
         else:
             raw = zlib.decompress(body)
-            stride = w * 3 + 1
+            stride = w * colors + 1
             if len(raw) == stride * h:
                 raw = b"".join(raw[r * stride + 1:(r + 1) * stride]
                                for r in range(h))
-            im = Image.frombytes("RGB", (w, h), raw[:w * h * 3]).convert("L")
-        px = im.get_flattened_data() if hasattr(im, "get_flattened_data") \
-            else im.getdata()
-        vals = list(px)
-        return sum(1 for v in vals if v < 200) / max(1, len(vals))
+            im = Image.frombytes("RGB" if colors == 3 else "L", (w, h),
+                                 raw[:w * h * colors]).convert("L")
+        # the histogram is the same count without walking every pixel in
+        # Python: a photographed sheet is millions of them
+        hist = im.histogram()
+        return sum(hist[:200]) / max(1, sum(hist))
     except Exception:
         return None
 
