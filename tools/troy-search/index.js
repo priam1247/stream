@@ -28,7 +28,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "1.6";
+const VERSION = "1.7";
 // The port to listen on. A host like this one hands its container the public
 // port it assigned in SERVER_PORT — PORT on some boxes — and there is no
 // translation behind it: whatever this listens on IS the port the world
@@ -718,12 +718,17 @@ export function scrollUrl(doc) {
  *
  * Nothing here knows Scribd's class names, because the viewer changes its
  * clothes and a selector that stops matching photographs nothing at all — which
- * is what "only 0 page block(s) found" was, on every book. A page is MEASURED,
- * with the same shape the single-page route has proved on the live viewer: a box
- * 1.1 to 1.8 times as tall as it is wide, at least 40% of the window wide and
- * 20% of it tall, and smaller than the window itself. Furniture pinned to the
- * window is left out, because it is measured again at every scroll and would
- * otherwise look like a column of pages.
+ * is what "only 0 page block(s) found" was, on every book. A page is MEASURED: a
+ * box 1.1 to 1.8 times as tall as it is wide, at least 40% of the window wide and
+ * 20% of it tall. Furniture pinned to the window is left out, because it is
+ * measured again at every scroll and would otherwise look like a column of pages.
+ *
+ * A box is never compared with the SIZE OF THE WINDOW. Measured from a live
+ * capture of document 776457435 (389 pages, 2026-10-26): every page block is
+ * 1499x1940 — 1.29 times as tall as wide, and 1.94 times the AREA of a
+ * 1000x1500 window. "Smaller than the window" is a preference that belongs to
+ * picking one page out of a screenful (pickClip, which can fall back); as a
+ * condition of measuring it throws away every page of a real book.
  *
  * The window's scroll is added so the boxes are in document pixels: this runs at
  * every window of the scroll, and a viewer that keeps only the pages near the
@@ -734,7 +739,6 @@ const JS_PAGE_RECTS = `() => {
   const view = { width: window.innerWidth || 0, height: window.innerHeight || 0 };
   if (!(view.width > 0) || !(view.height > 0)) return { boxes: [], seen: 0 };
   const sx = window.scrollX || 0, sy = window.scrollY || 0;
-  const windowArea = view.width * view.height;
   const seen = [];
   const tags = 'img, canvas, div, section, article, main, li, figure';
   for (const el of document.querySelectorAll(tags)) {
@@ -743,10 +747,11 @@ const JS_PAGE_RECTS = `() => {
     if (!(r.width >= view.width * 0.4) || !(r.height >= view.height * 0.2)) continue;
     const tall = r.height / r.width;
     if (!(tall >= 1.1) || !(tall <= 1.8)) continue;
-    if (r.width * r.height >= windowArea * 0.97) continue;
     const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
     if (style && (style.position === 'fixed' || style.position === 'sticky')) continue;
-    seen.push({ x: r.x + sx, y: r.y + sy, width: r.width, height: r.height });
+    // whole pixels, so the same block met at two windows is the same box
+    seen.push({ x: Math.round(r.x + sx), y: Math.round(r.y + sy),
+                width: Math.round(r.width), height: Math.round(r.height) });
   }
   // one page met twice — the page block and the picture filling it exactly — is
   // one box, not two, and neither of them is a wrapper around the other
@@ -913,8 +918,11 @@ export function pickPageColumn(boxes, want = 0, tall = 0) {
     .filter((b) => b && b.width > 0 && b.height > 0);
   const uniq = [];
   for (const b of all) {
-    if (!uniq.some((u) => Math.abs(u.x - b.x) <= 1 && Math.abs(u.y - b.y) <= 1 &&
-        Math.abs(u.width - b.width) <= 1 && Math.abs(u.height - b.height) <= 1))
+    // four pixels, not one: a block measured at two windows can land a pixel
+    // either side of a rounding, and two boxes one pixel apart would read as two
+    // pages in the same slot and lose the whole column
+    if (!uniq.some((u) => Math.abs(u.x - b.x) <= 4 && Math.abs(u.y - b.y) <= 4 &&
+        Math.abs(u.width - b.width) <= 4 && Math.abs(u.height - b.height) <= 4))
       uniq.push(b);
   }
   const groups = [];
@@ -1041,12 +1049,22 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
     const started = Date.now();
     const deadline = started + Math.max(SHOT_BOOK_MS * 8, 60000);
     const gathered = [];
+    const met = new Set();
     let last = -1, stable = 0, y = 0, rounds = 0, tall = 0, sawSeen = 0, windows = 0;
     const measure = async () => {
       const found = await tab.evaluate(JS_PAGE_RECTS).catch(() => null);
       windows += 1;
       if (found && Array.isArray(found.boxes)) {
-        gathered.push(...found.boxes);
+        // every block of the column is in the document from the first moment —
+        // 389 shells for a 389-page book — so the same block is met at every
+        // window, and twenty-six windows of 389 boxes would be ten thousand boxes
+        // to judge. One box per page is kept.
+        for (const box of found.boxes) {
+          const key = box.x + "," + box.y + "," + box.width + "," + box.height;
+          if (met.has(key)) continue;
+          met.add(key);
+          gathered.push(box);
+        }
         sawSeen = Math.max(sawSeen, found.seen || 0);
       }
       return found;
@@ -1066,8 +1084,10 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
       } else {
         stable = 0; last = h; y += SHOT_HEIGHT;
       }
-      // a full column already in hand is worth more scrolling than a book is
-      if (want > 0 && rounds % 3 === 0 &&
+      // a full column already in hand is worth more scrolling than a book is,
+      // and the pages are cut one window at a time behind this, so there is
+      // nothing to gain from scrolling a 389-page column end to end first
+      if (want > 0 && gathered.length >= want &&
           pickPageColumn(gathered, want, tall).rects.length >= want) break;
     }
     const spent = Date.now() - started;
@@ -1097,7 +1117,12 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
     const clipH = Math.round(run.height);   // every clip the same height
     const wantW = Math.max(1, Math.round(run.width * ratio));
     const wantH = Math.max(1, Math.round(clipH * ratio));
-    const cutSettle = Math.max(80, Math.min(300, settle / 2));
+    // A page is cut while it is in the window, and the viewer fills a block as
+    // it is scrolled to — 46 of 389 blocks carried content at load in the live
+    // capture, and the ones near the window are the ones filled. So the pause
+    // here is the full settle, not half of one: it is the difference between a
+    // page drawn and a page asked for again.
+    const cutSettle = Math.max(150, Math.min(600, settle));
     let at = -1;
     for (let i = 0; i < rects.length; i++) {
       const number = run.slots[i] + 1;
@@ -1156,19 +1181,40 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
         notes.push(`page ${number}: kept at ${size.width}x${size.height} ` +
                    `though the column is ${wantW}x${wantH}`);
       }
+      // An empty sheet is the one thing this must never hand back. In the live
+      // capture only 46 of 389 page blocks carried any content at load: the rest
+      // are shells the viewer fills as they are scrolled to. So an empty clip is
+      // asked for again with the pictures forced eager — and a page that stays
+      // empty is left out and named, for the panel to photograph on its own. If
+      // the page is empty in the document itself, that route says so honestly and
+      // the book gets what the book has; what it never gets is a page this pass
+      // cut too early.
+      let blank = blankShot(png);
+      for (let tries = 0; blank && tries < 3; tries++) {
+        notes.push(`page ${number}: the clip looks empty — the viewer is asked ` +
+                   `to draw it again`);
+        await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
+        await sleep(400 * (tries + 1));
+        png = await take();
+        size = pngSize(png);
+        blank = blankShot(png);
+      }
+      if (blank) {
+        missed.push(number);
+        notes.push(`page ${number}: still an empty sheet — left for a photograph ` +
+                   `of its own`);
+        continue;
+      }
       pages.push({ page: number, png, width: size.width, height: size.height,
-                   unstable, blank: blankShot(png),
+                   unstable, blank: false,
                    padded: i === rects.length - 1 && run.pad > 0 });
       if (unstable) {
         notes.push(`page ${number}: still moving between captures — kept the last one`);
       }
-      if (blankShot(png)) {
-        notes.push(`page ${number}: the clip looks empty — kept, an empty page ` +
-                   `is still that page`);
-      }
     }
     for (const number of run.missing) missed.push(number);
-    const left = [...new Set(missed)].sort((a, b) => a - b);
+    const left = [...new Set(missed)].sort((a, b) => a - b)
+      .filter((number) => !pages.some((page) => page.page === number));
     if (!pages.length) {
       return { pages: [], run, missed: left,
                note: `the column was measured but not one page could be cut — ${saw}` };
@@ -1914,6 +1960,87 @@ export function selftest() {
     throughNoise.note);
   assert(throughNoise.run.slots.join(",") === "0,1,2,3,4,5",
     throughNoise.run.slots.join(","));
+  // ---- the live viewer, as captured --------------------------------------
+  // Document 776457435, captured on 2026-10-26, 389 pages. Every page block is
+  // 1499x1940 — 1.29 times as tall as wide, and 1.94 times the AREA of this
+  // service's own 1000x1500 window. Each filled block holds a .newpage of
+  // 902x1167 transformed by scale(1.66186) into exactly the block's rectangle, a
+  // highlighter canvas of that rectangle again and a text layer over it, so one
+  // page is met as four boxes at the same place; eight thin border strips and
+  // 176x171 inline pictures come with it, and an ad portal sits between two
+  // pages. Only the first 46 blocks carried any content at load — the other 343
+  // are empty shells the viewer fills as they are scrolled to. The portal's own
+  // height is modelled (60px): what the capture proves is that a gap is there,
+  // once between each pair of pages, the same every time.
+  const LIVE = { width: 1499, height: 1940, pages: 389, gap: 60, top: 120,
+                 filled: 46 };
+  const liveColumn = () => {
+    const pitch = LIVE.height + LIVE.gap;
+    const tall = LIVE.top + LIVE.pages * LIVE.height + (LIVE.pages - 1) * LIVE.gap;
+    const items = [
+      { tag: "main", x: 0, y: 0, width: LIVE.width, height: tall },
+      { tag: "div", x: 0, y: 0, width: LIVE.width, height: tall },
+      { tag: "div", x: 0, y: LIVE.top - 100, width: LIVE.width, height: 90 },
+    ];
+    for (let index = 0; index < LIVE.pages; index++) {
+      const top = LIVE.top + index * pitch;
+      items.push({ tag: "div", x: 0, y: top, width: LIVE.width,
+                   height: LIVE.height });              // the page block
+      items.push({ tag: "div", x: 0, y: top, width: LIVE.width, height: 12 });
+      items.push({ tag: "div", x: 0, y: top + LIVE.height - 12,
+                   width: LIVE.width, height: 12 });
+      items.push({ tag: "div", x: 0, y: top, width: 12, height: LIVE.height });
+      items.push({ tag: "div", x: LIVE.width - 12, y: top, width: 12,
+                   height: LIVE.height });              // its border strips
+      items.push({ tag: "div", x: 0, y: top + LIVE.height, width: LIVE.width,
+                   height: LIVE.gap });                 // the portal between pages
+      if (index < LIVE.filled) {
+        items.push({ tag: "div", x: 0, y: top, width: LIVE.width,
+                     height: LIVE.height });            // .newpage, transformed
+        items.push({ tag: "canvas", x: 0, y: top, width: LIVE.width,
+                     height: LIVE.height });            // the highlighter canvas
+        items.push({ tag: "div", x: 0, y: top, width: LIVE.width,
+                     height: LIVE.height });            // the text layer
+        items.push({ tag: "img", x: 362, y: top + 497, width: 176,
+                     height: 171 });                    // an inline picture
+      }
+    }
+    return { items, tall, pitch };
+  };
+  const live = liveColumn();
+  const liveSeen = viewer(live.items);
+  assert(liveSeen.boxes.length === LIVE.pages,
+    `the live column of ${LIVE.pages} page blocks measures as ` +
+    `${liveSeen.boxes.length}`);
+  assert(liveSeen.boxes.every((box) => box.width === LIVE.width &&
+                                      box.height === LIVE.height),
+    "every page of the live column is measured at the page's own size");
+  assert(liveSeen.boxes.every((box) => box.width * box.height > 1000 * 1500),
+    "a real page is bigger than the window, and is still a page");
+  assert(liveSeen.seen >= LIVE.pages + LIVE.filled * 3,
+    `one page met as four boxes was not counted: ${liveSeen.seen} seen, ` +
+    `${liveSeen.boxes.length} kept`);
+  // a shell the viewer has not filled yet is still that page's own block: this is
+  // what lets a 389-page book be cut at all, and why a page is cut while it is in
+  // the window rather than from one measure of the whole column
+  const shell = liveSeen.boxes[200];
+  assert(shell && shell.y === LIVE.top + 200 * live.pitch,
+    `an unfilled block is not a missing page: ${JSON.stringify(shell)}`);
+  const livePicked = pickPageColumn(liveSeen.boxes, LIVE.pages, live.tall);
+  assert(livePicked.run && livePicked.run.ok, livePicked.note);
+  assert(livePicked.rects.length === LIVE.pages, String(livePicked.rects.length));
+  assert(livePicked.run.pitch === live.pitch, `the live step: ${livePicked.run.pitch}`);
+  assert(livePicked.run.width === LIVE.width && livePicked.run.height === LIVE.height,
+    livePicked.note);
+  assert(livePicked.run.missing.length === 0,
+    livePicked.run.missing.slice(0, 8).join(","));
+  assert(livePicked.run.slots[LIVE.pages - 1] === LIVE.pages - 1,
+    `page ${LIVE.pages} is numbered ${livePicked.run.slots[LIVE.pages - 1] + 1}`);
+  // a page is never judged against the size of the window: that condition, shipped
+  // for a day, would have thrown away all 389 pages of the capture above
+  assert(!/windowArea|0\.97/.test(JS_PAGE_RECTS),
+    "the measure went back to comparing a page with the window");
+
   // a screen with nothing page-shaped on it says so, and says what it did see
   const empty = viewer([{ tag: "div", x: 0, y: 0, width: 1000, height: 300 }]);
   assert(empty.boxes.length === 0, "a banner is not a page");
