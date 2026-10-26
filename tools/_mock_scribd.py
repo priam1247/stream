@@ -46,6 +46,13 @@ VIEWER_WINDOW = int(os.environ.get("MOCK_VIEWER_WINDOW", "0"))
 # MOCK_VIEWER_EMPTY=1: the viewer page is a JavaScript shell with no text in the
 # HTML at all, so there is nothing to read and nothing may be invented.
 VIEWER_EMPTY = os.environ.get("MOCK_VIEWER_EMPTY", "") == "1"
+# MOCK_WORDLESS_PAGES="2,3": those pages have a picture but no words in the
+# viewer — the shape a scanned book has when the OCR only read some of it. It
+# is what makes a document part-rescuable: some pages can be written from
+# their text and the rest are genuinely missing.
+WORDLESS_PAGES = {int(part) for part in
+                  os.environ.get("MOCK_WORDLESS_PAGES", "").replace(" ", "").split(",")
+                  if part.isdigit()}
 # MOCK_DELAY_MS=n: make every page answer take n milliseconds, so a test can
 # look at a job while it is genuinely still running
 DELAY_MS = float(os.environ.get("MOCK_DELAY_MS", "0"))
@@ -196,8 +203,9 @@ def embed_page(doc_id, number):
     if TEXT_DOC:
         body = text_layer_spans(number, doc_id)     # placed spans, the real shape
     else:
-        body = "".join(f"<p>{line}</p>"
-                       for line in page_text_lines(number, doc_id))
+        body = ("" if number in WORDLESS_PAGES else
+                "".join(f"<p>{line}</p>"
+                        for line in page_text_lines(number, doc_id)))
     picture = ""
     if (not TEXT_DOC) or number == 1:
         picture = (f'<img src="//html.scribdassets.com/h{doc_id}/images/'
