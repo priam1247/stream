@@ -30,8 +30,11 @@ THROTTLE_FOR = float(os.environ.get("MOCK_THROTTLE_FOR", "5"))
 # MOCK_TEXT_DOC=2: the harder shape — the page names ONE asset in total (page
 # 1's scan) and nothing at all for the other pages. Their descriptor addresses
 # have to be built from the one that is named.
-TEXT_DOC = os.environ.get("MOCK_TEXT_DOC", "") in ("1", "2")
-ONE_ASSET = os.environ.get("MOCK_TEXT_DOC", "") == "2"
+TEXT_MODE = os.environ.get("MOCK_TEXT_DOC", "")
+TEXT_DOC = TEXT_MODE in ("1", "2", "3")
+ONE_ASSET = TEXT_MODE == "2"
+# MOCK_TEXT_DOC=3: every page advertises both a scan and native words. This
+# catches the blank-image case: the downloader should prefer the words.
 # MOCK_NO_DESCRIPTORS=1: every /pages/*.jsonp answers 403, like a document whose
 # per-page descriptors are not served at all. Then the viewer's own page is the
 # only place the words exist — the shape that produced the 37 blank sheets.
@@ -165,7 +168,7 @@ def document_html(doc_id):
     for number in range(1, PAGES + 1):
         # a converted document: page 1 usually still has a scan, every other
         # page is words only
-        scan = (not TEXT_DOC) or number == 1
+        scan = (not TEXT_DOC) or number == 1 or TEXT_MODE == "3"
         if ONE_ASSET and number > 1:
             continue                 # the page prints no address for it at all
         kind, ext = ("images", "jpg") if scan else ("pages", "jsonp")
@@ -262,7 +265,7 @@ class Handler(BaseHTTPRequestHandler):
             if DELAY_MS:
                 time.sleep(DELAY_MS / 1000.0)
             page = path.rsplit("/", 1)[-1].split("-")[0]
-            if TEXT_DOC and page != "1":
+            if TEXT_DOC and TEXT_MODE != "3" and page != "1":
                 # a converted document has no scan for that page: exactly what
                 # Scribd answers, and what used to become a grey placeholder
                 self.send(b"<Error><Code>AccessDenied</Code></Error>", 403,
