@@ -221,7 +221,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.31"
+VERSION = "2.32"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -393,6 +393,7 @@ def cookie_sentence(jar: dict[str, str]) -> str:
             + (f", session '{session[0]}'" if session else ", NO session"))
 
 BASE = os.environ.get("SCRIBD_BASE", "").rstrip("/")   # only for local tests
+SHOTS_ONLY = os.environ.get("SCRIBD_SHOTS_ONLY", "") == "1"
 _POOL = threading.local()
 
 def rebase(url: str) -> str:
@@ -4051,6 +4052,76 @@ def refusal_reason(body: bytes, status: int) -> str:
 # refused then used to end in grey sheets saying "scan not available". That
 # sheet no longer exists, so the engine makes sure the browser does: same box,
 # same node that runs the panel, the service that ships next to this file.
+def png_size(payload: bytes) -> tuple[int, int]:
+    """(width, height) as a PNG header claims them — no decoding."""
+    if len(payload) < 24 or payload[:4] != b"\x89PNG":
+        return 0, 0
+    import struct as _struct
+    width, height = _struct.unpack(">II", payload[16:24])
+    return int(width), int(height)
+
+
+def decode_shots(body: bytes) -> tuple[list[dict], str]:
+    """The book wire format: [4-byte length][png] ... [zero length][manifest].
+
+    A body that ends mid-picture or whose manifest is not JSON is an error, not
+    a partial book: half a book of clipped pages would put the wrong picture on
+    the wrong page number.
+    """
+    import json as _json
+    buf = memoryview(body)
+    pages: list[dict] = []
+    at = 0
+    while at + 4 <= len(buf):
+        length = int.from_bytes(buf[at:at + 4], "big")
+        at += 4
+        if length == 0:
+            break
+        if at + length > len(buf):
+            return [], "a picture runs past the end of the answer"
+        pages.append({"png": bytes(buf[at:at + length])})
+        at += length
+    try:
+        manifest = _json.loads(bytes(buf[at:]) or b"{}")
+    except Exception:                                            # noqa: BLE001
+        return [], "the manifest is not JSON"
+    if not isinstance(manifest, dict):
+        return [], "the manifest is not a JSON object"
+    listed = manifest.get("pages") or []
+    for entry, meta in zip(pages, listed if isinstance(listed, list) else []):
+        if isinstance(meta, dict):
+            entry.update({key: meta[key] for key in
+                          ("page", "width", "height", "unstable", "blank")
+                          if key in meta})
+    for number, entry in enumerate(pages, 1):
+        entry.setdefault("page", number)
+        width, height = entry.get("width") or 0, entry.get("height") or 0
+        if not (width and height):
+            width, height = png_size(entry.get("png") or b"")
+            entry["width"], entry["height"] = width, height
+    return pages, ""
+
+
+def entry_manifest(pages: list[dict]) -> str:
+    """One honest line about how the book was cut."""
+    widths = {int(e.get("width") or 0) for e in pages}
+    heights = {int(e.get("height") or 0) for e in pages}
+    unstable = [int(e.get("page") or 0) for e in pages if e.get("unstable")]
+    blanks = [int(e.get("page") or 0) for e in pages if e.get("blank")]
+    if len(widths) == 1 and len(heights) == 1:
+        size = f"every sheet {sorted(widths)[0]}x{sorted(heights)[0]}"
+    else:
+        size = (f"{len(widths)} different size(s) — the viewer did not lay "
+                f"them out as one column")
+    line = f"{len(pages)} page(s) clipped at the gaps, {size}"
+    if unstable:
+        line += f" · page(s) {', '.join(map(str, unstable[:8]))} were still " \
+                f"moving between two captures"
+    if blanks:
+        line += f" · page(s) {', '.join(map(str, blanks[:8]))} look empty"
+    return line
+
+
 _AUTOSTART = {"tried": False, "base": ""}
 
 
@@ -4192,6 +4263,46 @@ class Shooter:
                       f"{size_text(len(body))}) — kept, it is the only picture of "
                       f"that page" if blank else "")
 
+    def shoot_book(self, ident: str, scale: float = 0.0
+                   ) -> tuple[dict[int, dict], str]:
+        """Every page of the document in one pass, cut at the gaps.
+
+        The browser service opens the scroll viewer once, loads the whole
+        column, and clips each page block at the gap between it and the next —
+        so every page arrives at exactly the page's own size and no page is cut
+        differently from any other. -> (page -> picture, one note).
+        """
+        base = (self.base or "").rstrip("/")
+        if not base or not ident:
+            return {}, "no browser to ask"
+        url = (f"{base}/shots?doc={ident}"
+               f"&scale={(scale or self.scale):g}")
+        status, body, error = shot_get(url, self.timeout * 6)
+        if error:
+            return {}, f"the one-pass photograph failed: {error}"
+        if status != 200:
+            return {}, (f"the one-pass photograph answered {status}: "
+                        f"{refusal_reason(body, status)}")
+        pages, error = decode_shots(body)
+        if error:
+            return {}, f"the one-pass photograph came back broken: {error}"
+        out: dict[int, dict] = {}
+        for entry in pages:
+            number = int(entry.get("page") or 0)
+            payload = entry.get("png") or b""
+            if not number or not payload:
+                continue
+            built = scan_for_pdf(payload)
+            if built is None:
+                continue
+            built = dict(built)
+            built["bytes"] = len(payload)
+            built["shot"] = True
+            built["blank"] = bool(entry.get("blank"))
+            out[number] = built
+        manifest = entry_manifest(pages)
+        return out, manifest
+
     def capture(self, ident: str, pages, jobs: int = 4,
                 alive=None) -> tuple[dict[int, dict], list[str]]:
         """Photograph a list of pages. -> (page -> picture, what went wrong)."""
@@ -4296,6 +4407,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
 
     with_limit = min(ctx.total, limit) if limit else ctx.total
     locked = ctx.locked_pages(with_limit)
+
     JOB.say(("downloading the first %d" % with_limit) if limit
             else "downloading the whole document")
     JOB.set_progress(page=0, of=with_limit, ok=0, skipped=0, blank=0)
@@ -4308,201 +4420,270 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     os.makedirs(ctx.cache_dir, exist_ok=True)
     os.makedirs(os.path.join(out, "debug"), exist_ok=True)
 
-    # ---- is this a document of words, or of page scans? ------------------
+    # ---- shots only: one pass over the viewer, cut at the gaps -------------
+    # No scan is asked for at all. The browser opens the scroll viewer once,
+    # loads the whole column and clips every page block at the gap between it
+    # and the next: each page arrives at exactly its own size, and no page can
+    # be cut or cropped differently from any other. The words still come from
+    # the document, underneath, so the book stays searchable.
     collected: dict[int, dict] = {}
     failed: list[int] = []
     text_pages: dict[int, str] = {}
     texts: dict[int, str] = {}        # the invisible text layer of a scan page
-    done = 0
-    text_only = ctx.is_text_document()
-    if text_only:
-        JOB.say("this document is text, not page scans — reading the pages the "
-                "viewer renders (that is what a browser shows you)")
-        # ONE request first: the viewer's scroll page carries every page's
-        # words. Only what it does not have is asked for page by page.
-        viewer = ctx.viewer_pages()
-        if viewer:
-            JOB.say(f"viewer: {ctx.embed_state} — its pages are the document, "
-                    f"so they are drawn as pages")
-            for number in range(1, with_limit + 1):
-                words = (viewer.get(number) or "").strip()
-                if words:
-                    text_pages[number] = viewer[number]
-                    ctx.remember_text(number, viewer[number])
-        missing = [number for number in range(1, with_limit + 1)
-                   if number not in text_pages and number not in locked]
-        done = len(text_pages)
-        JOB.set_progress(page=done, ok=len(text_pages), skipped=len(missing))
-        if missing and done:
-            saved = ctx.save_viewer_page()
-            if saved:
-                JOB.say(f"viewer: it carries no page text — the page as received "
-                        f"is saved to {saved} (safe to send: no cookie in it)")
-            JOB.say(f"text: {len(missing)} page(s) are not in the viewer page — "
-                    f"asking their descriptors")
+    book_pages: dict[int, dict] = {}
+    book_shot: list[int] = []
+    if SHOTS_ONLY and not ctx.skip_now:
+        shooter = ensure_shooter(shooter)
+        if shooter.alive():
+            JOB.say(f"shots only: photographing the whole viewer in one pass "
+                    f"({shooter.base}) — every page clipped at the gap between "
+                    f"it and the next, no scan asked for at all")
+            book_pages, book_note = shooter.shoot_book(ctx.ident, shooter.scale)
+            if book_pages:
+                JOB.say(book_note)
+            else:
+                JOB.say(f"the one-pass photograph came back empty: {book_note} "
+                        f"— falling back to page by page")
+        else:
+            JOB.say("shots only was asked, but no browser is reachable"
+                    + (f" at {shooter.base}" if shooter.base else "")
+                    + f": {shooter.note} — the normal ladder runs instead")
+    if book_pages:
+        collected.update(book_pages)
+        book_shot = sorted(book_pages)
+        # the look came from the browser; the words come from the document,
+        # underneath every photograph, so the book stays searchable
         with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
-            futures = {pool.submit(ctx.descriptor_text, number): number
-                       for number in missing}
+            futures = {pool.submit(ctx.page_text, number): number
+                       for number in sorted(book_pages)}
             for future in as_completed(futures):
-                if not JOB.alive(ctx.gen):
-                    for pending in futures:
-                        pending.cancel()
-                    JOB.say("stopped — no more pages read")
-                    return
-                if ctx.skip_now:
-                    for pending in futures:
-                        pending.cancel()
-                    break
                 number = futures[future]
                 try:
                     words = future.result()
                 except Exception:                      # noqa: BLE001
                     words = ""
-                if words.strip():
-                    text_pages[number] = words
-                done += 1
-                JOB.set_progress(page=done, ok=len(text_pages),
-                                 skipped=with_limit - len(text_pages))
-                if done % 10 == 0 or done == with_limit:
-                    JOB.say(f"… {done}/{with_limit} pages, "
-                            f"{len(text_pages)} with words")
-        # Text first, then a picture. Scribd sometimes names a black/empty
-        # placeholder image beside usable text, and using that image made a
-        # structurally valid but visually blank page. Only a page with no words
-        # is asked for a scan — and only if it actually names one, because 37
-        # requests for images that do not exist would just be refused 37 times.
-        # A page can carry both words and a picture (page 1 of a converted
-        # document is usually its scanned cover). The picture is shown when it
-        # is a real one — it is what the page looks like — and skipped when it
-        # is the empty rectangle Scribd sometimes names instead.
-        both = [number for number in range(1, with_limit + 1)
-                if number in text_pages and number not in locked
-                and ctx.sources.images_for(number)]
-        fetched: list[tuple[int, dict, str]] = []
-        for number in both[:MAX_COVER_SCANS]:
-            if not JOB.alive(ctx.gen) or ctx.skip_now:
-                break
-            _n, built, _m = ctx.grab(number)
-            if built:
-                fetched.append(
-                    (number, built,
-                     hashlib.sha256(built.get("payload") or b"").hexdigest()))
-        twice = repeated_pages({number: sha for number, _built, sha in fetched})
-        for number, built, sha in fetched:
-            stand_in = placeholder_scan(built.get("payload") or b"")
-            if stand_in:
-                JOB.say(f"page {number}: the picture named for it is {stand_in} "
-                        f"({built['bytes']} B) — its words are drawn instead")
-                continue
-            if number in twice:
-                JOB.say(f"page {number}: the picture named for it is byte for byte "
-                        f"the same file as another page's — no two pages of paper "
-                        f"scan alike, so its words are drawn instead")
-                continue
-            if looks_blank_scan(built):
-                JOB.say(f"page {number}: the picture is an empty {built['width']}x"
-                        f"{built['height']} placeholder ({built['bytes']} B) — "
-                        f"its words are drawn instead")
-                continue
-            collected[number] = built
-        if both:
-            kept_cover = [n for n, _built, _sha in fetched if n in collected]
-            JOB.say(f"pictures: {len(kept_cover)} of {len(both[:MAX_COVER_SCANS])} "
-                    f"page(s) that name a scan are shown as that scan")
-            # a page shown as a scan keeps its words as the invisible text layer,
-            # so it is still searchable and copyable
-            for number in kept_cover:
-                texts.setdefault(number, text_pages[number])
-        silent = [number for number in range(1, with_limit + 1)
-                  if number not in text_pages and number not in locked]
-        # a page's descriptor name is also its scan's name (pages/N-x.jsonp and
-        # images/N-x.jpg are siblings), so a page whose words were refused still
-        # has a picture to ask for — the same picture the browser shows. Only a
-        # page nobody named at all is left to the browser alone.
-        need_scan = [number for number in silent
-                     if ctx.sources.images_for(number)
-                     or ctx.sources.jsonps_for(number)]
-        if need_scan:
-            JOB.say(f"scan fallback: {len(need_scan)} page(s) have no words but "
-                    f"do name a picture ({', '.join(str(n) for n in need_scan[:8])}"
-                    f"{' …' if len(need_scan) > 8 else ''})")
-        still_missing: list[int] = [number for number in silent
-                                    if number not in need_scan]
-        for number in need_scan:
-            if not JOB.alive(ctx.gen) or ctx.skip_now:
-                break
-            _n, built, message = ctx.grab(number)
-            stand_in = placeholder_scan(built.get("payload") or b"") if built else ""
-            if stand_in:
-                # a page with no words and only a stand-in picture has no page in
-                # it: leaving it out is honest, and a browser may yet photograph
-                # what a person sees
-                JOB.say(f"page {number}: the only picture named for it is "
-                        f"{stand_in} — left out for now, and a browser can still "
-                        f"photograph the real page")
-                built, message = None, ""
-            if built:
+                if words and words.strip():
+                    texts[number] = words
+        JOB.say(f"words underneath: {len(texts)} of {len(book_pages)} "
+                f"photographed page(s) are searchable")
+        failed = [number for number in range(1, with_limit + 1)
+                  if number not in collected and number not in locked]
+        if failed and shooter.alive() and not ctx.skip_now:
+            JOB.say(f"the one pass missed {len(failed)} page(s) — "
+                    f"photographing them one by one")
+            pictures, shot_notes = shooter.capture(
+                ctx.ident, failed, jobs=ctx.jobs,
+                alive=lambda: JOB.alive(ctx.gen))
+            for number in sorted(pictures):
+                collected[number] = pictures[number]
+                book_shot.append(number)
+            for note in shot_notes:
+                JOB.say("  " + note)
+            failed = [n for n in failed if n not in collected]
+        if failed:
+            JOB.say(f"pages left out of the PDF (no photograph reached them): "
+                    f"{', '.join(map(str, failed[:12]))}"
+                    + (" …" if len(failed) > 12 else ""))
+        JOB.set_progress(page=with_limit, ok=len(collected),
+                         skipped=len(failed))
+        photographed.extend(book_shot)
+    if not book_pages:
+        pass  # the ladder below runs: words first, then scans, then shots
+        # ---- is this a document of words, or of page scans? ------------------
+        collected: dict[int, dict] = {}
+        failed: list[int] = []
+        text_pages: dict[int, str] = {}
+        texts: dict[int, str] = {}        # the invisible text layer of a scan page
+        done = 0
+        text_only = ctx.is_text_document()
+        if text_only:
+            JOB.say("this document is text, not page scans — reading the pages the "
+                    "viewer renders (that is what a browser shows you)")
+            # ONE request first: the viewer's scroll page carries every page's
+            # words. Only what it does not have is asked for page by page.
+            viewer = ctx.viewer_pages()
+            if viewer:
+                JOB.say(f"viewer: {ctx.embed_state} — its pages are the document, "
+                        f"so they are drawn as pages")
+                for number in range(1, with_limit + 1):
+                    words = (viewer.get(number) or "").strip()
+                    if words:
+                        text_pages[number] = viewer[number]
+                        ctx.remember_text(number, viewer[number])
+            missing = [number for number in range(1, with_limit + 1)
+                       if number not in text_pages and number not in locked]
+            done = len(text_pages)
+            JOB.set_progress(page=done, ok=len(text_pages), skipped=len(missing))
+            if missing and done:
+                saved = ctx.save_viewer_page()
+                if saved:
+                    JOB.say(f"viewer: it carries no page text — the page as received "
+                            f"is saved to {saved} (safe to send: no cookie in it)")
+                JOB.say(f"text: {len(missing)} page(s) are not in the viewer page — "
+                        f"asking their descriptors")
+            with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
+                futures = {pool.submit(ctx.descriptor_text, number): number
+                           for number in missing}
+                for future in as_completed(futures):
+                    if not JOB.alive(ctx.gen):
+                        for pending in futures:
+                            pending.cancel()
+                        JOB.say("stopped — no more pages read")
+                        return
+                    if ctx.skip_now:
+                        for pending in futures:
+                            pending.cancel()
+                        break
+                    number = futures[future]
+                    try:
+                        words = future.result()
+                    except Exception:                      # noqa: BLE001
+                        words = ""
+                    if words.strip():
+                        text_pages[number] = words
+                    done += 1
+                    JOB.set_progress(page=done, ok=len(text_pages),
+                                     skipped=with_limit - len(text_pages))
+                    if done % 10 == 0 or done == with_limit:
+                        JOB.say(f"… {done}/{with_limit} pages, "
+                                f"{len(text_pages)} with words")
+            # Text first, then a picture. Scribd sometimes names a black/empty
+            # placeholder image beside usable text, and using that image made a
+            # structurally valid but visually blank page. Only a page with no words
+            # is asked for a scan — and only if it actually names one, because 37
+            # requests for images that do not exist would just be refused 37 times.
+            # A page can carry both words and a picture (page 1 of a converted
+            # document is usually its scanned cover). The picture is shown when it
+            # is a real one — it is what the page looks like — and skipped when it
+            # is the empty rectangle Scribd sometimes names instead.
+            both = [number for number in range(1, with_limit + 1)
+                    if number in text_pages and number not in locked
+                    and ctx.sources.images_for(number)]
+            fetched: list[tuple[int, dict, str]] = []
+            for number in both[:MAX_COVER_SCANS]:
+                if not JOB.alive(ctx.gen) or ctx.skip_now:
+                    break
+                _n, built, _m = ctx.grab(number)
+                if built:
+                    fetched.append(
+                        (number, built,
+                         hashlib.sha256(built.get("payload") or b"").hexdigest()))
+            twice = repeated_pages({number: sha for number, _built, sha in fetched})
+            for number, built, sha in fetched:
+                stand_in = placeholder_scan(built.get("payload") or b"")
+                if stand_in:
+                    JOB.say(f"page {number}: the picture named for it is {stand_in} "
+                            f"({built['bytes']} B) — its words are drawn instead")
+                    continue
+                if number in twice:
+                    JOB.say(f"page {number}: the picture named for it is byte for byte "
+                            f"the same file as another page's — no two pages of paper "
+                            f"scan alike, so its words are drawn instead")
+                    continue
+                if looks_blank_scan(built):
+                    JOB.say(f"page {number}: the picture is an empty {built['width']}x"
+                            f"{built['height']} placeholder ({built['bytes']} B) — "
+                            f"its words are drawn instead")
+                    continue
                 collected[number] = built
-                if number in failed:
-                    failed.remove(number)
-            else:
-                still_missing.append(number)
+            if both:
+                kept_cover = [n for n, _built, _sha in fetched if n in collected]
+                JOB.say(f"pictures: {len(kept_cover)} of {len(both[:MAX_COVER_SCANS])} "
+                        f"page(s) that name a scan are shown as that scan")
+                # a page shown as a scan keeps its words as the invisible text layer,
+                # so it is still searchable and copyable
+                for number in kept_cover:
+                    texts.setdefault(number, text_pages[number])
+            silent = [number for number in range(1, with_limit + 1)
+                      if number not in text_pages and number not in locked]
+            # a page's descriptor name is also its scan's name (pages/N-x.jsonp and
+            # images/N-x.jpg are siblings), so a page whose words were refused still
+            # has a picture to ask for — the same picture the browser shows. Only a
+            # page nobody named at all is left to the browser alone.
+            need_scan = [number for number in silent
+                         if ctx.sources.images_for(number)
+                         or ctx.sources.jsonps_for(number)]
+            if need_scan:
+                JOB.say(f"scan fallback: {len(need_scan)} page(s) have no words but "
+                        f"do name a picture ({', '.join(str(n) for n in need_scan[:8])}"
+                        f"{' …' if len(need_scan) > 8 else ''})")
+            still_missing: list[int] = [number for number in silent
+                                        if number not in need_scan]
+            for number in need_scan:
+                if not JOB.alive(ctx.gen) or ctx.skip_now:
+                    break
+                _n, built, message = ctx.grab(number)
+                stand_in = placeholder_scan(built.get("payload") or b"") if built else ""
+                if stand_in:
+                    # a page with no words and only a stand-in picture has no page in
+                    # it: leaving it out is honest, and a browser may yet photograph
+                    # what a person sees
+                    JOB.say(f"page {number}: the only picture named for it is "
+                            f"{stand_in} — left out for now, and a browser can still "
+                            f"photograph the real page")
+                    built, message = None, ""
+                if built:
+                    collected[number] = built
+                    if number in failed:
+                        failed.remove(number)
+                else:
+                    still_missing.append(number)
+                    if message:
+                        JOB.say(message)
+            failed = still_missing
+            JOB.say(f"text: {len(text_pages)} of {with_limit} page(s) have words"
+                    + (f", {len(collected)} scan fallback(s)" if collected else ""))
+            JOB.set_progress(ok=len(text_pages) + len(collected), skipped=len(failed))
+
+        with ThreadPoolExecutor(max_workers=ctx.jobs) as pool:
+            # not one scan request when the document is text: the old code queued
+            # every page here and then threw the queue away, which is what made a
+            # text document ask for 38 images that never existed
+            futures = ([] if text_only else
+                       [pool.submit(ctx.grab, number)
+                        for number in range(1, with_limit + 1)
+                        if number not in locked])
+            for future in as_completed(futures):
+                if not JOB.alive(ctx.gen):
+                    for pending in futures:
+                        pending.cancel()
+                    JOB.say("stopped — no more pages requested")
+                    return
+                if ctx.skip_now:
+                    for pending in futures:
+                        pending.cancel()
+                    break
+                number, built, message = future.result()
+                done += 1
                 if message:
                     JOB.say(message)
-        failed = still_missing
-        JOB.say(f"text: {len(text_pages)} of {with_limit} page(s) have words"
-                + (f", {len(collected)} scan fallback(s)" if collected else ""))
-        JOB.set_progress(ok=len(text_pages) + len(collected), skipped=len(failed))
+                if built:
+                    collected[number] = built
+                else:
+                    failed.append(number)
+                JOB.set_progress(page=done, ok=len(collected), skipped=len(failed))
+                if done % 25 == 0 or done == with_limit:
+                    spent = max(0.001, time.time() - JOB.started)
+                    rate = done / spent
+                    left = (with_limit - done) / rate if rate else 0
+                    JOB.say(f"… {done}/{with_limit} pages, {len(collected)} ok"
+                            + (f", {len(failed)} failed" if failed else "")
+                            + f" · {rate:.1f} pages/s · gate {ctx.gate.rate:.1f}/s"
+                            + (f" · about {left:.0f} s left" if left > 1 else ""))
 
-    with ThreadPoolExecutor(max_workers=ctx.jobs) as pool:
-        # not one scan request when the document is text: the old code queued
-        # every page here and then threw the queue away, which is what made a
-        # text document ask for 38 images that never existed
-        futures = ([] if text_only else
-                   [pool.submit(ctx.grab, number)
-                    for number in range(1, with_limit + 1)
-                    if number not in locked])
-        for future in as_completed(futures):
-            if not JOB.alive(ctx.gen):
-                for pending in futures:
-                    pending.cancel()
-                JOB.say("stopped — no more pages requested")
-                return
-            if ctx.skip_now:
-                for pending in futures:
-                    pending.cancel()
-                break
-            number, built, message = future.result()
-            done += 1
-            if message:
-                JOB.say(message)
-            if built:
-                collected[number] = built
-            else:
-                failed.append(number)
-            JOB.set_progress(page=done, ok=len(collected), skipped=len(failed))
-            if done % 25 == 0 or done == with_limit:
-                spent = max(0.001, time.time() - JOB.started)
-                rate = done / spent
-                left = (with_limit - done) / rate if rate else 0
-                JOB.say(f"… {done}/{with_limit} pages, {len(collected)} ok"
-                        + (f", {len(failed)} failed" if failed else "")
-                        + f" · {rate:.1f} pages/s · gate {ctx.gate.rate:.1f}/s"
-                        + (f" · about {left:.0f} s left" if left > 1 else ""))
-
-    if ctx.skip_now:
-        # The drop cancelled requests that had not been made yet. A page nobody
-        # asked for is still a page the reader does not have, and it must be
-        # counted: otherwise a dropped book reports itself as built with a
-        # handful of placeholder sheets inside it.
-        never_asked = [number for number in range(1, with_limit + 1)
-                       if number not in collected and number not in text_pages
-                       and number not in failed and number not in texts]
-        if never_asked:
-            failed = sorted(set(failed) | set(never_asked))
-            JOB.say(f"{len(never_asked)} page(s) were never asked for — the "
-                    f"queue moved on without them: they will be left out of "
-                    f"the PDF and named, never greyed")
+        if ctx.skip_now:
+            # The drop cancelled requests that had not been made yet. A page nobody
+            # asked for is still a page the reader does not have, and it must be
+            # counted: otherwise a dropped book reports itself as built with a
+            # handful of placeholder sheets inside it.
+            never_asked = [number for number in range(1, with_limit + 1)
+                           if number not in collected and number not in text_pages
+                           and number not in failed and number not in texts]
+            if never_asked:
+                failed = sorted(set(failed) | set(never_asked))
+                JOB.say(f"{len(never_asked)} page(s) were never asked for — the "
+                        f"queue moved on without them: they will be left out of "
+                        f"the PDF and named, never greyed")
 
     # ---- retries, on a budget -------------------------------------------
     # A page Scribd refuses is refused for a reason (not this account, or the
@@ -6850,6 +7031,27 @@ def selftest() -> str:
         assert not made and message == "no pages to write", message
 
     # ---- a browser that photographs the pages nobody sent us --------------
+    # the book wire format: lengths, pictures in order, manifest readable —
+    # and a body cut mid-picture is an error, never a half book
+    def _png_blob(seed: int) -> bytes:
+        import struct as _st, zlib as _z
+        raw = b"".join(b"\x00" + bytes((seed + i) % 251 for i in range(60))
+                       for _ in range(8))
+        return (b"\x89PNG\r\n\x1a\n" + b"IHDR" +
+                _st.pack(">IIBBBBB", 20, 8, 8, 2, 0, 0, 0) +
+                b"IDAT" + _z.compress(raw) + b"IEND")
+    pa, pb = _png_blob(3), _png_blob(9)
+    wire = b"".join(len(x).to_bytes(4, "big") + x for x in (pa, pb)) + \
+        b"\x00" * 4 + b'{"pages": [{"page": 1, "width": 20, "height": 8},' \
+        b' {"page": 2, "width": 20, "height": 8, "blank": true}]}'
+    got, err = decode_shots(wire)
+    assert not err and len(got) == 2, err
+    assert got[0]["png"] == pa and got[1]["png"] == pb
+    assert got[0]["page"] == 1 and got[1]["blank"] is True
+    assert got[0]["width"] == 20 and got[0]["height"] == 8
+    assert decode_shots(wire[:len(wire) - 20])[1], "a cut body is refused"
+    assert decode_shots(b"\x00" * 4 + b"not json")[1], "a bad manifest is refused"
+    assert entry_manifest(got).startswith("2 page(s) clipped at the gaps, every sheet 20x8")
     assert shot_request("http://host:8096/", "7", 12, 2.0) == (
         "http://host:8096/shot?doc=7&page=12&scale=2")
     # a page's ink does not repeat and a picture of it does not compress, so the
@@ -7192,6 +7394,9 @@ def main(argv: list[str]) -> int:
             verify = False
         elif arg in ("--text", "--text-layer"):
             text = True
+        elif arg in ("--shots-only", "--shots"):
+            global SHOTS_ONLY
+            SHOTS_ONLY = True
         elif arg == "--selftest":
             print(selftest())
             return 0
