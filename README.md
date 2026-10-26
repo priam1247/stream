@@ -173,6 +173,13 @@ Search, then download — that is the whole flow; there is no link box to fill i
   labelled as a placeholder — `PDF PARTIAL`, never a lost book. **Nothing that
   arrives is discarded**: thumbnails, odd-shaped spreads, cut-short transfers and
   tiny scans all go in, scaled to the sheet. Only sub-16 px noise is refused.
+- **A document that is text, not scans, is still a full PDF.** Most Scribd
+  uploads are converted documents: the viewer lays out each page's *words* and
+  there is no image for them at all. The panel now reads those pages as text and
+  draws them, so a 38-page book is 38 readable pages instead of 1 scan and 37
+  `scan not available` sheets. A refused page is asked for its words before it is
+  called missing, and the verdict says how many pages came that way
+  (`38 of 38 page(s) real · 37 from text`).
 - **The scan token is hunted in four shapes** (`?token=`, `"token":"…"`,
   `"imageToken":"…"`, bare `eyJ…` JWT). A scanned upload used to log
   `image token: none` and then 403 on every page; that is what 2.16 fixes.

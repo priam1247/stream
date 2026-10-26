@@ -24,6 +24,14 @@ PAGES = int(os.environ.get("MOCK_PAGES", "2"))
 # way the real CDN does when a job goes too fast. MOCK_THROTTLE_FOR=seconds.
 THROTTLE_AFTER = int(os.environ.get("MOCK_THROTTLE_AFTER", "0"))
 THROTTLE_FOR = float(os.environ.get("MOCK_THROTTLE_FOR", "5"))
+# MOCK_TEXT_DOC=1: a converted document, like most Scribd uploads — page 1 has a
+# scan, every other page is TEXT the viewer renders. No image exists for those
+# pages, which is what used to produce 37 "scan not available" sheets.
+# MOCK_TEXT_DOC=2: the harder shape — the page names ONE asset in total (page
+# 1's scan) and nothing at all for the other pages. Their descriptor addresses
+# have to be built from the one that is named.
+TEXT_DOC = os.environ.get("MOCK_TEXT_DOC", "") in ("1", "2")
+ONE_ASSET = os.environ.get("MOCK_TEXT_DOC", "") == "2"
 # MOCK_DELAY_MS=n: make every page answer take n milliseconds, so a test can
 # look at a job while it is genuinely still running
 DELAY_MS = float(os.environ.get("MOCK_DELAY_MS", "0"))
@@ -79,17 +87,39 @@ def fake_jpeg(width=1200, height=1600, fill=6000):
 
 def page_jsonp(doc_id, number):
     """Scribd sends each page's text as window.pageN_callback([…]) of html."""
-    words = [f"Mock page {number}", f"This is line two of page {number}",
-             f"Search for the word needle{number} to find this page"]
+    if TEXT_DOC:
+        # a converted document: the viewer renders this, there is no scan
+        lines = [f"KUSANTHULA BUKU LA NTHONDO — page {number}",
+                 "Ndondomeko ya buku ili ndi yotalikirapo pa nkhani za nthondo ndi "
+                 "mmene anthu amapezera chithandizo ku chipatala cha boma."]
+        lines += [f"Mutu wa nkhani {line} pa tsamba {number}: mawu oti "
+                  f"needle{number} amapezeka mmenemo." for line in range(1, 7)]
+        lines.append("Zolembedwa ndi a NTHONDO SUMMARY, kukonza kwa 2026.")
+    else:
+        lines = [f"Mock page {number}", f"This is line two of page {number}",
+                 f"Search for the word needle{number} to find this page"]
     return ('window.page%d_callback(["%s"]);'
-            % (number, "<br>".join(f"<div>{line}</div>" for line in words))).encode()
+            % (number, "<br>".join(f"<div>{line}</div>" for line in lines))).encode()
 
 
 def document_html(doc_id):
-    names = "".join(
-        f'var p{number}="https:\\\\\\\\/\\\\\\\\/html.scribdassets.com'
-        f'\\\\\\\\/h{doc_id}\\\\/images\\\\\\\\/{number}-aa{doc_id}.jpg";'
-        for number in range(1, PAGES + 1))
+    """The document page. In TEXT_DOC mode it names page descriptors only.
+
+    A converted document has no `/images/` URL for most pages at all: the viewer
+    renders their text. That is the shape that produced 37 grey placeholder
+    sheets, so the mock has to be able to reproduce it.
+    """
+    names = ""
+    for number in range(1, PAGES + 1):
+        # a converted document: page 1 usually still has a scan, every other
+        # page is words only
+        scan = (not TEXT_DOC) or number == 1
+        if ONE_ASSET and number > 1:
+            continue                 # the page prints no address for it at all
+        kind, ext = ("images", "jpg") if scan else ("pages", "jsonp")
+        url = (f"https://html.scribdassets.com/h{doc_id}/{kind}/"
+               f"{number}-aa{doc_id}.{ext}")
+        names += 'var p%d="%s";' % (number, url.replace("/", "\\/"))
     return (f'<!doctype html><html><head>'
             f'<meta property="og:title" content="Doc {doc_id} | Scribd">'
             f'</head><body><script>var d={{"page_count":{PAGES}}};'
@@ -173,6 +203,12 @@ class Handler(BaseHTTPRequestHandler):
             if DELAY_MS:
                 time.sleep(DELAY_MS / 1000.0)
             page = path.rsplit("/", 1)[-1].split("-")[0]
+            if TEXT_DOC and page != "1":
+                # a converted document has no scan for that page: exactly what
+                # Scribd answers, and what used to become a grey placeholder
+                self.send(b"<Error><Code>AccessDenied</Code></Error>", 403,
+                          "application/xml")
+                return
             if page.isdigit() and int(page) in LOCK_PAGES:
                 self.send(b"<html>not for you</html>", 403)
             elif refused_now():
