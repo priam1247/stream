@@ -7394,7 +7394,7 @@ def main(argv: list[str]) -> int:
             verify = False
         elif arg in ("--text", "--text-layer"):
             text = True
-        elif arg in ("--shots-only", "--shots"):
+        elif arg == "--shots-only":
             global SHOTS_ONLY
             SHOTS_ONLY = True
         elif arg == "--selftest":
