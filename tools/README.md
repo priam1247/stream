@@ -419,6 +419,14 @@ history: on a 10 GB plan lower `SCRIBD_KEEP_FILES` to about 20.
 
 ## Limits, stated plainly
 
+- **Nothing that arrives is thrown away any more (v2.16).** A small scan, a
+  thumbnail, a double-page spread, a page whose shape is nothing like a book page
+  — all of it goes into the PDF and is scaled to the sheet. Only a picture under
+  16 px (noise) is refused. The log still says what arrived and how big it was.
+- The token hunt looks in four shapes now (`?token=`, `"token":"…"`,
+  `"imageToken":"…"`, and a bare `eyJ…` JWT). Before, a scanned upload whose
+  viewer writes the token as JSON logged `image token: none` and every page came
+  back `403 AccessDenied` — 102 pages, one image.
 - A page whose scan Scribd refuses will stay a placeholder. The log says which
   page and why; it is never quietly dropped.
 - **A refusal means one of two things, and v2.9 tells them apart.** One page

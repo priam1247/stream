@@ -170,8 +170,12 @@ Search, then download — that is the whole flow; there is no link box to fill i
   `pages/s` figure is the honest measure.
 - **A page Scribd will not serve** (a `403` on a scan-only document) costs the
   book at most 75 seconds of retrying, then the PDF is built with that page
-  labelled as a placeholder — `PDF PARTIAL`, never a lost book. Thumbnails and
-  cut-short transfers are used as they are.
+  labelled as a placeholder — `PDF PARTIAL`, never a lost book. **Nothing that
+  arrives is discarded**: thumbnails, odd-shaped spreads, cut-short transfers and
+  tiny scans all go in, scaled to the sheet. Only sub-16 px noise is refused.
+- **The scan token is hunted in four shapes** (`?token=`, `"token":"…"`,
+  `"imageToken":"…"`, bare `eyJ…` JWT). A scanned upload used to log
+  `image token: none` and then 403 on every page; that is what 2.16 fixes.
 - **A stuck job stops blocking you**: if a job has not moved for 7 minutes, a new
   download steps over it, and the amber banner's **Stop it** button clears it at
   once (`POST /api/scribd/reset`, administrator only).

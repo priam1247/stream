@@ -198,7 +198,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.15"
+VERSION = "2.16"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -216,6 +216,20 @@ ASSET_RE = re.compile(
     r"\.(?:jpe?g|png|webp|jsonp|json)(?:\?[^\s\"'\\<>()]*)?", re.IGNORECASE)
 SCAN_RE = re.compile(r"\.(?:jpe?g|png|webp)(?:\?|$)", re.IGNORECASE)
 TOKEN_RE = re.compile(r"[?&]token=([A-Za-z0-9._\-%]+)", re.IGNORECASE)
+# The viewer writes the scan token in more than one shape. `?token=` was the
+# original; newer builds write it as JSON (`"token":"…"`), as a camelCase key
+# (`"imageToken":"…"`), or just leave the bare JWT in the page. A bare `eyJ…`
+# blob is unambiguous: nothing else on a Scribd page looks like that.
+TOKEN_SHAPES = (
+    re.compile(r"[?&]token=([A-Za-z0-9._\-%]{16,})", re.IGNORECASE),
+    re.compile(r"[\"'](?:token|imageToken|image_token|pageToken|accessToken|"
+               r"access_token|viewerToken|readToken)[\"']\s*:\s*[\"']"
+               r"([A-Za-z0-9._\-%]{16,})[\"']", re.IGNORECASE),
+    re.compile(r"\btoken(?:=|%3D)([A-Za-z0-9._\-%]{16,})", re.IGNORECASE),
+    # a bare JWT: three base64url segments, the first two of which are JSON
+    re.compile(r"(?<![A-Za-z0-9_\-])(eyJ[A-Za-z0-9_\-]*\."
+               r"[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)"),
+)
 RETRY_STATUS = (408, 425, 429, 500, 502, 503, 504)
 HARD_THROTTLE = (429, 503)
 # A 403 has two meanings and they need opposite answers: "this page is not for
@@ -244,7 +258,8 @@ PANEL_COOKIE = "scribd_panel_key"
 
 # a page scan is never smaller than this, and never this lopsided
 MIN_PAGE_PX = 200
-PREVIEW_MIN_PX = 80                # below this a picture is a smudge, not a page
+PREVIEW_MIN_PX = 80                # below this a picture is a small preview
+ABSOLUTE_MIN_PX = 16               # below this it is noise, not a page
 ASPECT_RANGE = (0.4, 3.0)          # width / height
 SIZE_TOLERANCE = 0.06              # 6% either way counts as the same page
 MAX_REFETCH = 40                   # pages whose wrong size we will pay to redo
@@ -563,22 +578,33 @@ def token_score(token: str) -> tuple[int, int]:
         return jwt_exp(token), 1
     return 0, 0
 
-def harvest_token(body: bytes) -> str:
-    """Find the scan token wherever it is written, and refuse the fake ones."""
-    scored: list[tuple[tuple[int, int], str]] = []
+def harvest_token(body: bytes, where: str = "") -> str:
+    """Find the scan token wherever it is written, and refuse the fake ones.
+
+    v2.16 looks for four shapes, because the panel's log said
+    `image token: none on the page` for scanned uploads while the same page in a
+    browser served its scans: the token was in the body, just not as `?token=`.
+    """
+    scored: list[tuple[tuple[int, int], str, str]] = []
     seen: set[str] = set()
-    for variant in (text_of(body), urllib.parse.unquote(text_of(body))):
-        for match in TOKEN_RE.finditer(variant):
-            for candidate in (match.group(1), urllib.parse.unquote(match.group(1))):
-                candidate = candidate.strip("\"'")
-                if candidate in seen or not usable_token(candidate):
-                    continue
-                seen.add(candidate)
-                scored.append((token_score(candidate), candidate))
+    text = text_of(body)
+    for variant in (text, urllib.parse.unquote(text)):
+        for index, shape in enumerate(TOKEN_SHAPES):
+            for match in shape.finditer(variant):
+                for candidate in (match.group(1), urllib.parse.unquote(match.group(1))):
+                    candidate = candidate.strip("\"'")
+                    if candidate in seen or not usable_token(candidate):
+                        continue
+                    seen.add(candidate)
+                    scored.append((token_score(candidate), candidate, f"shape {index + 1}"))
     if not scored:
         return ""
     scored.sort(key=lambda row: row[0], reverse=True)
-    return scored[0][1]
+    best = scored[0]
+    if where:
+        JOB.say(f"image token: found in the {where} ({best[2]}, "
+                f"{'jwt' if jwt_ok(best[1]) else 'plain'})")
+    return best[1]
 
 def with_token(url: str, token: str) -> str:
     """Put the real token on the url, replacing anything that is not one."""
@@ -604,6 +630,22 @@ def strip_token(url: str) -> str:
     if not rest:
         return url[:match.start()]
     return url[:match.start()] + ("?" if separator == "?" else "&") + rest.lstrip("&")
+
+def redact(text: str, limit: int = 150) -> str:
+    """A URL or body line safe to paste into a chat window.
+
+    Probe output is meant to be shared — with a person, in an issue — so every
+    token in it is replaced before printing. A cookie or a token in a screenshot
+    is a leaked account; this is the one place that could happen by accident.
+    """
+    out = str(text or "")
+    for shape in TOKEN_SHAPES:
+        out = shape.sub(lambda m: m.group(0).replace(m.group(1), "REDACTED"), out)
+    out = re.sub(r"([?&](?:key|access_key|sid)=)[A-Za-z0-9._%\-]{8,}",
+                 r"\1REDACTED", out)
+    out = " ".join(out.split())
+    return out[:limit]
+
 
 def token_note(token: str) -> str:
     if not token:
@@ -984,20 +1026,30 @@ def biggest_frame(frames: list[tuple[int, int, int]]) -> tuple[int, int, int]:
 
 
 def small_frame(frames: list[tuple[int, int, int]]) -> tuple[int, int, int]:
-    """A page-shaped picture that is complete but smaller than a real scan.
+    """The largest picture in the file that could be a page at all.
 
-    Some documents are only served at reduced size under every name we know. A
-    page at 300x400 is readable; one at 60 px is a smudge, so there is a floor.
+    v2.16 stopped excluding pages. A scanned upload often serves odd sizes —
+    a 60x80 strip, a double-page spread far outside a page's aspect, a 349x383
+    thumbnail — and a small or odd-looking page is still that page's content.
+    A blank placeholder is strictly worse than a poor scan, so the rule is now:
+    take the biggest frame that is not a 1-pixel smudge, whatever its shape.
     """
     best = (0, 0, 0)
     for width, height, components in frames:
-        if min(width, height) < PREVIEW_MIN_PX:
+        if min(width, height) < ABSOLUTE_MIN_PX:
             continue
-        if not (ASPECT_RANGE[0] <= width / height <= ASPECT_RANGE[1]):
-            continue
+        # prefer a page-shaped frame of the same area, but never insist
         if width * height > best[0] * best[1]:
             best = (width, height, components or 3)
     return best
+
+
+def best_frame_any_shape(frames: list[tuple[int, int, int]]) -> tuple[int, int, int]:
+    """The largest frame, page-shaped or not — the last resort before a blank."""
+    usable = [frame for frame in frames if min(frame[0], frame[1]) >= ABSOLUTE_MIN_PX]
+    if not usable:
+        return 0, 0, 0
+    return max(usable, key=lambda frame: frame[0] * frame[1])
 
 
 def jpeg_size(data: bytes) -> tuple[int, int, int]:
@@ -1319,6 +1371,9 @@ def scan_for_pdf(data: bytes) -> dict | None:
                 width, height, components = wide, tall, guess
             else:
                 width, height, components = small_frame(frames)
+                if not width:
+                    # even an odd-shaped or tiny page beats a blank placeholder
+                    width, height, components = best_frame_any_shape(frames)
                 if not width:
                     return None
                 preview = True
@@ -2320,11 +2375,25 @@ class Ctx:
 
         combined = embed["body"] + doc["body"]
         self.sources.merge(combined)
-        self.token.set(harvest_token(combined))
+        found = harvest_token(combined, where="document or viewer page")
+        self.token.set(found)
         self.total = page_count(combined, self.sources)
         if not self.total:
             return False
         JOB.say(f"pages: {self.total} found · {self.sources.count()} with a page name")
+        if not self.token.get():
+            # no token on the page at all: try the viewer's other entry points
+            for probe in (f"https://www.scribd.com/embeds/{self.ident}/content"
+                          f"?start_page=1&view_mode=scroll&access_key=&"
+                          f"only_page=1",
+                          f"https://www.scribd.com/document/{self.ident}/"
+                          f"__next_data__"):
+                extra = fetch(probe, self.jar, referer=self.document_url, timeout=20)
+                if extra.get("status") == 200 and extra.get("body"):
+                    late = harvest_token(extra["body"], where=probe.split("/")[3])
+                    if late:
+                        self.token.set(late)
+                        break
         JOB.say(token_note(self.token.get()))
 
         meta = oembed(self.ident, self.jar)
@@ -2758,19 +2827,20 @@ def _probe(url: str, number: int) -> None:
             JOB.detail = "the page named no pages"
         return
     JOB.say(f"probe: page {number} · token "
-            f"{ctx.token.get()[:44] if ctx.token.get() else 'none'}")
+            + ("found (redacted)" if ctx.token.get() else "NONE FOUND"))
     for name in ctx.sources.images_for(number):
-        JOB.say(f"probe: document names {name[:140]}")
+        JOB.say(f"probe: document name  {redact(name, 160)}")
     for jsonp in ctx.sources.jsonps_for(number):
-        JOB.say(f"probe: descriptor {jsonp[:140]}")
+        JOB.say(f"probe: descriptor     {redact(jsonp, 160)}")
         for variant in ctx.jsonp_variants(jsonp):
             got = fetch(variant, ctx.jar, referer=ctx.document_url, timeout=20)
-            JOB.say(f"  {got['status']:>3} {len(got['body']):>7} B  {variant[:140]}"
+            JOB.say(f"  {got['status']:>3} {len(got['body']):>7} B  {redact(variant, 160)}"
                     + (f"   {http_reason(got)}" if got["status"] != 200 else ""))
             if got["status"] == 200 and got["body"]:
-                JOB.say("        body: "
-                        + got["body"][:500].decode("latin-1", "replace")
-                        .replace("\n", " "))
+                JOB.say("        body: " + redact(got["body"][:800].decode("latin-1", "replace"), 300))
+                # what the descriptor itself offers, by host and name only
+                for url in ctx.assets_in(got["body"], number, ctx.token.get())[:4]:
+                    JOB.say(f"        offers: {redact(url, 160)}")
     for candidate in ctx.deep(number) + ctx.candidates_for(number, True):
         got = fetch(candidate, ctx.jar, referer=ctx.document_url, timeout=20)
         size = len(got["body"])
@@ -2783,7 +2853,7 @@ def _probe(url: str, number: int) -> None:
                       + (", small preview" if built.get("preview") else "")
                       + ("" if built.get("complete", True) else ", cut short")
                       if built else f"  {describe_image(got['body'])}")
-        JOB.say(f"  {mark} {got['status']:>3} {size / 1000:8.1f} kB  {candidate[:150]}"
+        JOB.say(f"  {mark} {got['status']:>3} {size / 1000:8.1f} kB  {redact(candidate, 150)}"
                 + (detail or (f"   {http_reason(got)}" if mark == "     " else "")))
     with JOB.lock:
         JOB.verdict = "PROBE DONE"
@@ -3719,10 +3789,11 @@ async function ask(page) {
     search.page = d.page || page;
     search.total = d.total || 0;
     search.shown += fresh;
-    // more to come when Scribd says so, or when a full page came back and it
-    // did not say how many there are at all
-    search.more = (search.page < (d.max_page || 40)) && (
-      search.total ? search.shown < search.total : (d.documents || 0) >= (d.per_page || 40));
+    // v2.16: keep "Load more" while there are results and pages left. It used
+    // to disappear whenever Scribd sent no total, which is exactly when a person
+    // still wants it — a page that adds nothing says so instead.
+    search.more = fresh > 0 && search.page < (d.max_page || 40) &&
+      (search.total ? search.shown < search.total : true);
     say({page: search.page, total: search.total});
   } catch (e) {
     $('said').textContent = 'the panel did not answer: ' + e;
@@ -4105,7 +4176,15 @@ def selftest() -> str:
     preview_page = scan_for_pdf(make_jpeg(96, 130))
     assert preview_page and preview_page["preview"] is True, preview_page
     assert preview_page["width"] == 96 and "small preview" in preview_page["label"]
-    assert scan_for_pdf(make_jpeg(60, 80)) is None           # that is a smudge
+    # v2.16: a small or odd-shaped page is used, not thrown away — a 60x80 scan
+    # of a page is still that page, and a blank placeholder is worse
+    tiny = scan_for_pdf(make_jpeg(60, 80))
+    assert tiny and tiny["preview"] and tiny["width"] == 60, tiny
+    spread = scan_for_pdf(make_jpeg(2400, 700))              # far outside a page shape
+    assert spread and spread["width"] == 2400, spread
+    assert scan_for_pdf(make_jpeg(8, 8)) is None             # this really is noise
+    # odd shapes are still "not this book's page size", so they never set it
+    assert not plausible_page(spread)
     assert scan_for_pdf(real)["preview"] is False
     # a decoy thumbnail in front of a full page never wins
     assert scan_for_pdf(make_jpeg(1200, 1600, thumbnail=(90, 120)))["preview"] is False
@@ -4172,8 +4251,28 @@ def selftest() -> str:
         good = "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjQxMDI0NDQ4MDB9.sig"
         placeholder = "navigator.userAgent.toLowerCase"
         plain = "puba93cb01f5c7d6a8163631bbd7ce20349"
-        assert harvest_token(b'var t="x.jpg?token=' + good.encode() + b'"') == good
+        # v2.16: the token in every shape the viewer writes it in
+        written = {
+            "query": b'var t="x.jpg?token=' + good.encode() + b'"',
+            "json": b'{"token":"' + good.encode() + b'"}',
+            "camel": b'{"imageToken":"' + good.encode() + b'"}',
+            "encoded": b'&amp;token%3D' + good.encode(),
+            "bare": b'window.__X={"a":1,"t":"' + good.encode() + b'","b":2}',
+        }
+        for shape, body in written.items():
+            assert harvest_token(body) == good, (shape, harvest_token(body))
+        # a JavaScript expression is still never a token, in any shape
+        assert harvest_token(b'{"token":"navigator.userAgent.toLowerCase"}') == ""
+        assert harvest_token(b'{"imageToken":"' + placeholder.encode() + b'"}') == ""
         assert harvest_token(b'?token=' + plain.encode()) == plain
+        # ---- probe output must be safe to paste into a chat --------------
+        line = ("https://html.scribdassets.com/abc/images/5-deadbeef.jpg"
+                "?token=" + good)
+        assert good not in redact(line) and "REDACTED" in redact(line), redact(line)
+        assert good not in redact('{"imageToken":"' + good + '"}')
+        assert good not in redact("var t = \"" + good + "\";")
+        assert "REDACTED" in redact("https://x/file?key=abcdefgh12345678")
+        assert len(redact("x" * 500, 60)) == 60
         assert harvest_token(b'?token=' + placeholder.encode()) == ""
         assert harvest_token(b"nothing here") == ""
         holder = Token()
@@ -4716,7 +4815,8 @@ def selftest() -> str:
             "jpeg size traps, previews and cut transfers, pdf verify, text "
             "layer, panel key and CORS, cookies, token, names, pasted links, "
             "bookmarklet, scribd search, relevance, channels, the document "
-            "queue, signed links, the disk guard, page wiring")
+            "queue, signed links, the disk guard, token shapes, redaction, "
+            "page wiring")
 
 def main(argv: list[str]) -> int:
     global BASE
