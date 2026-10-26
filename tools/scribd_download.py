@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scribd_download.py — ONE file, standard library only.  Version 2.12
+"""scribd_download.py — ONE file, standard library only.  Version 2.17
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 browser, no pip install and no repository.
@@ -198,7 +198,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.16"
+VERSION = "2.17"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -511,6 +511,18 @@ def jsonp_from_image(image_url: str) -> str:
     swapped = re.sub(r"/images/(\d+-[0-9A-Za-z]+)\.(?:jpe?g|png|webp)(?:\?.*)?$",
                      r"/pages/\1.jsonp", image_url, flags=re.IGNORECASE)
     return "" if swapped == image_url else swapped
+
+
+def jsonp_for_page(url: str, number: int) -> str:
+    """That page's descriptor, built on a pattern the document already names.
+
+    A converted document may name an asset for one page only (page 1 keeps its
+    scan). The other pages still have descriptors; their address is the same
+    shape with another page number, so it can be built instead of guessed.
+    """
+    swapped = jsonp_from_image(url) or url
+    return re.sub(r"/(pages|images)/\d+-", lambda m: f"/{m.group(1)}/{number}-",
+                  swapped, count=1)
 
 
 def alternate_host(url: str) -> str:
@@ -1561,6 +1573,68 @@ def pdf_visible_text(text: str) -> str:
     return "".join(out)
 
 
+def wrap_words(words: str, per_line: int) -> list[str]:
+    """Break a page's words into lines that fit, keeping blank lines."""
+    if not (words or "").strip():
+        return []
+    lines: list[str] = []
+    for paragraph in (words or "").replace("\r", "").split("\n"):
+        paragraph = " ".join(paragraph.split())
+        if not paragraph:
+            lines.append("")
+            continue
+        while len(paragraph) > per_line:
+            cut = paragraph.rfind(" ", 0, per_line)
+            cut = cut if cut > per_line // 2 else per_line
+            lines.append(paragraph[:cut].strip())
+            paragraph = paragraph[cut:].strip()
+        lines.append(paragraph)
+    return lines
+
+
+TEXT_SIZES = (10.5, 9.5, 8.5, 7.5, 6.5, 5.5)
+
+
+def text_body_page(words: str, sheet: tuple[float, float]) -> tuple[bytes, int]:
+    """A whole sheet of readable text — for a document page that is text.
+
+    Not every Scribd document is a stack of scans. Plenty are converted
+    documents: the viewer renders each page's *words* (HTML), and there is no
+    image to download for most pages at all. Those pages used to come out as
+    "scan not available" placeholders while the same document read perfectly in
+    a browser — because the words were one request away and nothing asked.
+
+    Returns (content stream, lines actually drawn).
+    """
+    margin = 46.0
+    usable_w = max(40.0, sheet[0] - 2 * margin)
+    usable_h = max(40.0, sheet[1] - 2 * margin)
+    if not words.strip():
+        return b"", 0
+    chosen = TEXT_SIZES[-1]
+    lines: list[str] = []
+    leading = 0.0
+    for size in TEXT_SIZES:
+        per_line = max(16, int(usable_w / (size * 0.5)))
+        leading = round(size * 1.32, 2)
+        lines = wrap_words(words, per_line)
+        if len(lines) * leading <= usable_h:
+            chosen = size
+            break
+        chosen = size
+    room = max(1, int(usable_h / leading))
+    drawn = lines[:room]
+    top = sheet[1] - margin - chosen
+    body = [f"BT /F1 {chosen:.1f} Tf 0 0 0 rg"]
+    for index, line in enumerate(drawn):
+        if not line:
+            continue
+        body.append(f"1 0 0 1 {margin:.2f} {top - index * leading:.2f} Tm "
+                    f"({pdf_visible_text(line)}) Tj")
+    body.append("ET")
+    return "\n".join(body).encode("latin-1", "replace"), len(drawn)
+
+
 def text_layer(words: str, box: tuple[float, float, float, float],
                size: float = 9.0) -> bytes:
     """The invisible text of one page, laid out inside the sheet.
@@ -1602,18 +1676,26 @@ def text_layer(words: str, box: tuple[float, float, float, float],
 
 def build_pdf(pages: list[dict | None], path: str, title: str = "",
               author: str = "", uniform: bool = True,
-              texts: dict[int, str] | None = None) -> tuple[bool, str]:
+              texts: dict[int, str] | None = None,
+              text_pages: dict[int, str] | None = None) -> tuple[bool, str]:
     """pages: [{'payload','params','width','height','rotate'}|None] in sheet order.
 
-    None is a labelled placeholder sheet, so PDF page N always equals document
-    page N. uniform=False gives every sheet the MediaBox of its own scan.
+    None is a placeholder sheet, so PDF page N always equals document page N.
+    `text_pages` is the difference between a placeholder and a page: where a
+    document page is text (no scan exists), its words are laid out on the sheet
+    and the book is readable instead of 38 grey "not available" boxes.
+    uniform=False gives every sheet the MediaBox of its own scan.
     """
     real = [page for page in pages if page]
-    if not real:
+    text_pages = {number: words for number, words in (text_pages or {}).items()
+                  if (words or "").strip()}
+    if not real and not text_pages:
         return False, "no pages to write"
-    house = house_sheet(real)
+    house = house_sheet(real) if real else (595.0, 842.0)   # A4 for a text doc
     texts = texts or {}
     with_text = 0
+    from_text = 0
+    short: list[int] = []
 
     objects: list[bytes] = [b"", b"", b""]     # 1 catalog, 2 pages, 3 font
     objects[2] = (b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
@@ -1621,6 +1703,25 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
     kids: list[int] = []
 
     for index, page in enumerate(pages, start=1):
+        if page is None and text_pages.get(index):
+            sheet = house
+            content, drawn = text_body_page(text_pages[index], sheet)
+            if drawn:
+                from_text += 1
+                wrapped = len(wrap_words(
+                    text_pages[index], max(16, int((sheet[0] - 92) / 3.0))))
+                if wrapped > drawn:
+                    short.append(index)
+            objects.append(b"<< /Length " + str(len(content)).encode()
+                           + b" >>\nstream\n" + content + b"\nendstream")
+            content_num = len(objects)
+            objects.append(
+                (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {sheet[0]} {sheet[1]}]"
+                 f" /Resources << /ProcSet [/PDF /Text] /Font << /F1 3 0 R >> >>"
+                 f" /Contents {content_num} 0 R >>").encode())
+            kids.append(len(objects))
+            continue
+
         if page is None:
             sheet = house
             text = f"page {index} - scan not available"
@@ -1692,11 +1793,16 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
             f" >>\nstartxref\n{xref}\n%%EOF\n").encode()
     with open(path, "wb") as handle:
         handle.write(bytes(out))
-    blanks = sum(1 for page in pages if page is None)
+    blanks = sum(1 for position, page in enumerate(pages, start=1)
+                 if page is None and not text_pages.get(position))
     return True, (f"{len(kids)} sheet(s), {len(out) / 1_000_000:.2f} MB"
+                  + (f", {from_text} page(s) from the document's text"
+                     if from_text else "")
                   + (f", {blanks} placeholder" if blanks else "")
                   + (f", {with_text} page(s) with searchable text" if texts
-                     and with_text else ""))
+                     and with_text else "")
+                  + (f", {len(short)} page(s) whose text runs past the sheet"
+                     if short else ""))
 
 # ---------------------------------------------------------------------------
 # read the file back and check it as a PDF
@@ -2152,6 +2258,19 @@ class Sources:
         with self.lock:
             return list(self.images.get(number) or [])
 
+    def asset_patterns(self) -> list[str]:
+        """One asset name of every shape this document writes, any page."""
+        with self.lock:
+            seen: set[str] = set()
+            out: list[str] = []
+            for urls in list(self.images.values()) + list(self.jsonps.values()):
+                for url in urls:
+                    shape = re.sub(r"/\d+-[0-9A-Za-z]+\.", "/#.", url.split("?")[0])
+                    if shape not in seen:
+                        seen.add(shape)
+                        out.append(url)
+            return out
+
     def jsonps_for(self, number: int) -> list[str]:
         with self.lock:
             return list(self.jsonps.get(number) or [])
@@ -2357,6 +2476,19 @@ class Ctx:
             self.rejected[kind] = self.rejected.get(kind, 0) + 1
         return kind
 
+    def is_text_document(self) -> bool:
+        """Does this document give words instead of page scans?
+
+        Plenty of Scribd uploads are converted documents: the viewer lays out
+        each page's *text*, and there is no image to fetch for it. Reading the
+        second page's descriptor answers this in one request, before 38 page
+        ladders are wasted on images that do not exist.
+        """
+        if len(self.sources.images_for(2)) > 0:
+            return False
+        words = self.page_text(2)
+        return len(words.strip()) > 120
+
     def load(self) -> bool:
         doc = fetch(self.document_url, self.jar)
         if doc["error"]:
@@ -2518,6 +2650,14 @@ class Ctx:
             names = [jsonp for jsonp in
                      (jsonp_from_image(url) for url in self.sources.images_for(number))
                      if jsonp]
+        # nothing names this page? build its address from a page that is named.
+        # This is what a converted document needs: it names one asset, page 1's
+        # scan, and its 37 other pages are words behind a name nobody printed.
+        for url in self.sources.asset_patterns()[:4]:
+            borrowed = jsonp_for_page(url, number)
+            if borrowed and borrowed not in names:
+                names.append(borrowed)
+        names = names[:6]
         for jsonp in names:
             for variant in ([with_token(jsonp, token), strip_token(jsonp)]
                             if token else [strip_token(jsonp)]):
@@ -2890,12 +3030,66 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     os.makedirs(ctx.cache_dir, exist_ok=True)
     os.makedirs(os.path.join(out, "debug"), exist_ok=True)
 
+    # ---- is this a document of words, or of page scans? ------------------
     collected: dict[int, dict] = {}
     failed: list[int] = []
+    text_pages: dict[int, str] = {}
     done = 0
+    text_only = ctx.is_text_document()
+    if text_only:
+        JOB.say("this document is text, not page scans — reading each page's "
+                "words (that is what the viewer shows you)")
+        JOB.say("text: asking for each page's words (one request per page)")
+        with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
+            futures = {pool.submit(ctx.page_text, number): number
+                       for number in range(1, with_limit + 1)}
+            for future in as_completed(futures):
+                if not JOB.alive(ctx.gen):
+                    for pending in futures:
+                        pending.cancel()
+                    JOB.say("stopped — no more pages read")
+                    return
+                number = futures[future]
+                try:
+                    words = future.result()
+                except Exception:                      # noqa: BLE001
+                    words = ""
+                done += 1
+                if words.strip():
+                    text_pages[number] = words
+                else:
+                    failed.append(number)
+                JOB.set_progress(page=done, ok=len(text_pages),
+                                 skipped=len(failed))
+                if done % 10 == 0 or done == with_limit:
+                    JOB.say(f"… {done}/{with_limit} pages, "
+                            f"{len(text_pages)} with words")
+        # a text page can still carry a scan (page 1 of many such documents),
+        # but only ask where the page actually names an image: 37 requests for
+        # images that do not exist would only be refused 37 times
+        with_scan = [number for number in sorted(text_pages)
+                     if ctx.sources.images_for(number)]
+        if with_scan:
+            JOB.say(f"scan: {len(with_scan)} page(s) also name a picture "
+                    f"({', '.join(str(n) for n in with_scan[:8])}"
+                    f"{' …' if len(with_scan) > 8 else ''}) — fetching those too")
+        for number in with_scan:
+            if not JOB.alive(ctx.gen):
+                break
+            _n, built, _m = ctx.grab(number)
+            if built:
+                collected[number] = built
+        JOB.say(f"text: {len(text_pages)} of {with_limit} page(s) have words"
+                + (f", {len(collected)} also have a scan" if collected else ""))
+        JOB.set_progress(ok=len(text_pages), skipped=len(failed))
+
     with ThreadPoolExecutor(max_workers=ctx.jobs) as pool:
-        futures = [pool.submit(ctx.grab, number)
-                   for number in range(1, with_limit + 1)]
+        # not one scan request when the document is text: the old code queued
+        # every page here and then threw the queue away, which is what made a
+        # text document ask for 38 images that never existed
+        futures = ([] if text_only else
+                   [pool.submit(ctx.grab, number)
+                    for number in range(1, with_limit + 1)])
         for future in as_completed(futures):
             if not JOB.alive(ctx.gen):
                 for pending in futures:
@@ -2962,6 +3156,36 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         failed = still
         JOB.set_progress(ok=len(collected), skipped=len(failed))
 
+    # ---- a refused page may still have words: use them --------------------
+    # This is the case that made a 38-page document come out blank. Most of its
+    # pages are text the viewer renders; no image exists for them, so every one
+    # of them used to become "scan not available". One descriptor request per
+    # missing page turns them into pages you can actually read.
+    if failed and not text_only:
+        JOB.say(f"no scan for {len(failed)} page(s) — asking for their words")
+        rescued: list[int] = []
+        for number in sorted(failed):
+            if not JOB.alive(ctx.gen):
+                break
+            words = ctx.page_text(number)
+            if words.strip():
+                text_pages[number] = words
+                rescued.append(number)
+        if rescued:
+            for number in rescued:
+                rows = [line for line in ctx.trace.get(number, [])
+                        if "403" in line or "AccessDenied" in line]
+                JOB.say(f"page {number}: no scan (it is text in this document) — "
+                        f"wrote its words instead"
+                        + ("" if not rows else " · the scan was refused with 403"))
+            failed = [number for number in failed if number not in text_pages]
+            JOB.set_progress(ok=len(collected) + len(text_pages),
+                             skipped=len(failed))
+            JOB.say(f"{len(rescued)} page(s) came from the document's text — "
+                    + ("the PDF is complete, no placeholder"
+                       if not failed else
+                       f"{len(failed)} page(s) still have neither a scan nor words"))
+
     # ---- pictures that arrived, but not as a full scan -------------------
     previews = sorted(number for number, page in collected.items()
                       if page.get("preview"))
@@ -3027,10 +3251,15 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
 
     uniform = check and not mixed and bool(collected)
     sheets = sheet_list(collected, with_limit, placeholder)
-    if uniform:
+    if not sheets:
+        # a text document has no scans at all: one sheet per page, A4
+        sheets = [None] * with_limit
+    if uniform and any(sheets):
         sheet = house_sheet([page for page in sheets if page])
     elif reference[0]:
         sheet = (round(reference[0] * 0.75, 2), round(reference[1] * 0.75, 2))
+    elif text_pages:
+        sheet = (595.0, 842.0)
     else:
         sheet = (0.0, 0.0)
 
@@ -3095,7 +3324,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             for line in lines[:4]:
                 JOB.say("   " + line)
 
-    if not collected:
+    if not collected and not text_pages:
         kinds = ", ".join(f"{count} {kind}" for kind, count in
                           sorted(ctx.rejected.items(), key=lambda row: -row[1]))
         if ctx.rejected:
@@ -3126,7 +3355,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         suffix += 1
 
     ok, note_text = build_pdf(sheets, target, title=ctx.title, author=ctx.author,
-                              uniform=uniform, texts=texts)
+                              uniform=uniform, texts=texts, text_pages=text_pages)
     if not ok:
         with JOB.lock:
             JOB.verdict = "FAILED"
@@ -3148,9 +3377,12 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         JOB.file = target
         JOB.verdict = "PDF BUILT" if not failed else "PDF PARTIAL"
         asked = with_limit if limit else ctx.total
-        JOB.detail = (f"{note_text} · {len(collected)} of {asked} page(s) real"
+        real_pages = len(set(collected) | set(text_pages))
+        drawn_text = sum(1 for number in text_pages if number not in collected)
+        JOB.detail = (f"{note_text} · {real_pages} of {asked} page(s) real"
                       + (f" of {ctx.total} in the document" if limit and
                          with_limit < ctx.total else "")
+                      + (f" · {drawn_text} from text" if drawn_text else "")
                       + (f" · {len(failed)} placeholder" if failed else "")
                       + (f" · {len(previews)} small preview" if previews else "")
                       + (f" · {len(cuts)} cut short" if cuts else "")
@@ -4802,6 +5034,61 @@ def selftest() -> str:
         assert rows[0]["bytes"] == 12 and rows[0]["when"] > 0
         assert panel_files(os.path.join(shelf, "gone")) == []
 
+    # ---- building a descriptor address nothing printed ------------------
+    named = (b'var p1="https:\\/\\/html.scribdassets.com\\/h7\\/images'
+             b'\\/1-aa7.jpg";')
+    sources = Sources()
+    sources.merge(named)
+    assert sources.jsonps_for(2) == [] and sources.images_for(2) == []
+    assert sources.asset_patterns() == [
+        "https://html.scribdassets.com/h7/images/1-aa7.jpg"], sources.asset_patterns()
+    built = jsonp_for_page(sources.asset_patterns()[0], 2)
+    assert built == "https://html.scribdassets.com/h7/pages/2-aa7.jsonp", built
+    assert jsonp_for_page("https://h/pages/9-bb.jsonp?token=x", 4) == \
+        "https://h/pages/4-bb.jsonp?token=x"
+    assert jsonp_for_page("https://h/images/3-cc.webp", 11) == \
+        "https://h/pages/11-cc.jsonp"
+    assert jsonp_for_page("https://h/nothing", 5) == "https://h/nothing"
+
+    # ---- a page that is text, not a scan --------------------------------
+    # The case that made a 38-page document come out as 37 grey boxes: most of
+    # its pages have words and no image at all. Those pages have to be drawn.
+    assert wrap_words("", 40) == []
+    assert wrap_words("one two three", 40) == ["one two three"]
+    wrapped = wrap_words("word " * 60, 20)
+    assert len(wrapped) > 1 and all(len(line) <= 20 for line in wrapped), wrapped
+    assert " ".join(wrapped).split() == ["word"] * 60
+
+    body_words = ("KUSANTHULA BUKU LA NTHONDO. " * 40).strip()
+    content, drawn = text_body_page(body_words, (595.0, 842.0))
+    assert drawn > 1 and content.startswith(b"BT") and content.endswith(b"ET")
+    shown = " ".join(re.findall(r"\((.*?)\) Tj", content.decode("latin-1")))
+    assert shown.split() == body_words.split(), "the sheet is not the page"
+    small, _ = text_body_page(body_words * 12, (595.0, 842.0))
+    assert float(re.search(rb"/F1 ([\d.]+) Tf", small).group(1)) < 10.5
+    assert text_body_page("   ", (595.0, 842.0)) == (b"", 0)
+
+    with tempfile.TemporaryDirectory() as shelf:
+        both = os.path.join(shelf, "text.pdf")
+        made, message = build_pdf([None, None], both, title="T",
+                                  text_pages={1: body_words, 2: body_words})
+        assert made, message
+        assert "2 page(s) from the document's text" in message, message
+        assert "placeholder" not in message, message
+        ok, detail = verify_pdf(both, expect_pages=2, expect_images=0)
+        assert ok, detail
+
+        half = os.path.join(shelf, "half.pdf")
+        made, message = build_pdf([None, None], half, title="T",
+                                  text_pages={1: body_words})
+        assert made and "1 placeholder" in message, message
+        assert "1 page(s) from the document's text" in message, message
+
+        empty = os.path.join(shelf, "empty.pdf")
+        made, message = build_pdf([None, None], empty, title="T",
+                                  text_pages={1: "   "})
+        assert not made and message == "no pages to write", message
+
     gate = Gate(rate=24.0, floor=8.0, ceiling=60.0)
     for _ in range(40):
         gate.complaint(403)
@@ -4816,7 +5103,7 @@ def selftest() -> str:
             "layer, panel key and CORS, cookies, token, names, pasted links, "
             "bookmarklet, scribd search, relevance, channels, the document "
             "queue, signed links, the disk guard, token shapes, redaction, "
-            "page wiring")
+            "page wiring, text pages, built names")
 
 def main(argv: list[str]) -> int:
     global BASE

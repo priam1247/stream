@@ -43,7 +43,7 @@ something nobody asked.
    printed, and only `scribd.com` / `scribdassets.com` cookies are ever sent —
    the rest of a browser export stays out of the request.
 3. Start it: `PY_FILE=scribd_download.py`, restart.
-4. Open the server address. The line under the title must read **v2.12**.
+4. Open the server address. The line under the title must read **v2.17**.
 
 ## 2. Find links: five ways
 
@@ -267,6 +267,39 @@ no quality loss. JPEG is embedded as-is; PNG goes in as its own filtered stream.
 If the pages genuinely differ (a portrait book with landscape spreads), that is
 reported and every sheet keeps its own size instead of being squashed.
 
+## A document that is text, not scans
+
+Half of Scribd is not photographed pages. An uploaded Word file, a typed book,
+anything that was **converted** is laid out by Scribd's viewer as *text*: the
+pages you read in the browser are HTML, and there is no image anywhere for them.
+Until v2.17 the panel only asked for images, so those pages came out as grey
+`page 4 - scan not available` boxes while the same book read perfectly in a
+browser — a 38-page document became one real page and 37 empty ones.
+
+What the panel does now:
+
+- **It looks first, then downloads.** One descriptor request for page 2 answers
+  "is this a document of words or of page scans?" — the words settle it before a
+  single page ladder is spent on images that do not exist.
+- **A text page is drawn as a page.** Its words go on the sheet in Helvetica,
+  wrapped to the width, with the font stepping down (10.5 → 5.5 pt) until the
+  whole page fits. Every sheet is A4 unless page 1 (or another page) has a scan,
+  in which case the book keeps the scans' size.
+- **A refused page still gets its words.** On a scan document, any page that
+  fails three retry rounds is asked for its words before it is given up on. If
+  it has them, the page is drawn — `page 9: no scan (it is text in this document)
+  — wrote its words instead` — and it is no longer a placeholder.
+- **The address does not need to be printed.** Converted documents often name
+  one asset only (page 1's scan). The other pages' descriptors live at the same
+  address with another page number, so the panel builds
+  `…/pages/<n>-<same-hash>.jsonp` from the one name it has, with the token and
+  without it.
+- **The verdict counts pages, not pictures**: `38 of 38 page(s) real · 37 from
+  text` — and `placeholder` only for a page with neither a scan nor words.
+
+Nothing about this needs a new dependency, and it costs one request per page —
+the same order of traffic as the scans it replaces.
+
 ## Testing without the network
 
 `tools/_mock_scribd.py` is a local stand-in for Scribd (document page, embed
@@ -278,9 +311,24 @@ python tools/scribd_download.py --base http://127.0.0.1:8911 --out /tmp/out \
     --find "physics 12th"          # the mock answers with two documents
 ```
 
+A **converted document** (text pages, no scans) has its own switches, because
+that is the shape that used to produce grey sheets:
+
+```
+MOCK_PAGES=38 MOCK_TEXT_DOC=1 python3 tools/_mock_scribd.py 8912   # page 1 scan, 37 text pages
+MOCK_PAGES=38 MOCK_TEXT_DOC=2 python3 tools/_mock_scribd.py 8913   # only page 1 is named at all
+python3 tools/scribd_download.py --base http://127.0.0.1:8912 --out /tmp/t1 \
+    --url https://www.scribd.com/document/681599722/NTHONDO
+```
+
+Expect `38 sheet(s) … 37 page(s) from the document's text · 38 of 38 page(s)
+real`, `--verify` clean, and no request for the 37 images that do not exist.
+
 `--selftest` covers the rest offline: sheet maths, all four EXIF rotations, JPEG
 header traps, previews and cut transfers, PDF verification, the text layer (including brackets, backslashes
-and non-Latin characters), cookie filtering, token parsing, pasted links, the
+and non-Latin characters), text pages for a document that has no scans, word
+wrapping, descriptor addresses built from the one name a page prints, cookie
+filtering, token parsing, pasted links, the
 bookmarklet, the throttle breaker, and the search-answer parser (a refusal is
 never reported as "no results").
 
@@ -419,6 +467,9 @@ history: on a 10 GB plan lower `SCRIBD_KEEP_FILES` to about 20.
 
 ## Limits, stated plainly
 
+- **A page whose words exist is never a placeholder (v2.17).** If Scribd refuses
+  the image but serves the page's descriptor, the page is drawn as text. The log
+  says `no scan (it is text in this document) — wrote its words instead`.
 - **Nothing that arrives is thrown away any more (v2.16).** A small scan, a
   thumbnail, a double-page spread, a page whose shape is nothing like a book page
   — all of it goes into the PDF and is scaled to the sheet. Only a picture under
@@ -427,8 +478,8 @@ history: on a 10 GB plan lower `SCRIBD_KEEP_FILES` to about 20.
   `"imageToken":"…"`, and a bare `eyJ…` JWT). Before, a scanned upload whose
   viewer writes the token as JSON logged `image token: none` and every page came
   back `403 AccessDenied` — 102 pages, one image.
-- A page whose scan Scribd refuses will stay a placeholder. The log says which
-  page and why; it is never quietly dropped.
+- A page stays a placeholder only when Scribd gives **neither** a picture nor
+  its words. The log says which page and why; it is never quietly dropped.
 - **A refusal means one of two things, and v2.9 tells them apart.** One page
   refused while the rest arrive is a locked page — nothing to do. Different
   pages refused in a row is *throttling*: the job rests (4s, 12s, 30s), slows
@@ -452,7 +503,7 @@ history: on a 10 GB plan lower `SCRIBD_KEEP_FILES` to about 20.
   page beats a blank one. Under 80 px it is still treated as a smudge.
 - `--text` is one request per page and gives up quietly on a page that has no
   descriptor: the PDF is still built, that page just stays a picture. A locked
-  page (403) gets a placeholder sheet with no words for the same reason.
+  page (403) gets a placeholder sheet only if its words are refused too.
 - The text layer drops characters Helvetica cannot draw (anything outside
   Latin-1, e.g. Devanagari or Chinese) — the scan still shows them. There is no
   way around that without embedding a font, which would blow the file size.
