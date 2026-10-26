@@ -153,7 +153,10 @@ the same name without the token, then the page's own descriptor, which names the
 real asset outright. Every url tried for a failed page is recorded. A page that
 comes back with neither a scan nor its words is then photographed by a browser
 (--shots / SCRIBD_SHOTS), because a page nobody sent us is still a page somebody
-can see — and only if no browser is there does it fall back to a labelled sheet.
+can see — and if that browser is not running, the engine starts it itself. Only
+when no browser can exist at all is the page left out of the PDF and named in
+the verdict. A page is never grey: no sheet is ever drawn for a page that has
+nothing on it.
 
 Options: --find "TEXT", --pages N, --pick 1,3, --url LINK (repeatable), --links "TEXT",
          --limit N, --out DIR, --cookies PATH, --base URL, --jobs N (default 12),
@@ -200,6 +203,7 @@ import re
 import socket
 import shutil
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -211,7 +215,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2.29"
+VERSION = "2.30"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -271,7 +275,7 @@ PAUSE_LADDER = (4.0, 12.0, 30.0)
 QUEUE_DROP_AFTER = float(os.environ.get("SCRIBD_QUEUE_DROP_AFTER", "20"))
 # How long one document may spend resting and retrying before it is built with
 # whatever arrived. A page Scribd will not serve is not worth ten minutes of a
-# 100-page book: the placeholders are labelled, the PDF still lands.
+# 100-page book: the missing pages are named in the verdict, the PDF still lands.
 RETRY_BUDGET = float(os.environ.get("SCRIBD_RETRY_BUDGET", "75"))
 # With a browser to photograph what is left, resting a minute for scans that may
 # never come is a minute the reader waits for a page that could already be in the
@@ -2074,10 +2078,12 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
               text_pages: dict[int, str] | None = None) -> tuple[bool, str]:
     """pages: [{'payload','params','width','height','rotate'}|None] in sheet order.
 
-    None is a placeholder sheet, so PDF page N always equals document page N.
-    `text_pages` is the difference between a placeholder and a page: where a
-    document page is text (no scan exists), its words are laid out on the sheet
-    and the book is readable instead of 38 grey "not available" boxes.
+    None with words in `text_pages` becomes a readable text sheet. None with
+    nothing — no scan, no words, no browser that could photograph it — is
+    OMITTED: the sheet is not drawn and the note says how many went missing.
+    A grey "scan not available" sheet is never drawn again, because a book
+    that silently contains grey leaves is worse than a book that says which
+    pages it could not get.
     uniform=False gives every sheet the MediaBox of its own scan.
     """
     real = [page for page in pages if page]
@@ -2090,6 +2096,7 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
     with_text = 0
     from_text = 0
     short: list[int] = []
+    missing: list[int] = []
 
     objects: list[bytes] = [b"", b"", b""]     # 1 catalog, 2 pages, 3 font
     objects[2] = (b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
@@ -2116,25 +2123,10 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
             continue
 
         if page is None:
-            sheet = house
-            text = f"page {index} - scan not available"
-            # centred on the sheet, with a light frame, so a missing page is
-            # obvious in the book rather than an empty white leaf
-            span = len(text) * 16 * 0.5
-            left = max(36.0, (sheet[0] - span) / 2)
-            middle = sheet[1] / 2
-            content = (f"0.85 0.85 0.85 RG 1 w 36 {middle - 40:.2f} "
-                       f"{sheet[0] - 72:.2f} 80 re S "
-                       f"BT /F1 16 Tf 0 0 0 rg 1 0 0 1 {left:.2f} {middle:.2f} Tm "
-                       f"({text}) Tj ET").encode()
-            objects.append(b"<< /Length " + str(len(content)).encode()
-                           + b" >>\nstream\n" + content + b"\nendstream")
-            content_num = len(objects)
-            objects.append(
-                (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {sheet[0]} {sheet[1]}]"
-                 f" /Resources << /ProcSet [/PDF /Text] /Font << /F1 3 0 R >> >>"
-                 f" /Contents {content_num} 0 R >>").encode())
-            kids.append(len(objects))
+            # Nothing arrived for this page from any source. It is left out
+            # and named in the note: a grey sheet is not a page and not an
+            # answer, and readers deserve the truth in words, not in leaves.
+            missing.append(index)
             continue
 
         sheet = (house if uniform else
@@ -2191,7 +2183,8 @@ def build_pdf(pages: list[dict | None], path: str, title: str = "",
     return True, (f"{len(kids)} sheet(s), {len(out) / 1_000_000:.2f} MB"
                   + (f", {from_text} page(s) from the document's text"
                      if from_text else "")
-                  + (f", {blanks} placeholder" if blanks else "")
+                  + (f", {blanks} page(s) omitted — no scan, no words, no "
+                     f"browser" if blanks else "")
                   + (f", {with_text} page(s) with searchable text" if texts
                      and with_text else "")
                   + (f", {len(short)} page(s) squeezed to fit the sheet "
@@ -3129,7 +3122,7 @@ class Ctx:
         throttle that will clear — it is a book this address will not be
         served. While other documents wait, fighting it further buys nothing
         and costs every book behind it, so it drops itself: what arrived is
-        written, the missing pages are labelled for what they are, and the
+        written, the missing pages are left out and named for what they are,
         queue moves on. There is no second pass — a document that refused
         everything for twenty seconds refuses everything a second time, and
         the reader should not wait twice for the same answer.
@@ -3280,7 +3273,8 @@ class Ctx:
             JOB.say(f"preview lock: the document's own token says the CDN "
                     f"serves pages {self.lock_window[0]}–{self.lock_window[1]} "
                     f"of {self.total} — the rest are locked by Scribd, and will "
-                    f"be labelled or photographed, never asked for")
+                    f"be photographed or left out of the PDF and named, never "
+                    f"asked for")
 
         meta = oembed(self.ident, self.jar)
         self.author = safe_name(str(meta.get("author_name") or ""), "")
@@ -4045,6 +4039,71 @@ def refusal_reason(body: bytes, status: int) -> str:
     return text or f"http {status}"
 
 
+# ─── the browser service starts itself ──────────────────────────────────────
+# A host that runs only the web process (the Procfile's `web:` line) has no
+# shooter until somebody starts one by hand — and a document whose scans are
+# refused then used to end in grey sheets saying "scan not available". That
+# sheet no longer exists, so the engine makes sure the browser does: same box,
+# same node that runs the panel, the service that ships next to this file.
+_AUTOSTART = {"tried": False, "base": ""}
+
+
+def autostart_shots() -> str:
+    """Start tools/troy-search myself and wait for it to answer. '' if I cannot.
+
+    Tried once per process. SCRIBD_AUTOSHOOT=0 turns it off for hosts where a
+    browser must never be spawned; SCRIBD_SHOOTER_DIR points somewhere else.
+    """
+    if _AUTOSTART["tried"]:
+        return _AUTOSTART["base"]
+    _AUTOSTART["tried"] = True
+    if os.environ.get("SCRIBD_AUTOSHOOT", "1") == "0":
+        return ""
+    node = shutil.which("node")
+    here = os.path.dirname(os.path.abspath(__file__))
+    proj = os.environ.get("SCRIBD_SHOOTER_DIR") or os.path.join(here, "troy-search")
+    entry = os.path.join(proj, "index.js")
+    if not node or not os.path.isfile(entry):
+        JOB.say("no browser service is running and I cannot start one myself "
+                f"(node found: {bool(node)} · {entry} exists: "
+                f"{os.path.isfile(entry)}) — pages with no other source will "
+                f"be left out of the PDF and named, never greyed")
+        return ""
+    env = dict(os.environ)
+    env.setdefault("TMPDIR", os.path.join(proj, "tmp"))
+    try:
+        subprocess.Popen([node, "index.js"], cwd=proj, env=env,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except Exception as exc:  # noqa: BLE001
+        JOB.say(f"starting the browser service myself failed: {exc!r}")
+        return ""
+    JOB.say("no browser service was running — starting tools/troy-search "
+            "myself and waiting for it, because a grey page is not an option")
+    for _ in range(45):
+        time.sleep(1.0)
+        base, _note = discover_shots(force=True)
+        if base:
+            _AUTOSTART["base"] = base
+            JOB.say(f"the browser service I started is up: {base}")
+            return base
+    JOB.say("the browser service I started never answered in 45s")
+    return ""
+
+
+def ensure_shooter(shooter: "Shooter") -> "Shooter":
+    """A live shooter: ask again past the cache, then start one myself."""
+    if shooter.alive():
+        return shooter
+    base, _note = discover_shots(force=True)
+    if not base:
+        base = autostart_shots()
+    if not base:
+        return shooter
+    fresh = Shooter(base, discover=False)
+    return fresh if fresh.alive() else shooter
+
+
 class Shooter:
     """One browser service, asked for the pages this document could not build.
 
@@ -4110,6 +4169,7 @@ class Shooter:
         # a sheet that says "scan not available". Judged on the shot's own rows,
         # before the size goes back to the screen's.
         blank = looks_blank_shot(len(body), page["height"])
+        page["blank"] = blank
         # a screenshot's pixel count says how finely the page was drawn, not how
         # big the page is: at 2x it is the same page at twice the detail, so the
         # size goes back to the screen's and the sharpness stays in the pixels
@@ -4139,7 +4199,7 @@ class Shooter:
             notes.append(
                 f"{len(asked)} page(s) need a browser and one pass photographs "
                 f"{MAX_SHOT_PAGES} — pages {wanted[-1] + 1} to {asked[-1]} will be "
-                f"labelled sheets; run again for those")
+                f"left out of the PDF and named; run again for those")
         if not self.alive():
             return {}, [self.note or "no browser to ask"]
         pictures: dict[int, dict] = {}
@@ -4210,8 +4270,9 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 f"{ctx.rest_budget:.0f}s waiting for scans")
     elif shooter.base:
         JOB.say(f"no browser at {shooter.base}: {shooter.note}")
-        JOB.say("  pages this document cannot build will be labelled sheets; "
-                "start that service and run again to photograph them")
+        JOB.say("  pages this document cannot build will be left out of the PDF "
+                "and named, never greyed; when pages are missing I will try to "
+                "start that service myself")
     if not ctx.ident:
         with JOB.lock:
             JOB.verdict = "BAD LINK"
@@ -4368,10 +4429,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             stand_in = placeholder_scan(built.get("payload") or b"") if built else ""
             if stand_in:
                 # a page with no words and only a stand-in picture has no page in
-                # it: a labelled sheet is honest, and a browser may yet photograph
+                # it: leaving it out is honest, and a browser may yet photograph
                 # what a person sees
                 JOB.say(f"page {number}: the only picture named for it is "
-                        f"{stand_in} — labelled instead, and a browser can still "
+                        f"{stand_in} — left out for now, and a browser can still "
                         f"photograph the real page")
                 built, message = None, ""
             if built:
@@ -4434,20 +4495,20 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         if never_asked:
             failed = sorted(set(failed) | set(never_asked))
             JOB.say(f"{len(never_asked)} page(s) were never asked for — the "
-                    f"queue moved on without them: they are labelled in the "
-                    f"PDF, not hidden")
+                    f"queue moved on without them: they will be left out of "
+                    f"the PDF and named, never greyed")
 
     # ---- retries, on a budget -------------------------------------------
     # A page Scribd refuses is refused for a reason (not this account, or the
     # address is throttled). Retrying is worth a minute; it is not worth ten.
-    # Everything already fetched is kept, the missing pages go in as labelled
-    # placeholders, and the PDF still lands.
+    # Everything already fetched is kept, the missing pages are photographed or
+    # left out of the PDF and named, and the PDF still lands.
     recovered_last = -1
     retry_started = time.time()
     budget = RETRY_BUDGET
     if locked:
-        # a locked page is a failed page: labelled honestly, photographed if a
-        # browser is on hand, and never counted as something we dropped
+        # a locked page is a failed page: photographed if a browser is on hand,
+        # left out and named if not, never counted as something we dropped
         failed = sorted(set(failed) | locked)
     if failed and shooter.alive() and not ctx.skip_now:
         budget = min(RETRY_BUDGET, SHOT_RETRY_BUDGET)
@@ -4485,7 +4546,8 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             JOB.say(f"retry budget spent ({spent:.0f}s of {budget:.0f}s) — "
                     + (f"{len(failed)} page(s) go to the browser"
                        if budget < RETRY_BUDGET else
-                       f"building the PDF with {len(failed)} placeholder page(s)"))
+                       f"leaving {len(failed)} page(s) out of the PDF rather "
+                       f"than greying them"))
             break
         JOB.say(f"retry {round_number}: {len(failed)} page(s), resting {pause:.0f}s")
         time.sleep(pause)
@@ -4549,6 +4611,10 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     # This is the page that used to say "scan not available". Nothing arrived
     # for it, so there is nothing to draw — but a browser can still see it, and
     # what a browser sees is the page.
+    if failed and not ctx.skip_now:
+        # not alive at the start of the job is not an answer: ask past the
+        # cache and, if nobody runs one, start the browser service myself
+        shooter = ensure_shooter(shooter)
     if failed and shooter.alive() and not ctx.skip_now:
         JOB.say(f"photographing {len(failed)} page(s) with a browser "
                 f"({shooter.base}) — a page nobody sent us is still a page "
@@ -4752,6 +4818,16 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 JOB.say("   " + line)
         return
 
+    if failed and os.environ.get("SCRIBD_STRICT_PAGES", "0") == "1":
+        # some deployments would rather have no book than a book with holes
+        with JOB.lock:
+            JOB.verdict = "FAILED"
+            JOB.detail = (f"{len(failed)} page(s) have no source at all — no "
+                          f"scan, no words, no browser that could photograph "
+                          f"them: {failed[:20]}; SCRIBD_STRICT_PAGES refuses "
+                          f"to save a book with holes")
+        return
+
     stem = safe_name(name, "") or ctx.title or f"scribd-{ctx.ident}"
     target = os.path.join(out, f"{stem}.pdf")
     suffix = 2
@@ -4768,7 +4844,9 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         return
 
     if verify:
-        sound, report = verify_pdf(target, expect_pages=len(sheets),
+        drawn = len(sheets) - sum(1 for pos, sh in enumerate(sheets, start=1)
+                                  if sh is None and not text_pages.get(pos))
+        sound, report = verify_pdf(target, expect_pages=drawn,
                                    expect_images=len(collected), uniform=uniform)
         JOB.say("verify: " + report)
         if not sound:
@@ -4791,19 +4869,20 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                       + (f" · {drawn_text} from text" if drawn_text else "")
                       + (f" · {len(photographed)} photographed"
                          if photographed else "")
-                      + (f" · {len(failed)} placeholder" if failed else "")
+                      + (f" · {len(failed)} omitted" if failed else "")
                       + (f" · {len(previews)} small preview" if previews else "")
                       + (" · dropped by the queue" if ctx.skip_now else "")
                       + (f" · {len(cuts)} cut short" if cuts else "")
                       + (" · verified" if verify else ""))
     if failed:
-        JOB.say("placeholder pages: " + ", ".join(str(n) for n in failed[:60])
+        JOB.say("pages left out of the PDF (no scan, no words, no browser): "
+                + ", ".join(str(n) for n in failed[:60])
                 + (" …" if len(failed) > 60 else ""))
         JOB.say("why, page by page: downloads/debug/failed-pages.txt")
     if ctx.skip_now:
         JOB.say(f"dropped itself after {ctx.age():.0f}s: {len(failed)} page(s) "
-                f"were only refusals and the queue was waiting — they are "
-                f"labelled in the PDF and this document is not retried")
+                f"were only refusals and the queue was waiting — they are left "
+                f"out of the PDF and named in the verdict; not retried")
 
     # a small disk fills up quietly; say what was cleaned instead of hiding it
     for line in prune_out(out):
@@ -5944,23 +6023,25 @@ def selftest() -> str:
         wide = scan_for_pdf(make_jpeg(1600, 1200))
         ok, note = build_pdf([tall, None, wide, tall], target,
                              title="A (B)", author="me")
-        assert ok and "placeholder" in note, note
+        assert ok and "1 page(s) omitted" in note, note
         with open(target, "rb") as handle:
             written = handle.read()
         assert written.startswith(b"%PDF-1.4") and written.rstrip().endswith(b"%%EOF")
-        assert b"/Count 4" in written and written.count(b"/Type /Page /Parent") == 4
+        # 2.30: a page nothing arrived for is LEFT OUT and named in the note.
+        # A grey "scan not available" sheet must never exist again.
+        assert b"/Count 3" in written and written.count(b"/Type /Page /Parent") == 3
         assert written.count(b"/DCTDecode") == 3
-        assert b"page 2 - scan not available" in written and b"/Info" in written
+        assert b"scan not available" not in written and b"/Info" in written
         boxes = re.findall(rb"/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]", written)
-        assert len(boxes) == 4 and len(set(boxes)) == 1, boxes
+        assert len(boxes) == 3 and len(set(boxes)) == 1, boxes
         # the wide page is centred inside the same sheet, never stretched
         assert b"/MediaBox [0 0 900.0 1200.0]" in written
 
-        sound, report = verify_pdf(target, expect_pages=4, expect_images=3)
+        sound, report = verify_pdf(target, expect_pages=3, expect_images=3)
         assert sound, report                       # 2.3 failed here: counted 0
         assert "3 image stream(s)" in report, report
         assert verify_pdf(target, expect_pages=5, expect_images=3)[0] is False
-        assert verify_bytes(written.replace(b"/Count 4", b"/Count 9"),
+        assert verify_bytes(written.replace(b"/Count 3", b"/Count 9"),
                           expect_pages=4, expect_images=3)[1].find("/Count says 9") >= 0
         cut = written.find(b"/Subtype /Image")
         marker = written.find(b"stream\n", cut) + len(b"stream\n")
@@ -6386,13 +6467,18 @@ def selftest() -> str:
         leaf = scan_for_pdf(make_jpeg(1200, 1600))
         ok, note = build_pdf([leaf, None], book, texts={1: "Mock page one\nline two"})
         assert ok and "searchable text" in note, note
-        sound, report = verify_pdf(book, expect_pages=2, expect_images=1)
+        assert "1 page(s) omitted" in note, note
+        sound, report = verify_pdf(book, expect_pages=1, expect_images=1)
         assert sound, report                       # the layer must not break xref
         with open(book, "rb") as handle:
             written = handle.read()
         assert b"(Mock page one) Tj" in written
-        # the placeholder sheet is untouched by the layer: one page has text
+        assert b"scan not available" not in written
+        # the text page is untouched by the omission: one page has text
         assert note.count("1 page(s) with searchable text") == 1, note
+        # a book where nothing arrived is not a book: no file, honest note
+        ok, note = build_pdf([None, None], os.path.join(spot, "none.pdf"))
+        assert not ok and "no pages" in note, note
         ok, note = build_pdf([leaf], book)
         assert ok and "searchable" not in note, note
         with open(book, "rb") as handle:
@@ -6713,7 +6799,7 @@ def selftest() -> str:
         half = os.path.join(shelf, "half.pdf")
         made, message = build_pdf([None, None], half, title="T",
                                   text_pages={1: body_words})
-        assert made and "1 placeholder" in message, message
+        assert made and "1 page(s) omitted" in message, message
         assert "1 page(s) from the document's text" in message, message
 
         empty = os.path.join(shelf, "empty.pdf")
@@ -6857,7 +6943,7 @@ def selftest() -> str:
             globals()["MAX_SHOT_PAGES"] = 2
             capped, notes = shooter.capture("7", [1, 2, 3], jobs=2)
             assert sorted(capped) == [1, 2], sorted(capped)
-            assert any("labelled sheets" in note and "pages 3 to 3" in note
+            assert any("left out of the PDF" in note and "pages 3 to 3" in note
                        for note in notes), notes
         finally:
             globals()["MAX_SHOT_PAGES"] = held_cap
@@ -6866,7 +6952,7 @@ def selftest() -> str:
 
         # a service that answers 200 and says "ok": false is NOT a browser on
         # hand. Believing it would send every missing page somewhere that cannot
-        # help, and the document would end up with the same placeholders, slower.
+        # help, and the document would end up with the same missing pages, slower.
         notready = Shooter(f"http://127.0.0.1:{service.server_address[1]}/notready")
         assert notready.alive() is False, notready.note
         assert "@sparticuz/chromium" in notready.note, notready.note
@@ -6995,7 +7081,8 @@ def selftest() -> str:
             "written into the file, the picture that was not a page, "
             "the second door, the name that was never asked, "
             "the lock map in the token, the last line of every page, "
-            "the queue that drops what will not come")
+            "the queue that drops what will not come, "
+            "the sheet that is never grey")
 
 def main(argv: list[str]) -> int:
     global BASE
