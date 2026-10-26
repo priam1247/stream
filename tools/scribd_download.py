@@ -193,7 +193,10 @@ Panel options (environment, all optional):
   SERVER_PORT / PORT             port to listen on
   SCRIBD_SHOTS                   a browser service that photographs a page this
                                  panel could not build (troy-search's /shot);
-                                 SCRIBD_SHOT_SCALE (default 2) and
+                                 SCRIBD_SHOT_SCALE (default 1: standard
+                                 quality, the page at the size the viewer draws
+                                 it; 2 is the same sheet in the PDF at twice the
+                                 detail and four times the bytes) and
                                  SCRIBD_SHOT_TIMEOUT (default 120) tune it.
                                  With none set, everything works as before — the
                                  addresses written into SHOT_HOSTS are asked in
