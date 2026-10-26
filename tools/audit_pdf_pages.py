@@ -86,7 +86,138 @@ def audit(path):
     return findings, pages, len(images)
 
 
+def parse_objects(data):
+    """object number -> (dict bytes, stream body), nesting honoured."""
+    objs = {}
+    for m in re.finditer(rb"(\d+) 0 obj\s*", data):
+        num = int(m.group(1))
+        i = m.end()
+        if not data.startswith(b"<<", i):
+            continue
+        depth, j = 0, i
+        while j < len(data):
+            if data.startswith(b"<<", j):
+                depth += 1; j += 2
+            elif data.startswith(b">>", j):
+                depth -= 1; j += 2
+                if depth == 0:
+                    break
+            else:
+                j += 1
+        d = data[i:j]
+        body = b""
+        k = data.find(b"stream", j)
+        if k != -1 and k - j < 8:
+            t = k + 6
+            if data[t:t + 2] == b"\r\n":
+                t += 2
+            elif data[t:t + 1] in (b"\n", b"\r"):
+                t += 1
+            e = data.find(b"endstream", t)
+            body = data[t:e].rstrip(b"\r\n")
+        objs[num] = (d, body)
+    return objs
+
+
+def page_rows(path):
+    """One honest row per page, in reading order: what carries the page,
+    how big its picture is, how many strings it draws, and (with Pillow)
+    how much ink is on it."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    objs = parse_objects(data)
+    kids = re.search(rb"/Kids\s*\[(.*?)\]", data, re.S)
+    pages = [int(x) for x in re.findall(rb"(\d+)\s+0\s+R", kids.group(1))] \
+        if kids else []
+    rows = []
+    for i, pnum in enumerate(pages, 1):
+        d, _ = objs.get(pnum, (b"", b""))
+        mres = re.search(rb"/Resources\s+(\d+)\s+0\s+R", d)
+        rd = objs[int(mres.group(1))][0] if mres and int(mres.group(1)) in objs else d
+        mim = re.search(rb"/Im0\s+(\d+)\s+0\s+R", rd)
+        imnum = int(mim.group(1)) if mim else None
+        mcon = re.search(rb"/Contents\s+(\d+)\s+0\s+R", d)
+        body = objs[int(mcon.group(1))][1] if mcon and int(mcon.group(1)) in objs else b""
+        try:
+            content = zlib.decompress(body)
+        except zlib.error:
+            content = body
+        strings = len(re.findall(rb"\)\s*Tj", content))
+        hidden = b"3 Tr" in content
+        has_img = b"/Im0 Do" in content and imnum is not None
+        kind = ("img+hidden" if has_img and hidden else
+                "image" if has_img else
+                "hidden-text" if hidden else
+                "words-sheet" if strings else "empty")
+        w = h = nb = 0
+        ink = None
+        if imnum is not None and imnum in objs:
+            idict, ibody = objs[imnum]
+            mw = re.search(rb"/Width\s+(\d+)", idict)
+            mh = re.search(rb"/Height\s+(\d+)", idict)
+            w = int(mw.group(1)) if mw else 0
+            h = int(mh.group(1)) if mh else 0
+            nb = len(ibody)
+            ink = pixel_ink(ibody, w, h)
+        rows.append({"page": i, "kind": kind, "w": w, "h": h,
+                     "bytes": nb, "strings": strings, "ink": ink})
+    return rows
+
+
+def pixel_ink(body, w, h):
+    """Share of pixels darker than near-white, if Pillow is installed."""
+    try:
+        import io
+        from PIL import Image
+        if body[:2] == b"\xff\xd8":
+            im = Image.open(io.BytesIO(body)).convert("L")
+        else:
+            raw = zlib.decompress(body)
+            stride = w * 3 + 1
+            if len(raw) == stride * h:
+                raw = b"".join(raw[r * stride + 1:(r + 1) * stride]
+                               for r in range(h))
+            im = Image.frombytes("RGB", (w, h), raw[:w * h * 3]).convert("L")
+        px = im.get_flattened_data() if hasattr(im, "get_flattened_data") \
+            else im.getdata()
+        vals = list(px)
+        return sum(1 for v in vals if v < 200) / max(1, len(vals))
+    except Exception:
+        return None
+
+
+def compare(paths):
+    left, right = page_rows(paths[0]), page_rows(paths[1])
+    for name, rows in zip(paths, (left, right)):
+        kinds = {}
+        for row in rows:
+            kinds[row["kind"]] = kinds.get(row["kind"], 0) + 1
+        sizes = {(r["w"], r["h"]) for r in rows if r["w"]}
+        print(f"{name}: {len(rows)} page(s) · " +
+              ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())) +
+              (f" · image size(s): " +
+               ", ".join(f"{w}x{h}" for w, h in sorted(sizes)) if sizes else ""))
+    print(f"{'page':>4}  {'left':<26}  {'right':<26}")
+    for i in range(max(len(left), len(right))):
+        a = left[i] if i < len(left) else None
+        b = right[i] if i < len(right) else None
+        def cell(row):
+            if not row:
+                return "missing"
+            ink = f" ink={row['ink']*100:.1f}%" if row["ink"] is not None else ""
+            size = f" {row['w']}x{row['h']}" if row["w"] else ""
+            return f"{row['kind']}{size}{ink}"
+        print(f"{i+1:>4}  {cell(a):<26}  {cell(b):<26}")
+    return 0
+
+
 def main(argv):
+    if "--compare" in argv:
+        rest = [a for a in argv if a != "--compare"]
+        if len(rest) != 2:
+            print("compare needs exactly two PDFs")
+            return 2
+        return compare(rest)
     targets = []
     for arg in argv:
         if os.path.isdir(arg):

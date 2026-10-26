@@ -27,7 +27,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "1.2";
+const VERSION = "1.3";
 const PORT = Number(process.env.PORT || 8096);
 // The download panel this box sends links to, written down rather than wired:
 // SCRIBD_PANEL still wins when it is set, and the page still lets you type a
@@ -647,6 +647,263 @@ export async function shootPage(doc, page, scale = SHOT_SCALE, waitMs = SHOT_WAI
   }
 }
 
+// ---- photographing a whole book in one pass, cut at the gaps --------------
+//
+// The scroll viewer lays the document out as a column of page blocks with a
+// gap of empty background between any two of them. That gap is the cut: a clip
+// rectangle exactly on one page block can never bleed into its neighbour, so
+// every page of the book is photographed at exactly the page's own size — no
+// page cut or cropped differently from any other. One navigation loads the
+// whole book; the captures are clip rectangles, not scrolls.
+//
+// The capture discipline is the one page2pdf proved: load everything first
+// (scroll end to end, images eager and decoded, fonts ready, height stable),
+// then capture with captureBeyondViewport and an exact clip, and take every
+// tile twice — a page that differs between two captures is a page that was
+// still moving, and it is taken again before it is believed.
+
+const SCROLL_CSS = `
+*, *::before, *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+html::-webkit-scrollbar, body::-webkit-scrollbar { display: none !important; }
+html { scrollbar-width: none !important; }
+`;
+
+const JS_FORCE_EAGER = `async () => {
+  document.querySelectorAll('img[loading="lazy"]').forEach(i => { i.loading = 'eager'; });
+  document.querySelectorAll('img[data-src]').forEach(i => { if (!i.src) i.src = i.dataset.src; });
+  document.querySelectorAll('img[data-srcset]').forEach(i => { if (!i.srcset) i.srcset = i.dataset.srcset; });
+  await Promise.all([...document.images].map(i =>
+    i.complete ? (i.decode ? i.decode().catch(() => {}) : null)
+               : new Promise(r => { i.onload = i.onerror = r; setTimeout(r, 15000); })));
+  if (document.fonts && document.fonts.ready) await document.fonts.ready;
+}`;
+
+const JS_HEIGHT = `() => Math.ceil(Math.max(
+  document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0,
+  document.documentElement.offsetHeight, document.documentElement.clientHeight))`;
+
+/** The whole document in one scrollable column, at its first page. */
+export function scrollUrl(doc) {
+  const ident = String(doc || "").replace(/[^0-9]/g, "");
+  return `https://www.scribd.com/embeds/${ident}/content?view_mode=scroll`;
+}
+
+/**
+ * The page blocks of the scroll viewer, in reading order, in document pixels.
+ *
+ * Known viewer selectors first; if the viewer changes its clothes, the fallback
+ * measures what a page actually is: the block that carries a full-size page
+ * image. Rectangles are returned raw — checkPageRun is what judges them.
+ */
+const JS_PAGE_RECTS = `() => {
+  const selectors = ['.page', '.page_container', '[data-pageid]', '.text_page'];
+  let els = [];
+  for (const sel of selectors) {
+    els = [...document.querySelectorAll(sel)];
+    if (els.length > 1) break;
+  }
+  if (els.length < 2) {
+    const seen = new Set();
+    els = [];
+    for (const img of document.querySelectorAll('img.absimg, img.orig_image, img[src*="scribdassets"]')) {
+      let el = img.parentElement;
+      for (let up = 0; up < 3 && el; up++) {
+        const r = el.getBoundingClientRect();
+        if (r.height > r.width * 1.05 && r.width > 300) break;
+        el = el.parentElement;
+      }
+      if (el && !seen.has(el)) { seen.add(el); els.push(el); }
+    }
+  }
+  const sx = window.scrollX || 0, sy = window.scrollY || 0;
+  return els.map((el) => {
+    const r = el.getBoundingClientRect();
+    return { x: r.x + sx, y: r.y + sy, width: r.width, height: r.height };
+  }).filter((r) => r.width > 200 && r.height > 200);
+}`;
+
+/**
+ * Is this run of rectangles one book's pages, cut by gaps?
+ *
+ * Uniform width and height (within 2%) and a real gap of background between
+ * consecutive blocks: that is a column of pages. Overlap, a stray size or a
+ * missing gap means the rectangles are not pages and cutting them would crop
+ * somebody's page differently from the rest — refuse instead.
+ */
+export function checkPageRun(rects) {
+  const run = (Array.isArray(rects) ? rects : [])
+    .filter((r) => r && r.width > 0 && r.height > 0)
+    .sort((a, b) => a.y - b.y);
+  if (run.length < 2) {
+    return { ok: false, count: run.length,
+             note: `only ${run.length} page block(s) found — nothing to cut` };
+  }
+  const width = run[0].width, height = run[0].height;
+  for (const r of run) {
+    if (Math.abs(r.width - width) > width * 0.02 ||
+        Math.abs(r.height - height) > height * 0.02) {
+      return { ok: false, count: run.length,
+               note: `page blocks differ in size (${Math.round(r.width)}x` +
+                     `${Math.round(r.height)} against ${Math.round(width)}x` +
+                     `${Math.round(height)}) — not one column of pages` };
+    }
+  }
+  let gapMin = Infinity, gapMax = -Infinity;
+  for (let i = 1; i < run.length; i++) {
+    const gap = run[i].y - (run[i - 1].y + run[i - 1].height);
+    if (gap <= 0) {
+      return { ok: false, count: run.length,
+               note: `blocks ${i} and ${i + 1} overlap by ${-gap}px — no gap ` +
+                     `to cut at, a clip would crop two pages at once` };
+    }
+    if (gap > 400) {
+      return { ok: false, count: run.length,
+               note: `a ${Math.round(gap)}px hole between blocks ${i} and ` +
+                     `${i + 1} — that is not the gap between two pages` };
+    }
+    gapMin = Math.min(gapMin, gap); gapMax = Math.max(gapMax, gap);
+  }
+  return { ok: true, count: run.length, width: Math.round(width),
+           height: Math.round(height),
+           gapMin: Math.round(gapMin), gapMax: Math.round(gapMax),
+           note: `${run.length} page block(s), each ${Math.round(width)}x` +
+                 `${Math.round(height)}, gaps ${Math.round(gapMin)}–` +
+                 `${Math.round(gapMax)}px — every cut the same` };
+}
+
+/**
+ * The wire format for a whole book: each png behind a 4-byte big-endian
+ * length, a zero length to close the run, then the manifest as UTF-8 JSON.
+ * One request, one response, no multipart ceremony, parseable with nothing
+ * but a socket on the other end.
+ */
+export function encodeShots(pngs, manifest) {
+  const parts = [];
+  for (const png of pngs) {
+    const head = Buffer.alloc(4);
+    head.writeUInt32BE(png.length, 0);
+    parts.push(head, png);
+  }
+  parts.push(Buffer.alloc(4), Buffer.from(JSON.stringify(manifest), "utf8"));
+  return Buffer.concat(parts);
+}
+
+export function decodeShots(body) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body || []);
+  const pngs = [];
+  let at = 0;
+  while (at + 4 <= buf.length) {
+    const len = buf.readUInt32BE(at);
+    at += 4;
+    if (len === 0) break;
+    if (at + len > buf.length) return { error: "a picture runs past the end" };
+    pngs.push(buf.subarray(at, at + len));
+    at += len;
+  }
+  let manifest = {};
+  try { manifest = JSON.parse(buf.subarray(at).toString("utf8") || "{}"); }
+  catch { return { error: "the manifest is not JSON" }; }
+  return { pngs, manifest };
+}
+
+/**
+ * Photograph every page of a document in one pass. -> { pages, run, note }
+ *
+ * pages: [{ page, png, width, height, unstable, blank }]. An empty pages list
+ * means the column of pages was not there to cut — the caller falls back to
+ * photographing page by page, never to a grey sheet.
+ */
+export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS) {
+  const ident = String(doc || "").replace(/[^0-9]/g, "");
+  if (!/^\d{3,}$/.test(ident)) {
+    return { pages: [], run: null, note: "a document id is needed" };
+  }
+  const ratio = Math.max(0.5, Math.min(4, Number(scale) || SHOT_SCALE));
+  const settle = Math.max(200, Math.min(4000, Number(waitMs) || SHOT_WAIT_MS)) / 10;
+  const release = await shotSlot();
+  let tab = null;
+  try {
+    const browser = await getBrowser();
+    tab = await browser.newPage();
+    await tab.setUserAgent(UA);
+    await tab.setViewport({ width: SHOT_WIDTH, height: SHOT_HEIGHT,
+                            deviceScaleFactor: ratio });
+    await tab.goto(scrollUrl(ident),
+                   { waitUntil: "domcontentloaded", timeout: 45000 });
+    await tab.addStyleTag({ content: SCROLL_CSS }).catch(() => {});
+
+    // load the whole column first: scroll it end to end until its height
+    // stops growing, forcing every lazy picture to fetch and decode
+    let last = -1, stable = 0, y = 0, rounds = 0;
+    while (rounds++ < 300) {
+      await tab.evaluate(`window.scrollTo(0, ${y})`);
+      await new Promise((resolve) => setTimeout(resolve, settle));
+      await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
+      const h = await tab.evaluate(JS_HEIGHT);
+      if (y + SHOT_HEIGHT >= h) {
+        stable = h === last ? stable + 1 : 0;
+        if (stable >= 2) break;
+        last = h;
+        y = Math.max(0, h - SHOT_HEIGHT);
+      } else {
+        stable = 0; last = h;
+        y += Math.max(SHOT_HEIGHT >> 1, 200);
+      }
+    }
+    await tab.evaluate("window.scrollTo(0, 0)");
+    await new Promise((resolve) => setTimeout(resolve, settle));
+    await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
+
+    const rects = await tab.evaluate(JS_PAGE_RECTS);
+    const run = checkPageRun(rects);
+    if (!run.ok) return { pages: [], run, note: run.note };
+
+    const cdp = await (tab.createCDPSession
+      ? tab.createCDPSession() : tab.target().createCDPSession());
+    const crypto = await import("node:crypto");
+    const hash = (b) => crypto.createHash("sha256").update(b).digest("hex");
+    const pages = [];
+    const notes = [];
+    for (let i = 0; i < rects.length; i++) {
+      const r = rects[i];
+      const clip = { x: Math.round(r.x), y: Math.round(r.y),
+                     width: Math.round(r.width), height: Math.round(r.height),
+                     scale: ratio };
+      const take = async () => {
+        const res = await cdp.send("Page.captureScreenshot", {
+          format: "png", fromSurface: true, captureBeyondViewport: true, clip });
+        return Buffer.from(res.data, "base64");
+      };
+      let png = await take();
+      let unstable = false;
+      for (let tries = 0; tries < 3; tries++) {
+        const first = hash(png);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        png = await take();
+        if (hash(png) === first) { unstable = false; break; }
+        unstable = true;
+      }
+      const size = pngSize(png);
+      pages.push({ page: i + 1, png, width: size.width, height: size.height,
+                   unstable, blank: blankShot(png) });
+      if (unstable) notes.push(`page ${i + 1}: still moving between captures — kept the last one`);
+      if (blankShot(png)) notes.push(`page ${i + 1}: the clip looks empty — kept, an empty page is still that page`);
+    }
+    notes.push(run.note);
+    return { pages, run, note: notes.join(" · ") };
+  } catch (exc) {
+    const message = String((exc && exc.message) || exc).slice(0, 200);
+    return { pages: [], run: null, note: `the browser failed — ${message}` };
+  } finally {
+    if (tab) await tab.close().catch(() => {});
+    release();
+  }
+}
+
 export function panelOrigin(text) {
   const raw = String(text || "").trim();
   if (!raw) return "";
@@ -996,6 +1253,37 @@ export function serve(port = PORT) {
         });
         return response.end(got.png);
       }
+      if (url.pathname === "/shots") {
+        const ask = shotAsk({ doc: url.searchParams.get("doc"),
+                              page: "1",
+                              scale: url.searchParams.get("scale") });
+        if (ask.error) return json(response, 400, { error: ask.error });
+        console.log(`shots ${ask.doc}: photographing the whole book at ` +
+                    `${ask.scale}x, cut at the gaps`);
+        const book = await shootBook(ask.doc, ask.scale);
+        if (!book.pages.length) {
+          console.log(`  -> refused: ${book.note}`);
+          return json(response, 502, { error: book.note });
+        }
+        const manifest = {
+          doc: ask.doc, scale: ask.scale, count: book.pages.length,
+          run: book.run,
+          pages: book.pages.map((p) => ({ page: p.page, width: p.width,
+                                          height: p.height,
+                                          unstable: p.unstable, blank: p.blank })),
+        };
+        const body = encodeShots(book.pages.map((p) => p.png), manifest);
+        console.log(`  -> ok: ${book.pages.length} page(s), ${body.length} bytes`);
+        response.writeHead(200, {
+          "Content-Type": "application/x-page-shots",
+          "Content-Length": body.length,
+          "Cache-Control": "no-store",
+          "X-Shot-Doc": ask.doc,
+          "X-Shot-Count": String(book.pages.length),
+          "X-Shot-Note": encodeURIComponent(book.note || "").slice(0, 500),
+        });
+        return response.end(body);
+      }
       return json(response, 404, { error: "unknown endpoint" });
     } catch (exc) {
       console.error("error:", exc);
@@ -1135,6 +1423,36 @@ export function selftest() {
   assert(blankShot(Buffer.concat([header, Buffer.alloc(2828 * 400)])) === false,
     "a page of writing is not blank");
   assert(blankShot(Buffer.from("not a png")) === false, "cannot judge: keep it");
+
+  // a column of pages, cut by the gaps between them: uniform blocks, real gaps
+  const goodRun = checkPageRun([
+    { x: 40, y: 10, width: 800, height: 1100 },
+    { x: 40, y: 1140, width: 800, height: 1100 },
+    { x: 40, y: 2270, width: 802, height: 1098 }]);
+  assert(goodRun.ok && goodRun.count === 3 && goodRun.gapMin >= 20, goodRun.note);
+  // overlapping blocks: a clip there would crop two pages at once — refuse
+  assert(checkPageRun([
+    { x: 0, y: 0, width: 800, height: 1100 },
+    { x: 0, y: 1090, width: 800, height: 1100 }]).ok === false, "overlap refused");
+  // a block of another size is not a page of this column — refuse
+  assert(checkPageRun([
+    { x: 0, y: 0, width: 800, height: 1100 },
+    { x: 0, y: 1140, width: 400, height: 1100 }]).ok === false, "odd size refused");
+  // one block is not a run, and a canyon is not a gap
+  assert(checkPageRun([{ x: 0, y: 0, width: 800, height: 1100 }]).ok === false,
+         "one block refused");
+  assert(checkPageRun([
+    { x: 0, y: 0, width: 800, height: 1100 },
+    { x: 0, y: 5000, width: 800, height: 1100 }]).ok === false, "canyon refused");
+  // the wire format survives the trip, pictures in order, manifest readable
+  const pngA = Buffer.from([1, 2, 3, 4]), pngB = Buffer.from([9, 8, 7]);
+  const wired = encodeShots([pngA, pngB], { count: 2, pages: [{ page: 1 }] });
+  const back = decodeShots(wired);
+  assert(!back.error && back.pngs.length === 2 &&
+         Buffer.compare(back.pngs[0], pngA) === 0 &&
+         Buffer.compare(back.pngs[1], pngB) === 0 &&
+         back.manifest.count === 2, "shots wire round-trip");
+  assert(decodeShots(wired.subarray(0, 6)).error, "a cut body is refused");
 
   const ask = shotAsk({ doc: "692848690", page: "12" });
   assert(ask.doc === "692848690" && ask.page === 12 && ask.scale === SHOT_SCALE,
