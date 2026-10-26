@@ -1,6 +1,6 @@
 {
   "name": "troy-search",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "Find Scribd documents and send the links to the download panel; photograph (/shot) the pages that panel could not build.",

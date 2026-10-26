@@ -27,9 +27,13 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "1.1";
+const VERSION = "1.2";
 const PORT = Number(process.env.PORT || 8096);
-const PANEL = (process.env.SCRIBD_PANEL || "").trim();
+// The download panel this box sends links to, written down rather than wired:
+// SCRIBD_PANEL still wins when it is set, and the page still lets you type a
+// different one — but a fresh restart now works with nothing configured.
+const DEFAULT_PANEL = "http://195.123.189.187:25811";
+const PANEL = (process.env.SCRIBD_PANEL || "").trim() || DEFAULT_PANEL;
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -1013,7 +1017,8 @@ export function serve(port = PORT) {
                 `the download panel could not build`);
     console.log(`  point the panel here:  SCRIBD_SHOTS=http://THIS_HOST:${port}`);
     console.log(`  prove the browser:     /shot/ping?launch=1`);
-    if (!PANEL) console.log("no panel address set: type it in the page (it is remembered)");
+    console.log(`  links go to the panel: ${PANEL}` +
+                (process.env.SCRIBD_PANEL ? " (SCRIBD_PANEL)" : " (written into index.js)"));
   });
   return server;
 }
@@ -1080,6 +1085,11 @@ export function selftest() {
   assert(parsed[0].url === "https://www.scribd.com/document/111111111/P", parsed[0].url);
   assert(parseScribdJson("<html>not json</html>").length === 0, "html is not json");
 
+  assert(DEFAULT_PANEL === "http://195.123.189.187:25811", DEFAULT_PANEL);
+  assert(PANEL === DEFAULT_PANEL || process.env.SCRIBD_PANEL,
+    "the panel address is written down, so nothing has to be typed");
+  assert(panelOrigin(PANEL) === DEFAULT_PANEL || Boolean(process.env.SCRIBD_PANEL),
+    "and it is an address this file can send to");
   assert(panelOrigin("195.123.189.187:25811") === "http://195.123.189.187:25811", "bare host");
   assert(panelOrigin("http://1.2.3.4:25811/") === "http://1.2.3.4:25811", "trailing slash");
   assert(panelOrigin("nonsense") === "", "typo rejected");
