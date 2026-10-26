@@ -180,6 +180,15 @@ Search, then download — that is the whole flow; there is no link box to fill i
   "Share this document", page numbers) is stripped, so it is never drawn as if it
   were the book. If even that page is a JavaScript shell, the panel saves it to
   `downloads/debug/viewer-<id>.html` — no cookie in it — instead of guessing.
+- **A drawn page reads like the page (v2.19).** The viewer positions every line,
+  and the sheet keeps those positions, so a contents page stays a contents page
+  instead of collapsing into one paragraph; two columns on a row stay a row; type
+  is sized against the sheet; curly quotes, dashes and dotted leaders are written
+  in the encoding Helvetica actually uses, so nothing turns into `?` or vanishes.
+  Widths use Helvetica's real metrics, so a line never runs off the page. A page
+  that really is a scan (the cover of a converted document) is shown as that
+  scan, with its words kept as a searchable text layer; an empty rectangle
+  pretending to be a scan is skipped and the words are drawn instead.
 - **Waiting is capped.** A document may rest at most `SCRIBD_REST_BUDGET` (60 s)
   in total, and stops resting after two turns if not one page has ever arrived:
   a refused 6-page document went from 2 m 50 s to under a minute with the same

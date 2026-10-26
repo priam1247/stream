@@ -43,7 +43,7 @@ something nobody asked.
    printed, and only `scribd.com` / `scribdassets.com` cookies are ever sent —
    the rest of a browser export stays out of the request.
 3. Start it: `PY_FILE=scribd_download.py`, restart.
-4. Open the server address. The line under the title must read **v2.18**.
+4. Open the server address. The line under the title must read **v2.19**.
 
 ## 2. Find links: five ways
 
@@ -267,6 +267,27 @@ no quality loss. JPEG is embedded as-is; PNG goes in as its own filtered stream.
 If the pages genuinely differ (a portrait book with landscape spreads), that is
 reported and every sheet keeps its own size instead of being squashed.
 
+## A page that reads like the page (v2.19)
+
+Fetching the right words was only half of it. The first PDF built from a
+converted document had the text — and still looked wrong, because of how it
+was written onto the sheet:
+
+| what the page does | what the sheet now does |
+|---|---|
+| every line is its own positioned element | the lines are read for their `top:` and drawn in place, so a contents page stays a contents page instead of becoming one paragraph |
+| two columns on one row are two spans at one height | they are joined into the row they belong to, with a gap |
+| a dotted leader is one long unbroken token | it is a single line, not a wrapped fragment |
+| the type is set for the page, not the sheet | sizes are scaled by the sheet (`900x1200 pt` gets ~17 pt, A4 ~12 pt), so text is not a footnote in the corner |
+| Helvetica spells `’ … “ ” –` | they are written as the cp1252 bytes WinAnsi defines, so `ZAM’KATIMU` keeps its apostrophe and the dots do not become `?` |
+| the viewer's page can carry an empty rectangle where a scan would be | a picture under 0.02 bytes per pixel is not drawn — the page's words are, and the log says which page and why |
+| page 1 of a converted document really is a scan of its cover | a real scan is shown as that scan, with the page's words kept as its invisible, searchable text layer |
+
+Widths are measured with Helvetica's own advance widths (the Adobe AFM
+numbers), not an average: a line either fits the sheet or is wrapped, it never
+runs off the right edge. `--selftest` checks all of this, including a contents
+page with curly quotes, two columns and dotted leaders.
+
 ## Where a page's words are looked for (v2.18)
 
 A page is only ever called blank after **every** source of its words has been
@@ -405,7 +426,10 @@ python3 tools/scribd_download.py --base http://127.0.0.1:8912 --out /tmp/t1 \
 
 `MOCK_VIEWER_WINDOW` hands out N pages per answer (the real viewer does this on
 a long document) and `MOCK_VIEWER_EMPTY=1` makes the viewer page carry no text at
-all, so the honest-failure path is tested too.
+all, so the honest-failure path is tested too. `MOCK_BLANK_PAGES="1"` makes a
+page's picture an empty rectangle — the shape that must never be drawn in place
+of a page's words. `MOCK_TEXT_DOC=1` also reproduces page 2 of the real
+document: a contents page of positioned lines, two columns and dotted leaders.
 
 Expect `38 sheet(s) … 37 page(s) from the document's text · 38 of 38 page(s)
 real`, `--verify` clean, and no request for the 37 images that do not exist. With
@@ -418,8 +442,10 @@ and non-Latin characters), text pages for a document that has no scans, word
 wrapping, descriptor addresses built from the one name a page prints, cookie
 filtering, token parsing, pasted links, the
 bookmarklet, the throttle breaker, the resting budget, the viewer page parser
-(page marks, bare text blocks, chrome removal, a script full of markup), and the
-search-answer parser (a refusal is never reported as "no results").
+(page marks, bare text blocks, chrome removal, a script full of markup),
+typography (WinAnsi, real Helvetica widths, a word wider than the sheet), placed
+lines (rows, two columns, kept spacing), and the search-answer parser (a refusal
+is never reported as "no results").
 
 ---
 
@@ -563,6 +589,10 @@ history: on a 10 GB plan lower `SCRIBD_KEEP_FILES` to about 20.
   expose both page words and an empty/black image URL; the PDF draws the words
   instead and only falls back to a scan where a page has none. On scan-only
   documents the same lookups rescue pages whose scans are refused.
+- **A real scan beside words is still shown (v2.19)** — the cover of a converted
+  document — with the words kept as its invisible, searchable text layer. A
+  picture that compresses to under 0.02 bytes per pixel is an empty rectangle and
+  is skipped, with a log line saying so.
 - **Nothing that arrives is thrown away any more (v2.16).** A small scan, a
   thumbnail, a double-page spread, a page whose shape is nothing like a book page
   — all of it goes into the PDF and is scaled to the sheet. Only a picture under
