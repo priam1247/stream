@@ -1,3 +1,0 @@
-
-
-MAX_SHARD_FRACTION = 0.5
