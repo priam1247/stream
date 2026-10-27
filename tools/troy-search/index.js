@@ -1,28 +1,17 @@
 /**
- * troy-search entry point. The implementation is split by responsibility under
- * ./src/ — see ./src/MAP.md. This file only re-exports the public API and runs
- * the server / CLI / selftest.
+ * troy-search entry point. The runtime lives in ./core.js and the offline
+ * checks in ./selftest.js — three files total. This file only re-exports the
+ * public API and starts the server / CLI / selftest.
  */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { PORT } from "./src/config.js";
-import { serve } from "./src/http.js";
-import { selftest } from "./src/selftest.js";
-import { runCli } from "./src/cli.js";
+import { PORT, serve, runCli } from "./core.js";
+import { selftest } from "./selftest.js";
 
-export { VERSION, FALLBACK_PORT, listenPort, ASSIGNED_PORT, PORT, DEFAULT_PANEL, PANEL, UA, liveUA, refererFor, within, navOptions, MAX_SEND, DOC_LINK, DOC_ID } from "./src/config.js";
-export { BLANK_BYTES_PER_ROW, pngSize, blankShot } from "./src/png.js";
-export { refusal, fetchText } from "./src/network.js";
-export { userAgentOf, getBrowser, closeBrowser, launchProof, browserStatus, forgetBrowser } from "./src/browser.js";
-export { documentLinks, parseAnchors, unwrap, strip, htmlDecode, parseScribdJson, panelOrigin, headline, sendToPanel, picked } from "./src/links.js";
-export { ENGINES, engineOrder, searchWithFetch, searchWithBrowser, search } from "./src/search.js";
-export { SHOT_WIDTH, SHOT_HEIGHT, SHOT_SCALE, SHOT_WAIT_MS, SHOT_TABS, shotUrl, pickPageBox, measurePage, shotAsk, shotSlot, shootPage, JS_PAGE_RECTS } from "./src/shots.js";
-export { PAGE } from "./src/page.js";
-export { serve } from "./src/http.js";
-export { selftest } from "./src/selftest.js";
-export { runCli } from "./src/cli.js";
+export * from "./core.js";
+export { selftest } from "./selftest.js";
 
 const isMain = process.argv[1] &&
   fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);

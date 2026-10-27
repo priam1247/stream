@@ -1,44 +1,40 @@
 #!/usr/bin/env python3
-"""Split-source loader for the Scribd panel.
+"""Scribd panel — small loader for the four-file source.
 
-The real code lives in ``tools/scribd_parts/*.py`` — one fragment per top-level
-function or class, plus small state/entry fragments. They are executed here in
-``MANIFEST.json`` order in one shared namespace, so the behaviour is exactly the
-same as the old monolithic file. See ``tools/scribd_parts/MAP.md``.
+The real code lives in ``scribd_core.py``, ``scribd_jobs.py`` and
+``scribd_panel.py``. They are executed here in one shared namespace, in order,
+so the public behaviour is exactly the same as the old monolithic file.
+
+See ``tools/README.md`` for deployment. ``build_scribd_singlefile.py`` can make
+a one-file copy for hosts that need one.
 """
 from __future__ import annotations
 
 import __future__
-import json
 from pathlib import Path
 
-_SCRIBD_PARTS = Path(__file__).resolve().with_name("scribd_parts")
-_SCRIBD_MANIFEST = json.loads(
-    (_SCRIBD_PARTS / "MANIFEST.json").read_text(encoding="utf-8")
-)
-_SCRIBD_NS = globals()
+_HERE = Path(__file__).resolve().parent
+_SOURCES = ("scribd_core.py", "scribd_jobs.py", "scribd_panel.py")
+_NS = globals()
 
 
 def _scribd_source_text() -> str:
-    """All fragments concatenated, for selftests that inspect the whole source."""
-    return "\n".join(
-        (_SCRIBD_PARTS / name).read_text(encoding="utf-8")
-        for name in _SCRIBD_MANIFEST
-    )
+    """All source files concatenated, for selftests that inspect the whole source."""
+    return "".join((_HERE / name).read_text(encoding="utf-8") for name in _SOURCES)
 
 
-_SCRIBD_NS["_scribd_source_text"] = _scribd_source_text
+_NS["_scribd_source_text"] = _scribd_source_text
 
-for _scribd_name in _SCRIBD_MANIFEST:
-    _scribd_path = _SCRIBD_PARTS / _scribd_name
-    _scribd_code = compile(
-        _scribd_path.read_text(encoding="utf-8"),
-        str(_scribd_path),
+for _name in _SOURCES:
+    _path = _HERE / _name
+    _code = compile(
+        _path.read_text(encoding="utf-8"),
+        str(_path),
         "exec",
         flags=__future__.annotations.compiler_flag,
         dont_inherit=True,
     )
-    exec(_scribd_code, _SCRIBD_NS)
+    exec(_code, _NS)
 
 # Importers (screenshots_to_pdf.py, scribd_screenshots.py) see every function.
-_SCRIBD_NS["_scribd_source_text"] = _scribd_source_text
+_NS["_scribd_source_text"] = _scribd_source_text

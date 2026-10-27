@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build a deployable one-file copy of the Scribd panel from its source fragments.
+"""Build a deployable one-file copy of the Scribd panel.
 
-Development uses ``tools/scribd_download.py`` (the split-source loader). Hosts
-that still need one file (``PY_FILE=scribd_download.py`` on Pterodactyl) can
-upload the output of this script instead:
+Development uses ``tools/scribd_download.py`` (a small loader) plus
+``scribd_core.py``, ``scribd_jobs.py`` and ``scribd_panel.py``. Hosts that still
+need one file (``PY_FILE=scribd_download.py`` on Pterodactyl) can upload the
+output of this script instead:
 
     python3 tools/build_scribd_singlefile.py
     python3 tools/scribd_download_singlefile.py --selftest
@@ -11,13 +12,11 @@ upload the output of this script instead:
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PARTS = HERE / "scribd_parts"
+SOURCES = ("scribd_core.py", "scribd_jobs.py", "scribd_panel.py")
 DEFAULT_OUT = HERE / "scribd_download_singlefile.py"
-
 
 HELPER = '''
 
@@ -30,14 +29,10 @@ def _scribd_source_text() -> str:
 
 
 def bundle() -> str:
-    names = json.loads((PARTS / "MANIFEST.json").read_text(encoding="utf-8"))
-    text = "".join((PARTS / name).read_text(encoding="utf-8") for name in names)
-    # The split loader injects this helper into its shared namespace. The
-    # standalone copy has no loader, so give it the same name here — after the
-    # future import, not before it.
+    text = "".join((HERE / name).read_text(encoding="utf-8") for name in SOURCES)
     marker = "from __future__ import annotations\n"
     if marker not in text:
-        raise RuntimeError("the first fragment lost its future import")
+        raise RuntimeError("scribd_core.py lost its future import")
     return text.replace(marker, marker + HELPER, 1)
 
 
@@ -45,7 +40,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="output .py file")
     ap.add_argument("--check", action="store_true",
-                    help="compare the output with the fragments, write nothing")
+                    help="compare the output with the sources, write nothing")
     args = ap.parse_args()
     text = bundle()
     out = Path(args.out)

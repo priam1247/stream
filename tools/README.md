@@ -3,11 +3,13 @@
 Turns Scribd links into clean PDFs — one document page per sheet —
 **without pip and without a Python framework**.
 
-`tools/scribd_download.py` is now a small loader. The real source is split into
-`tools/scribd_parts/` — one file per top-level function or class, plus small
-state/entry fragments. `tools/scribd_parts/MAP.md` lists every function and the
-fragment that owns it. Python 3.8+ and nothing else (it parses as 3.8 syntax;
-it was developed and run on 3.11).
+`tools/scribd_download.py` is now a small loader. The real source is four files:
+`scribd_core.py` (constants, cookies, network and PDF/image helpers),
+`scribd_jobs.py` (job orchestration, downloads and the screenshot shooter
+bridge), `scribd_panel.py` (search, HTTP panel, selftest and CLI), and the
+loader itself. The loader runs the three source files in order in one shared
+namespace, so behaviour is unchanged. Python 3.8+ and nothing else (it parses
+as 3.8 syntax; it was developed and run on 3.11).
 
 ```
 python tools/scribd_download.py            # panel mode: a page you can use from anywhere
@@ -45,7 +47,7 @@ something nobody asked.
 1. If the host wants one file, run `python3 tools/build_scribd_singlefile.py`
    and upload `tools/scribd_download_singlefile.py` as `scribd_download.py`.
    Otherwise upload the whole `tools/` folder: `scribd_download.py` loads
-   `scribd_parts/` from beside itself.
+   `scribd_core.py`, `scribd_jobs.py` and `scribd_panel.py` from beside itself.
 2. Put your `cookies.txt` in the same folder. It is never committed, never
    printed, and only `scribd.com` / `scribdassets.com` cookies are ever sent —
    the rest of a browser export stays out of the request.
@@ -134,7 +136,9 @@ It collects `/document/`, `/presentation/`, `/spreadsheet/` and `/ebook/` links
 ### d) search from your own JS server
 
 If you run a Node box with `@sparticuz/chromium` + `puppeteer-core`, `tools/troy-search/`
-is a second small service that searches and hands the links to the panel:
+is a second small service that searches and hands the links to the panel. It is
+three files: `index.js` (entry point), `core.js` (all runtime code) and
+`selftest.js` (offline checks):
 
 ```bash
 cd tools/troy-search

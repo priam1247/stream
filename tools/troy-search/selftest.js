@@ -1,22 +1,24 @@
-import { readdirSync, readFileSync } from "node:fs";
+/** Offline regression checks for troy-search. Reads core.js to inspect source. */
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { VERSION, FALLBACK_PORT, listenPort, ASSIGNED_PORT, PORT, DEFAULT_PANEL, PANEL, UA, liveUA, refererFor, within, navOptions, MAX_SEND, DOC_LINK, DOC_ID } from "./config.js";
-import { BLANK_BYTES_PER_ROW, pngSize, blankShot } from "./png.js";
-import { refusal, fetchText } from "./network.js";
-import { userAgentOf, getBrowser, closeBrowser, launchProof, browserStatus, forgetBrowser } from "./browser.js";
-import { documentLinks, parseAnchors, unwrap, strip, htmlDecode, parseScribdJson, panelOrigin, headline, sendToPanel, picked } from "./links.js";
-import { ENGINES, engineOrder, searchWithFetch, searchWithBrowser, search } from "./search.js";
-import { SHOT_WIDTH, SHOT_HEIGHT, SHOT_SCALE, SHOT_WAIT_MS, SHOT_TABS, shotUrl, pickPageBox, measurePage, shotAsk, shotSlot, shootPage, JS_PAGE_RECTS } from "./shots.js";
-import { PAGE } from "./page.js";
-import { serve } from "./http.js";
+import {
+  VERSION, FALLBACK_PORT, listenPort, ASSIGNED_PORT, PORT, DEFAULT_PANEL, PANEL,
+  UA, liveUA, refererFor, within, navOptions, MAX_SEND, DOC_LINK, DOC_ID,
+  BLANK_BYTES_PER_ROW, pngSize, blankShot,
+  refusal, fetchText,
+  userAgentOf, getBrowser, closeBrowser, launchProof, browserStatus, forgetBrowser,
+  documentLinks, parseAnchors, unwrap, strip, htmlDecode, parseScribdJson,
+  panelOrigin, headline, sendToPanel, picked,
+  ENGINES, engineOrder, searchWithFetch, searchWithBrowser, search,
+  SHOT_WIDTH, SHOT_HEIGHT, SHOT_SCALE, SHOT_WAIT_MS, SHOT_TABS, shotUrl,
+  pickPageBox, measurePage, shotAsk, shotSlot, shootPage, JS_PAGE_RECTS,
+  PAGE, serve,
+} from "./core.js";
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
-const PRODUCTION_FILES = [
-  "config.js", "png.js", "network.js", "browser.js", "links.js",
-  "search.js", "shots.js", "page.js", "http.js",
-];
+const PRODUCTION_FILES = ["core.js"];
 
 function allSource() {
   return PRODUCTION_FILES
@@ -25,7 +27,7 @@ function allSource() {
 }
 
 function serveSource() {
-  return readFileSync(join(SRC_DIR, "http.js"), "utf8");
+  return readFileSync(join(SRC_DIR, "core.js"), "utf8");
 }
 
 export async function selftest() {
