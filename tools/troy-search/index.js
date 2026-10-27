@@ -30,7 +30,7 @@ import { fileURLToPath } from "node:url";
 
 import { readFileSync } from "node:fs";
 
-const VERSION = "2.3";
+const VERSION = "2.4";
 // The port to listen on. A host like this one hands its container the public
 // port it assigned in SERVER_PORT — PORT on some boxes — and there is no
 // translation behind it: whatever this listens on IS the port the world
@@ -966,18 +966,56 @@ const JS_PAGE_RECTS = `() => {
   // one page met twice — the page block and the picture filling it exactly — is
   // one box, not two, and neither of them is a wrapper around the other
   const boxes = [];
+  // A 2px grid in x/y narrows each comparison to neighbouring cells. The
+  // original four <=1px checks remain authoritative, and insertion order still
+  // decides which representative survives a fuzzy match.
+  const cellSize = 2, spatial = new Map();
   for (const r of seen) {
-    if (!boxes.some((b) => Math.abs(b.x - r.x) <= 1 && Math.abs(b.y - r.y) <= 1 &&
-        Math.abs(b.width - r.width) <= 1 && Math.abs(b.height - r.height) <= 1))
+    const cx = Math.floor(r.x / cellSize), cy = Math.floor(r.y / cellSize);
+    let duplicate = false;
+    for (let dx = -1; dx <= 1 && !duplicate; dx++) {
+      for (let dy = -1; dy <= 1 && !duplicate; dy++) {
+        const nearby = spatial.get((cx + dx) + "," + (cy + dy)) || [];
+        duplicate = nearby.some((b) => Math.abs(b.x - r.x) <= 1 &&
+          Math.abs(b.y - r.y) <= 1 && Math.abs(b.width - r.width) <= 1 &&
+          Math.abs(b.height - r.height) <= 1);
+      }
+    }
+    if (!duplicate) {
       boxes.push(r);
+      const key = cx + "," + cy;
+      if (!spatial.has(key)) spatial.set(key, []);
+      spatial.get(key).push(r);
+    }
   }
   // a box that holds another by more than a hair is furniture around a page
   const holds = (a, b) => b.x >= a.x - 1 && b.y >= a.y - 1 &&
     b.x + b.width <= a.x + a.width + 1 &&
     b.y + b.height <= a.y + a.height + 1 &&
     a.width * a.height > b.width * b.height * 1.05;
-  return { boxes: boxes.filter((a) => !boxes.some((b) => b !== a && holds(a, b))),
-           seen: seen.length };
+  // A held box must start within this page's vertical interval. Sorting once
+  // lets each page inspect only plausible contained boxes instead of scanning
+  // every page-shaped rectangle in the document.
+  const byY = boxes.slice().sort((a, b) => a.y - b.y);
+  const lowerBound = (y) => {
+    let low = 0, high = byY.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (byY[mid].y < y) low = mid + 1; else high = mid;
+    }
+    return low;
+  };
+  const kept = [];
+  for (const a of boxes) {
+    let contained = false;
+    for (let i = lowerBound(a.y - 1);
+         i < byY.length && byY[i].y <= a.y + a.height + 1; i++) {
+      const b = byY[i];
+      if (b !== a && holds(a, b)) { contained = true; break; }
+    }
+    if (!contained) kept.push(a);
+  }
+  return { boxes: kept, seen: seen.length };
 }`;
 
 /**
@@ -1067,6 +1105,7 @@ export function checkPageRun(rects, want = 0, tall = 0) {
                   `hole — that is not the gap between two pages`);
   }
   const slots = [];
+  const occupied = new Set();
   for (let i = 0; i < run.length; i++) {
     const step = (run[i].y - run[0].y) / pitch;
     const slot = Math.round(step);
@@ -1075,11 +1114,12 @@ export function checkPageRun(rects, want = 0, tall = 0) {
                     `into the column, which is no whole number of the ` +
                     `${Math.round(pitch)}px step — the blocks are not one column`);
     }
-    if (slots.includes(slot)) {
+    if (occupied.has(slot)) {
       return refuse(`two page blocks share slot ${slot + 1} of the column — ` +
                     `one of them is not a page`);
     }
     slots.push(slot);
+    occupied.add(slot);
   }
   if (run[0].y > pitch * 1.25) {
     return refuse(`the first block is ${Math.round(run[0].y)}px down, more than a ` +
@@ -1100,7 +1140,7 @@ export function checkPageRun(rects, want = 0, tall = 0) {
   const lastSlot = want > 0 ? want - 1 : top - 1;
   const missing = [];
   for (let slot = 0; slot <= lastSlot; slot++) {
-    if (!slots.includes(slot)) missing.push(slot + 1);
+    if (!occupied.has(slot)) missing.push(slot + 1);
   }
   let gapMin = Infinity, gapMax = -Infinity;
   for (const d of deltas) { gapMin = Math.min(gapMin, d - height); gapMax = Math.max(gapMax, d - height); }
@@ -1133,13 +1173,32 @@ export function pickPageColumn(boxes, want = 0, tall = 0) {
   const all = (Array.isArray(boxes) ? boxes : [])
     .filter((b) => b && b.width > 0 && b.height > 0);
   const uniq = [];
+  // Re-measuring a long column can hand this selector thousands of boxes. The
+  // old `uniq.some(...)` compared every new page with every page already seen.
+  // A 5px grid in x/y narrows the candidates to neighbouring cells; all four
+  // original <=4px checks still decide whether a box is actually a duplicate.
+  const cellSize = 5;
+  const spatial = new Map();
   for (const b of all) {
     // four pixels, not one: a block measured at two windows can land a pixel
     // either side of a rounding, and two boxes one pixel apart would read as two
     // pages in the same slot and lose the whole column
-    if (!uniq.some((u) => Math.abs(u.x - b.x) <= 4 && Math.abs(u.y - b.y) <= 4 &&
-        Math.abs(u.width - b.width) <= 4 && Math.abs(u.height - b.height) <= 4))
+    const cx = Math.floor(b.x / cellSize), cy = Math.floor(b.y / cellSize);
+    let duplicate = false;
+    for (let dx = -1; dx <= 1 && !duplicate; dx++) {
+      for (let dy = -1; dy <= 1 && !duplicate; dy++) {
+        const nearby = spatial.get(`${cx + dx},${cy + dy}`) || [];
+        duplicate = nearby.some((u) => Math.abs(u.x - b.x) <= 4 &&
+          Math.abs(u.y - b.y) <= 4 && Math.abs(u.width - b.width) <= 4 &&
+          Math.abs(u.height - b.height) <= 4);
+      }
+    }
+    if (!duplicate) {
       uniq.push(b);
+      const key = `${cx},${cy}`;
+      if (!spatial.has(key)) spatial.set(key, []);
+      spatial.get(key).push(b);
+    }
   }
   const groups = [];
   for (const box of uniq) {
@@ -2340,6 +2399,57 @@ export async function selftest() {
     return new Function("document", "window",
       "return (" + JS_PAGE_RECTS + ")()")(fakeDocument, fakeWindow);
   };
+  const fuzzy = viewer([
+    { tag: "div", x: 50, y: 20, width: 900, height: 1400 },
+    { tag: "img", x: 51, y: 21, width: 901, height: 1399 },
+  ]);
+  assert(fuzzy.seen === 2 && fuzzy.boxes.length === 1,
+    `a one-pixel measurement jitter must dedupe: ${JSON.stringify(fuzzy)}`);
+  const chain = viewer([
+    { tag: "div", x: 50, y: 20, width: 900, height: 1400 },
+    { tag: "img", x: 51, y: 20, width: 900, height: 1400 },
+    { tag: "canvas", x: 52, y: 20, width: 900, height: 1400 },
+  ]);
+  assert(chain.boxes.length === 2 && chain.boxes[0].x === 50 &&
+         chain.boxes[1].x === 52,
+    `fuzzy dedupe must retain the first representative, not form a chain: ` +
+    `${JSON.stringify(chain.boxes)}`);
+  // a grid narrows the search, so the pins must live ON the grid lines: a
+  // duplicate straddling a cell boundary is the case a wrong cell size misses
+  const straddle = viewer([
+    { tag: "div", x: 3.9, y: 20, width: 900, height: 1400 },
+    { tag: "img", x: 4.0, y: 20, width: 900, height: 1400 },
+  ]);
+  assert(straddle.boxes.length === 1,
+    `a duplicate straddling a 2px cell boundary must still dedupe: ` +
+    JSON.stringify(straddle.boxes));
+  const apart = viewer([
+    { tag: "div", x: 0, y: 20, width: 900, height: 1400 },
+    { tag: "img", x: 2, y: 20, width: 900, height: 1400 },
+  ]);
+  assert(apart.boxes.length === 2,
+    `two pages two pixels apart are two pages: ${JSON.stringify(apart.boxes)}`);
+  const edgeHeld = viewer([
+    { tag: "div", x: 50, y: 20, width: 900, height: 1400 },
+    { tag: "img", x: 51, y: 19, width: 800, height: 1300 },
+  ]);
+  assert(edgeHeld.boxes.length === 1 && edgeHeld.boxes[0].width === 800,
+    `the wrapper around a page must go even when the page starts exactly one ` +
+    `pixel above the wrapper's top — the scan window's edge case: ` +
+    JSON.stringify(edgeHeld.boxes));
+  const straddlePick = pickPageColumn([
+    { x: 9.9, y: 0, width: 800, height: 1100 },
+    { x: 10.0, y: 0, width: 800, height: 1100 },
+  ], 1, 0);
+  assert(straddlePick.boxes === 1,
+    `a duplicate straddling a 5px cell boundary must still dedupe: ` +
+    straddlePick.boxes);
+  const nested = viewer([
+    { tag: "div", x: 50, y: 20, width: 900, height: 1400 },
+    { tag: "img", x: 150, y: 100, width: 700, height: 1200 },
+  ]);
+  assert(nested.boxes.length === 1 && nested.boxes[0].width === 700,
+    `the larger wrapper must be removed around the inner page: ${JSON.stringify(nested)}`);
   const madeUpColumn = (pages) => {
     const items = [
       { tag: "div", x: 0, y: 0, width: 1000, height: 80 + pages * 1440 },
@@ -2375,6 +2485,18 @@ export async function selftest() {
   assert(column.run.missing.length === 0, column.run.missing.join(","));
   assert(column.run.pitch === 1440, `the column's step: ${column.run.pitch}`);
   assert(column.run.width === 900 && column.run.height === 1400, column.note);
+  const jittered = pickPageColumn([
+    { x: 0, y: 0, width: 800, height: 1100 },
+    { x: 4, y: 4, width: 804, height: 1096 },
+  ], 1, 0);
+  assert(jittered.boxes === 1 && jittered.rects.length === 1,
+    `a box within the original four-pixel tolerance was not deduped: ${jittered.boxes}`);
+  const outsideJitter = pickPageColumn([
+    { x: 0, y: 0, width: 800, height: 1100 },
+    { x: 0, y: 0, width: 805, height: 1100 },
+  ], 1, 0);
+  assert(outsideJitter.boxes === 2,
+    `a box outside the four-pixel tolerance was incorrectly deduped: ${outsideJitter.boxes}`);
   // a viewer that keeps only the pages near the window: a hole is a page this
   // pass did not reach, numbered by the column's own step, never a shifted book
   const withHole = measured.boxes.filter((box) => box.y !== 20 + 2 * 1440);
@@ -2841,7 +2963,8 @@ export async function selftest() {
   assert(/was cut off by its own/.test(shotsHandler),
     "a refused-by-deadline one pass must say it was the deadline");
 
-  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks, the lanes that cut a long book at the same time, the second place the column is looked for, what the browser says it saw when nothing on the screen is a page, and the pages that answer — a wall, an iframe, a window with no size, and a browser that says what it really is and where it came from, and a hang that cannot outlive the budget meant to contain it";
+  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks, the lanes that cut a long book at the same time, the second place the column is looked for, what the browser says it saw when nothing on the screen is a page, and the pages that answer — a wall, an iframe, a window with no size, and a browser that says what it really is and where it came from, and a hang that cannot outlive the budget meant to contain it, and a measure "
+    + "that stays linear when the column is long";
 }
 
 // ---------------------------------------------------------------------------
