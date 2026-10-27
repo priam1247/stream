@@ -5,8 +5,9 @@
 Usage:  python3 tools/audit_pdf_pages.py <file-or-directory> ...
 
 A page is flagged when it carries placeholder wording, when a sheet carries
-neither a picture nor any words, when a pictureless sheet carries too few words
-to be a page (a blank sheet with writing on it), when a real page is missing
+neither a picture nor any words, when a pictureless sheet's words are glyph
+shards rather than words (a blank sheet with writing on it), when a real page
+is missing
 from the sheet
 sequence, or when one image dominates the whole book (the same picture pasted
 everywhere). A clean book exits 0; any finding exits 1, so this can stand at
@@ -23,11 +24,28 @@ import zlib
 PLACEHOLDERS = (b"scan not available", b"not available", b"error en p",
                 b"placeholder", b"blank page", b"page missing")
 
-# A sheet with no picture on it and fewer characters of words than this is a
-# blank page that happens to have writing on it. A live run shipped exactly
-# that: page 1 of a 258-page textbook as seven glyph fragments, 26 characters,
-# and this audit called the book clean because the sheet had *some* Tj on it.
-MIN_SHEET_CHARS = 100
+def shard_fraction(text):
+    """The share of a sheet's alphabetic tokens that are one- or two-letter runs.
+
+    A sheet with no picture on it is judged by the SHAPE of its words, not by
+    how few they are: a title page, a dedication or a folio are real pages with
+    almost nothing on them, and a character count would call them blank. What a
+    failed font decode leaves is different — `Udd h`, `Eo`, `er`, `W` scattered
+    where lines should be — and half or more of its word-runs being one or two
+    letters is that wreckage. A live run shipped page 1 of a 258-page textbook
+    as exactly that, and this audit called the book clean because the sheet had
+    *some* Tj on it.
+    """
+    tokens = [tok for tok in re.split(r"\s+", str(text or "").strip()) if tok]
+    alpha = [tok for tok in tokens if re.search(r"[A-Za-z]", tok)]
+    if not alpha:
+        return 0.0
+    shards = [tok for tok in alpha
+              if re.fullmatch(r"[A-Za-z]{1,2}", tok.strip(".,;:!?\"'()"))]
+    return len(shards) / len(alpha)
+
+
+MAX_SHARD_FRACTION = 0.5
 
 
 def decode_streams(data):
@@ -126,18 +144,22 @@ def audit(path):
                     and b"TJ" not in content:
                 blanks.append(index)
             elif b" Do" not in content:
-                drawn = b"".join(re.findall(rb"\(((?:[^()\\]|\\.)*)\)", content))
+                # one space between the drawn strings: each Tj is its own line
+                # on the sheet, and gluing them together would merge "Udd" and
+                # "h" into one token and hide the shards
+                drawn = b" ".join(re.findall(rb"\(((?:[^()\\]|\\.)*)\)", content))
                 for esc, plain in ((b"\\(", b"("), (b"\\)", b")"),
                                    (b"\\\\", b"\\")):
                     drawn = drawn.replace(esc, plain)
-                chars = len(re.sub(rb"\s+", b"", drawn))
-                if chars < MIN_SHEET_CHARS:
-                    thin.append((index, chars))
+                frac = shard_fraction(drawn.decode("latin-1", "replace"))
+                if frac >= MAX_SHARD_FRACTION:
+                    thin.append((index, round(frac * 100)))
     if thin:
-        shown = ", ".join(f"{n} ({c} characters)" for n, c in thin[:8])
+        shown = ", ".join(f"{n} ({c}% glyph shards)" for n, c in thin[:8])
         findings.append(f"NEAR-BLANK SHEET: page(s) {shown}"
                         + (f" and {len(thin) - 8} more" if len(thin) > 8 else "")
-                        + " carry no picture and too few words to be a page")
+                        + " carry no picture and their words are decode "
+                          "wreckage, not a page")
     if blanks:
         shown = ", ".join(str(n) for n in blanks[:8])
         findings.append(f"BLANK SHEET: page(s) {shown}"

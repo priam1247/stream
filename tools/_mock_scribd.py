@@ -35,6 +35,10 @@ TEXT_MODE = os.environ.get("MOCK_TEXT_DOC", "")
 # arrived as scattered glyph runs, seven of them to a page. The engine must
 # leave those pages out and name them, not draw them as empty sheets.
 THIN_TEXT = os.environ.get("MOCK_THIN_TEXT") == "1"
+# MOCK_SPARSE_PAGE=N: page N is a real page with almost nothing on it — a
+# contents page, a dedication, a folio. The shape a character floor would have
+# dropped and the shard rule must not.
+SPARSE_PAGE = int(os.environ.get("MOCK_SPARSE_PAGE") or 0)
 TEXT_DOC = TEXT_MODE in ("1", "2", "3")
 ONE_ASSET = TEXT_MODE == "2"
 # MOCK_TEXT_DOC=3: every page advertises both a scan and native words. This
@@ -143,6 +147,9 @@ def page_text_lines(number, doc_id=0):
     """The words of one mock page — short for a scan, long for a text page."""
     if THIN_TEXT:
         return ["Udd  h", "Eo", " er", "W", "er", "K e"]
+    if SPARSE_PAGE and number == SPARSE_PAGE:
+        return ["Contents", "", "1. Introduction ......... 5",
+                "2. Vectors ......... 11"]
     if TEXT_DOC:
         if number == 2:
             return toc_page_lines()
