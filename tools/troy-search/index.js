@@ -28,7 +28,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.1";
+const VERSION = "2.2";
 // The port to listen on. A host like this one hands its container the public
 // port it assigned in SERVER_PORT — PORT on some boxes — and there is no
 // translation behind it: whatever this listens on IS the port the world
@@ -49,9 +49,71 @@ const PORT = ASSIGNED_PORT;
 // different one — but a fresh restart now works with nothing configured.
 const DEFAULT_PANEL = "http://195.123.189.187:25811";
 const PANEL = (process.env.SCRIBD_PANEL || "").trim() || DEFAULT_PANEL;
+// The fallback only. A version written into this file is a version that goes
+// stale: Chrome/126 was current in mid-2024, and the browser this service
+// actually runs is dozens of versions past it. What makes that worse than old is
+// that it is inconsistent — Chrome sends Sec-CH-UA client hints naming its own
+// real version on every request, so a header claiming 126 next to hints naming
+// something else is a shape no real browser has, and a bot check does not have
+// to be clever to notice it. liveUA() below asks the browser instead.
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+/**
+ * -> what this browser says it is, with "Headless" taken out of it.
+ *
+ * The version is the browser's own, so the header and the client hints it sends
+ * by itself agree, and nothing here has to be bumped by hand ever again. A
+ * browser that will not answer, or an answer that is not a Chrome, falls back to
+ * the constant above: a stale but consistent header beats no header.
+ */
+export function liveUA(browserUA) {
+  const text = String(browserUA || "").trim();
+  if (!/Chrome\/\d+/.test(text)) return UA;
+  return text.replace(/HeadlessChrome/g, "Chrome").replace(/Headless/g, "");
+}
+
+let askedUA = "";
+
+/** The user agent to browse with, asked of the browser once and remembered. */
+export async function userAgentOf(browser) {
+  if (!askedUA) {
+    try {
+      askedUA = liveUA(await browser.userAgent());
+    } catch {
+      askedUA = UA;
+    }
+  }
+  return askedUA || UA;
+}
+
+/**
+ * -> where this visit says it came from, or "" when it came from nowhere we
+ * should claim.
+ *
+ * A real reader arrives at the embed FROM the document's own page, and at that
+ * page from scribd.com, so both requests carry a Referer. Ours arrived from
+ * nowhere at all, which is another shape no browser has. Somewhere else's site
+ * gets no scribd referer, because that would be a lie in the other direction.
+ */
+export function refererFor(target, doc) {
+  const url = String(target || "");
+  if (!/^https?:\/\/([^\/?#]*\.)?scribd\.com\//i.test(url)) return "";
+  const ident = String(doc || "").replace(/[^0-9]/g, "");
+  if (/\/embeds\//.test(url) && ident) {
+    return `https://www.scribd.com/document/${ident}`;
+  }
+  return "https://www.scribd.com/";
+}
+
+/** How to load a page: what to wait for, how long, and where we came from. */
+export function navOptions(target, doc, timeoutMs = 45000) {
+  const options = { waitUntil: "domcontentloaded", timeout: timeoutMs };
+  const referer = refererFor(target, doc);
+  if (referer) options.referer = referer;
+  return options;
+}
 const MAX_SEND = 40;
 
 // the same pattern the panel accepts, so nothing we send can be rejected there
@@ -356,14 +418,14 @@ export async function searchWithBrowser(query) {
   for (const engine of ENGINES.filter((item) => item.mode === "browser")) {
     const page = await browser.newPage();
     try {
-      await page.setUserAgent(UA);
+      await page.setUserAgent(await userAgentOf(browser));
       const answers = [];
       page.on("response", (response) => {
         const type = response.request().resourceType();
         if (type === "document") answers.push(response.status());
       });
       const target = engine.url(query);
-      await page.goto(target, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.goto(target, navOptions(target, ""));
       await new Promise((resolve) => setTimeout(resolve, 2500));
       const anchors = await page.evaluate(() =>
         [...document.querySelectorAll("a[href]")].map((a) => ({
@@ -633,14 +695,14 @@ export async function shootPage(doc, page, scale = SHOT_SCALE, waitMs = SHOT_WAI
   try {
     const browser = await getBrowser();
     tab = await browser.newPage();
-    await tab.setUserAgent(UA);
+    await tab.setUserAgent(await userAgentOf(browser));
     await tab.setViewport({ width: viewport.width, height: viewport.height,
                             deviceScaleFactor: ratio });
     let kept = null;
     for (const patience of [Number(waitMs) || SHOT_WAIT_MS,
                             (Number(waitMs) || SHOT_WAIT_MS) * 2]) {
-      await tab.goto(shotUrl(ident, number),
-                     { waitUntil: "domcontentloaded", timeout: 45000 });
+      const single = shotUrl(ident, number);
+      await tab.goto(single, navOptions(single, ident));
       const deadline = Date.now() + patience;
       let clip = null;
       do {
@@ -1208,7 +1270,7 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
   try {
     const browser = await getBrowser();
     tab = await browser.newPage();
-    await tab.setUserAgent(UA);
+    await tab.setUserAgent(await userAgentOf(browser));
     await tab.setViewport({ width: SHOT_WIDTH, height: SHOT_HEIGHT,
                             deviceScaleFactor: ratio });
     // ---- the column, found one window at a time --------------------------
@@ -1231,7 +1293,7 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
     // book must not spend ten minutes finding out the one pass was never going to.
     const measureColumn = async (target, label, budgetMs) => {
       const began = Date.now();
-      await tab.goto(target, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await tab.goto(target, navOptions(target, ident));
       await tab.addStyleTag({ content: SCROLL_CSS }).catch(() => {});
       const gathered = [];
       const met = new Set();
@@ -1481,11 +1543,10 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
       if (!ranges[lane].length) continue;
       try {
         const extra = await browser.newPage();
-        await extra.setUserAgent(UA);
+        await extra.setUserAgent(await userAgentOf(browser));
         await extra.setViewport({ width: SHOT_WIDTH, height: SHOT_HEIGHT,
                                   deviceScaleFactor: ratio });
-        await extra.goto(columnUrl,
-                         { waitUntil: "domcontentloaded", timeout: 45000 });
+        await extra.goto(columnUrl, navOptions(columnUrl, ident));
         await extra.addStyleTag({ content: SCROLL_CSS }).catch(() => {});
         laneTabs[lane] = extra;
       } catch (exc) {
@@ -2629,7 +2690,50 @@ export function selftest() {
     "not say how tall it is: " + unknown.note);
   assert(unknown.count === 6, unknown.count);
 
-  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks, the lanes that cut a long book at the same time, the second place the column is looked for, what the browser says it saw when nothing on the screen is a page, and the pages that answer — a wall, an iframe, a window with no size";
+  // ---- a browser that looks like a browser ------------------------------
+  // Two shapes no real browser has, and a bot check does not have to be clever
+  // to notice either: a header claiming a Chrome version the browser is not
+  // running (its own client hints name the real one on every request), and a
+  // visit to the viewer that says it came from nowhere. Both are pinned here.
+  const headless = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) HeadlessChrome/156.0.8078.47 Safari/537.36";
+  assert(liveUA(headless) === headless.replace("HeadlessChrome", "Chrome"),
+    liveUA(headless));
+  assert(!/Headless/.test(liveUA(headless)), "headless must not be in the words");
+  assert(/Chrome\/156\.0\.8078\.47/.test(liveUA(headless)),
+    "the browser's own version survives, so the header and its hints agree");
+  assert(liveUA("") === UA && liveUA("curl/8.7.1") === UA,
+    "a browser that will not answer gets the fallback, not an empty header");
+  assert(refererFor(scrollUrl("398154705"), "398154705") ===
+         "https://www.scribd.com/document/398154705",
+    refererFor(scrollUrl("398154705"), "398154705"));
+  assert(refererFor(documentUrl("398154705"), "398154705") ===
+         "https://www.scribd.com/",
+    refererFor(documentUrl("398154705"), "398154705"));
+  assert(refererFor("about:blank", "1") === "", "a blank page came from nowhere");
+  assert(refererFor("https://duckduckgo.com/html/?q=x", "1") === "",
+    "somewhere else's site gets no scribd referer — that lie runs the other way");
+  assert(navOptions(scrollUrl("7"), "7").referer ===
+         "https://www.scribd.com/document/7", JSON.stringify(navOptions(scrollUrl("7"), "7")));
+  assert(navOptions(scrollUrl("7"), "7").waitUntil === "domcontentloaded" &&
+         navOptions(scrollUrl("7"), "7").timeout === 45000,
+    "asking where we came from must not change what we wait for");
+  assert(navOptions("about:blank", "7").referer === undefined,
+    "an empty referer is left out, not sent as nothing");
+  const looksReal = String(shootBook) + String(shootPage);
+  assert(!/setUserAgent\(UA\)/.test(looksReal),
+    "a version written into this file goes stale, and a stale header next to " +
+    "the client hints the browser really sends is a mismatch no browser has");
+  assert(/setUserAgent\(await userAgentOf\(browser\)\)/.test(looksReal),
+    "every tab must ask the browser what to call itself");
+  assert((String(shootBook).match(/navOptions\(/g) || []).length === 2,
+    "the measuring visit and every lane's visit say where they came from");
+  assert((String(shootPage).match(/navOptions\(/g) || []).length === 1,
+    "a single page's visit says where it came from");
+  assert(/browser\.userAgent\(\)/.test(String(userAgentOf)),
+    "the browser is asked, not guessed at");
+
+  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks, the lanes that cut a long book at the same time, the second place the column is looked for, what the browser says it saw when nothing on the screen is a page, and the pages that answer — a wall, an iframe, a window with no size, and a browser that says what it really is and where it came from";
 }
 
 // ---------------------------------------------------------------------------
