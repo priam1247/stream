@@ -48,6 +48,9 @@ venv/
 .download-debug/
 downloads/
 
+# generated one-file deployment copy of the split Scribd panel
+tools/scribd_download_singlefile.py
+
 # Session credentials — NEVER commit these (equivalent to a password)
 cookies.txt
 *cookies*.txt

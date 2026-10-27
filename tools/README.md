@@ -1,14 +1,18 @@
 # scribd-download
 
-One file. Turns Scribd links into clean PDFs — one document page per sheet —
-**without a browser, without pip, without a repository**.
+Turns Scribd links into clean PDFs — one document page per sheet —
+**without pip and without a Python framework**.
 
-`tools/scribd_download.py` is the whole tool. Python 3.8+ and nothing else
-(it parses as 3.8 syntax; it was developed and run on 3.11).
+`tools/scribd_download.py` is now a small loader. The real source is split into
+`tools/scribd_parts/` — one file per top-level function or class, plus small
+state/entry fragments. `tools/scribd_parts/MAP.md` lists every function and the
+fragment that owns it. Python 3.8+ and nothing else (it parses as 3.8 syntax;
+it was developed and run on 3.11).
 
 ```
 python tools/scribd_download.py            # panel mode: a page you can use from anywhere
 python tools/scribd_download.py --url LINK # one document from the command line
+python tools/build_scribd_singlefile.py    # make a one-file deployment copy
 ```
 
 ---
@@ -38,7 +42,10 @@ something nobody asked.
 
 ## 1. Put it on the panel
 
-1. Upload `tools/scribd_download.py` to `/home/container` (Pterodactyl → Files).
+1. If the host wants one file, run `python3 tools/build_scribd_singlefile.py`
+   and upload `tools/scribd_download_singlefile.py` as `scribd_download.py`.
+   Otherwise upload the whole `tools/` folder: `scribd_download.py` loads
+   `scribd_parts/` from beside itself.
 2. Put your `cookies.txt` in the same folder. It is never committed, never
    printed, and only `scribd.com` / `scribdassets.com` cookies are ever sent —
    the rest of a browser export stays out of the request.
