@@ -1157,7 +1157,7 @@ export async function getBotCommandById(
 }
 
 // ---------------------------------------------------------------------------
-// Scribd download panel (tools/scribd_download.py)
+// Scribd download panel (tools/downloader/scribd_download.py)
 // ---------------------------------------------------------------------------
 // Same shape as the Pterodactyl panel settings above: the environment supplies
 // the defaults, a saved row in portal_settings overrides them, and the disk

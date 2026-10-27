@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Build a deployable one-file copy of the Scribd panel.
 
-Development uses ``tools/scribd_download.py`` (a small loader) plus six
-responsibility modules: ``scribd_config.py``, ``scribd_pages.py``,
-``scribd_jobs.py``, ``scribd_shots.py``, ``scribd_panel.py`` and
-``scribd_selftest.py``. Hosts that still need one file
-(``PY_FILE=scribd_download.py`` on Pterodactyl) can upload the output of this
-script instead:
+Development uses ``tools/downloader/scribd_download.py`` (a small loader) plus
+six responsibility modules in ``tools/downloader/``. Hosts that still need one
+file (``PY_FILE=scribd_download.py`` on Pterodactyl) can upload the output of
+this script instead. For a split-folder deploy, set
+``PY_FILE=tools/downloader/scribd_download.py`` when the whole repo is
+mirrored, or ``PY_FILE=downloader/scribd_download.py`` when only the contents
+of ``tools/`` are uploaded to the panel root:
 
     python3 tools/build_scribd_singlefile.py
     python3 tools/scribd_download_singlefile.py --selftest
+
+The builder itself stays at the ``tools/`` root so ``tools/downloader/`` holds
+only the split Python sources.
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ import argparse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+SOURCE_DIR = HERE / "downloader"
 SOURCES = (
     "scribd_config.py",
     "scribd_pages.py",
@@ -38,10 +43,11 @@ def _scribd_source_text() -> str:
 
 
 def bundle() -> str:
-    text = "".join((HERE / name).read_text(encoding="utf-8") for name in SOURCES)
+    text = "".join((SOURCE_DIR / name).read_text(encoding="utf-8")
+                   for name in SOURCES)
     marker = "from __future__ import annotations\n"
     if marker not in text:
-        raise RuntimeError("scribd_config.py lost its future import")
+        raise RuntimeError("downloader/scribd_config.py lost its future import")
     return text.replace(marker, marker + HELPER, 1)
 
 
@@ -49,7 +55,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="output .py file")
     ap.add_argument("--check", action="store_true",
-                    help="compare the output with the sources, write nothing")
+                    help="compare the output with the downloader sources, write nothing")
     args = ap.parse_args()
     text = bundle()
     out = Path(args.out)

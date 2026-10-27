@@ -1,6 +1,6 @@
 """Scribd panel — search, HTTP routes, embedded UI and command-line main.
 
-Loaded by scribd_download.py after scribd_shots.py. The offline selftest is in
+Loaded from tools/downloader/ by scribd_download.py after scribd_shots.py. The offline selftest is in
 scribd_selftest.py, which also holds the final __main__ guard. Annotations are
 compiled with PEP 563 by the loader.
 """
@@ -1008,7 +1008,7 @@ def main(argv: list[str]) -> int:
             print(selftest())
             return 0
         elif arg in ("-h", "--help"):
-            print(__doc__)
+            print(globals().get("_HELP_TEXT", __doc__))
             return 0
         elif arg == "--verify" and index + 1 < len(argv):
             sound, report = verify_pdf(argv[index + 1])
@@ -1053,7 +1053,8 @@ def main(argv: list[str]) -> int:
                 text=text)
         return 0 if JOB.verdict in ("PDF BUILT", "PDF PARTIAL", "PROBE DONE") else 1
     # 25811 is the port this panel is reached on; an egg that sets SERVER_PORT
-    # still wins, and a bare `python scribd_download.py` now binds the right one
+    # still wins, and a bare `python3 tools/downloader/scribd_download.py` now
+    # binds the right one
     port = int(os.environ.get("SERVER_PORT") or os.environ.get("PORT")
                or PANEL_PORT)
     serve(port, out)

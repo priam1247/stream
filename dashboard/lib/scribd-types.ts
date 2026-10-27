@@ -2,7 +2,7 @@
  * Shapes shared by the Scribd panel client and the panel UI.
  *
  * They mirror exactly what `GET /status`, `POST /find`, `GET /files` answer in
- * `tools/scribd_download.py`, so nothing is guessed on this side.
+ * `tools/downloader/scribd_download.py`, so nothing is guessed on this side.
  */
 
 export interface ScribdProgress {

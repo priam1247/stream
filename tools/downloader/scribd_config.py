@@ -1,29 +1,34 @@
 #!/usr/bin/env python3
 """Scribd panel — configuration, cookies, network, tokens, links and helpers.
 
-The source is six files, each roughly 1,000-1,500 lines, grouped by
-responsibility. scribd_download.py is the loader; the others are
-scribd_pages.py, scribd_jobs.py, scribd_shots.py, scribd_panel.py and
-scribd_selftest.py. The loader runs them in order in one shared namespace;
-tools/build_scribd_singlefile.py makes a one-file deployment copy.
+The source is six modules in ``tools/downloader/``, each roughly 1,000-1,500
+lines, grouped by responsibility. ``scribd_download.py`` is the loader; the
+others are ``scribd_pages.py``, ``scribd_jobs.py``, ``scribd_shots.py``,
+``scribd_panel.py`` and ``scribd_selftest.py``. The loader runs them in order
+in one shared namespace; ``tools/build_scribd_singlefile.py`` (at the
+``tools/`` root) makes a one-file deployment copy.
 
 Turns Scribd documents into clean PDFs, one document page per sheet, with no
 pip install and no Python framework.
 
-    python scribd_download.py                        # serves the page (panel mode)
-    python scribd_download.py --find "physics 12th"  # search Scribd, print the links
-    python scribd_download.py --find "physics 12th" --pages 3
-    python scribd_download.py --find "physics 12th" --pick 1,3
-    python scribd_download.py --url LINK             # one document, all pages
-    python scribd_download.py --url LINK --limit 5   # first 5 pages only
-    python scribd_download.py --url LINK --probe 4   # every url and its answer
-    python scribd_download.py --url LINK --text      # searchable text, not photos
-    python scribd_download.py --links "LINK LINK"    # several documents
-    python scribd_download.py --verify FILE.pdf      # check a finished PDF
-    python scribd_download.py --selftest             # offline check of this file
+From the repository root:
 
-Panel mode: set PY_FILE to this file, restart, open the server address. The page
-has two ways in:
+    python3 tools/downloader/scribd_download.py --selftest
+    python3 tools/downloader/scribd_download.py --find "physics 12th"
+    python3 tools/downloader/scribd_download.py --find "physics 12th" --pages 3
+    python3 tools/downloader/scribd_download.py --find "physics 12th" --pick 1,3
+    python3 tools/downloader/scribd_download.py --url LINK
+    python3 tools/downloader/scribd_download.py --url LINK --limit 5
+    python3 tools/downloader/scribd_download.py --url LINK --probe 4
+    python3 tools/downloader/scribd_download.py --url LINK --text
+    python3 tools/downloader/scribd_download.py --links "LINK LINK"
+    python3 tools/downloader/scribd_download.py --verify FILE.pdf
+    python3 tools/downloader/scribd_download.py                 # panel mode
+
+Panel mode: for a split-folder deploy set ``PY_FILE=tools/downloader/scribd_download.py``
+(or ``PY_FILE=downloader/scribd_download.py`` when ``tools/`` contents are at
+the panel root); for the one-file build set ``PY_FILE=scribd_download.py``.
+Restart, open the server address. The page has two ways in:
 
   1. FIND HERE. The panel asks Scribd's own search — the very request its search
      page makes, /search/query — and gets the documents back as JSON with their
@@ -220,6 +225,11 @@ Panel options (environment, all optional):
   PANEL_KEY / SCRIBD_PANEL_KEY   lock the panel (X-Panel-Key, ?key=, or cookie)
   PANEL_ORIGIN                   comma-separated browser origins allowed by CORS
   SERVER_PORT / PORT             port to listen on
+  SCRIBD_TOOLS_DIR               folder that holds troy-search/ and the shooter
+                                 cache; defaults to the parent of downloader/
+                                 (or the generated one-file build's folder)
+  SCRIBD_SHOOTER_DIR             override the troy-search/ service directory
+  SCRIBD_AUTOSHOOT               set to 0 to never start troy-search/ locally
   SCRIBD_SHOTS                   a browser service that photographs a page this
                                  panel could not build (troy-search's /shot);
                                  SCRIBD_SHOT_SCALE (default 1: standard
@@ -231,21 +241,28 @@ Panel options (environment, all optional):
                                  addresses written into SHOT_HOSTS are asked in
                                  order (the browser egg's own assigned endpoint
                                  among them), the egg's host is swept once if
-                                 none of them answers, and the answer is kept in
-                                 tools/shooter-found.txt.
+                                 none of them answers, and the answer is cached
+                                 in shooter-found.txt beside troy-search/.
   SCRIBD_SCRAPE_DO               token for the scrape route asked after a 403;
                                  empty closes that door
 
 Endpoints, for a dashboard in front of this panel:
+  GET  /                         the search/download page
   GET  /health                   {"ok", "version", "locked", "state"} — no key
   GET  /status                   the running job: state, verdict, progress, log
   GET  /files                    {"files": [{name, bytes, when}]} newest first
-  GET  /file[/NAME]              the finished PDF
+  GET  /file[/NAME]              the finished PDF (signed link or panel key)
+  GET  /send?url=...             queue links from the bookmarklet
   GET  /logs[/NAME]              the debug folder, as a page or a file
-  POST /run                      {"urls"|"url"|"links", "limit", "text"}
+  POST /run                      {"urls"|"url"|"links", "limit", "text", "jobs"}
   POST /find                     {"query", "page"} -> documents from Scribd
+  POST /reset                    stop a job that is not moving
+  OPTIONS *                      CORS preflight for the dashboard client
 
-Cookies are read, never printed. Files stay on this machine.
+With PANEL_KEY set, most routes need X-Panel-Key, ?key=, or the panel cookie;
+/health is open and signed /file or /logs links are allowed. Cookies are read,
+never printed. Files stay on this machine.
+
 """
 
 from __future__ import annotations
@@ -273,6 +290,29 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Later modules are exec'd into this same namespace and would otherwise
+# replace __doc__ with their own module docstring. Keep the CLI help here.
+_HELP_TEXT = __doc__ or ""
+
+
+def _tools_dir() -> str:
+    """Folder that holds ``troy-search/`` and ``shooter-found.txt``.
+
+    Split sources live in ``tools/downloader/``, so their parent is ``tools/``.
+    The generated one-file build lives in ``tools/`` (or at the panel root when
+    uploaded as ``scribd_download.py``), so its own folder is already right.
+    ``SCRIBD_TOOLS_DIR`` overrides both when a host lays the service out
+    differently.
+    """
+    override = os.environ.get("SCRIBD_TOOLS_DIR")
+    if override:
+        return os.path.abspath(override)
+    here = os.path.dirname(os.path.abspath(__file__))
+    if os.path.basename(here) == "downloader":
+        return os.path.dirname(here)
+    return here
+
 
 VERSION = "3.5"
 SAMPLE = "https://www.scribd.com/document/751945245"

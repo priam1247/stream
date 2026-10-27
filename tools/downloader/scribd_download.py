@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Scribd panel — small loader for the six-file source.
+"""Scribd panel — small loader for the six-module source in this folder.
 
 The real code lives in ``scribd_config.py``, ``scribd_pages.py``,
 ``scribd_jobs.py``, ``scribd_shots.py``, ``scribd_panel.py`` and
-``scribd_selftest.py``. They are executed here in one shared namespace, in
-order, so the public behaviour is exactly the same as the old monolithic file.
-Each source file is roughly 1,000-1,500 lines and grouped by responsibility.
+``scribd_selftest.py`` beside this file. They are executed here in one shared
+namespace, in order, so the public behaviour is exactly the same as the old
+monolithic file. Each module is roughly 1,000-1,500 lines and grouped by
+responsibility.
 
-See ``tools/README.md`` for deployment. ``build_scribd_singlefile.py`` can make
-a one-file copy for hosts that need one.
+See ``docs/scribd-downloader.md`` for deployment. ``../build_scribd_singlefile.py``
+can make a one-file copy for hosts that need one.
 """
 from __future__ import annotations
 
@@ -45,5 +46,7 @@ for _name in _SOURCES:
     )
     exec(_code, _NS)
 
-# Importers (screenshots_to_pdf.py, scribd_screenshots.py) see every function.
+# Importers see every function in this shared namespace. Keep the config
+# module's help text: exec'ing later modules replaces __doc__.
+_NS["__doc__"] = _NS.get("_HELP_TEXT", __doc__)
 _NS["_scribd_source_text"] = _scribd_source_text

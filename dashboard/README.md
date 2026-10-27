@@ -63,9 +63,10 @@ npm run build
 ## Scribd Library tab
 
 The member console has a fourth tab (**Scribd**) that drives the Python panel in
-[`../tools/scribd_download.py`](../tools/scribd_download.py) — search Scribd, tick
-documents, watch the page-by-page progress and save the finished PDF. The browser
-calls only this app (`/api/scribd/*`); the server holds the panel key.
+[`../tools/downloader/scribd_download.py`](../tools/downloader/scribd_download.py) — search
+Scribd, tick documents, watch the page-by-page progress and save the finished
+PDF. The browser calls only this app (`/api/scribd/*`); the server holds the
+panel key.
 
 | file | role |
 |---|---|
