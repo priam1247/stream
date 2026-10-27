@@ -266,7 +266,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "3.1"
+VERSION = "3.2"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -3372,6 +3372,27 @@ class Ctx:
             return ""
         return target
 
+    def save_shot_note(self, note: str) -> str:
+        """Keep the browser service's own report of a refused photograph.
+
+        The note says what the browser was looking at when nothing on the screen
+        was a page: the title, the url it ended on, the size of the window, how
+        many elements were there, whether a viewer sat inside an iframe, how many
+        things were pinned over the window, the biggest boxes and the rule that
+        threw each one away, and the words the page itself printed. That is the
+        difference between guessing at the next fix and knowing it.
+        """
+        if not self.debug_dir or not str(note or "").strip():
+            return ""
+        target = os.path.join(self.debug_dir, f"shots-{self.ident}.txt")
+        try:
+            os.makedirs(self.debug_dir, exist_ok=True)
+            with open(target, "w", encoding="utf-8", errors="replace") as handle:
+                handle.write(str(note).strip() + "\n")
+        except OSError:
+            return ""
+        return target
+
     def page_text(self, number: int) -> str:
         """This page's words: its descriptor first, then the viewer's page.
 
@@ -4051,8 +4072,11 @@ def refusal_reason(body: bytes, status: int) -> str:
             for key in ("error", "note", "message"):
                 text = str(answer.get(key) or "").strip()
                 if text:
-                    return text[:200]
-    text = body[:200].decode("utf-8", "replace").strip()
+                    # 200 characters cut the browser's own diagnosis in half —
+                    # "the column NaNpx tall, 0 bo" is what a run printed, and
+                    # the rest of that sentence was the part that said why
+                    return text[:900]
+    text = body[:900].decode("utf-8", "replace").strip()
     return text or f"http {status}"
 
 
@@ -4437,8 +4461,14 @@ class Shooter:
         return out, manifest
 
     def capture(self, ident: str, pages, jobs: int = 4,
-                alive=None) -> tuple[dict[int, dict], list[str]]:
-        """Photograph a list of pages. -> (page -> picture, what went wrong)."""
+                alive=None, progress=None) -> tuple[dict[int, dict], list[str]]:
+        """Photograph a list of pages. -> (page -> picture, what went wrong).
+
+        `progress(done, ok, total)` is called as each page lands. Twenty pages
+        one at a time is minutes of silence, and a panel that prints nothing for
+        minutes looks dead — which is what makes a run get killed and started
+        again, and what made a book sit at `page 0/20 · 0 ok · 159.7s`.
+        """
         asked = sorted({int(number) for number in pages if number})
         wanted = asked[:MAX_SHOT_PAGES]
         if not wanted:
@@ -4475,6 +4505,12 @@ class Shooter:
                         notes.append(note)     # kept, and worth saying so
                 elif note:
                     notes.append(note)
+                if progress is not None:
+                    try:
+                        progress(len(pictures) + len(notes), len(pictures),
+                                 len(wanted))
+                    except Exception:          # noqa: BLE001
+                        pass                   # a progress line is never a failure
         return pictures, notes
 
 
@@ -4577,6 +4613,24 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     # photograph, never the book. The words still come from the document,
     # underneath, so the book stays searchable.
     collected: dict[int, dict] = {}
+
+    def shot_progress(done: int, ok: int, total: int) -> None:
+        """Move the panel's numbers while pages are photographed one at a time.
+
+        Twenty pages of silence is a panel that reads `page 0/20 · 0 ok · 159.7s`
+        and looks dead, and a run that looks dead gets killed and started again,
+        losing the pages that had already landed. This is defined above every
+        photograph pass, including the one for the pages a one pass missed: a
+        nested def is local to the whole function, so calling it before its own
+        line is an UnboundLocalError and not a late binding.
+        """
+        # "of" is the DOCUMENT's page count, never this pass's: a pass over the
+        # one page a one pass missed must not turn the panel's `page 20 of 20`
+        # into `page 20 of 1`, which reads like a lie about the book
+        of = max(int(with_limit), int(total), int(done))
+        JOB.set_progress(page=min(len(collected) + int(done), of), of=of,
+                         ok=len(collected) + int(ok))
+
     failed: list[int] = []
     text_pages: dict[int, str] = {}
     texts: dict[int, str] = {}     # the invisible text layer of a photographed page
@@ -4589,13 +4643,24 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                     f"({shooter.base}) — {with_limit} page(s) measured in the "
                     f"column and clipped at the gap between one and the next, "
                     f"at {shooter.scale:g}x")
+            JOB.say(f"one pass: measuring the whole column in the viewer now, "
+                    f"then cutting {with_limit} page(s) in up to four windows "
+                    f"({shooter.base}) — this is the part that takes the time")
             book_pages, book_note = shooter.shoot_book(ctx.ident, shooter.scale,
                                                        pages=with_limit)
             if book_pages:
                 JOB.say(book_note)
             else:
-                JOB.say(f"the one-pass photograph came back empty: {book_note} "
-                        f"— falling back to page by page")
+                # the browser's own report of what it was looking at is the only
+                # honest answer to "why is nothing on the screen a page", and it
+                # is long: the log gets it, and the file gets all of it
+                saved = ctx.save_shot_note(book_note)
+                JOB.say(f"the one pass found no column of pages: {book_note}")
+                JOB.say("falling back to page by page — every page is "
+                        "photographed on its own, and the panel counts them as "
+                        "they land"
+                        + (f" · the browser's report is saved at {saved}"
+                           if saved else ""))
         else:
             JOB.say("no browser is reachable"
                     + (f" at {shooter.base}" if shooter.base else "")
@@ -4630,7 +4695,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                     f"photographing them one by one")
             pictures, shot_notes = shooter.capture(
                 ctx.ident, failed, jobs=ctx.jobs,
-                alive=lambda: JOB.alive(ctx.gen))
+                alive=lambda: JOB.alive(ctx.gen), progress=shot_progress)
             for number in sorted(pictures):
                 collected[number] = pictures[number]
                 book_shot.append(number)
@@ -4783,7 +4848,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                 f"underneath, searchable")
         pictures, shot_notes = shooter.capture(
             ctx.ident, word_only, jobs=ctx.jobs,
-            alive=lambda: JOB.alive(ctx.gen))
+            alive=lambda: JOB.alive(ctx.gen), progress=shot_progress)
         for number in sorted(pictures):
             collected[number] = pictures[number]
             photographed.append(number)
@@ -4816,7 +4881,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         asked_for = len(failed)
         pictures, shot_notes = shooter.capture(
             ctx.ident, failed, jobs=ctx.jobs,
-            alive=lambda: JOB.alive(ctx.gen))
+            alive=lambda: JOB.alive(ctx.gen), progress=shot_progress)
         for number in sorted(pictures):
             collected[number] = pictures[number]
             photographed.append(number)
@@ -7302,6 +7367,20 @@ def selftest() -> str:
         stopped, notes = shooter.capture("7", [1, 2], jobs=2, alive=lambda: False)
         assert stopped == {} and notes and "stopped" in notes[0], notes
 
+        # The panel must move while pages are photographed one at a time. Twenty
+        # pages of silence is a panel that reads `page 0/20 · 0 ok · 159.7s`,
+        # which looks dead — and a run that looks dead gets killed and started
+        # again, losing the pages that had already landed.
+        steps = []
+        moving, moved_notes = shooter.capture(
+            "7", [1, 2, 3, 4], jobs=1,
+            progress=lambda done, ok, total: steps.append((done, ok, total)))
+        assert sorted(moving) == [1, 2, 3], sorted(moving)
+        assert [step[0] for step in steps] == [1, 2, 3, 4], steps
+        assert steps[-1] == (4, 3, 4), steps
+        assert all(step[2] == 4 for step in steps), steps
+        assert "page 4" in moved_notes[0], moved_notes
+
         # a service that answers 200 and says "ok": false is NOT a browser on
         # hand. Believing it would send every missing page somewhere that cannot
         # help, and the document would end up with the same missing pages, slower.
@@ -7340,6 +7419,16 @@ def selftest() -> str:
     assert refusal_reason(b'{"error": "page 12: no browser"}', 502) == "page 12: no browser"
     assert refusal_reason(b'<html>nope</html>', 502) == "<html>nope</html>"
     assert refusal_reason(b"", 500) == "http 500"
+    # a run once printed "the column NaNpx tall, 0 bo" and stopped there: the
+    # part of the sentence that said WHY was past the 200th character
+    told = ("no column of pages in the embed viewer or in the document's own "
+            "page — measured 0 page block(s) of 0 distinct page-shaped box(es) "
+            'in 12 window(s) over 9s · what the browser was looking at: title '
+            '"Sign in" · THE WINDOW HAS NO SIZE (0x0)' + "x" * 700)
+    kept = refusal_reason(json.dumps({"error": told}).encode("utf-8"), 502)
+    assert len(kept) == 900, len(kept)
+    assert kept.startswith("no column of pages"), kept[:60]
+    assert "THE WINDOW HAS NO SIZE" in kept, kept[-260:]
     assert "nothing is listening" in plain_error(
         urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")))
     assert "does not resolve" in plain_error(socket.gaierror(-2, "Name or service not known"))
@@ -7435,7 +7524,50 @@ def selftest() -> str:
             "the second door, the name that was never asked, "
             "the lock map in the token, the last line of every page, "
             "the queue that drops what will not come, "
-            "the sheet that is never grey")
+            "the sheet that is never grey, the panel that counts every "
+            "photographed page, and the report of a page nobody could find")
+
+    # ---- a refused photograph must leave its diagnosis behind --------------
+    # "0 page-shaped boxes" is not an answer. The browser's own report — the
+    # title, the url it ended on, the window's size, what was pinned over it,
+    # the biggest boxes and the rule that threw each one away, the words the
+    # page printed — is the difference between guessing at the next fix and
+    # knowing it. It is long, so the log gets the sentence and the disk gets
+    # all of it.
+    import inspect as _pin_inspect
+    import tempfile as _pin_tempfile
+    with _pin_tempfile.TemporaryDirectory() as _pin_dir:
+        _pin_ctx = Ctx("398154705", "https://www.scribd.com/document/398154705")
+        assert _pin_ctx.save_shot_note("a report") == "", \
+            "with nowhere to write, there is nothing to claim"
+        _pin_ctx.debug_dir = _pin_dir
+        _pin_text = ("no column of pages in the embed viewer or in the "
+                     "document's own page — what the browser was looking at: "
+                     'title "Linear Algebra" · THE WINDOW HAS NO SIZE (0x0)')
+        _pin_path = _pin_ctx.save_shot_note(_pin_text)
+        assert _pin_path == os.path.join(_pin_dir, "shots-398154705.txt"), _pin_path
+        with open(_pin_path, encoding="utf-8") as _pin_handle:
+            assert _pin_handle.read().strip() == _pin_text
+        assert _pin_ctx.save_shot_note("   ") == "", "an empty report writes nothing"
+    _pin_source = _pin_inspect.getsource(_download)
+    assert _pin_source.count("progress=shot_progress") == 3, (
+        "every page-by-page photograph pass must move the panel's numbers; "
+        f"{_pin_source.count('progress=shot_progress')} of 3 do")
+    assert "def shot_progress(" in _pin_source, (
+        "the page-by-page passes have no progress to report")
+    assert "max(int(with_limit), int(total), int(done))" in _pin_source, (
+        "a pass over one page must not shrink the document's page count on the "
+        "panel: `page 20 of 1` is what that reads like")
+    _pin_defined = _pin_source.index("def shot_progress(")
+    _pin_first_use = _pin_source.index("progress=shot_progress")
+    assert _pin_defined < _pin_first_use, (
+        "shot_progress is used before it is defined, which is an "
+        "UnboundLocalError on the first pass that reports through it — the one "
+        "pass missing a page is that pass")
+    assert "one pass: measuring the whole column" in _pin_source, (
+        "the one pass must say it is running before the minutes of silence")
+    assert "save_shot_note(book_note)" in _pin_source, (
+        "a refused one pass must leave the browser's report on disk")
 
 def main(argv: list[str]) -> int:
     global BASE

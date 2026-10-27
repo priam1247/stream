@@ -28,7 +28,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.0";
+const VERSION = "2.1";
 // The port to listen on. A host like this one hands its container the public
 // port it assigned in SERVER_PORT — PORT on some boxes — and there is no
 // translation behind it: whatever this listens on IS the port the world
@@ -724,6 +724,111 @@ export function scrollUrl(doc) {
 }
 
 /**
+ * The document's own page — the second place to look for the column.
+ *
+ * The embed above is where a single page is photographed, and it is asked first.
+ * But the column this measure was built from — 389 page blocks, every one of them
+ * 1499x1940, in a capture of document 776457435 taken on 2026-10-26 — was in the
+ * document's OWN page, in the top document, with no iframe around it. When the
+ * embed shows nothing page-shaped, this is where the same window looks next.
+ */
+export function documentUrl(doc) {
+  const ident = String(doc || "").replace(/[^0-9]/g, "");
+  return `https://www.scribd.com/document/${ident}`;
+}
+
+/**
+ * What the browser is actually looking at, when no page on the screen is
+ * page-shaped. Run in the tab; the answer is plain data, no cookies in it and no
+ * token: only what a person would see if they opened the same window.
+ */
+const JS_SIGHT = `() => {
+  const view = { width: window.innerWidth || 0, height: window.innerHeight || 0 };
+  const newline = String.fromCharCode(10);
+  const seen = {
+    url: String(location.href || "").split("?")[0].slice(0, 140),
+    title: String(document.title || "").slice(0, 90),
+    view: [view.width, view.height],
+    ready: String(document.readyState || ""),
+    elements: document.querySelectorAll("*").length,
+    canvases: document.querySelectorAll("canvas").length,
+    images: document.querySelectorAll("img").length,
+    iframes: [...document.querySelectorAll("iframe")].map((frame) =>
+      String(frame.src || frame.getAttribute("src") || "(no src)")
+        .split("?")[0].slice(0, 110)).slice(0, 3),
+    fixed: 0,
+    biggest: [],
+    words: ((document.body && document.body.innerText) || "")
+      .split(newline).map((line) => line.trim()).filter(Boolean)
+      .join(" ").slice(0, 240),
+  };
+  const tags = "html, body, iframe, img, canvas, div, section, article, main, li, figure";
+  const rects = [];
+  for (const el of document.querySelectorAll(tags)) {
+    const r = el.getBoundingClientRect();
+    const style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+    const position = style ? String(style.position || "") : "";
+    if (position === "fixed" || position === "sticky") seen.fixed += 1;
+    if (!(r.width >= 100) || !(r.height >= 100)) continue;
+    rects.push({ tag: String(el.tagName || "").toLowerCase(),
+                 w: Math.round(r.width), h: Math.round(r.height),
+                 position: position });
+  }
+  rects.sort((a, b) => b.w * b.h - a.w * a.h);
+  for (const box of rects.slice(0, 5)) {
+    const tall = box.h / box.w;
+    box.why = !(view.width > 0) || !(view.height > 0) ? "the window has no size"
+      : box.w < view.width * 0.4 ? "narrower than 40% of the window"
+      : box.h < view.height * 0.2 ? "shorter than 20% of the window"
+      : tall < 1.1 ? "not tall enough for a page (" + tall.toFixed(2) + " to 1)"
+      : tall > 1.8 ? "too tall for a page (" + tall.toFixed(2) + " to 1)"
+      : box.position === "fixed" || box.position === "sticky"
+        ? "page-shaped but pinned to the window (" + box.position + ")"
+      : "IT IS PAGE-SHAPED";
+    seen.biggest.push(box);
+  }
+  return seen;
+}`;
+
+/**
+ * -> one line saying what the browser saw, and which rule threw it away.
+ *
+ * "0 page-shaped box(es)" is not an answer. A sign-in wall, a viewer inside an
+ * iframe, a window with no size and a page that never loaded all report that same
+ * zero, and only the page itself can say which one it was — so this says it, in
+ * the note the panel prints and writes to downloads/debug/.
+ */
+export function sightReport(seen) {
+  if (!seen || typeof seen !== "object") {
+    return "the page would not say what was on it";
+  }
+  const view = Array.isArray(seen.view) ? seen.view : [0, 0];
+  const parts = [];
+  parts.push("title " + JSON.stringify(String(seen.title || "").slice(0, 80)));
+  parts.push("at " + String(seen.url || "").split("?")[0].slice(0, 130));
+  if (!(view[0] > 0) || !(view[1] > 0)) {
+    parts.push("THE WINDOW HAS NO SIZE (" + view[0] + "x" + view[1] + ") — " +
+               "nothing can be measured in it, and that alone is why no page " +
+               "looks like one");
+  } else {
+    parts.push("window " + view[0] + "x" + view[1]);
+  }
+  parts.push((seen.elements || 0) + " element(s), " + (seen.canvases || 0) +
+             " canvas, " + (seen.images || 0) + " img, " + (seen.fixed || 0) +
+             " pinned to the window");
+  if (Array.isArray(seen.iframes) && seen.iframes.length) {
+    parts.push("iframe(s) " + seen.iframes.join(", ") + " — the viewer may be " +
+               "inside another document, where this window cannot measure it");
+  }
+  for (const box of (Array.isArray(seen.biggest) ? seen.biggest : []).slice(0, 4)) {
+    parts.push("biggest " + box.tag + " " + box.w + "x" + box.h + " — " + box.why);
+  }
+  const words = String(seen.words || "").trim();
+  if (words) parts.push("the page says " + JSON.stringify(words.slice(0, 200)));
+  return parts.join(" · ");
+}
+
+/**
  * Every page-shaped box on the screen, in document pixels.
  *
  * Nothing here knows Scribd's class names, because the viewer changes its
@@ -1106,10 +1211,6 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
     await tab.setUserAgent(UA);
     await tab.setViewport({ width: SHOT_WIDTH, height: SHOT_HEIGHT,
                             deviceScaleFactor: ratio });
-    await tab.goto(scrollUrl(ident),
-                   { waitUntil: "domcontentloaded", timeout: 45000 });
-    await tab.addStyleTag({ content: SCROLL_CSS }).catch(() => {});
-
     // ---- the column, found one window at a time --------------------------
     // Every window is measured as it is scrolled past, because a viewer that
     // keeps only the pages near the window would otherwise be measured as the
@@ -1119,62 +1220,121 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
     // route behind this works, and a book must not spend ten minutes finding out
     // that the one pass was never going to.
     const started = Date.now();
-    const gathered = [];
-    const met = new Set();
-    let last = -1, stable = 0, y = 0, rounds = 0, tall = 0, sawSeen = 0, windows = 0;
-    const measure = async () => {
-      const found = await tab.evaluate(JS_PAGE_RECTS).catch(() => null);
-      windows += 1;
-      if (found && Array.isArray(found.boxes)) {
-        // every block of the column is in the document from the first moment —
-        // 389 shells for a 389-page book — so the same block is met at every
-        // window, and twenty-six windows of 389 boxes would be ten thousand boxes
-        // to judge. One box per page is kept.
-        for (const box of found.boxes) {
-          const key = box.x + "," + box.y + "," + box.width + "," + box.height;
-          if (met.has(key)) continue;
-          met.add(key);
-          gathered.push(box);
+
+    // ---- the column, found one window at a time --------------------------
+    // Every window is measured as it is scrolled past, because a viewer that
+    // keeps only the pages near the window would otherwise be measured as the
+    // handful of pages that happened to be left on the screen at the end.
+    // Loading stops when the column stops growing, when every page asked for is
+    // in hand, when the page will not say how tall it is, or when this pass has
+    // spent what it is worth: the page-by-page route behind this works, and a
+    // book must not spend ten minutes finding out the one pass was never going to.
+    const measureColumn = async (target, label, budgetMs) => {
+      const began = Date.now();
+      await tab.goto(target, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await tab.addStyleTag({ content: SCROLL_CSS }).catch(() => {});
+      const gathered = [];
+      const met = new Set();
+      let last = -1, stable = 0, y = 0, rounds = 0, tall = 0, fullest = 0,
+          windows = 0, blind = 0;
+      const measure = async () => {
+        const found = await tab.evaluate(JS_PAGE_RECTS).catch(() => null);
+        windows += 1;
+        if (found && Array.isArray(found.boxes)) {
+          // every block of the column is in the document from the first moment —
+          // 389 shells for a 389-page book — so the same block is met at every
+          // window, and twenty-six windows of 389 boxes would be ten thousand
+          // boxes to judge. One box per page is kept.
+          for (const box of found.boxes) {
+            const key = box.x + "," + box.y + "," + box.width + "," + box.height;
+            if (met.has(key)) continue;
+            met.add(key);
+            gathered.push(box);
+          }
+          fullest = Math.max(fullest, found.seen || 0);
         }
-        sawSeen = Math.max(sawSeen, found.seen || 0);
+        return found;
+      };
+      while (rounds++ < 400 && Date.now() - began < budgetMs) {
+        await tab.evaluate(`window.scrollTo(0, ${y})`);
+        await sleep(settle);
+        await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
+        await measure();
+        // A height that cannot be read is 0, never NaN. NaN poisons every
+        // comparison it reaches, so the loop never knows it arrived at the
+        // bottom and scrolls for its whole budget — that is what "the column
+        // NaNpx tall" was: 69 windows of a page that was not saying.
+        const read = Number(await tab.evaluate(JS_HEIGHT).catch(() => NaN));
+        const h = Number.isFinite(read) && read > 0 ? Math.ceil(read) : 0;
+        if (h) { tall = Math.max(tall, h); blind = 0; } else { blind += 1; }
+        if (h && y + SHOT_HEIGHT >= h) {
+          stable = h === last ? stable + 1 : 0;
+          if (stable >= 2) break;
+          last = h;
+          y = Math.max(0, h - SHOT_HEIGHT);
+        } else {
+          stable = 0; last = h; y += SHOT_HEIGHT;
+        }
+        if (!tall && blind >= 6) break;    // it will not say how tall it is
+        // a full column already in hand is worth more scrolling than a book is,
+        // and the pages are cut one window at a time behind this, so there is
+        // nothing to gain from scrolling a 389-page column end to end first
+        if (want > 0 && gathered.length >= want &&
+            pickPageColumn(gathered, want, tall).rects.length >= want) break;
       }
-      return found;
-    };
-    while (rounds++ < 400 && Date.now() - started < SHOT_BOOK_MS) {
-      await tab.evaluate(`window.scrollTo(0, ${y})`);
+      const spent = Date.now() - began;
+      await tab.evaluate("window.scrollTo(0, 0)");
       await sleep(settle);
       await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
       await measure();
-      const h = await tab.evaluate(JS_HEIGHT);
-      tall = Math.max(tall, h);
-      if (y + SHOT_HEIGHT >= h) {
-        stable = h === last ? stable + 1 : 0;
-        if (stable >= 2) break;
-        last = h;
-        y = Math.max(0, h - SHOT_HEIGHT);
-      } else {
-        stable = 0; last = h; y += SHOT_HEIGHT;
-      }
-      // a full column already in hand is worth more scrolling than a book is,
-      // and the pages are cut one window at a time behind this, so there is
-      // nothing to gain from scrolling a 389-page column end to end first
-      if (want > 0 && gathered.length >= want &&
-          pickPageColumn(gathered, want, tall).rects.length >= want) break;
-    }
-    const spent = Date.now() - started;
-    await tab.evaluate("window.scrollTo(0, 0)");
-    await sleep(settle);
-    await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
-    await measure();
+      const picked = pickPageColumn(gathered, want, tall);
+      const saw = `measured ${picked.rects.length} page block(s) of ` +
+                  `${picked.boxes} distinct page-shaped box(es) in ${windows} ` +
+                  `window(s) over ${(spent / 1000).toFixed(0)}s, the column ` +
+                  (tall ? `${tall}px tall`
+                        : "never said how tall it is (that is not a number, it " +
+                          "is the page not answering)") +
+                  `, ${fullest} box(es) in the fullest window — ${picked.note}`;
+      return { picked, saw, label, target, tall, windows, fullest, spent };
+    };
 
-    const picked = pickPageColumn(gathered, want, tall);
-    const saw = `measured ${picked.rects.length} page block(s) of ${picked.boxes} ` +
-                `distinct page-shaped box(es) in ${windows} window(s) over ` +
-                `${(spent / 1000).toFixed(0)}s, the column ${tall}px tall, ` +
-                `${sawSeen} box(es) in the fullest window — ${picked.note}`;
-    if (!picked.rects.length) {
-      return { pages: [], run: picked.run, note: `${picked.note} — ${saw}` };
+    // The embed viewer is asked first: it is where a single page is photographed.
+    // The document's own page is the second chance, and it is not a guess — the
+    // capture this measure was built from was of that page. A pass that finds
+    // nothing gets half the budget, so two chances cost what one used to.
+    let found = await measureColumn(scrollUrl(ident), "the embed viewer",
+                                    SHOT_BOOK_MS);
+    if (!found.picked.rects.length) {
+      const second = await measureColumn(documentUrl(ident),
+                                         "the document's own page",
+                                         Math.max(8000, SHOT_BOOK_MS / 2));
+      if (second.picked.rects.length) {
+        second.before = found;
+        found = second;
+      } else {
+        found.also = second;
+      }
     }
+    const picked = found.picked;
+    const saw = found.before
+      ? `${found.label} found the column (${found.saw}); ${found.before.label} ` +
+        `showed nothing page-shaped`
+      : found.saw + (found.also ? ` · and ${found.also.label} showed nothing ` +
+                                 `page-shaped either (${found.also.saw})` : "");
+    if (!picked.rects.length) {
+      // Say what the browser was looking at. Only the page itself can tell a
+      // sign-in wall from a viewer inside an iframe, a window with no size, or a
+      // document that never loaded — and the panel writes this to
+      // downloads/debug/, so the next run is an answer instead of a guess.
+      const seen = await tab.evaluate(JS_SIGHT).catch(() => null);
+      return { pages: [], run: picked.run, sight: seen || null,
+               note: `no column of pages in ${found.label}` +
+                     (found.also ? ` or in ${found.also.label}` : "") +
+                     ` — ${saw} · what the browser was looking at: ` +
+                     sightReport(seen) };
+    }
+    // the lanes cut the page the column was found on, not a page that showed none
+    const columnUrl = found.target;
     const run = picked.run, rects = picked.rects;
     const deadline = started + cutBudgetMs(want || rects.length);
 
@@ -1324,7 +1484,7 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
         await extra.setUserAgent(UA);
         await extra.setViewport({ width: SHOT_WIDTH, height: SHOT_HEIGHT,
                                   deviceScaleFactor: ratio });
-        await extra.goto(scrollUrl(ident),
+        await extra.goto(columnUrl,
                          { waitUntil: "domcontentloaded", timeout: 45000 });
         await extra.addStyleTag({ content: SCROLL_CSS }).catch(() => {});
         laneTabs[lane] = extra;
@@ -2301,7 +2461,175 @@ export function selftest() {
     "the window that found the column must be the first one to cut it");
   assert(SHOT_LANES >= 2, `one window at a time is the slow route: ${SHOT_LANES}`);
 
-  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks, the lanes that cut a long book at the same time";
+  // ---- when nothing on the screen is page-shaped, say what WAS on it -----
+  // "0 page-shaped box(es)" is not an answer: a sign-in wall, a viewer inside an
+  // iframe, a window with no size and a page that never loaded all report that
+  // same zero. Only the page can say which one it was, so the note carries what
+  // the browser saw — and this is the pin that keeps it honest.
+  assert(documentUrl("398154705") ===
+         "https://www.scribd.com/document/398154705", documentUrl("398154705"));
+  assert(documentUrl("doc/398154705/x") ===
+         "https://www.scribd.com/document/398154705", "only the digits are the id");
+  assert(scrollUrl("398154705") !== documentUrl("398154705"),
+    "the second chance must be a different page from the first");
+  const wall = sightReport({
+    url: "https://www.scribd.com/embeds/398154705/content?view_mode=scroll",
+    title: "Sign in to Scribd", view: [1000, 1500], elements: 412,
+    canvases: 0, images: 2, iframes: [], fixed: 9,
+    biggest: [{ tag: "div", w: 1000, h: 1500, position: "fixed",
+                why: "page-shaped but pinned to the window (fixed)" }],
+    words: "Sign in to continue reading this document",
+  });
+  assert(/pinned to the window/.test(wall), wall);
+  assert(/Sign in to continue/.test(wall), wall);
+  assert(!/view_mode|\?/.test(wall.split(" · ")[1]), "no query, so no token: " + wall);
+  const noSize = sightReport({ url: "https://www.scribd.com/embeds/1/content",
+                               title: "", view: [0, 0], elements: 3,
+                               canvases: 0, images: 0, iframes: [], fixed: 0,
+                               biggest: [], words: "" });
+  assert(/THE WINDOW HAS NO SIZE/.test(noSize), noSize);
+  assert(/nothing can be measured in it/.test(noSize), noSize);
+  const framed = sightReport({ url: "https://www.scribd.com/document/1",
+                               title: "Doc", view: [1000, 1500], elements: 90,
+                               canvases: 0, images: 0,
+                               iframes: ["https://www.scribd.com/embeds/1/content"],
+                               fixed: 0, biggest: [], words: "Loading" });
+  assert(/inside another document/.test(framed), framed);
+  assert(/embeds\/1\/content/.test(framed), framed);
+  assert(sightReport(null) === "the page would not say what was on it",
+    sightReport(null));
+  const pageish = sightReport({ url: "u", title: "t", view: [1000, 1500],
+                                elements: 5, canvases: 1, images: 0, iframes: [],
+                                fixed: 0,
+                                biggest: [{ tag: "canvas", w: 1000, h: 1400,
+                                            position: "absolute",
+                                            why: "IT IS PAGE-SHAPED" }],
+                                words: "" });
+  assert(/IT IS PAGE-SHAPED/.test(pageish),
+    "a page-shaped box the measure still refused must say so: " + pageish);
+  // the sight report is data about a public page: never a cookie, never a token
+  assert(!/cookie/i.test(JS_SIGHT), "the sight report must not go near cookies");
+  assert(!/token/i.test(JS_SIGHT), "nor near a token");
+  assert(/split\("\?"\)/.test(JS_SIGHT),
+    "a url in the report keeps its path and drops its query");
+  // and the one pass really looks twice, and never trusts a height it could not read
+  const pass = String(shootBook);
+  assert(/documentUrl\(ident\)/.test(pass),
+    "the one pass does not try the document's own page when the embed shows " +
+    "nothing — the column it was built from was measured on that page");
+  assert(/Number\.isFinite\(read\)/.test(pass),
+    "a height that cannot be read must be 0, never NaN: NaN poisons every " +
+    "comparison and the loop scrolls for its whole budget");
+  assert(/sightReport\(seen\)/.test(pass),
+    "a refused column must say what the browser was looking at");
+  assert(/extra\.goto\(columnUrl/.test(pass),
+    "the lanes must load the page the column was found on");
+  assert(!/extra\.goto\(scrollUrl/.test(pass),
+    "a lane must not load a page that showed no column");
+
+  // ---- and the report is run against pages shaped like the failure -------
+  // This is not a formatter test: JS_SIGHT itself runs here, against a made-up
+  // page, the way the page measure runs above. A sign-in wall, a viewer inside an
+  // iframe, a window with no size and the real captured column each get their own
+  // answer, and each answer says which one it was.
+  const sightOf = (items, options = {}) => {
+    const view = { width: options.width === undefined ? 1000 : options.width,
+                   height: options.height === undefined ? 1500 : options.height };
+    const fakeDocument = {
+      title: options.title || "",
+      readyState: options.ready || "complete",
+      body: { innerText: options.words || "" },
+      querySelectorAll: (selector) => {
+        if (selector === "*") return items;
+        const wanted = selector.split(",").map((tag) => tag.trim().toLowerCase());
+        return items.filter((item) => wanted.includes(item.tag)).map((item) => ({
+          tagName: item.tag.toUpperCase(),
+          src: item.src || "",
+          getAttribute: (name) => (name === "src" ? item.src || "" : null),
+          style: item.style || { position: "static" },
+          getBoundingClientRect: () => ({ x: item.x, y: item.y,
+                                          width: item.width, height: item.height }),
+        }));
+      },
+    };
+    const fakeWindow = { innerWidth: view.width, innerHeight: view.height,
+                         getComputedStyle: (element) => element.style };
+    return new Function("document", "window", "location",
+      "return (" + JS_SIGHT + ")()")(
+        fakeDocument, fakeWindow,
+        { href: options.url || "https://www.scribd.com/embeds/1/content?a=b" });
+  };
+  // (a) a wall pinned over the whole window: the measure sees nothing page-shaped
+  const wallSeen = sightOf([
+    { tag: "div", x: 0, y: 0, width: 1000, height: 1500,
+      style: { position: "fixed" } },
+    { tag: "div", x: 200, y: 600, width: 600, height: 200,
+      style: { position: "fixed" } },
+  ], { title: "Sign in to Scribd", words: "Sign in to continue reading this " +
+       "document. Create a free account.",
+       url: "https://www.scribd.com/embeds/398154705/content?view_mode=scroll" });
+  assert(wallSeen.fixed === 2, wallSeen.fixed);
+  assert(wallSeen.biggest[0].why ===
+         "page-shaped but pinned to the window (fixed)", wallSeen.biggest[0].why);
+  const wallLine = sightReport(wallSeen);
+  assert(/Sign in to continue reading/.test(wallLine), wallLine);
+  assert(/pinned to the window/.test(wallLine), wallLine);
+  assert(!wallLine.includes("view_mode"), "no query, so no token, in a report: " +
+                                             wallLine);
+  // (b) the viewer inside another document, where this window cannot measure it
+  const framedSeen = sightOf([
+    { tag: "iframe", x: 0, y: 0, width: 1000, height: 1400,
+      src: "https://www.scribd.com/embeds/398154705/content?start_page=1" },
+  ], { title: "Linear Algebra", words: "Loading" });
+  assert(framedSeen.iframes[0] ===
+         "https://www.scribd.com/embeds/398154705/content", framedSeen.iframes);
+  assert(framedSeen.biggest[0].why === "IT IS PAGE-SHAPED", framedSeen.biggest[0].why);
+  const framedLine = sightReport(framedSeen);
+  assert(/inside another document/.test(framedLine), framedLine);
+  assert(/embeds\/398154705\/content/.test(framedLine), framedLine);
+  // (c) a window with no size: nothing can be measured in it at all
+  const sizeless = sightOf([{ tag: "div", x: 0, y: 0, width: 900, height: 1300 }],
+                           { width: 0, height: 0, title: "" });
+  assert(sizeless.biggest[0].why === "the window has no size", sizeless.biggest[0].why);
+  assert(/THE WINDOW HAS NO SIZE \(0x0\)/.test(sightReport(sizeless)),
+    sightReport(sizeless));
+  // (d) the real captured column, 1499x1940: a report that agrees with the measure
+  const captured = [];
+  for (let index = 0; index < 389; index++) {
+    captured.push({ tag: "div", x: 0, y: index * 1960, width: 1499, height: 1940 });
+  }
+  const capturedSeen = sightOf(captured, { title: "Malawi Secondary School Books",
+                                           ready: "complete" });
+  assert(capturedSeen.elements === 389, capturedSeen.elements);
+  assert(capturedSeen.biggest[0].w === 1499 && capturedSeen.biggest[0].h === 1940,
+    capturedSeen.biggest[0]);
+  assert(capturedSeen.biggest[0].why === "IT IS PAGE-SHAPED",
+    capturedSeen.biggest[0].why);
+  assert(/IT IS PAGE-SHAPED/.test(sightReport(capturedSeen)),
+    sightReport(capturedSeen));
+  // and that column is still found by the measure, so the two never disagree
+  assert(viewer(captured).boxes.length === 389,
+    "the captured column must measure as 389 page-shaped boxes");
+
+  // a page that will not say how tall it is must not be scrolled for the whole
+  // budget: 69 windows over 30s of a column that was NaN tall was exactly that,
+  // and every one of those windows was a window of nothing
+  assert(/if \(!tall && blind >= 6\) break;/.test(pass),
+    "an unreadable height must stop the scroll, not fill the budget with it");
+  assert(/never said how tall it is/.test(pass),
+    "the note must say the height was never read instead of printing a number " +
+    "that is not one");
+  assert(/SHOT_BOOK_MS \/ 2/.test(pass),
+    "the second chance must cost half a budget, not another whole one");
+  // an unknown height is ignored by the run check, never treated as a zero-height
+  // column: checkPageRun only compares the step against a height it was told
+  const unknown = checkPageRun([0, 1, 2, 3, 4, 5].map((index) => ({
+    x: 50, y: 20 + index * 1440, width: 900, height: 1400 })), 6, 0);
+  assert(unknown.ok === true, "a column is still a column when the page will " +
+    "not say how tall it is: " + unknown.note);
+  assert(unknown.count === 6, unknown.count);
+
+  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks, the lanes that cut a long book at the same time, the second place the column is looked for, what the browser says it saw when nothing on the screen is a page, and the pages that answer — a wall, an iframe, a window with no size";
 }
 
 // ---------------------------------------------------------------------------
