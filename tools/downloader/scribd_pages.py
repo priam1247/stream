@@ -1,6 +1,6 @@
 """Scribd panel — image decoding, page heuristics and PDF assembly.
 
-Loaded by scribd_download.py after scribd_config.py. JPEG/PNG parsing,
+Loaded from tools/downloader/ by scribd_download.py after scribd_config.py. JPEG/PNG parsing,
 page-shape checks, the PDF writer and the read-back verifier live here.
 Annotations are compiled with PEP 563 by the loader.
 """

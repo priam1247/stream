@@ -1,6 +1,6 @@
 """Scribd panel — shooter discovery, screenshot fallback and final download.
 
-Loaded by scribd_download.py after scribd_jobs.py. The /shot client, shooter
+Loaded from tools/downloader/ by scribd_download.py after scribd_jobs.py. The /shot client, shooter
 autostart, Shooter, fit_shots and _download live here. Annotations are compiled
 with PEP 563 by the loader.
 """
@@ -192,8 +192,7 @@ def ping_answer(status: int, body: bytes, error: str) -> tuple[bool, str]:
 
 
 def shooter_cache_path() -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "shooter-found.txt")
+    return os.path.join(_tools_dir(), "shooter-found.txt")
 
 
 def read_shooter_cache() -> str:
@@ -301,7 +300,7 @@ def scan_for_shooter(host: str = "", announce=None) -> str:
     if found:
         write_shooter_cache(found)
         say(f"found the browser service at {found} by asking its host's ports "
-            f"once — remembered in tools/shooter-found.txt, never swept again")
+            f"once — remembered in shooter-found.txt beside troy-search/, never swept again")
     elif ran_out:
         say(f"the search for the browser service ran out of its "
             f"{int(SCAN_BUDGET)} seconds at {ran_out} — pages will come as "
@@ -559,13 +558,14 @@ def shooter_start_reason(proj: str) -> str:
 
 
 def autostart_shots() -> str:
-    """Start tools/troy-search myself and wait for it to answer. '' if I cannot.
+    """Start the sibling troy-search/ service myself and wait for it to answer.
 
-    Retried at most once per cooldown after a failure, cached forever once it
-    works. SCRIBD_AUTOSHOOT=0 turns it off for hosts where a browser must never
-    be spawned; SCRIBD_SHOOTER_DIR points somewhere else. If the service has no
-    packages installed, npm install runs once first — photographs need them,
-    and a panel box that runs node can fetch them.
+    Returns '' if I cannot. Retried at most once per cooldown after a failure,
+    cached forever once it works. SCRIBD_AUTOSHOOT=0 turns it off for hosts
+    where a browser must never be spawned; SCRIBD_SHOOTER_DIR points somewhere
+    else, and SCRIBD_TOOLS_DIR changes where the sibling is looked for. If the
+    service has no packages installed, npm install runs once first —
+    photographs need them, and a panel box that runs node can fetch them.
     """
     if _AUTOSTART["base"]:
         return _AUTOSTART["base"]
@@ -576,7 +576,7 @@ def autostart_shots() -> str:
     if os.environ.get("SCRIBD_AUTOSHOOT", "1") == "0":
         return ""
     node = shutil.which("node")
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = _tools_dir()
     proj = os.environ.get("SCRIBD_SHOOTER_DIR") or os.path.join(here, "troy-search")
     entry = os.path.join(proj, "index.js")
     if not node or not os.path.isfile(entry):
@@ -593,7 +593,7 @@ def autostart_shots() -> str:
         npm = shutil.which("npm")
         if npm:
             JOB.say("the browser service has no packages installed — running "
-                    "npm install in tools/troy-search once, because the "
+                    "npm install in troy-search/ once, because the "
                     "photographs need them")
             try:
                 done = subprocess.run(
@@ -606,7 +606,7 @@ def autostart_shots() -> str:
                 JOB.say(f"npm install for the browser service failed: {exc!r}")
         else:
             JOB.say("the browser service has no packages installed and npm is "
-                    "not on the PATH — run npm install in tools/troy-search "
+                    "not on the PATH — run npm install in troy-search/ "
                     "once by hand")
     env = dict(os.environ)
     env.setdefault("TMPDIR", os.path.join(proj, "tmp"))
@@ -625,7 +625,7 @@ def autostart_shots() -> str:
     except Exception as exc:  # noqa: BLE001
         JOB.say(f"starting the browser service myself failed: {exc!r}")
         return ""
-    JOB.say("no browser service was running — starting tools/troy-search "
+    JOB.say("no browser service was running — starting troy-search/ "
             "myself and waiting for it, because a grey page is not an option")
     local = f"http://127.0.0.1:{SHOT_LOCAL_PORT}"
     for waited in range(45):

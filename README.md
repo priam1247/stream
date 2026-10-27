@@ -55,7 +55,8 @@ engine/             ESM movie/series resolver & downloader (loaded via utils/mov
 database/           Git-ignored runtime JSON state & vault_snapshot.json (backed up with .bak)
 scripts/            install-ytdlp.sh and offline regression suite (scripts/selftest.js)
 dashboard/          Standalone Next.js 16 web portal (deploy with Root Directory = dashboard)
-tools/              Python helpers — scribd_download.py (the Scribd panel) and troy-search/
+docs/               Scribd downloader manual (docs/scribd-downloader.md)
+tools/              downloader/ (Python panel), troy-search/ (JS service), build_scribd_singlefile.py
 Procfile            Process start command (`node --expose-gc index.js`, matching `npm start`)
 ```
 
@@ -84,7 +85,7 @@ Shared container panels often report the entire host node's free space via `stat
 
 | what | RAM it uses | disk it needs |
 |---|---|---|
-| the Scribd panel (`tools/scribd_download.py`) | ~70–120 MB while downloading (the channels are threads) | **the real constraint**: each book is 40–150 MB, plus its page cache (roughly the same again) |
+| the Scribd panel (`tools/downloader/scribd_download.py`) | ~70–120 MB while downloading (the channels are threads) | **the real constraint**: each book is 40–150 MB, plus its page cache (roughly the same again) |
 | the search helper (`tools/troy-search`) | ~100–200 MB | a few MB |
 | the dashboard (`dashboard/`, on Vercel) | 0 on your servers | 0 on your servers |
 
@@ -96,8 +97,8 @@ what it pruned.
 Merging the two servers buys nothing for downloads — the second box is nearly
 idle — and costs a supervisor, because a Pterodactyl startup command runs one
 process. If you want one box, run the search under the same startup line
-(`node tools/troy-search/index.js & python scribd_download.py`); the panel does
-not need the search to work.
+(`node tools/troy-search/index.js & python tools/downloader/scribd_download.py`);
+the panel does not need the search to work.
 
 Running the **dashboard** on your own box removes the Vercel function limit, but
 it needs HTTPS (the session cookie is `Secure` in production) so a domain and a
@@ -131,38 +132,60 @@ Because `.github/workflows/deploy-panel.yml` runs `lftp mirror -R` **without `--
 - `commands/media/facebook.js` *(merged into streaming `commands/media/shortcuts.js`)*
 - `engine/core/locker.js` *(unused stub removed)*
 
+- `tools/scribd_parts/` and `tools/troy-search/src/` *(old fragment/module splits;
+  replaced by `tools/downloader/` and three JS files)*
+- `tools/scribd_download.py`, `tools/scribd_core.py`, `tools/scribd_config.py`,
+  `tools/scribd_pages.py`, `tools/scribd_jobs.py`, `tools/scribd_shots.py`,
+  `tools/scribd_panel.py` and `tools/scribd_selftest.py` *(old top-level Python
+  copies; the split sources now live only in `tools/downloader/`)*
+- `tools/README.md`, `tools/_mock_scribd.py`, `tools/audit_pdf_pages.py`,
+  `tools/screenshots_to_pdf.py`, `tools/scribd_screenshots.py` and
+  `tools/scribd_search.py` *(legacy helpers removed from the repository)*
+- `tools/scribd_download_singlefile.py`,
+  `tools/downloader/scribd_download_singlefile.py`, `tools/shooter-found.txt`,
+  and `tools/downloader/shooter-found.txt` *(only if a previous deploy left a
+  generated copy or stale cache behind)*
+
+> **Do NOT delete** `tools/downloader/`, `tools/build_scribd_singlefile.py`, or
+> `tools/troy-search/` — those are the live services.
+
 > **Do NOT delete** `session/`, `.env`, or `database/*.json` (`whitelist.json`, `botstate.json`, `media_settings.json`, `paper_log.json`, `vault_snapshot.json`) on the panel! Keeping `database/vault_snapshot.json` avoids walking ~10,900 Drime files on cold boot.
 
 ## Scribd Library (panel + dashboard tab)
 
-`tools/scribd_download.py` is a **standard-library-only** tool. Its source is now
-seven files: a small loader (`scribd_download.py`) plus six responsibility modules
-of roughly 1,000-1,500 lines each — `scribd_config.py` (config, cookies, network,
-tokens, links and panel helpers), `scribd_pages.py` (image decoding and PDF
-assembly), `scribd_jobs.py` (job engine and page sources), `scribd_shots.py`
-(shooter bridge, screenshot fallback and final download), `scribd_panel.py`
-(search, HTTP panel and CLI main) and `scribd_selftest.py` (offline selftest and
-entry guard). The loader executes them in order in one shared namespace, so the
-public behaviour is the same as the old single file. It photographs viewer pages
-into a PDF and can serve itself as a small HTTP panel, so no PC is needed.
+The Python Scribd panel lives in `tools/downloader/`: a thin loader
+(`scribd_download.py`) plus six responsibility modules of roughly 1,000-1,500
+lines each — `scribd_config.py` (config, cookies, network, tokens, links and
+panel helpers), `scribd_pages.py` (image decoding and PDF assembly),
+`scribd_jobs.py` (job engine and page sources), `scribd_shots.py` (shooter
+bridge, screenshot fallback and final download), `scribd_panel.py` (search, HTTP
+panel and CLI main) and `scribd_selftest.py` (offline selftest and entry guard).
+The loader executes them in order in one shared namespace, so the public
+behaviour is the same as the old single file. It photographs viewer pages into a
+PDF and can serve itself as a small HTTP panel, so no PC is needed.
+
+`tools/build_scribd_singlefile.py` stays at the `tools/` root and can build a
+one-file deployment copy. `tools/troy-search/` is the separate JS search/shooter
+service (three files). The full manual is
+[`docs/scribd-downloader.md`](./docs/scribd-downloader.md).
 
 ```bash
-python3 tools/scribd_download.py --selftest          # offline, no network, no deps
-python3 tools/scribd_download.py --url "https://www.scribd.com/document/…"
-SERVER_PORT=25811 python3 tools/scribd_download.py      # the panel (panel mode is the default)
+python3 tools/downloader/scribd_download.py --selftest   # offline, no network, no deps
+python3 tools/downloader/scribd_download.py --url "https://www.scribd.com/document/…"
+SERVER_PORT=25811 python3 tools/downloader/scribd_download.py   # HTTP panel mode
 
-# host that still needs one file (Pterodactyl PY_FILE=scribd_download.py):
-python3 tools/build_scribd_singlefile.py               # -> tools/scribd_download_singlefile.py
+# full-repo deploy (e.g. the GitHub Actions mirror):
+PY_FILE=tools/downloader/scribd_download.py
+# if you upload only the contents of tools/ to the panel root instead:
+PY_FILE=downloader/scribd_download.py
+
+# host that still needs one file (upload it as scribd_download.py):
+python3 tools/build_scribd_singlefile.py   # -> tools/scribd_download_singlefile.py
 ```
 
-`tools/troy-search/` is three files: `index.js` (entry point), `core.js` (all
-runtime code — config, search, screenshots and HTTP routes) and `selftest.js`
-(offline regression checks).
-
 Verdicts are deliberately honest: `PDF BUILT`, `PDF PARTIAL`, `PDF BROKEN`,
-`NO PAGES`, `BAD LINK`. `--text` adds an invisible, searchable text layer (one extra
-request per page). The full manual — every flag, the routes, the limits — is
-[`tools/README.md`](./tools/README.md).
+`NO PAGES`, `BAD LINK`. `--text` adds an invisible, searchable text layer (one
+extra request per page).
 
 ### Working from a phone
 

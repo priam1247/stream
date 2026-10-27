@@ -1,6 +1,6 @@
 """Scribd panel — offline selftest and the script entry guard.
 
-Loaded last by scribd_download.py, so every function above is already defined
+Loaded last from tools/downloader/ by scribd_download.py, so every function above is already defined
 when --selftest runs. The __main__ guard only fires when the loader itself was
 executed as a script. Annotations are compiled with PEP 563 by the loader.
 """

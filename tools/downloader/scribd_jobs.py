@@ -1,6 +1,6 @@
 """Scribd panel — the job engine and page-source extraction.
 
-Loaded by scribd_download.py after scribd_pages.py. Job/Gate/Sources/Ctx,
+Loaded from tools/downloader/ by scribd_download.py after scribd_pages.py. Job/Gate/Sources/Ctx,
 HTML-to-text helpers, run_job, run_queue, _batch and _probe live here.
 Annotations are compiled with PEP 563 by the loader.
 """

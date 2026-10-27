@@ -1,5 +1,5 @@
 /**
- * Server-side client for the Scribd download panel (`tools/scribd_download.py`).
+ * Server-side client for the Scribd download panel (`tools/downloader/`).
  *
  * This file only ever runs on the server. The browser talks to
  * `/api/scribd/*` on this dashboard, and this module talks to the panel, so:
@@ -126,7 +126,7 @@ function explainPanelStatus(status: number): string {
     return 'The Scribd panel is locked and its key is missing or wrong. Put the panel\'s PANEL_KEY in Panel settings.';
   }
   if (status === 404) {
-    return 'The Scribd panel did not recognise that route. Update tools/scribd_download.py to v2.13 or newer (the reset route is new in 2.13).';
+    return 'The Scribd panel did not recognise that route. Update the Scribd downloader to v2.13 or newer (the reset route is new in 2.13).';
   }
   if (status === 409) {
     return 'A download is already running on the panel. Wait for it to finish.';
