@@ -28,7 +28,9 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.2";
+import { readFileSync } from "node:fs";
+
+const VERSION = "2.3";
 // The port to listen on. A host like this one hands its container the public
 // port it assigned in SERVER_PORT — PORT on some boxes — and there is no
 // translation behind it: whatever this listens on IS the port the world
@@ -105,6 +107,28 @@ export function refererFor(target, doc) {
     return `https://www.scribd.com/document/${ident}`;
   }
   return "https://www.scribd.com/";
+}
+
+/**
+ * Make an await on the browser mortal.
+ *
+ * A budget that is only checked at the top of a loop is not a budget: one await
+ * inside the loop that never settles — a stalled font load in JS_FORCE_EAGER, a
+ * captureScreenshot on a renderer that has stopped answering — and the loop
+ * never reaches its next check again. A run sat at `page 0/20 · 0 ok` for nine
+ * minutes exactly like that. Every await on the browser inside a measuring or
+ * cutting pass goes through here, so "this pass gets half a minute" means half
+ * a minute. The browser work is not cancelled, only abandoned: the window it
+ * was happening in is closed in the pass's finally.
+ */
+export function within(promise, ms, what) {
+  let timer = null;
+  const bail = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(
+      `${what} was still running after ${ms}ms — the browser stopped answering, ` +
+      `so this pass gives up on it instead of waiting forever`)), ms);
+  });
+  return Promise.race([promise, bail]).finally(() => clearTimeout(timer));
 }
 
 /** How to load a page: what to wait for, how long, and where we came from. */
@@ -636,11 +660,13 @@ export async function launchProof() {
   const started = Date.now();
   let tab = null;
   try {
-    const browser = await getBrowser();
-    tab = await browser.newPage();
-    await tab.setViewport({ width: 40, height: 40, deviceScaleFactor: 1 });
+    const browser = await within(getBrowser(), 60000, "the browser starting");
+    tab = await within(browser.newPage(), 30000, "opening a window");
+    await within(tab.setViewport({ width: 40, height: 40, deviceScaleFactor: 1 }),
+                 10000, "sizing the window");
     await tab.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 30000 });
-    const png = await tab.screenshot({ type: "png" });
+    const png = await within(tab.screenshot({ type: "png", timeout: 30000 }),
+                             35000, "photographing a blank window");
     const size = pngSize(png);
     return { launched: true, ms: Date.now() - started, bytes: png.length,
              width: size.width, height: size.height,
@@ -650,7 +676,8 @@ export async function launchProof() {
     return { launched: false, ms: Date.now() - started, bytes: 0, width: 0, height: 0,
              version: "", note: String((exc && exc.message) || exc).slice(0, 400) };
   } finally {
-    if (tab) await tab.close().catch(() => {});
+    if (tab) await within(tab.close(), 5000, "closing a window")
+      .catch(() => {});
   }
 }
 
@@ -693,11 +720,15 @@ export async function shootPage(doc, page, scale = SHOT_SCALE, waitMs = SHOT_WAI
   const release = await shotSlot();
   let tab = null;
   try {
-    const browser = await getBrowser();
-    tab = await browser.newPage();
-    await tab.setUserAgent(await userAgentOf(browser));
-    await tab.setViewport({ width: viewport.width, height: viewport.height,
-                            deviceScaleFactor: ratio });
+    const browser = await within(getBrowser(), 60000, "the browser starting");
+    tab = await within(browser.newPage(), 30000, "opening a window");
+    await within(tab.setUserAgent(await within(userAgentOf(browser), 10000,
+                                               "asking the browser's name")),
+                 10000, "naming the window").catch(() => {});
+    await within(tab.setViewport({ width: viewport.width,
+                                   height: viewport.height,
+                                   deviceScaleFactor: ratio }),
+                 10000, "sizing the window").catch(() => {});
     let kept = null;
     for (const patience of [Number(waitMs) || SHOT_WAIT_MS,
                             (Number(waitMs) || SHOT_WAIT_MS) * 2]) {
@@ -716,9 +747,10 @@ export async function shootPage(doc, page, scale = SHOT_SCALE, waitMs = SHOT_WAI
         await new Promise((resolve) => setTimeout(resolve, 700));
         clip = (await pageBoxes(tab, viewport).catch(() => null)) || clip;
       }
-      const png = await tab.screenshot(clip
-        ? { type: "png", clip, captureBeyondViewport: false }
-        : { type: "png", captureBeyondViewport: false });
+      const png = await within(tab.screenshot(clip
+        ? { type: "png", clip, captureBeyondViewport: false, timeout: 30000 }
+        : { type: "png", captureBeyondViewport: false, timeout: 30000 }),
+        35000, "photographing one page");
       const size = pngSize(png);
       const where = clip ? `the page box ${clip.width}x${clip.height}`
                          : "the whole window — no page box was found";
@@ -735,7 +767,8 @@ export async function shootPage(doc, page, scale = SHOT_SCALE, waitMs = SHOT_WAI
     const message = String((exc && exc.message) || exc).slice(0, 200);
     return { png: null, note: `page ${number}: the browser failed — ${message}` };
   } finally {
-    if (tab) await tab.close().catch(() => {});
+    if (tab) await within(tab.close(), 5000, "closing a window")
+      .catch(() => {});
     release();
   }
 }
@@ -1268,11 +1301,14 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
   const release = await shotSlot();
   let tab = null;
   try {
-    const browser = await getBrowser();
-    tab = await browser.newPage();
-    await tab.setUserAgent(await userAgentOf(browser));
-    await tab.setViewport({ width: SHOT_WIDTH, height: SHOT_HEIGHT,
-                            deviceScaleFactor: ratio });
+    const browser = await within(getBrowser(), 60000, "the browser starting");
+    tab = await within(browser.newPage(), 30000, "opening a window");
+    await within(tab.setUserAgent(await within(userAgentOf(browser), 10000,
+                                               "asking the browser's name")),
+                 10000, "naming the window").catch(() => {});
+    await within(tab.setViewport({ width: SHOT_WIDTH, height: SHOT_HEIGHT,
+                                   deviceScaleFactor: ratio }),
+                 10000, "sizing the window").catch(() => {});
     // ---- the column, found one window at a time --------------------------
     // Every window is measured as it is scrolled past, because a viewer that
     // keeps only the pages near the window would otherwise be measured as the
@@ -1300,7 +1336,8 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
       let last = -1, stable = 0, y = 0, rounds = 0, tall = 0, fullest = 0,
           windows = 0, blind = 0;
       const measure = async () => {
-        const found = await tab.evaluate(JS_PAGE_RECTS).catch(() => null);
+        const found = await within(tab.evaluate(JS_PAGE_RECTS), 15000,
+                                   "measuring the window").catch(() => null);
         windows += 1;
         if (found && Array.isArray(found.boxes)) {
           // every block of the column is in the document from the first moment —
@@ -1318,15 +1355,19 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
         return found;
       };
       while (rounds++ < 400 && Date.now() - began < budgetMs) {
-        await tab.evaluate(`window.scrollTo(0, ${y})`);
+        await within(tab.evaluate(`window.scrollTo(0, ${y})`), 5000,
+                     "scrolling the window").catch(() => {});
         await sleep(settle);
-        await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
+        await within(tab.evaluate(JS_FORCE_EAGER), 20000,
+                     "waiting for the window's pictures").catch(() => {});
         await measure();
         // A height that cannot be read is 0, never NaN. NaN poisons every
         // comparison it reaches, so the loop never knows it arrived at the
         // bottom and scrolls for its whole budget — that is what "the column
         // NaNpx tall" was: 69 windows of a page that was not saying.
-        const read = Number(await tab.evaluate(JS_HEIGHT).catch(() => NaN));
+        const read = Number(await within(tab.evaluate(JS_HEIGHT), 5000,
+                                         "asking the column how tall it is")
+          .catch(() => NaN));
         const h = Number.isFinite(read) && read > 0 ? Math.ceil(read) : 0;
         if (h) { tall = Math.max(tall, h); blind = 0; } else { blind += 1; }
         if (h && y + SHOT_HEIGHT >= h) {
@@ -1345,9 +1386,11 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
             pickPageColumn(gathered, want, tall).rects.length >= want) break;
       }
       const spent = Date.now() - began;
-      await tab.evaluate("window.scrollTo(0, 0)");
+      await within(tab.evaluate("window.scrollTo(0, 0)"), 5000,
+                   "scrolling back to the top").catch(() => {});
       await sleep(settle);
-      await tab.evaluate(JS_FORCE_EAGER).catch(() => {});
+      await within(tab.evaluate(JS_FORCE_EAGER), 20000,
+                   "waiting for the window's pictures").catch(() => {});
       await measure();
       const picked = pickPageColumn(gathered, want, tall);
       const saw = `measured ${picked.rects.length} page block(s) of ` +
@@ -1388,7 +1431,9 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
       // sign-in wall from a viewer inside an iframe, a window with no size, or a
       // document that never loaded — and the panel writes this to
       // downloads/debug/, so the next run is an answer instead of a guess.
-      const seen = await tab.evaluate(JS_SIGHT).catch(() => null);
+      const seen = await within(tab.evaluate(JS_SIGHT), 20000,
+                                "asking the page what was on it")
+        .catch(() => null);
       return { pages: [], run: picked.run, sight: seen || null,
                note: `no column of pages in ${found.label}` +
                      (found.also ? ` or in ${found.also.label}` : "") +
@@ -1454,11 +1499,14 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
         // grey sheet
         const where = Math.max(0, Math.round(rects[i].y - 40));
         if (where !== at) {
-          await laneTab.evaluate(`window.scrollTo(0, ${where})`);
+          await within(laneTab.evaluate(`window.scrollTo(0, ${where})`), 5000,
+                     "scrolling a cutting window").catch(() => {});
           await sleep(cutSettle);
           at = where;
         }
-        const here = await laneTab.evaluate(JS_PAGE_RECTS).catch(() => null);
+        const here = await within(laneTab.evaluate(JS_PAGE_RECTS), 15000,
+                                  "measuring a cutting window")
+          .catch(() => null);
         const r = snapBox((here && here.boxes) || [], rects[i], run.pitch);
         if (!r) {
           found.missed.push(number);
@@ -1469,9 +1517,9 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
         const clip = { x: Math.round(r.x), y: Math.round(r.y),
                        width: Math.round(r.width), height: clipH, scale: ratio };
         const take = async () => {
-          const res = await cdp.send("Page.captureScreenshot", {
+          const res = await within(cdp.send("Page.captureScreenshot", {
             format: "png", fromSurface: true, captureBeyondViewport: true,
-            clip });
+            clip }), 30000, "cutting one page");
           return Buffer.from(res.data, "base64");
         };
         let png = await take();
@@ -1542,10 +1590,13 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
     for (let lane = 1; lane < ranges.length; lane++) {
       if (!ranges[lane].length) continue;
       try {
-        const extra = await browser.newPage();
-        await extra.setUserAgent(await userAgentOf(browser));
-        await extra.setViewport({ width: SHOT_WIDTH, height: SHOT_HEIGHT,
-                                  deviceScaleFactor: ratio });
+        const extra = await within(browser.newPage(), 30000,
+                                   `opening window ${lane + 1}`);
+        await within(extra.setUserAgent(await userAgentOf(browser)),
+                     10000, "naming the window").catch(() => {});
+        await within(extra.setViewport({ width: SHOT_WIDTH, height: SHOT_HEIGHT,
+                                         deviceScaleFactor: ratio }),
+                     10000, "sizing the window").catch(() => {});
         await extra.goto(columnUrl, navOptions(columnUrl, ident));
         await extra.addStyleTag({ content: SCROLL_CSS }).catch(() => {});
         laneTabs[lane] = extra;
@@ -1605,7 +1656,12 @@ export async function shootBook(doc, scale = SHOT_SCALE, waitMs = SHOT_WAIT_MS,
     const message = String((exc && exc.message) || exc).slice(0, 200);
     return { pages: [], run: null, note: `the browser failed — ${message}` };
   } finally {
-    if (tab) await tab.close().catch(() => {});
+    for (const laneTab of laneTabs) {
+      if (laneTab) await within(laneTab.close(), 5000, "closing a lane's window")
+        .catch(() => {});
+    }
+    if (tab) await within(tab.close(), 5000, "closing a window")
+      .catch(() => {});
     release();
   }
 }
@@ -1968,7 +2024,17 @@ export function serve(port = PORT) {
         console.log(`shots ${ask.doc}: photographing ` +
                     `${wanted ? `the first ${wanted} page(s)` : "the whole book"} ` +
                     `at ${ask.scale}x, cut at the gaps`);
-        const book = await shootBook(ask.doc, ask.scale, SHOT_WAIT_MS, wanted);
+        // Even with every await inside it mortal, the pass gets one deadline of
+        // its own, because a request that never answers is what makes a panel
+        // sit at `page 0/20 · 0 ok` for nine minutes: past it, the book is
+        // refused and the page-by-page route — which works — takes over.
+        const book = await within(
+          shootBook(ask.doc, ask.scale, SHOT_WAIT_MS, wanted),
+          cutBudgetMs(wanted || 20) + 90000, "the one pass over the whole book")
+          .catch((exc) => ({ pages: [], run: null, missed: [],
+                             note: `the one pass was cut off by its own ` +
+                                   `deadline: ${String((exc && exc.message) || exc)
+                                     .slice(0, 300)}` }));
         if (!book.pages.length) {
           console.log(`  -> refused: ${book.note}`);
           return json(response, 502, { error: book.note });
@@ -2058,7 +2124,7 @@ export function picked(hits, spec) {
   return chosen;
 }
 
-export function selftest() {
+export async function selftest() {
   const assert = (ok, message) => {
     if (!ok) throw new Error(message);
   };
@@ -2733,7 +2799,49 @@ export function selftest() {
   assert(/browser\.userAgent\(\)/.test(String(userAgentOf)),
     "the browser is asked, not guessed at");
 
-  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks, the lanes that cut a long book at the same time, the second place the column is looked for, what the browser says it saw when nothing on the screen is a page, and the pages that answer — a wall, an iframe, a window with no size, and a browser that says what it really is and where it came from";
+  // ---- a hang must not outlive the budget that was meant to contain it ----
+  // A run sat at `page 0/20 · 0 ok` for nine minutes because one await on the
+  // browser never settled, and every budget in this file is only checked at the
+  // top of a loop. within() is what makes those budgets real, so this pin lets
+  // one actually fire.
+  const hung = new Promise(() => {});              // never settles, on purpose
+  const beganHang = Date.now();
+  let hangNote = "";
+  await within(hung, 60, "a test that hangs")
+    .catch((exc) => { hangNote = String((exc && exc.message) || exc); });
+  assert(hangNote.includes("still running after 60ms"), hangNote);
+  assert(hangNote.includes("gives up on it instead of waiting forever"), hangNote);
+  assert(Date.now() - beganHang < 5000,
+    "a deadline that arrives late is not a deadline");
+  const fast = await within(Promise.resolve(7), 5000, "a fast answer");
+  assert(fast === 7, "an answer inside the deadline must come through untouched");
+  // and the awaits that can hang are the ones that go through it
+  const mortal = String(shootBook) + String(shootPage);
+  for (const [needle, why] of [
+    ["within(tab.evaluate(JS_FORCE_EAGER)", "a stalled picture or font load in " +
+      "JS_FORCE_EAGER is what held a measuring loop open for nine minutes"],
+    ["within(cdp.send(", "a capture on a renderer that stopped answering"],
+    ["within(tab.screenshot(", "a page photograph that never arrives"],
+    ["within(tab.close(), 5000", "a window that will not close holds the slot " +
+      "permit, and with it every book behind this one"],
+  ]) {
+    assert(mortal.includes(needle), why);
+  }
+  assert(String(shootBook).includes("within(getBrowser(), 60000"),
+    "a browser that will not start must not hang the request that asked for it");
+  // the master deadline: a hung one pass answers 502 instead of nothing at all
+  const here = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const shotsHandler = here.slice(here.indexOf('url.pathname === "/shots"'));
+  assert(/within\(\s*shootBook\(/.test(shotsHandler),
+    "the one pass has no deadline of its own: a request that never answers is " +
+    "what made the panel sit at page 0/20 for nine minutes");
+  assert(/cutBudgetMs\(wanted \|\| 20\) \+ 90000/.test(shotsHandler),
+    "the deadline must be the pass's own budget plus the measuring, not a " +
+    "number from nowhere");
+  assert(/was cut off by its own/.test(shotsHandler),
+    "a refused-by-deadline one pass must say it was the deadline");
+
+  return "selftest: every check passed — link parsing, redirect unwrapping, scribd json, panel address, panel reply, picking, engine order, page photographs, shot requests, the port the host assigned, the page measure and the column it picks, the lanes that cut a long book at the same time, the second place the column is looked for, what the browser says it saw when nothing on the screen is a page, and the pages that answer — a wall, an iframe, a window with no size, and a browser that says what it really is and where it came from, and a hang that cannot outlive the budget meant to contain it";
 }
 
 // ---------------------------------------------------------------------------
@@ -2812,7 +2920,7 @@ if (isMain) {
   const args = process.argv.slice(2);
   if (args.includes("--selftest")) {
     try {
-      console.log(selftest());
+      console.log(await selftest());
       process.exit(0);
     } catch (exc) {
       console.error("selftest FAILED:", exc.message);

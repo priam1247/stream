@@ -5,7 +5,9 @@
 Usage:  python3 tools/audit_pdf_pages.py <file-or-directory> ...
 
 A page is flagged when it carries placeholder wording, when a sheet carries
-neither a picture nor any words, when a real page is missing from the sheet
+neither a picture nor any words, when a pictureless sheet carries too few words
+to be a page (a blank sheet with writing on it), when a real page is missing
+from the sheet
 sequence, or when one image dominates the whole book (the same picture pasted
 everywhere). A clean book exits 0; any finding exits 1, so this can stand at
 the end of any test or any download folder.
@@ -20,6 +22,12 @@ import zlib
 
 PLACEHOLDERS = (b"scan not available", b"not available", b"error en p",
                 b"placeholder", b"blank page", b"page missing")
+
+# A sheet with no picture on it and fewer characters of words than this is a
+# blank page that happens to have writing on it. A live run shipped exactly
+# that: page 1 of a 258-page textbook as seven glyph fragments, 26 characters,
+# and this audit called the book clean because the sheet had *some* Tj on it.
+MIN_SHEET_CHARS = 100
 
 
 def decode_streams(data):
@@ -102,6 +110,7 @@ def audit(path):
     # book: a picture is an XObject Do, and words are a Tj or a TJ.
     kids = re.search(rb"/Kids\s*\[(.*?)\]", data, re.S)
     blanks = []
+    thin = []
     if kids:
         numbers = [int(x) for x in re.findall(rb"(\d+)\s+0\s+R", kids.group(1))]
         for index, number in enumerate(numbers, 1):
@@ -116,6 +125,19 @@ def audit(path):
             if b" Do" not in content and b"Tj" not in content \
                     and b"TJ" not in content:
                 blanks.append(index)
+            elif b" Do" not in content:
+                drawn = b"".join(re.findall(rb"\(((?:[^()\\]|\\.)*)\)", content))
+                for esc, plain in ((b"\\(", b"("), (b"\\)", b")"),
+                                   (b"\\\\", b"\\")):
+                    drawn = drawn.replace(esc, plain)
+                chars = len(re.sub(rb"\s+", b"", drawn))
+                if chars < MIN_SHEET_CHARS:
+                    thin.append((index, chars))
+    if thin:
+        shown = ", ".join(f"{n} ({c} characters)" for n, c in thin[:8])
+        findings.append(f"NEAR-BLANK SHEET: page(s) {shown}"
+                        + (f" and {len(thin) - 8} more" if len(thin) > 8 else "")
+                        + " carry no picture and too few words to be a page")
     if blanks:
         shown = ", ".join(str(n) for n in blanks[:8])
         findings.append(f"BLANK SHEET: page(s) {shown}"
