@@ -266,7 +266,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "3.3"
+VERSION = "3.4"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -4061,21 +4061,50 @@ def discover_shots(hosts: tuple | list | None = None, force: bool = False,
     return "", note
 
 
-MIN_WORDS_FOR_A_SHEET = 200
+MAX_SHARD_FRACTION = 0.5
 
 
-def words_worth_a_sheet(words: str) -> bool:
-    """Whether these words are a page of a book, or fragments that only look like one.
+def shard_fraction(words: str) -> float:
+    """How much of a page's words are glyph shards instead of words.
 
-    A live run drew page 1 of a 258-page textbook as seven scattered glyph runs
-    on an otherwise empty sheet — 26 characters, 0.08% ink — because the words
-    route accepts anything non-empty. That is a blank page with writing on it,
-    which is the one thing this project exists to not ship: below the floor a
-    page is left out of the PDF and named, which is honest, where a near-empty
-    sheet pretending to be page 1 is not. A real page of running text is
-    thousands of characters, so the floor has room to be generous.
+    A text layer that failed to decode leaves a signature no character count
+    has: its "words" are one- and two-letter runs — `Udd h`, `Eo`, `er`, `W` —
+    scattered where lines should be. A page that is genuinely sparse has the
+    opposite shape: very few tokens, but whole ones — `Contents`, `Fifth
+    Edition`, a folio `6`, a dedication `For my mother`. So the share of
+    alphabetic tokens that are one or two letters is what tells a fake page
+    from a short real one, and it does not care how long the page is.
     """
-    return len(re.sub(r"\s+", "", str(words or ""))) >= MIN_WORDS_FOR_A_SHEET
+    # the words a page carries are stored with their placement marks in front
+    # of every line ("\x010.0000|Udd h"); tokenising THAT would chew on the
+    # positions and hide the shards entirely
+    plain = words_plain(str(words or ""))
+    tokens = [tok for tok in re.split(r"\s+", plain.strip()) if tok]
+    alpha = [tok for tok in tokens if re.search(r"[A-Za-z]", tok)]
+    if not alpha:
+        return 0.0          # a folio, a figure, a page number: nothing shardy
+    shards = [tok for tok in alpha
+              if re.fullmatch(r"[A-Za-z]{1,2}", tok.strip(".,;:!?\"'()"))]
+    return len(shards) / len(alpha)
+
+
+def words_look_like_a_page(words: str) -> bool:
+    """Whether these words are a page of a book, or the wreckage of a font decode.
+
+    Length must not be the test. A title page, a dedication, a folio and a
+    chapter divider are all real pages with almost nothing on them, and a
+    character floor drops exactly those — which is how a fix for one blank book
+    would have started eating short real ones. What was shipped instead of page
+    1 of a live book was not *short*, it was *shards*: seven glyph runs where
+    lines of words should be, because the viewer's custom font would not decode.
+    Half or more of the alphabetic tokens being one or two letters is that
+    wreckage; no real page, however sparse, looks like it. A page below the
+    rule is left out of the PDF and named, which is honest, where an empty sheet
+    with writing on it is not.
+    """
+    if not str(words or "").strip():
+        return False
+    return shard_fraction(words) < MAX_SHARD_FRACTION
 
 
 def shot_book_timeout(pages: int) -> float:
@@ -4747,15 +4776,16 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                         words = future.result()
                     except Exception:                      # noqa: BLE001
                         words = ""
-                    if words_worth_a_sheet(words):
+                    if words_look_like_a_page(words):
                         text_pages[number] = words
                         failed = [n for n in failed if n != number]
                     elif words and words.strip():
                         thin.append(number)
         if thin:
-            JOB.say(f"{len(thin)} page(s) had words too thin to be a page "
-                    f"(fewer than {MIN_WORDS_FOR_A_SHEET} characters of them) — "
-                    f"left out and named, not drawn as an empty sheet: "
+            JOB.say(f"{len(thin)} page(s) had words that were glyph shards, "
+                    f"not a page (half or more of its word-runs are one or two "
+                    f"letters — a font that would not decode) — left out and "
+                    f"named, not drawn as an empty sheet: "
                     f"{', '.join(str(n) for n in thin[:12])}"
                     + (" …" if len(thin) > 12 else ""))
         if failed:
@@ -4784,17 +4814,17 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                         f"so they are drawn as pages")
                 thin = [number for number in range(1, with_limit + 1)
                         if (viewer.get(number) or "").strip()
-                        and not words_worth_a_sheet(viewer.get(number))]
+                        and not words_look_like_a_page(viewer.get(number))]
                 for number in range(1, with_limit + 1):
                     words = (viewer.get(number) or "").strip()
-                    if words and words_worth_a_sheet(words):
+                    if words and words_look_like_a_page(words):
                         text_pages[number] = viewer[number]
                         ctx.remember_text(number, viewer[number])
                 if thin:
-                    JOB.say(f"{len(thin)} page(s) of the viewer's words were too "
-                            f"thin to be a page (fewer than "
-                            f"{MIN_WORDS_FOR_A_SHEET} characters) — left out and "
-                            f"named, not drawn as an empty sheet")
+                    JOB.say(f"{len(thin)} page(s) of the viewer's words were "
+                            f"glyph shards, not a page (a font that would not "
+                            f"decode) — left out and named, not drawn as an "
+                            f"empty sheet")
             missing = [number for number in range(1, with_limit + 1)
                        if number not in text_pages and number not in locked]
             done = len(text_pages)
@@ -4968,15 +4998,16 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             if not JOB.alive(ctx.gen):
                 break
             words = ctx.page_text(number)
-            if words_worth_a_sheet(words):
+            if words_look_like_a_page(words):
                 text_pages[number] = words
                 rescued.append(number)
             elif words.strip():
                 thin.append(number)
         if thin:
-            JOB.say(f"{len(thin)} page(s) had words too thin to be a page "
-                    f"(fewer than {MIN_WORDS_FOR_A_SHEET} characters of them) — "
-                    f"left out and named, not drawn as an empty sheet: "
+            JOB.say(f"{len(thin)} page(s) had words that were glyph shards, "
+                    f"not a page (half or more of its word-runs are one or two "
+                    f"letters — a font that would not decode) — left out and "
+                    f"named, not drawn as an empty sheet: "
                     f"{', '.join(str(n) for n in thin[:12])}"
                     + (" …" if len(thin) > 12 else ""))
         if rescued:
@@ -7584,8 +7615,8 @@ def selftest() -> str:
             "the queue that drops what will not come, "
             "the sheet that is never grey, the panel that counts every "
             "photographed page, the report of a page nobody could find, the "
-            "floor under a page of words, and the deadline a hung pass cannot "
-            "outlive")
+            "rule that tells glyph shards from a short real page, and the "
+            "deadline a hung pass cannot outlive")
 
     # ---- a refused photograph must leave its diagnosis behind --------------
     # "0 page-shaped boxes" is not an answer. The browser's own report — the
@@ -7609,12 +7640,32 @@ def selftest() -> str:
         with open(_pin_path, encoding="utf-8") as _pin_handle:
             assert _pin_handle.read().strip() == _pin_text
         assert _pin_ctx.save_shot_note("   ") == "", "an empty report writes nothing"
-    # a page of fragments is not a page: the floor, and the passes that use it
-    assert words_worth_a_sheet("Udd  h Eo  er W er K e") is False
-    assert words_worth_a_sheet("x" * 199) is False
-    assert words_worth_a_sheet("x" * 200) is True
-    assert words_worth_a_sheet("   ") is False and words_worth_a_sheet("") is False
-    assert words_worth_a_sheet("word " * 60) is True
+    # A page of shards is not a page — and a SHORT REAL PAGE STILL IS. The
+    # character floor this replaced would have dropped every title page,
+    # dedication, folio and chapter divider in every book; the shard rule cannot,
+    # because it looks at the shape of the words and not at how few they are.
+    assert shard_fraction("Udd h Eo er W er K e") > 0.8, (
+        shard_fraction("Udd h Eo er W er K e"))
+    # and with the placement marks the stored words carry, the same page must
+    # still be shards: tokenising the marks instead of the words is how a
+    # shard page slipped through once already
+    assert shard_fraction("\x010.0000|Udd h\n\x010.1999|Eo\n\x010.4000|er"
+                          "\n\x010.6000|W\n\x010.7999|er\n\x011.0000|K e") > 0.8
+    assert words_look_like_a_page("\x010.0000|Udd h\n\x010.1999|Eo") is False
+    assert words_look_like_a_page("\x010.0000|Contents\n\x010.2|1. Introduction"
+                                  " ......... 5") is True
+    assert words_look_like_a_page("Udd  h Eo  er W er K e") is False
+    assert words_look_like_a_page("e cece+sess e LLC") is False
+    assert words_look_like_a_page("Contents Fifth Edition Jimmie Gilbert") is True
+    assert words_look_like_a_page("For my mother") is True
+    assert words_look_like_a_page("6") is True, "a folio is a page"
+    assert words_look_like_a_page("Contents 1. Introduction 5") is True
+    assert words_look_like_a_page("word " * 60) is True
+    assert words_look_like_a_page("   ") is False and words_look_like_a_page("") is False
+    assert words_look_like_a_page("It is as it is") is False, (
+        "a page of nothing but two-letter words is the one shape this rule "
+        "cannot tell from shards; it is named as missing instead of drawn, and "
+        "that trade is written down here so nobody rediscovers it by accident")
     # the one pass waits for the shooter's own deadline, plus slack, not 12 min
     assert shot_book_timeout(20) == 360.0, shot_book_timeout(20)
     assert shot_book_timeout(0) == 360.0, "a whole book asks the same as twenty"
@@ -7642,10 +7693,11 @@ def selftest() -> str:
         "the one pass must say it is running before the minutes of silence")
     assert "save_shot_note(book_note)" in _pin_source, (
         "a refused one pass must leave the browser's report on disk")
-    assert _pin_source.count("words_worth_a_sheet(") == 4, (
+    assert _pin_source.count("words_look_like_a_page(") == 4, (
         "every place a page is made out of words must hold it to the floor — "
         "the rescue for a document with no words is the one that drew seven "
-        f"fragments on an empty sheet; {_pin_source.count('words_worth_a_sheet(')} of 4 do")
+        f"fragments on an empty sheet; "
+        f"{_pin_source.count('words_look_like_a_page(')} of 4 do")
     assert "shot_get(url, shot_book_timeout(pages))" in _pin_inspect.getsource(
         Shooter.shoot_book), (
         "the one pass must wait for the shooter's own deadline, not for a "
