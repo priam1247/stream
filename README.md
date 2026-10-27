@@ -135,15 +135,24 @@ Because `.github/workflows/deploy-panel.yml` runs `lftp mirror -R` **without `--
 
 ## Scribd Library (panel + dashboard tab)
 
-`tools/scribd_download.py` is a **single-file, standard-library-only** tool: it turns
-Scribd documents into clean PDFs by downloading the public page scans, and it can
-serve itself as a small HTTP panel so no PC is needed to start a download.
+`tools/scribd_download.py` is a **standard-library-only** tool whose source is now
+split into `tools/scribd_parts/` — one fragment per top-level function or class,
+plus small state fragments. `tools/scribd_download.py` is a small loader that runs
+those fragments in order; `tools/scribd_parts/MAP.md` tells you exactly which file
+holds which function. It photographs viewer pages into a PDF and can serve itself
+as a small HTTP panel, so no PC is needed to start a download.
 
 ```bash
 python3 tools/scribd_download.py --selftest          # offline, no network, no deps
 python3 tools/scribd_download.py --url "https://www.scribd.com/document/…"
 SERVER_PORT=25811 python3 tools/scribd_download.py      # the panel (panel mode is the default)
+
+# host that still needs one file (Pterodactyl PY_FILE=scribd_download.py):
+python3 tools/build_scribd_singlefile.py               # -> tools/scribd_download_singlefile.py
 ```
+
+`tools/troy-search/index.js` is likewise a thin entry point; its implementation
+lives in `tools/troy-search/src/` (see `src/MAP.md` and `src/FUNCTIONS.md`).
 
 Verdicts are deliberately honest: `PDF BUILT`, `PDF PARTIAL`, `PDF BROKEN`,
 `NO PAGES`, `BAD LINK`. `--text` adds an invisible, searchable text layer (one extra
