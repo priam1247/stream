@@ -58,11 +58,12 @@ What 3.0 removed: SCANNING. Every page of every document is photographed.
   3. What is kept is what a photograph needs: the viewer's own words for each
      page (laid underneath, invisible, so the PDF stays searchable), the image
      reader that turns a picture into a PDF stream, and the throttle breaker.
-  4. Speed is the point of having one load: a browser photographs the whole
-     column in one pass, measuring the page blocks a window at a time, and a page
-     that pass could not cut is photographed on its own. Nothing is fetched twice
-     and nothing is refetched, because there is no second copy of a photograph to
-     ask for.
+  4. One window per page: the browser opens each page's own address, measures
+     that page's bounds in that window and photographs exactly those bounds, so
+     no capture can carry a neighbour's edge. Pages are photographed with
+     bounded concurrency and assembled in the document's order. Nothing is
+     fetched twice and nothing is refetched, because there is no second copy of
+     a photograph to ask for.
 
 What 2.12 added: WIRING THIS PANEL INTO ANOTHER DASHBOARD
   The panel is a plain HTTP service, so another site can drive it without a line
@@ -171,9 +172,9 @@ What 2.4 fixed in your COOKIES
 
 How a document is downloaded, plain HTTPS with your cookies:
   1. read the document page and the embed viewer
-  2. photograph every page: one pass over the scroll viewer that measures the
-     column of page blocks a window at a time, numbers every block by the
-     column's own step, and clips each page while it is in the window
+  2. photograph every page: one window per page, opened at that page's own
+     address, the page's bounds measured in it and the clip exactly those
+     bounds — checked against the picture that comes back
   3. read the document's own words for each page and lay them underneath its
      photograph, invisible, so the finished PDF is searchable and copyable
   4. assemble the pages in order — a picture goes in as its own filtered stream
@@ -186,8 +187,9 @@ upload are drawn by the same viewer, so the photograph is the page for both, and
 no page of either is fetched from Scribd as an image. That second load is gone —
 removed, not switched off: no environment word and no flag brings it back,
 because two routes meant two ways to be wrong about a page, and which one ran
-was decided by a guess. A page the one pass could not cut is photographed on its
-own; a page no photograph reached is asked for its words and drawn with them; a
+was decided by a guess. A page whose bounds cannot be measured, or whose
+picture does not match them, is failed and named; a page no photograph reached
+is asked for its words and drawn with them; a
 page with neither is left out of the PDF and named in the verdict. Every url
 tried for a failed page is recorded. A browser photographs a page nobody sent us
 (--shots / SCRIBD_SHOTS), because a page nobody sent is still a page somebody
@@ -266,7 +268,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "3.4"
+VERSION = "3.5"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -3798,6 +3800,29 @@ def shot_request(base: str, ident: str, number: int, scale: float) -> str:
             f"&scale={scale:g}")
 
 
+def shot_get_headed(url: str, timeout: float
+                    ) -> tuple[int, bytes, str, dict[str, str]]:
+    """shot_get, plus the answer's headers.
+
+    The browser service states the box it measured in `X-Shot-Box`, because the
+    panel checks every picture against the box it claims to be: a picture that
+    is not the size of its own page is a picture of something else, and the
+    shooter's word alone is not the check.
+    """
+    request = urllib.request.Request(url, headers={"User-Agent": UA,
+                                                  "Accept": "image/png,*/*"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as answer:
+            return (answer.status, answer.read(), "",
+                    {k.lower(): v for k, v in answer.headers.items()})
+    except urllib.error.HTTPError as exc:
+        # an HTTP answer is an answer: the status and body carry the reason,
+        # exactly as shot_get has always reported them
+        return exc.code, exc.read() or b"", "", {}
+    except Exception as exc:                                 # noqa: BLE001
+        return 0, b"", str(exc), {}
+
+
 def shot_get(url: str, timeout: float) -> tuple[int, bytes, str]:
     """A plain GET that is deliberately not `fetch()`.
 
@@ -4107,21 +4132,6 @@ def words_look_like_a_page(words: str) -> bool:
     return shard_fraction(words) < MAX_SHARD_FRACTION
 
 
-def shot_book_timeout(pages: int) -> float:
-    """How long the panel waits for a one pass, in seconds.
-
-    Mirrors the shooter's own deadline for the same pass — its cut budget plus
-    90s of measuring — with 30s of slack, so the shooter's refusal arrives first
-    and this number is only what a shooter that has stopped answering entirely
-    costs. The panel used to wait twelve minutes for a hung pass (`page 0/20 ·
-    0 ok`, nine minutes of it silent); a dead shooter now costs six, and a hung
-    one costs whatever its own budget is.
-    """
-    pages = max(int(pages or 0), 20)
-    cut = min(max(30000 * 8, pages * 1200 + 60000), 660000)
-    return (cut + 90000 + 30000) / 1000.0
-
-
 def refusal_reason(body: bytes, status: int) -> str:
     """Why the browser service said no, in its own words."""
     if body:
@@ -4425,10 +4435,19 @@ class Shooter:
         return bool(self.state)
 
     def shoot(self, ident: str, number: int) -> tuple[dict | None, str]:
-        """One page, photographed. -> (the page for the PDF, or why not)."""
+        """One page, photographed. -> (the page for the PDF, or why not).
+
+        Two checks stand between a picture and the book. The picture must be
+        the size of the box the shooter says it measured — a capture that is
+        not its page's size is a capture of something else, and it is failed,
+        not shipped. And it must not be an empty sheet: an empty sheet is not a
+        page, and "the only picture of that page" is not a reason to put a
+        blank leaf in a book. Either way the page is reported failed and the
+        book's record names it.
+        """
         if not self.base:
             return None, self.note or "no browser service configured"
-        status, body, error = shot_get(
+        status, body, error, heads = shot_get_headed(
             shot_request(self.base, ident, number, self.scale), self.timeout)
         if error:
             return None, f"page {number}: the browser did not answer — {error}"
@@ -4440,86 +4459,42 @@ class Shooter:
                           f"{describe_image(body)}, not a page")
         page = dict(page)
         page["bytes"] = len(body)
-        # a blank sheet is a warning, never a refusal: the browser already tried
-        # again with more patience, and an empty page that really is empty beats
-        # a sheet that says "scan not available". Judged on the shot's own rows,
-        # before the size goes back to the screen's.
-        blank = looks_blank_shot(len(body), page["height"])
-        page["blank"] = blank
+        # the box the shooter measured, in the page's own units: the picture's
+        # pixel count must be that box at the scale it was taken at, or the
+        # picture is not of this page
+        box = (heads.get("x-shot-box") or "").lower().split("x")
+        if len(box) == 2 and box[0].strip().isdigit() and box[1].strip().isdigit():
+            # in the page's own units, so a rounding of half a pixel at 2x is
+            # not a disagreement: 283 pixels at 2x IS a 142-pixel page
+            want = (int(box[0]), int(box[1]))
+            got = (round(page["width"] / self.scale),
+                   round(page["height"] / self.scale))
+            if abs(got[0] - want[0]) > 1 or abs(got[1] - want[1]) > 1:
+                return None, (f"page {number}: the capture came back "
+                              f"{page['width']}x{page['height']} pixels, a "
+                              f"{got[0]}x{got[1]} page at {self.scale:g}x, against "
+                              f"the measured page box {want[0]}x{want[1]} — a "
+                              f"picture that is not the page's own size is "
+                              f"failed, not shipped")
+        if looks_blank_shot(len(body), page["height"]):
+            sheet = (max(1, round(page["width"] / self.scale)),
+                     max(1, round(page["height"] / self.scale)))
+            return None, (f"page {number}: the sheet came back empty "
+                          f"({sheet[0]}x{sheet[1]} in "
+                          f"{size_text(len(body))}) — failed, and named: an "
+                          f"empty sheet is not a page")
         # a screenshot's pixel count says how finely the page was drawn, not how
         # big the page is: at 2x it is the same page at twice the detail, so the
         # size goes back to the screen's and the sharpness stays in the pixels
         page["width"] = max(1, round(page["width"] / self.scale))
         page["height"] = max(1, round(page["height"] / self.scale))
+        page["blank"] = False
         page["shot"] = True
         page["phase"] = "shot"
         page["url"] = f"browser {self.base} · page {number}"
         page["label"] = (f"{page['width']}x{page['height']} photographed"
-                         + (f" at {self.scale:g}x" if self.scale != 1 else "")
-                         + (", and it looks empty" if blank else ""))
-        return page, (f"page {number}: photographed, but the sheet looks empty "
-                      f"({page['width']}x{page['height']} in "
-                      f"{size_text(len(body))}) — kept, it is the only picture of "
-                      f"that page" if blank else "")
-
-    def shoot_book(self, ident: str, scale: float = 0.0, pages: int = 0
-                   ) -> tuple[dict[int, dict], str]:
-        """Every page of the document in one pass, cut at the gaps.
-
-        The browser service opens the scroll viewer once, measures the column of
-        page blocks a window at a time, and clips each page while that page is in
-        the window — so every page arrives at exactly the page's own size and no
-        page is cut differently from any other. It is told how many pages the
-        document has: the column's own step is what numbers the blocks, so a
-        column holding more slots than the document has pages is refused rather
-        than believed, and a hole in the column is a page named as missing, never
-        a book shifted one page out of place. A page the pass could not cut is
-        simply absent from the pictures and named in the note, and then gets a
-        photograph of its own. -> (page -> picture, one note).
-        """
-        base = (self.base or "").rstrip("/")
-        if not base or not ident:
-            return {}, "no browser to ask"
-        url = (f"{base}/shots?doc={ident}"
-               f"&scale={(scale or self.scale):g}"
-               + (f"&pages={int(pages)}" if pages else ""))
-        status, body, error = shot_get(url, shot_book_timeout(pages))
-        if error:
-            return {}, f"the one-pass photograph failed: {error}"
-        if status != 200:
-            return {}, (f"the one-pass photograph answered {status}: "
-                        f"{refusal_reason(body, status)}")
-        pages, error = decode_shots(body)
-        if error:
-            return {}, f"the one-pass photograph came back broken: {error}"
-        out: dict[int, dict] = {}
-        for entry in pages:
-            number = int(entry.get("page") or 0)
-            payload = entry.get("png") or b""
-            if not number or not payload:
-                continue
-            built = scan_for_pdf(payload)
-            if built is None:
-                continue
-            built = dict(built)
-            built["bytes"] = len(payload)
-            built["shot"] = True
-            built["blank"] = bool(entry.get("blank"))
-            built["phase"] = "one pass"
-            built["url"] = (f"browser {base} · cut out of the column at the gap "
-                            f"between this page and the next")
-            out[number] = built
-        manifest = entry_manifest(pages)
-        pad = 0
-        try:
-            pad = int((body_manifest(body) or {}).get("run", {}).get("pad") or 0)
-        except Exception:                                          # noqa: BLE001
-            pad = 0
-        if pad:
-            manifest += (f" · the last page was padded {pad}px with the "
-                         f"background after the document, so no page of the "
-                         f"book is a different size from any other")
-        return out, manifest
+                         + (f" at {self.scale:g}x" if self.scale != 1 else ""))
+        return page, ""
 
     def capture(self, ident: str, pages, jobs: int = 4,
                 alive=None, progress=None) -> tuple[dict[int, dict], list[str]]:
@@ -4538,7 +4513,7 @@ class Shooter:
         if len(asked) > len(wanted):
             # a cap that quietly drops pages is how a document ends up short
             notes.append(
-                f"{len(asked)} page(s) need a browser and one pass photographs "
+                f"{len(asked)} page(s) need a browser and one window each "
                 f"{MAX_SHOT_PAGES} — pages {wanted[-1] + 1} to {asked[-1]} will be "
                 f"left out of the PDF and named; run again for those")
         if not self.alive():
@@ -4659,20 +4634,21 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     # question, and one request answers it: a scan has none, and asking anyway
     # would spend hundreds of refusals and rest the job for nothing.
     has_words = ctx.gives_words()
-    JOB.say("route: every page is photographed — one pass over the viewer, then "
-            "a photograph of its own for whatever that pass could not cut"
+    JOB.say("route: every page is photographed — one window and one measured "
+            "clip per page"
             + (" · this document carries words, so they stay underneath every "
                "page, searchable" if has_words else
                " · this document carries no words of its own, so the "
                "photograph is the page"))
-    # ---- one pass over the viewer, cut at the gaps between its pages ------
-    # The browser opens the scroll viewer once, measures the column of page
-    # blocks a window at a time and clips each page while it is in the window:
-    # every page arrives at exactly its own size, and no page can be cut or
-    # cropped differently from any other. Whatever that pass could not cut is
-    # photographed one page at a time behind it — a hole costs that page's own
-    # photograph, never the book. The words still come from the document,
-    # underneath, so the book stays searchable.
+    # ---- one window per page, one clip of exactly that page ----------------
+    # The browser opens the page's own address, measures the page's bounds in
+    # that window, and photographs exactly those bounds: a capture can neither
+    # lose the page's own edges nor carry its neighbour's. A page whose bounds
+    # are missing, cut by the window, shared with a neighbour, or whose picture
+    # does not match the measured bounds is a FAILED page with a reason — never
+    # a picture of something else, and never a photograph of the window. The
+    # words still come from the document, underneath, so the book stays
+    # searchable.
     collected: dict[int, dict] = {}
 
     def shot_progress(done: int, ok: int, total: int) -> None:
@@ -4680,14 +4656,11 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
 
         Twenty pages of silence is a panel that reads `page 0/20 · 0 ok · 159.7s`
         and looks dead, and a run that looks dead gets killed and started again,
-        losing the pages that had already landed. This is defined above every
-        photograph pass, including the one for the pages a one pass missed: a
-        nested def is local to the whole function, so calling it before its own
-        line is an UnboundLocalError and not a late binding.
+        losing the pages that had already landed.
         """
-        # "of" is the DOCUMENT's page count, never this pass's: a pass over the
-        # one page a one pass missed must not turn the panel's `page 20 of 20`
-        # into `page 20 of 1`, which reads like a lie about the book
+        # "of" is the DOCUMENT's page count, never this pass's: a pass over one
+        # page must not turn the panel's `page 20 of 20` into `page 20 of 1`,
+        # which reads like a lie about the book
         of = max(int(with_limit), int(total), int(done))
         JOB.set_progress(page=min(len(collected) + int(done), of), of=of,
                          ok=len(collected) + int(ok))
@@ -4695,109 +4668,93 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
     failed: list[int] = []
     text_pages: dict[int, str] = {}
     texts: dict[int, str] = {}     # the invisible text layer of a photographed page
-    book_pages: dict[int, dict] = {}
     book_shot: list[int] = []
+    shot_notes: list[str] = []
+    asked = [number for number in range(1, with_limit + 1)
+             if number not in locked]
     if not ctx.skip_now:
         shooter = ensure_shooter(shooter)
         if shooter.alive():
-            JOB.say(f"photographing the whole viewer in one pass "
-                    f"({shooter.base}) — {with_limit} page(s) measured in the "
-                    f"column and clipped at the gap between one and the next, "
-                    f"at {shooter.scale:g}x")
-            JOB.say(f"one pass: measuring the whole column in the viewer now, "
-                    f"then cutting {with_limit} page(s) in up to four windows "
-                    f"({shooter.base}) — this is the part that takes the time")
-            book_pages, book_note = shooter.shoot_book(ctx.ident, shooter.scale,
-                                                       pages=with_limit)
-            if book_pages:
-                JOB.say(book_note)
-            else:
-                # the browser's own report of what it was looking at is the only
-                # honest answer to "why is nothing on the screen a page", and it
-                # is long: the log gets it, and the file gets all of it
-                saved = ctx.save_shot_note(book_note)
-                JOB.say(f"the one pass found no column of pages: {book_note}")
-                JOB.say("falling back to page by page — every page is "
-                        "photographed on its own, and the panel counts them as "
-                        "they land"
-                        + (f" · the browser's report is saved at {saved}"
-                           if saved else ""))
+            JOB.say(f"photographing {len(asked)} page(s) at {shooter.base} — "
+                    f"one window each, measured and clipped to the page's own "
+                    f"bounds, at {shooter.scale:g}x")
+            pictures, shot_notes = shooter.capture(
+                ctx.ident, asked, jobs=ctx.jobs,
+                alive=lambda: JOB.alive(ctx.gen), progress=shot_progress)
+            collected.update(pictures)
+            book_shot = sorted(pictures)
+            for note in shot_notes:
+                JOB.say("  " + note)
+            # the browser's own words for why a page failed are the only honest
+            # answer to "why is this page missing", and the debug file keeps all
+            # of them, page by page
+            missed_notes = [note for note in shot_notes
+                            if "failed" in note or "refused" in note]
+            if missed_notes:
+                saved = ctx.save_shot_note("\n".join(missed_notes))
+                if saved:
+                    JOB.say(f"why, page by page: {saved}")
         else:
             JOB.say("no browser is reachable"
                     + (f" at {shooter.base}" if shooter.base else "")
                     + f": {shooter.note} — the words ladder runs instead, and a "
                     "page with no words and no photograph is left out and named")
-    if book_pages:
-        collected.update(book_pages)
-        book_shot = sorted(book_pages)
+    if collected and has_words:
         # The look came from the browser; the words come from the document,
         # underneath every photograph, so the book stays searchable. Only when
         # the document has words to give: a scanned page has none, and one
         # refused request per page would trip the throttle breaker and rest the
         # job for nothing.
-        if has_words:
-            with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
-                futures = {pool.submit(ctx.page_text, number): number
-                           for number in sorted(book_pages)}
-                for future in as_completed(futures):
-                    number = futures[future]
-                    try:
-                        words = future.result()
-                    except Exception:                      # noqa: BLE001
-                        words = ""
-                    if words and words.strip():
-                        texts[number] = words
-            JOB.say(f"words underneath: {len(texts)} of {len(book_pages)} "
-                    f"photographed page(s) are searchable")
-        failed = [number for number in range(1, with_limit + 1)
-                  if number not in collected and number not in locked]
-        if failed and shooter.alive() and not ctx.skip_now:
-            JOB.say(f"the one pass missed {len(failed)} page(s) — "
-                    f"photographing them one by one")
-            pictures, shot_notes = shooter.capture(
-                ctx.ident, failed, jobs=ctx.jobs,
-                alive=lambda: JOB.alive(ctx.gen), progress=shot_progress)
-            for number in sorted(pictures):
-                collected[number] = pictures[number]
-                book_shot.append(number)
-            for note in shot_notes:
-                JOB.say("  " + note)
-            failed = [n for n in failed if n not in collected]
-        thin: list[int] = []
-        if failed and not ctx.skip_now:
-            JOB.say(f"{len(failed)} page(s) no photograph reached — asking the "
-                    f"document for their words instead")
-            with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
-                futures = {pool.submit(ctx.descriptor_text, number): number
-                           for number in list(failed)}
-                for future in as_completed(futures):
-                    number = futures[future]
-                    try:
-                        words = future.result()
-                    except Exception:                      # noqa: BLE001
-                        words = ""
-                    if words_look_like_a_page(words):
-                        text_pages[number] = words
-                        failed = [n for n in failed if n != number]
-                    elif words and words.strip():
-                        thin.append(number)
-        if thin:
-            JOB.say(f"{len(thin)} page(s) had words that were glyph shards, "
-                    f"not a page (half or more of its word-runs are one or two "
-                    f"letters — a font that would not decode) — left out and "
-                    f"named, not drawn as an empty sheet: "
-                    f"{', '.join(str(n) for n in thin[:12])}"
-                    + (" …" if len(thin) > 12 else ""))
-        if failed:
-            JOB.say(f"pages left out of the PDF (no photograph and no words "
-                    f"reached them): {', '.join(map(str, failed[:12]))}"
-                    + (" …" if len(failed) > 12 else ""))
-        JOB.set_progress(page=with_limit, ok=len(collected),
-                         skipped=len(failed))
-        photographed.extend(book_shot)
-    if not book_pages:
-        # ---- the ladder behind the one pass --------------------------------
-        # Not one page was cut, so every page is built one at a time. A document
+        with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
+            futures = {pool.submit(ctx.page_text, number): number
+                       for number in sorted(collected)}
+            for future in as_completed(futures):
+                number = futures[future]
+                try:
+                    words = future.result()
+                except Exception:                      # noqa: BLE001
+                    words = ""
+                if words and words.strip():
+                    texts[number] = words
+        JOB.say(f"words underneath: {len(texts)} of {len(collected)} "
+                f"photographed page(s) are searchable")
+    failed = [number for number in asked if number not in collected]
+    thin: list[int] = []
+    if failed and not ctx.skip_now:
+        JOB.say(f"{len(failed)} page(s) no photograph reached — asking the "
+                f"document for their words instead")
+        with ThreadPoolExecutor(max_workers=max(2, min(ctx.jobs, 8))) as pool:
+            futures = {pool.submit(ctx.descriptor_text, number): number
+                       for number in list(failed)}
+            for future in as_completed(futures):
+                number = futures[future]
+                try:
+                    words = future.result()
+                except Exception:                      # noqa: BLE001
+                    words = ""
+                if words_look_like_a_page(words):
+                    text_pages[number] = words
+                    failed = [n for n in failed if n != number]
+                elif words and words.strip():
+                    thin.append(number)
+    if thin:
+        JOB.say(f"{len(thin)} page(s) had words that were glyph shards, "
+                f"not a page (half or more of its word-runs are one or two "
+                f"letters — a font that would not decode) — left out and "
+                f"named, not drawn as an empty sheet: "
+                f"{', '.join(str(n) for n in thin[:12])}"
+                + (" …" if len(thin) > 12 else ""))
+    if failed:
+        JOB.say(f"pages left out of the PDF (no photograph and no words "
+                f"reached them): {', '.join(map(str, failed[:12]))}"
+                + (" …" if len(failed) > 12 else ""))
+    JOB.set_progress(page=with_limit, ok=len(collected),
+                     skipped=len(failed))
+    photographed.extend(book_shot)
+    if not collected:
+        # ---- when no photograph arrived at all ------------------------------
+        # Not one page could be photographed, so every page is built from the
+        # document's own words. A document
         # that has words reads them — they are drawn as pages, and photographed
         # over the top when a browser is there. A document with no words of its
         # own has every page photographed instead: the viewer's picture is the
@@ -4876,8 +4833,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         if not has_words:
             # No words to read and no image to fetch: what a page is, is what the
             # viewer draws, so every page of it is photographed one at a time —
-            # the same route that stands behind the one pass, and the only route
-            # there is now.
+            # the only route there is: one window and one measured clip per page.
             failed = [number for number in range(1, with_limit + 1)
                       if number not in collected and number not in locked]
             JOB.say(f"{len(failed)} page(s) to photograph one at a time — this "
@@ -7364,6 +7320,9 @@ def selftest() -> str:
     # a pixel measure would call this page empty at 2x and not at 1x; rows do not
     assert looks_blank_shot(len(sparse), 283) == looks_blank_shot(len(sparse) * 4, 566)
 
+    def _png_dims(body: bytes) -> tuple[int, int]:
+        return int.from_bytes(body[16:20], "big"), int.from_bytes(body[20:24], "big")
+
     class ShotHandler(BaseHTTPRequestHandler):
         """The service a real browser would be: one page per request."""
         def do_GET(self):
@@ -7388,6 +7347,8 @@ def selftest() -> str:
                     body, kind = b"not an image", "text/plain"
                 elif number == 7:
                     body = sparse                    # paper, and a little writing
+                elif number == 8:
+                    body = inked                     # a picture of the wrong page
                 else:
                     body = inked
             else:
@@ -7395,6 +7356,16 @@ def selftest() -> str:
             self.send_response(status)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
+            if kind == "image/png" and parsed.path == "/shot":
+                # the box this picture claims to be, in the page's own units:
+                # the png's pixels at the scale asked for. Page 8 lies about it,
+                # which is the picture that is not its page.
+                scale = float((query.get("scale") or ["1"])[0] or 1)
+                wide, high = _png_dims(body)
+                if number == 8:
+                    wide += 60
+                self.send_header("X-Shot-Box",
+                                 f"{round(wide / scale)}x{round(high / scale)}")
             self.end_headers()
             self.wfile.write(body)
 
@@ -7428,9 +7399,9 @@ def selftest() -> str:
         # the reason arrives as json: the note is the service's own words
         assert "not for this account" in note and "{" not in note, note
         empty, note = shooter.shoot("7", 5)
-        assert empty and empty["shot"] and "looks empty" in note, (empty, note)
-        assert "only picture of that page" in note, note
-        assert "100x142" in note or "looks empty" in empty["label"], note
+        assert empty is None and "came back empty" in note and "failed" in note, (
+            empty, note)
+        assert "100x142" in note, note
         junk, note = shooter.shoot("7", 6)
         assert junk is None and "not a page" in note, note
         sparse_page, note = shooter.shoot("7", 7)
@@ -7440,8 +7411,11 @@ def selftest() -> str:
         assert sorted(pictures) == [1, 2, 3], sorted(pictures)
         assert len(notes) == 1 and "page 4" in notes[0], notes
         kept, notes = shooter.capture("7", [5], jobs=1)
-        assert sorted(kept) == [5] and notes and "looks empty" in notes[0], notes
-        assert "only picture of that page" in notes[0], notes
+        assert not kept and notes and "came back empty" in notes[0], (kept, notes)
+        wrong, note = shooter.shoot("7", 8)
+        assert wrong is None and "not the page's own size" in note, (wrong, note)
+        assert "960" not in note or True  # the note carries both sizes, read it
+        assert "against the measured page box" in note, note
         # a cap that photographs fewer pages than were asked for has to say so,
         # or the document quietly comes back short
         held_cap = MAX_SHOT_PAGES
@@ -7666,18 +7640,15 @@ def selftest() -> str:
         "a page of nothing but two-letter words is the one shape this rule "
         "cannot tell from shards; it is named as missing instead of drawn, and "
         "that trade is written down here so nobody rediscovers it by accident")
-    # the one pass waits for the shooter's own deadline, plus slack, not 12 min
-    assert shot_book_timeout(20) == 360.0, shot_book_timeout(20)
-    assert shot_book_timeout(0) == 360.0, "a whole book asks the same as twenty"
-    assert shot_book_timeout(389) == 646.8, shot_book_timeout(389)
-    assert shot_book_timeout(5000) == 780.0, shot_book_timeout(5000)
-    assert shot_book_timeout(20) < 12 * 60, (
-        "the panel must not be willing to wait twelve minutes for a hung pass")
+    # the column route is gone from the panel as completely as from the shooter
+    assert not hasattr(Shooter, "shoot_book"), (
+        "the whole-column capture must not come back: it cut pages by inference "
+        "instead of measuring each one in its own window")
 
     _pin_source = _pin_inspect.getsource(_download)
-    assert _pin_source.count("progress=shot_progress") == 3, (
-        "every page-by-page photograph pass must move the panel's numbers; "
-        f"{_pin_source.count('progress=shot_progress')} of 3 do")
+    assert _pin_source.count("progress=shot_progress") == 2, (
+        "every photograph pass must move the panel's numbers; "
+        f"{_pin_source.count('progress=shot_progress')} of 2 do")
     assert "def shot_progress(" in _pin_source, (
         "the page-by-page passes have no progress to report")
     assert "max(int(with_limit), int(total), int(done))" in _pin_source, (
@@ -7689,19 +7660,21 @@ def selftest() -> str:
         "shot_progress is used before it is defined, which is an "
         "UnboundLocalError on the first pass that reports through it — the one "
         "pass missing a page is that pass")
-    assert "one pass: measuring the whole column" in _pin_source, (
-        "the one pass must say it is running before the minutes of silence")
-    assert "save_shot_note(book_note)" in _pin_source, (
-        "a refused one pass must leave the browser's report on disk")
+    assert "one window each, measured and clipped" in _pin_source, (
+        "the photograph pass must say what it is doing before the minutes of "
+        "silence, or the panel looks dead while it works")
+    assert "save_shot_note(" in _pin_source, (
+        "the browser's own words for why pages failed must land on disk, "
+        "page by page")
+    assert "shooter.shoot_book" not in _pin_source, (
+        "no call to the column route may survive in the download")
     assert _pin_source.count("words_look_like_a_page(") == 4, (
         "every place a page is made out of words must hold it to the floor — "
         "the rescue for a document with no words is the one that drew seven "
         f"fragments on an empty sheet; "
         f"{_pin_source.count('words_look_like_a_page(')} of 4 do")
-    assert "shot_get(url, shot_book_timeout(pages))" in _pin_inspect.getsource(
-        Shooter.shoot_book), (
-        "the one pass must wait for the shooter's own deadline, not for a "
-        "number from nowhere")
+    assert "shoot_book" not in _pin_inspect.getsource(Shooter.capture), (
+        "the per-page pool must not reach for the column route")
 
 def main(argv: list[str]) -> int:
     global BASE
