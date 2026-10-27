@@ -266,7 +266,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "3.2"
+VERSION = "3.3"
 SAMPLE = "https://www.scribd.com/document/751945245"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -4061,6 +4061,38 @@ def discover_shots(hosts: tuple | list | None = None, force: bool = False,
     return "", note
 
 
+MIN_WORDS_FOR_A_SHEET = 200
+
+
+def words_worth_a_sheet(words: str) -> bool:
+    """Whether these words are a page of a book, or fragments that only look like one.
+
+    A live run drew page 1 of a 258-page textbook as seven scattered glyph runs
+    on an otherwise empty sheet — 26 characters, 0.08% ink — because the words
+    route accepts anything non-empty. That is a blank page with writing on it,
+    which is the one thing this project exists to not ship: below the floor a
+    page is left out of the PDF and named, which is honest, where a near-empty
+    sheet pretending to be page 1 is not. A real page of running text is
+    thousands of characters, so the floor has room to be generous.
+    """
+    return len(re.sub(r"\s+", "", str(words or ""))) >= MIN_WORDS_FOR_A_SHEET
+
+
+def shot_book_timeout(pages: int) -> float:
+    """How long the panel waits for a one pass, in seconds.
+
+    Mirrors the shooter's own deadline for the same pass — its cut budget plus
+    90s of measuring — with 30s of slack, so the shooter's refusal arrives first
+    and this number is only what a shooter that has stopped answering entirely
+    costs. The panel used to wait twelve minutes for a hung pass (`page 0/20 ·
+    0 ok`, nine minutes of it silent); a dead shooter now costs six, and a hung
+    one costs whatever its own budget is.
+    """
+    pages = max(int(pages or 0), 20)
+    cut = min(max(30000 * 8, pages * 1200 + 60000), 660000)
+    return (cut + 90000 + 30000) / 1000.0
+
+
 def refusal_reason(body: bytes, status: int) -> str:
     """Why the browser service said no, in its own words."""
     if body:
@@ -4422,7 +4454,7 @@ class Shooter:
         url = (f"{base}/shots?doc={ident}"
                f"&scale={(scale or self.scale):g}"
                + (f"&pages={int(pages)}" if pages else ""))
-        status, body, error = shot_get(url, self.timeout * 6)
+        status, body, error = shot_get(url, shot_book_timeout(pages))
         if error:
             return {}, f"the one-pass photograph failed: {error}"
         if status != 200:
@@ -4702,6 +4734,7 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             for note in shot_notes:
                 JOB.say("  " + note)
             failed = [n for n in failed if n not in collected]
+        thin: list[int] = []
         if failed and not ctx.skip_now:
             JOB.say(f"{len(failed)} page(s) no photograph reached — asking the "
                     f"document for their words instead")
@@ -4714,9 +4747,17 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
                         words = future.result()
                     except Exception:                      # noqa: BLE001
                         words = ""
-                    if words and words.strip():
+                    if words_worth_a_sheet(words):
                         text_pages[number] = words
                         failed = [n for n in failed if n != number]
+                    elif words and words.strip():
+                        thin.append(number)
+        if thin:
+            JOB.say(f"{len(thin)} page(s) had words too thin to be a page "
+                    f"(fewer than {MIN_WORDS_FOR_A_SHEET} characters of them) — "
+                    f"left out and named, not drawn as an empty sheet: "
+                    f"{', '.join(str(n) for n in thin[:12])}"
+                    + (" …" if len(thin) > 12 else ""))
         if failed:
             JOB.say(f"pages left out of the PDF (no photograph and no words "
                     f"reached them): {', '.join(map(str, failed[:12]))}"
@@ -4741,11 +4782,19 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
             if viewer:
                 JOB.say(f"viewer: {ctx.embed_state} — its pages are the document, "
                         f"so they are drawn as pages")
+                thin = [number for number in range(1, with_limit + 1)
+                        if (viewer.get(number) or "").strip()
+                        and not words_worth_a_sheet(viewer.get(number))]
                 for number in range(1, with_limit + 1):
                     words = (viewer.get(number) or "").strip()
-                    if words:
+                    if words and words_worth_a_sheet(words):
                         text_pages[number] = viewer[number]
                         ctx.remember_text(number, viewer[number])
+                if thin:
+                    JOB.say(f"{len(thin)} page(s) of the viewer's words were too "
+                            f"thin to be a page (fewer than "
+                            f"{MIN_WORDS_FOR_A_SHEET} characters) — left out and "
+                            f"named, not drawn as an empty sheet")
             missing = [number for number in range(1, with_limit + 1)
                        if number not in text_pages and number not in locked]
             done = len(text_pages)
@@ -4914,13 +4963,22 @@ def _download(url: str, limit: int, out: str, jobs: int = 12,
         JOB.say(f"no photograph for {len(failed)} page(s) — asking the document "
                 f"for their words")
         rescued: list[int] = []
+        thin: list[int] = []
         for number in sorted(failed):
             if not JOB.alive(ctx.gen):
                 break
             words = ctx.page_text(number)
-            if words.strip():
+            if words_worth_a_sheet(words):
                 text_pages[number] = words
                 rescued.append(number)
+            elif words.strip():
+                thin.append(number)
+        if thin:
+            JOB.say(f"{len(thin)} page(s) had words too thin to be a page "
+                    f"(fewer than {MIN_WORDS_FOR_A_SHEET} characters of them) — "
+                    f"left out and named, not drawn as an empty sheet: "
+                    f"{', '.join(str(n) for n in thin[:12])}"
+                    + (" …" if len(thin) > 12 else ""))
         if rescued:
             for number in rescued:
                 rows = [line for line in ctx.trace.get(number, [])
@@ -7525,7 +7583,9 @@ def selftest() -> str:
             "the lock map in the token, the last line of every page, "
             "the queue that drops what will not come, "
             "the sheet that is never grey, the panel that counts every "
-            "photographed page, and the report of a page nobody could find")
+            "photographed page, the report of a page nobody could find, the "
+            "floor under a page of words, and the deadline a hung pass cannot "
+            "outlive")
 
     # ---- a refused photograph must leave its diagnosis behind --------------
     # "0 page-shaped boxes" is not an answer. The browser's own report — the
@@ -7549,6 +7609,20 @@ def selftest() -> str:
         with open(_pin_path, encoding="utf-8") as _pin_handle:
             assert _pin_handle.read().strip() == _pin_text
         assert _pin_ctx.save_shot_note("   ") == "", "an empty report writes nothing"
+    # a page of fragments is not a page: the floor, and the passes that use it
+    assert words_worth_a_sheet("Udd  h Eo  er W er K e") is False
+    assert words_worth_a_sheet("x" * 199) is False
+    assert words_worth_a_sheet("x" * 200) is True
+    assert words_worth_a_sheet("   ") is False and words_worth_a_sheet("") is False
+    assert words_worth_a_sheet("word " * 60) is True
+    # the one pass waits for the shooter's own deadline, plus slack, not 12 min
+    assert shot_book_timeout(20) == 360.0, shot_book_timeout(20)
+    assert shot_book_timeout(0) == 360.0, "a whole book asks the same as twenty"
+    assert shot_book_timeout(389) == 646.8, shot_book_timeout(389)
+    assert shot_book_timeout(5000) == 780.0, shot_book_timeout(5000)
+    assert shot_book_timeout(20) < 12 * 60, (
+        "the panel must not be willing to wait twelve minutes for a hung pass")
+
     _pin_source = _pin_inspect.getsource(_download)
     assert _pin_source.count("progress=shot_progress") == 3, (
         "every page-by-page photograph pass must move the panel's numbers; "
@@ -7568,6 +7642,14 @@ def selftest() -> str:
         "the one pass must say it is running before the minutes of silence")
     assert "save_shot_note(book_note)" in _pin_source, (
         "a refused one pass must leave the browser's report on disk")
+    assert _pin_source.count("words_worth_a_sheet(") == 4, (
+        "every place a page is made out of words must hold it to the floor — "
+        "the rescue for a document with no words is the one that drew seven "
+        f"fragments on an empty sheet; {_pin_source.count('words_worth_a_sheet(')} of 4 do")
+    assert "shot_get(url, shot_book_timeout(pages))" in _pin_inspect.getsource(
+        Shooter.shoot_book), (
+        "the one pass must wait for the shooter's own deadline, not for a "
+        "number from nowhere")
 
 def main(argv: list[str]) -> int:
     global BASE
