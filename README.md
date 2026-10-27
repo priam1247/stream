@@ -136,12 +136,15 @@ Because `.github/workflows/deploy-panel.yml` runs `lftp mirror -R` **without `--
 ## Scribd Library (panel + dashboard tab)
 
 `tools/scribd_download.py` is a **standard-library-only** tool. Its source is now
-four files: a small loader (`scribd_download.py`) plus `scribd_core.py` (helpers,
-network and PDF/image code), `scribd_jobs.py` (download jobs and the shooter
-bridge), and `scribd_panel.py` (search, HTTP panel, selftest and CLI). The loader
-executes them in order in one shared namespace, so the public behaviour is the
-same as the old single file. It photographs viewer pages into a PDF and can serve
-itself as a small HTTP panel, so no PC is needed to start a download.
+seven files: a small loader (`scribd_download.py`) plus six responsibility modules
+of roughly 1,000-1,500 lines each — `scribd_config.py` (config, cookies, network,
+tokens, links and panel helpers), `scribd_pages.py` (image decoding and PDF
+assembly), `scribd_jobs.py` (job engine and page sources), `scribd_shots.py`
+(shooter bridge, screenshot fallback and final download), `scribd_panel.py`
+(search, HTTP panel and CLI main) and `scribd_selftest.py` (offline selftest and
+entry guard). The loader executes them in order in one shared namespace, so the
+public behaviour is the same as the old single file. It photographs viewer pages
+into a PDF and can serve itself as a small HTTP panel, so no PC is needed.
 
 ```bash
 python3 tools/scribd_download.py --selftest          # offline, no network, no deps

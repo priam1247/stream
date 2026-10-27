@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Build a deployable one-file copy of the Scribd panel.
 
-Development uses ``tools/scribd_download.py`` (a small loader) plus
-``scribd_core.py``, ``scribd_jobs.py`` and ``scribd_panel.py``. Hosts that still
-need one file (``PY_FILE=scribd_download.py`` on Pterodactyl) can upload the
-output of this script instead:
+Development uses ``tools/scribd_download.py`` (a small loader) plus six
+responsibility modules: ``scribd_config.py``, ``scribd_pages.py``,
+``scribd_jobs.py``, ``scribd_shots.py``, ``scribd_panel.py`` and
+``scribd_selftest.py``. Hosts that still need one file
+(``PY_FILE=scribd_download.py`` on Pterodactyl) can upload the output of this
+script instead:
 
     python3 tools/build_scribd_singlefile.py
     python3 tools/scribd_download_singlefile.py --selftest
@@ -15,7 +17,14 @@ import argparse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SOURCES = ("scribd_core.py", "scribd_jobs.py", "scribd_panel.py")
+SOURCES = (
+    "scribd_config.py",
+    "scribd_pages.py",
+    "scribd_jobs.py",
+    "scribd_shots.py",
+    "scribd_panel.py",
+    "scribd_selftest.py",
+)
 DEFAULT_OUT = HERE / "scribd_download_singlefile.py"
 
 HELPER = '''
@@ -32,7 +41,7 @@ def bundle() -> str:
     text = "".join((HERE / name).read_text(encoding="utf-8") for name in SOURCES)
     marker = "from __future__ import annotations\n"
     if marker not in text:
-        raise RuntimeError("scribd_core.py lost its future import")
+        raise RuntimeError("scribd_config.py lost its future import")
     return text.replace(marker, marker + HELPER, 1)
 
 
