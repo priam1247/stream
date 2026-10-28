@@ -506,6 +506,57 @@ def _route(route) -> None:
         route.continue_()
 
 
+_INSTALL_LOCK = threading.Lock()
+_INSTALL_TRIED = False
+_INSTALL_ERROR = ""
+
+
+def _one_line(output: str) -> str:
+    """The most useful line from a pip/playwright failure, not a stack tail."""
+    lines = [x.strip() for x in (output or "").splitlines() if x.strip()]
+    for line in reversed(lines):
+        lowered = line.lower()
+        if "error" in lowered or "failed" in lowered or "denied" in lowered:
+            return line[:200]
+    return lines[-1][:200] if lines else "no output"
+
+
+def _install_browser(log=None) -> bool:
+    """Download Playwright's Chromium once per process. Never raises."""
+    global _INSTALL_TRIED, _INSTALL_ERROR
+    with _INSTALL_LOCK:
+        if config.browser_ready():
+            return True
+        if _INSTALL_TRIED:
+            return False
+        _INSTALL_TRIED = True
+        if log:
+            log("Chromium is missing — installing it now (one time)…")
+        try:
+            import subprocess
+            import sys
+
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                capture_output=True,
+                text=True,
+                timeout=int(os.environ.get("SCRIBD_BROWSER_INSTALL_TIMEOUT", "900")),
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced by the caller
+            _INSTALL_ERROR = str(exc)[:200]
+            if log:
+                log(f"Chromium install failed: {_INSTALL_ERROR}")
+            return False
+        if result.returncode != 0 or not config.browser_ready():
+            _INSTALL_ERROR = _one_line(result.stderr or result.stdout)
+            if log:
+                log("Chromium install failed: " + _INSTALL_ERROR)
+            return False
+        if log:
+            log("Chromium installed.")
+        return True
+
+
 def capture_document(
     document: scribd.Document,
     *,
@@ -551,16 +602,47 @@ def capture_document(
             if executable:
                 launch_args["executable_path"] = executable
             with sync_playwright() as playwright:
+                browser = None
                 try:
                     browser = playwright.chromium.launch(**launch_args)
-                except PlaywrightError as exc:
-                    detail = str(exc).strip().splitlines()[0] if str(exc).strip() else "unknown error"
-                    raise CaptureError(
-                        "Playwright Chromium could not start "
-                        f"({detail}). The panel expects the bundled browser at "
-                        f"{executable or '<tmp>/chromium'}; run `bash downloader/setup.sh` "
-                        "to prepare it."
-                    ) from exc
+                except PlaywrightError as first_error:
+                    # A fresh deploy can start serving before Chromium is ready.
+                    # Install it once and retry, instead of failing the download.
+                    detail = (
+                        str(first_error).strip().splitlines()[0]
+                        if str(first_error).strip()
+                        else "unknown error"
+                    )
+                    if not executable and _install_browser(log):
+                        try:
+                            browser = playwright.chromium.launch(**launch_args)
+                        except PlaywrightError as exc:
+                            detail = (
+                                str(exc).strip().splitlines()[0]
+                                if str(exc).strip()
+                                else detail
+                            )
+                    if browser is None:
+                        if config.browser_ready():
+                            raise CaptureError(
+                                "Chromium is installed but will not start "
+                                f"({detail}). The server is most likely missing "
+                                "the browser's shared libraries: libnss3, "
+                                "libatk1.0-0, libatk-bridge2.0-0, libgbm1, "
+                                "libxkbcommon0, libasound2, fonts-liberation."
+                            ) from first_error
+                        if _INSTALL_ERROR:
+                            raise CaptureError(
+                                "Chromium could not be installed "
+                                f"({_INSTALL_ERROR}). That server needs outbound "
+                                "access to cdn.playwright.dev, or upload the "
+                                "bundled browser. Status is on /diag."
+                            ) from first_error
+                        raise CaptureError(
+                            "Chromium is still downloading. First boot installs "
+                            "it in the background; wait a minute and tick the "
+                            "document again. Status is on /diag."
+                        ) from first_error
                 try:
                     context = browser.new_context(
                         viewport=config.VIEWPORT,

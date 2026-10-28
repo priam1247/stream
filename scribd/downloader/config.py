@@ -187,6 +187,34 @@ def chrome_executable() -> str:
     return ""
 
 
+def browsers_path() -> Path:
+    """Where Playwright keeps its browsers (default: $HOME/.cache/ms-playwright)."""
+    raw = (os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip()
+    if raw and raw != "0":
+        return Path(raw).expanduser()
+    home = os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".cache" / "ms-playwright"
+
+
+def browser_ready() -> bool:
+    """True when a Chromium is actually available to take screenshots.
+
+    Either the bundled binary is unpacked (the JS/bootstrap path) or
+    Playwright has downloaded its own build. Used by /diag so a half-deployed
+    panel is visible instead of looking healthy until the first download.
+    """
+    if chrome_executable():
+        return True
+    base = browsers_path()
+    try:
+        for pattern in ("chromium-*", "chromium_headless_shell-*"):
+            if any(base.glob(pattern)):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def chrome_args() -> list[str]:
     args = list(CHROME_ARGS)
     extra = (os.environ.get("PLAYWRIGHT_CHROMIUM_EXTRA_ARGS") or "").strip()
