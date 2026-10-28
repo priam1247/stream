@@ -25,7 +25,7 @@ const path = require('path');
 
 const HERE = __dirname;
 const APP = path.join(HERE, 'downloader', 'app.py');
-const LAUNCHER = path.join(HERE, 'utils', 'scribdLauncher.js');
+const LAUNCHER = path.join(HERE, 'scribdLauncher.js');
 
 process.env.SCRIBD_PANEL_PORT = process.env.SCRIBD_PANEL_PORT || '25811';
 
@@ -55,7 +55,7 @@ if (!fs.existsSync(APP)) {
   process.exit(1);
 }
 if (!fs.existsSync(LAUNCHER)) {
-  console.error('[scribd] utils/scribdLauncher.js is missing — upload the whole scribd/ folder.');
+  console.error('[scribd] scribdLauncher.js is missing — upload the whole scribd/ folder.');
   process.exit(1);
 }
 
