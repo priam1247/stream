@@ -1163,16 +1163,18 @@ export async function getBotCommandById(
 // the defaults, a saved row in portal_settings overrides them, and the disk
 // store stands in when D1 is not configured (local dev).
 /**
- * The panel runs on the Node server (Botkeep): that is the box with the
- * browser, and it answers /find, /run, /status, /files and /file.
+ * The two servers, and which one answers what.
  *
- * XS Systems (195.123.189.187:25811) is only the file store now — it keeps
- * finished PDFs. Pointing the dashboard there answers /health but 404s /find,
- * /run and /status, which is what a saved address from before the split does.
+ * Node server (Botkeep) runs index.js: it searches (/search), photographs the
+ * pages (/shot, /shots) and passes links on with /send.
+ *
+ * File store (XS Systems) keeps the finished PDFs: /files, /file, /reset — and
+ * it is the one that downloads, because /send is answered there.
  */
-export const DEFAULT_SCRIBD_PANEL_URL = 'http://node6.botkeep.cloud:45009';
+export const DEFAULT_SCRIBD_SEARCH_URL = 'http://node6.botkeep.cloud:45009';
+export const DEFAULT_SCRIBD_PANEL_URL = 'http://195.123.189.187:25811';
 
-/** Addresses that only store PDFs and must never be used as the panel. */
+/** Addresses that only store PDFs. */
 const STORE_ONLY_PANEL_URLS = new Set([
   'http://195.123.189.187:25811',
   'https://195.123.189.187:25811',
