@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# Install the pinned Python dependencies and Chromium for the standalone panel.
+# OPTIONAL manual helper for a standalone downloader/ deploy. Normal deploy
+# needs none of this: start.sh installs the Python deps and prepares the
+# bundled Chromium automatically (cached after the first boot).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 PY="${PYTHON_BIN:-python3}"
-"$PY" -m pip install -r requirements.txt
-"$PY" -m playwright install chromium
+"$PY" -m pip install --disable-pip-version-check -r requirements.txt
+if command -v node >/dev/null 2>&1; then
+  node chromium.mjs || true
+fi
+echo "Ready. Start with: sh start.sh"

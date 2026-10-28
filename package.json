@@ -33,6 +33,7 @@
     "node": ">=18.17"
   },
   "optionalDependencies": {
+    "@sparticuz/chromium": "153.0.0",
     "webtorrent": "^3.0.21"
   }
 }

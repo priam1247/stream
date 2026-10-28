@@ -62,3 +62,10 @@ tools/troy-search/tmp/
 tools/downloader/tmp/
 tools/shooter-found.txt
 tools/downloader/shooter-found.txt
+
+# Scribd screenshot panel — bundled browser + runtime scratch
+downloader/node_modules/
+downloader/.cache/
+downloader/*.log
+downloader/downloads/
+downloader/tmp/
