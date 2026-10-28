@@ -13,6 +13,7 @@ const os = require('os');
 const path = require('path');
 
 const config = require('./config');
+const disk = require('./disk');
 const scripts = require('./page-scripts');
 const { buildPdf, isBlank } = require('./pdf');
 
@@ -39,33 +40,80 @@ function executablePath() {
   if (explicit) return explicit;
   if (browserExecutable) return browserExecutable;
   const candidates = [
-    path.join(os.tmpdir(), 'chromium'),
+    path.join(disk.tempRoot(), 'chromium'),
     path.join(config.browsersPath(), 'chromium'),
   ];
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+    // Only a complete binary counts: a half-unpacked file is not a browser.
+    if (disk.isCompleteBinary(candidate)) return candidate;
   }
   return '';
+}
+
+/** Say how much room is actually left instead of just "ENOSPC". */
+function spaceReport(root) {
+  const free = disk.freeBytes(root);
+  if (free === null) return `free space could not be measured for ${root}`;
+  return `${disk.human(free)} free in ${root}, need about ${disk.human(disk.CHROMIUM_NEEDS_BYTES)}`;
 }
 
 async function launch() {
   const puppeteer = require('puppeteer-core');
   const chromium = chromiumPackage();
 
+  // Unpack into a directory this app controls, before anything reads the path.
+  const root = disk.adoptTempRoot();
+  disk.cleanStaleScratch(root);
+
   let args = [...config.CHROME_ARGS];
   let executable = executablePath();
 
   if (chromium) {
+    const bundledPath = path.join(root, 'chromium');
+    // A truncated binary from an earlier ENOSPC would otherwise be reused.
+    if (disk.discardPartialBinary(bundledPath)) {
+      console.log(`[panel] removed an incomplete Chromium at ${bundledPath}`);
+    }
+
+    if (!executable) {
+      const free = disk.freeBytes(root);
+      if (free !== null && free < disk.CHROMIUM_NEEDS_BYTES) {
+        throw new CaptureError(
+          `Not enough disk space for Chromium: ${disk.human(free)} free in ${root}, ` +
+          `about ${disk.human(disk.CHROMIUM_NEEDS_BYTES)} needed. ` +
+          'Free some space, or set SCRIBD_CHROME_PATH to a Chromium already on this ' +
+          'server, or SCRIBD_TEMP_DIR to a folder with more room.',
+        );
+      }
+    }
+
     // The bundled package inflates a Chromium plus the shared libraries these
     // containers lack, and sets LD_LIBRARY_PATH / FONTCONFIG_PATH for it.
     try {
-      if (typeof chromium.setGraphicsMode === 'function') chromium.setGraphicsMode = false;
+      // setGraphicsMode is a setter, not a method: reading it yields undefined,
+      // so it must be assigned. Leaving it on also unpacks swiftshader.
+      try {
+        chromium.setGraphicsMode = false;
+      } catch {
+        /* older versions without the setter */
+      }
       const bundled = await chromium.executablePath();
-      if (bundled && fs.existsSync(bundled)) executable = bundled;
+      if (bundled && disk.isCompleteBinary(bundled)) executable = bundled;
+      else if (bundled) {
+        disk.discardPartialBinary(bundled);
+        throw new CaptureError(
+          `Chromium unpacked incompletely at ${bundled} (${spaceReport(root)}). ` +
+          'It was removed; try the download again once there is more room.',
+        );
+      }
       if (Array.isArray(chromium.args)) args = [...new Set([...chromium.args, ...args])];
     } catch (err) {
       if (!executable) {
-        throw new CaptureError(`Could not unpack Chromium: ${err.message}`);
+        if (err instanceof CaptureError) throw err;
+        const detail = /ENOSPC/.test(String(err.message))
+          ? `${err.message} — ${spaceReport(root)}`
+          : err.message;
+        throw new CaptureError(`Could not unpack Chromium: ${detail}`);
       }
     }
   }
@@ -200,7 +248,7 @@ async function captureDocument(doc, { progress, log, cancel } = {}) {
 
   let expected = Math.max(0, Math.min(Number(doc.pages) || 0, config.MAX_PAGES));
   const name = safeName(doc.title, ident);
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scribd-'));
+  const workDir = fs.mkdtempSync(path.join(disk.adoptTempRoot(), 'scribd-'));
   const shots = [];
 
   const browser = await getBrowser();
@@ -330,8 +378,16 @@ async function captureDocument(doc, { progress, log, cancel } = {}) {
 
     if (cancel && cancel.aborted) throw new CaptureError('Job stopped.');
 
-    const output = path.join(workDir, name);
-    const bytes = await buildPdf(shots, output, expected);
+    const scratch = path.join(workDir, name);
+    const bytes = await buildPdf(shots, scratch, expected);
+
+    // Move the finished PDF out of the scratch folder: the page images are
+    // deleted in `finally`, and the caller needs the file to still exist.
+    const outDir = path.join(disk.adoptTempRoot(), 'scribd-output');
+    fs.mkdirSync(outDir, { recursive: true });
+    const output = path.join(outDir, name);
+    fs.renameSync(scratch, output);
+
     if (log) log(`built ${name} · ${expected} pages · ${Math.round(bytes / 1024)} KiB`);
     return {
       path: output,
@@ -339,18 +395,18 @@ async function captureDocument(doc, { progress, log, cancel } = {}) {
       pages: expected,
       bytes,
       seconds: (Date.now() - started) / 1000,
-      workDir,
     };
   } catch (err) {
-    try {
-      for (const file of fs.readdirSync(workDir)) {
-        if (file.endsWith('.pdf')) fs.unlinkSync(path.join(workDir, file));
-      }
-    } catch {
-      /* ignore */
-    }
     if (err instanceof CaptureError) throw err;
-    throw new CaptureError(err && err.message ? err.message : String(err));
+    const message = err && err.message ? err.message : String(err);
+    // ENOSPC reaches here too: say what filled up rather than just "no space".
+    if (/ENOSPC/.test(message)) {
+      throw new CaptureError(
+        `No disk space left while capturing (${disk.human(disk.freeBytes(workDir))} free). ` +
+        'The page images were removed; free some room and try again.',
+      );
+    }
+    throw new CaptureError(message);
   } finally {
     if (page) {
       try {
@@ -358,6 +414,13 @@ async function captureDocument(doc, { progress, log, cancel } = {}) {
       } catch {
         /* ignore */
       }
+    }
+    // Every page image goes, whether the job worked or not: a failed capture
+    // used to leave them behind and slowly fill the server.
+    try {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
     }
   }
 }

@@ -166,6 +166,65 @@ check('PDF builder writes the exact page count', async () => {
   return `12 pages · ${Math.round(bytes / 1024)} KiB`;
 });
 
+check('disk helpers report honestly and reject a truncated Chromium', () => {
+  const disk = require('./disk');
+  const os = require('os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'selftest-disk-'));
+
+  const small = path.join(dir, 'chromium');
+  fs.writeFileSync(small, 'not a browser');
+  if (disk.isCompleteBinary(small)) throw new Error('a 13-byte file passed as Chromium');
+  if (!disk.discardPartialBinary(small)) throw new Error('a truncated binary was kept');
+  if (fs.existsSync(small)) throw new Error('a truncated binary survived cleanup');
+
+  if (disk.human(0) !== '0 B') throw new Error(`human(0) = ${disk.human(0)}`);
+  if (!/MB/.test(disk.human(200 * 1024 * 1024))) throw new Error('human() units');
+
+  const free = disk.freeBytes(dir);
+  if (free !== null && !(free >= 0)) throw new Error('freeBytes returned a negative number');
+
+  // Stale scratch goes, fresh scratch stays.
+  const oldDir = path.join(dir, 'scribd-old');
+  fs.mkdirSync(oldDir);
+  const past = Date.now() - 60 * 60 * 1000;
+  fs.utimesSync(oldDir, past / 1000, past / 1000);
+  const freshDir = path.join(dir, 'scribd-fresh');
+  fs.mkdirSync(freshDir);
+  const removed = disk.cleanStaleScratch(dir, 60 * 1000);
+  if (fs.existsSync(oldDir)) throw new Error('stale scratch was kept');
+  if (!fs.existsSync(freshDir)) throw new Error('fresh scratch was deleted');
+  if (removed.length !== 1) throw new Error(`removed ${removed.length}`);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+  return 'partial binary discarded, stale scratch cleared';
+});
+
+check('end-to-end capture leaves no scratch behind', async () => {
+  // Proves the leak that filled the disk is gone: a failing capture must not
+  // leave page images or a PDF in the temp folder.
+  const disk = require('./disk');
+  const root = disk.adoptTempRoot();
+  const before = new Set(fs.readdirSync(root).filter((name) => name.startsWith('scribd-')));
+
+  const capture = require('./capture');
+  const scribd = require('./scribd');
+  // A document on an address that cannot answer: the job must fail cleanly.
+  const doc = { id: '123456789', url: 'https://www.scribd.com/document/123456789/x', title: 'x', pages: 3 };
+  if (!scribd.embedUrl(doc.url)) throw new Error('embedUrl');
+
+  let failed = false;
+  try {
+    await capture.captureDocument(doc);
+  } catch {
+    failed = true;
+  }
+
+  const after = fs.readdirSync(root).filter((name) => name.startsWith('scribd-'));
+  const leaked = after.filter((name) => !before.has(name) && name !== 'scribd-output');
+  if (leaked.length) throw new Error(`left behind: ${leaked.join(', ')}`);
+  return failed ? 'failure left nothing behind' : 'capture succeeded, nothing left behind';
+});
+
 check('panel answers its routes locally', async () => {
   const { makeTestServer } = require('./selftest-server');
   const server = await makeTestServer();
