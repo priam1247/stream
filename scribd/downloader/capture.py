@@ -539,20 +539,27 @@ def capture_document(
         work_dir = Path(work)
         screenshots: list[Path] = []
         try:
+            # Resolve the browser BEFORE Playwright starts: it launches a Node
+            # driver on entering `sync_playwright()`, and that driver inherits
+            # the environment and spawns Chromium. LD_LIBRARY_PATH set later
+            # would never reach the browser.
+            executable = config.chrome_executable()
+            launch_args = {
+                "headless": True,
+                "args": config.chrome_args(),
+            }
+            if executable:
+                launch_args["executable_path"] = executable
             with sync_playwright() as playwright:
-                launch_args = {
-                    "headless": True,
-                    "args": config.chrome_args(),
-                }
-                executable = config.chrome_executable()
-                if executable:
-                    launch_args["executable_path"] = executable
                 try:
                     browser = playwright.chromium.launch(**launch_args)
                 except PlaywrightError as exc:
+                    detail = str(exc).strip().splitlines()[0] if str(exc).strip() else "unknown error"
                     raise CaptureError(
-                        "Playwright Chromium is not installed. Run "
-                        "`python -m playwright install chromium` or `bash downloader/setup.sh`."
+                        "Playwright Chromium could not start "
+                        f"({detail}). The panel expects the bundled browser at "
+                        f"{executable or '<tmp>/chromium'}; run `bash downloader/setup.sh` "
+                        "to prepare it."
                     ) from exc
                 try:
                     context = browser.new_context(

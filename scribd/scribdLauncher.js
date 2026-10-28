@@ -1,29 +1,31 @@
 'use strict';
 /**
- * Zero-configuration launcher for the Scribd screenshot downloader panel.
+ * Zero-configuration launcher for the Scribd search + download panel.
  *
- * Discord/Pterodactyl panels run ONE startup command (node index.js) and give
- * the operator no shell and no environment variables. This module makes that
- * single process bring up the Python panel too, with everything hardcoded:
+ * Pterodactyl-style panels run ONE startup command (`node index.js` in this
+ * folder) and give the operator no shell and no environment variables. This
+ * module makes that single process bring up the Python panel too, with
+ * everything hardcoded:
  *
  *   - it runs `downloader/start.sh`, which installs the pip packages and
  *     Chromium on first boot (cached afterwards) and then execs the panel;
  *   - it supervises the child and restarts it if it ever exits;
- *   - it kills the child when the bot stops, so a Restart never leaves orphans.
+ *   - it kills the child when this process stops, so a Restart leaves no
+ *     orphans.
  *
  * The panel binds 0.0.0.0 on the dashboard's hardcoded 25811 AND on the
  * host's SERVER_PORT/PORT, so it works on either server without configuration.
- * Search + tick work even if Chromium cannot be downloaded.
+ * Search + tick work even if Chromium cannot be prepared.
  *
- * Nothing here can crash the bot: every failure is logged and swallowed.
- * Set SCRIBD_PANEL_AUTOSTART=0 to disable (optional; off by default in tests).
+ * Nothing here can crash the panel process: every failure is logged and
+ * swallowed. Set SCRIBD_PANEL_AUTOSTART=0 to disable (optional).
  */
 
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = __dirname;
 const START = path.join(ROOT, 'downloader', 'start.sh');
 
 const MAX_RESTARTS = 8;
