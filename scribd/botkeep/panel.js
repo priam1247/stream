@@ -26,6 +26,16 @@ const state = {
   lastTitle: '',
 };
 
+/** The last /find results, so /run can recover title and page count. */
+const hitsById = new Map();
+
+function rememberHits(hits) {
+  for (const hit of hits || []) {
+    if (hit && hit.id) hitsById.set(String(hit.id), hit);
+  }
+  if (hitsById.size > 4000) hitsById.clear();
+}
+
 function note(message) {
   const line = String(message || '').trim();
   if (!line) return;
@@ -109,8 +119,45 @@ function pump() {
   runJob(job).catch((err) => note(`worker error: ${err.message}`));
 }
 
-function readBody(req, limit = config.MAX_BODY_BYTES) {
-  return new Promise((resolve, reject) => {
+/**
+ * What the dashboard already sends: the ticked results as `urls`, plus the
+ * older free-text `links` field. Bare URLs are enriched from the last /find so
+ * the page count Scribd reported stays authoritative.
+ */
+function documentsFrom(body) {
+  const docs = [];
+  const seen = new Set();
+
+  const push = (rawUrl, meta) => {
+    const url = String(rawUrl || '').trim();
+    const ident = scribd.docIdOf(url) || String((meta && meta.id) || '');
+    if (!ident || seen.has(ident)) return;
+    seen.add(ident);
+    const cached = hitsById.get(ident) || {};
+    const pages = Number((meta && meta.pages) || cached.pages || 0) || 0;
+    docs.push({
+      id: ident,
+      url: scribd.cleanUrl(url) || scribd.documentUrl(ident),
+      title: String((meta && meta.title) || '').trim() || cached.title || scribd.titleFromUrl(url),
+      pages: Math.max(0, Math.min(pages, config.MAX_PAGES)),
+    });
+  };
+
+  if (Array.isArray(body.documents)) {
+    for (const item of body.documents) {
+      if (item) push(item.url, item);
+    }
+  }
+  if (Array.isArray(body.urls)) {
+    for (const url of body.urls) push(url, null);
+  }
+  if (typeof body.links === 'string') {
+    for (const url of body.links.split(/[\s,]+/)) push(url, null);
+  }
+  return docs.slice(0, config.MAX_DOCUMENTS);
+}
+
+function readBody(req, limit = config.MAX_BODY_BYTES) {  return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
@@ -214,7 +261,14 @@ async function handle(req, res) {
   if (pathname === '/files') {
     try {
       const listing = await store.files();
-      sendJson(res, 200, listing);
+      const files = (Array.isArray(listing.files) ? listing.files : []).map((file) => ({
+        ...file,
+        name: String(file.name || ''),
+        bytes: Number(file.bytes) || 0,
+        // The dashboard formats `when` as epoch seconds.
+        when: Number(file.when) || Math.floor((Number(file.mtime) || 0) / 1000) || 0,
+      }));
+      sendJson(res, 200, { ...listing, files });
     } catch (err) {
       sendJson(res, 200, { files: [], error: err.message });
     }
@@ -235,13 +289,21 @@ async function handle(req, res) {
         sendJson(res, answer.status === 404 ? 404 : 502, { error: `The storage server refused that file (HTTP ${answer.status}).` });
         return;
       }
-      res.writeHead(200, {
+      const headers = {
         'Content-Type': answer.headers.get('content-type') || 'application/pdf',
         'Content-Disposition': `attachment; filename="${name.replace(/"/g, '')}"`,
         'Cache-Control': 'no-store',
-      });
-      const buffer = Buffer.from(await answer.arrayBuffer());
-      res.end(buffer);
+      };
+      const length = answer.headers.get('content-length');
+      if (length) headers['Content-Length'] = length;
+      res.writeHead(200, headers);
+      // Stream it: a 150 MB book must never be held in memory on this box.
+      if (!answer.body) {
+        res.end();
+        return;
+      }
+      const { Readable } = require('stream');
+      Readable.fromWeb(answer.body).pipe(res);
     } catch (err) {
       sendJson(res, 502, { error: err.message });
     }
@@ -273,6 +335,7 @@ async function handle(req, res) {
       return;
     }
     const found = await scribd.findPage(query, body.page || 1);
+    rememberHits(found.hits);
     sendJson(res, 200, found);
     return;
   }
@@ -289,23 +352,7 @@ async function handle(req, res) {
       sendJson(res, 409, { error: 'A download is already running. Wait for it to finish.' });
       return;
     }
-    const docs = [];
-    const seen = new Set();
-    const raw = Array.isArray(body.documents) ? body.documents : [];
-    for (const item of raw) {
-      if (!item) continue;
-      const url = String(item.url || '');
-      const ident = scribd.docIdOf(url) || String(item.id || '');
-      if (!ident || seen.has(ident)) continue;
-      seen.add(ident);
-      docs.push({
-        id: ident,
-        url: scribd.cleanUrl(url) || scribd.documentUrl(ident),
-        title: String(item.title || '') || scribd.titleFromUrl(url),
-        pages: Math.max(0, Math.min(Number(item.pages) || 0, config.MAX_PAGES)),
-      });
-      if (docs.length >= config.MAX_DOCUMENTS) break;
-    }
+    const docs = documentsFrom(body);
     if (!docs.length) {
       sendJson(res, 400, { error: 'Tick at least one document first.' });
       return;
@@ -329,7 +376,7 @@ async function handle(req, res) {
     } catch {
       /* the storage box being down must not break reset */
     }
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, stopped: true });
     return;
   }
 

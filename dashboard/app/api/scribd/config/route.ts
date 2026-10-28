@@ -20,7 +20,8 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    panelUrl: config.panelUrl,
+    // The address actually used: a saved store-only address is healed to the panel.
+    panelUrl: cleanPanelUrl(config.panelUrl),
     hasPanelKey: Boolean(config.panelKey),
     updatedAt: config.updatedAt || null,
     ...check,

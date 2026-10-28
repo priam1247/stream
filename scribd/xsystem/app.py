@@ -85,6 +85,8 @@ def listing(folder: Path) -> list[dict]:
                 {
                     "name": item.name,
                     "bytes": stat.st_size,
+                    # Epoch seconds: what the dashboard formats for "when".
+                    "when": int(stat.st_mtime),
                     "size": f"{stat.st_size / 1024:.0f} KiB",
                     "age": f"{age // 60} min ago" if age < 3600 else f"{age // 3600} h ago",
                     "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime)),

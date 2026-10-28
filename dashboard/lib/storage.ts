@@ -1162,7 +1162,27 @@ export async function getBotCommandById(
 // Same shape as the Pterodactyl panel settings above: the environment supplies
 // the defaults, a saved row in portal_settings overrides them, and the disk
 // store stands in when D1 is not configured (local dev).
-export const DEFAULT_SCRIBD_PANEL_URL = 'http://195.123.189.187:25811';
+/**
+ * The panel runs on the Node server (Botkeep): that is the box with the
+ * browser, and it answers /find, /run, /status, /files and /file.
+ *
+ * XS Systems (195.123.189.187:25811) is only the file store now — it keeps
+ * finished PDFs. Pointing the dashboard there answers /health but 404s /find,
+ * /run and /status, which is what a saved address from before the split does.
+ */
+export const DEFAULT_SCRIBD_PANEL_URL = 'http://node6.botkeep.cloud:45009';
+
+/** Addresses that only store PDFs and must never be used as the panel. */
+const STORE_ONLY_PANEL_URLS = new Set([
+  'http://195.123.189.187:25811',
+  'https://195.123.189.187:25811',
+]);
+
+/** True when a saved address is the store, not the panel. */
+export function isStoreOnlyPanelUrl(raw: string): boolean {
+  const value = String(raw || '').trim().replace(/\/+$/, '');
+  return STORE_ONLY_PANEL_URLS.has(value);
+}
 
 export async function getScribdConnectionConfig(): Promise<ScribdConnectionConfig> {
   const envUrl = (process.env.SCRIBD_PANEL_URL || DEFAULT_SCRIBD_PANEL_URL).trim();

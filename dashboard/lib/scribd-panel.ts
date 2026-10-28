@@ -25,6 +25,7 @@ import type {
 import {
   DEFAULT_SCRIBD_PANEL_URL,
   getScribdConnectionConfig,
+  isStoreOnlyPanelUrl,
 } from './storage';
 
 const DEFAULT_PANEL_URL = DEFAULT_SCRIBD_PANEL_URL;
@@ -99,14 +100,22 @@ export async function signedFileUrl(name: string): Promise<string> {
   );
 }
 
-/** One panel address, cleaned so a pasted link still works. */
+/**
+ * One panel address, cleaned so a pasted link still works.
+ *
+ * A stored address that points at the file store is redirected to the default
+ * panel: the store keeps finished PDFs but has no /find, /run or /status, so
+ * using it looks like "the dashboard cannot reach the servers".
+ */
 export function cleanPanelUrl(raw: string): string {
   try {
     const parsed = new URL((raw || DEFAULT_PANEL_URL).trim());
     // A pasted panel link often includes ?key=… or a trailing slash.
     parsed.search = '';
     parsed.hash = '';
-    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+    const cleaned = `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+    if (isStoreOnlyPanelUrl(cleaned)) return DEFAULT_PANEL_URL;
+    return cleaned;
   } catch {
     return DEFAULT_PANEL_URL;
   }
@@ -126,7 +135,11 @@ function explainPanelStatus(status: number): string {
     return 'The Scribd panel is locked and its key is missing or wrong. Put the panel\'s PANEL_KEY in Panel settings.';
   }
   if (status === 404) {
-    return 'The Scribd panel did not recognise that route. Update the Scribd downloader to v2.13 or newer (the reset route is new in 2.13).';
+    return (
+      'That address answered but does not run the panel. It is probably the file ' +
+      'store (25811) instead of the capture panel on the Node server. Open ' +
+      'Panel settings and use the panel address from /diag.'
+    );
   }
   if (status === 409) {
     return 'A download is already running on the panel. Wait for it to finish.';
