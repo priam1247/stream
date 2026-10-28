@@ -15,6 +15,7 @@ const config = require('./config');
 const scribd = require('./scribd');
 const capture = require('./capture');
 const store = require('./store');
+const disk = require('./disk');
 const { UI_HTML } = require('./ui');
 
 const state = {
@@ -87,20 +88,25 @@ async function runJob(job) {
       cancel: state.cancel,
     });
     note(`handing ${result.name} to the storage server`);
-    await store.upload(result.path, result.name);
-    state.outcome = {
-      ok: true,
-      file: result.name,
-      name: result.name,
-      pages: result.pages,
-      seconds: result.seconds,
-      detail: `${result.pages} page(s) · ${Math.round(result.bytes / 1024)} KiB · stored`,
-    };
-    note(`done ${result.name} (${result.pages} pages)`);
     try {
-      fs.rmSync(result.workDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
+      await store.upload(result.path, result.name);
+      state.outcome = {
+        ok: true,
+        file: result.name,
+        name: result.name,
+        pages: result.pages,
+        seconds: result.seconds,
+        detail: `${result.pages} page(s) · ${Math.round(result.bytes / 1024)} KiB · stored`,
+      };
+      note(`done ${result.name} (${result.pages} pages)`);
+    } finally {
+      // The PDF lives on the storage server now; this copy would only fill the
+      // capture server's disk.
+      try {
+        fs.unlinkSync(result.path);
+      } catch {
+        /* already gone */
+      }
     }
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
@@ -245,6 +251,17 @@ async function handle(req, res) {
       browser: 'Chromium',
       executable: capture.executablePath() || 'bundled (@sparticuz/chromium)',
       cookies: config.cookieReport(),
+      temp_dir: disk.tempRoot(),
+      disk_free: disk.human(disk.freeBytes(disk.tempRoot())),
+      chromium_bytes: disk.human(
+        (() => {
+          try {
+            return fs.statSync(capture.executablePath()).size;
+          } catch {
+            return 0;
+          }
+        })(),
+      ),
       store_url: config.storeUrl(),
       store_ok: storeHealth.ok,
       store: storeHealth.body,
@@ -384,6 +401,19 @@ async function handle(req, res) {
 }
 
 function serve() {
+  // A restart is the natural moment to reclaim what earlier runs left behind:
+  // scratch page images, half-written PDFs and a truncated Chromium binary.
+  const root = disk.adoptTempRoot();
+  const removed = disk.cleanStaleScratch(root, 0);
+  disk.discardPartialBinary(require('path').join(root, 'chromium'));
+  try {
+    require('fs').rmSync(require('path').join(root, 'scribd-output'), { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
+  if (removed.length) console.log(`[panel] cleared ${removed.length} leftover capture folder(s)`);
+  console.log(`[panel] temp ${root} · ${disk.human(disk.freeBytes(root))} free`);
+
   const wanted = config.ports();
   const bound = [];
 
