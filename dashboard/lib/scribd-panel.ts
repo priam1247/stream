@@ -19,13 +19,14 @@ import { createHmac } from 'node:crypto';
 import type {
   ScribdFile,
   ScribdFindPayload,
+  ScribdHit,
   ScribdPanelHealth,
   ScribdPanelStatus,
 } from './scribd-types';
 import {
   DEFAULT_SCRIBD_PANEL_URL,
+  DEFAULT_SCRIBD_SEARCH_URL,
   getScribdConnectionConfig,
-  isStoreOnlyPanelUrl,
 } from './storage';
 
 const DEFAULT_PANEL_URL = DEFAULT_SCRIBD_PANEL_URL;
@@ -113,9 +114,7 @@ export function cleanPanelUrl(raw: string): string {
     // A pasted panel link often includes ?key=… or a trailing slash.
     parsed.search = '';
     parsed.hash = '';
-    const cleaned = `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
-    if (isStoreOnlyPanelUrl(cleaned)) return DEFAULT_PANEL_URL;
-    return cleaned;
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
   } catch {
     return DEFAULT_PANEL_URL;
   }
@@ -163,11 +162,26 @@ function explainNetworkError(err: unknown, baseUrl: string): string {
   return `Could not reach the Scribd panel at ${baseUrl} (${text}).`;
 }
 
-async function panelJson<T>(
+/**
+ * Where the search box is. It runs index.js: /search, /send, /shot, /shots.
+ * A different machine from the file store, and reachable without settings.
+ */
+export function scribdSearchUrl(): string {
+  const raw = (process.env.SCRIBD_SEARCH_URL || DEFAULT_SCRIBD_SEARCH_URL).trim();
+  try {
+    const parsed = new URL(raw);
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return DEFAULT_SCRIBD_SEARCH_URL;
+  }
+}
+
+async function anyJson<T>(
+  baseUrl: string,
   path: string,
   init: RequestInit = {},
+  key = '',
 ): Promise<PanelResult<T>> {
-  const { baseUrl, key } = await scribdPanelConfig();
   const headers: Record<string, string> = {
     Accept: 'application/json',
     ...(init.headers as Record<string, string> | undefined),
@@ -220,8 +234,48 @@ async function panelJson<T>(
   }
 }
 
-export function getScribdStatus(): Promise<PanelResult<ScribdPanelStatus>> {
-  return panelJson<ScribdPanelStatus>('/status');
+async function panelJson<T>(path: string, init: RequestInit = {}): Promise<PanelResult<T>> {
+  const { baseUrl, key } = await scribdPanelConfig();
+  return anyJson<T>(baseUrl, path, init, key);
+}
+
+/**
+ * There is no queue to watch any more: /send answers when the work is done.
+ * This reports the two servers as they are, which is what the page needs.
+ */
+export async function getScribdStatus(): Promise<PanelResult<ScribdPanelStatus>> {
+  const base = scribdSearchUrl();
+  const diag = await anyJson<{
+    version?: unknown;
+    browser?: { ready?: unknown; path?: unknown };
+    panel?: { address?: unknown; health?: unknown };
+  }>(base, '/diag');
+  if (!diag.ok) {
+    return { ok: false, status: diag.status, error: diag.error, extra: diag.extra };
+  }
+  const browserReady = Boolean(diag.data.browser?.ready);
+  const store = await panelJson<{ ok?: unknown; version?: unknown }>('/health');
+  return {
+    ok: true,
+    data: {
+      state: 'idle',
+      verdict: browserReady ? 'READY' : 'NO BROWSER',
+      detail: [
+        `search: ${base}`,
+        `browser: ${browserReady ? 'ready' : 'not unpacked yet'}`,
+        `store: ${store.ok ? 'up' : 'not answering'}`,
+      ].join(' · '),
+      url: '',
+      title: '',
+      file: '',
+      seconds: 0,
+      version: String(diag.data.version ?? ''),
+      cookies: '',
+      sample: 'index.js',
+      progress: { page: 0, of: 0, ok: 0, skipped: 0, blank: 0 },
+      log: [],
+    },
+  };
 }
 
 export function getScribdHealth(): Promise<PanelResult<ScribdPanelHealth>> {
@@ -273,46 +327,130 @@ export async function testScribdConnection(): Promise<{
   };
 }
 
-export function findScribdDocuments(
+/**
+ * Search: POST /search on the Node server, which reads Scribd's own results.
+ *
+ * There is no page number to ask for: index.js tries its engines in order and
+ * returns everything they found, so `page` is kept in the answer for the page
+ * that calls this, not to limit anything.
+ */
+export async function findScribdDocuments(
   query: string,
   page = 1,
 ): Promise<PanelResult<ScribdFindPayload>> {
-  return panelJson<ScribdFindPayload>('/find', {
+  const base = scribdSearchUrl();
+  const result = await anyJson<{
+    hits?: unknown;
+    notes?: unknown;
+    summary?: unknown;
+    mode?: unknown;
+  }>(base, '/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, page }),
+    body: JSON.stringify({ query, mode: 'auto' }),
   });
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status,
+      error:
+        result.status === 404
+          ? `The search server at ${base} answered but has no /search. Check it runs index.js.`
+          : result.error,
+      extra: result.extra,
+    };
+  }
+  const rawHits = Array.isArray(result.data.hits) ? result.data.hits : [];
+  const hits: ScribdHit[] = rawHits
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .map((item) => ({
+      id: String(item.id ?? ''),
+      title: String(item.title ?? ''),
+      url: String(item.url ?? ''),
+      pages: Number(item.pages) || 0,
+      views: String(item.views ?? ''),
+      author: String(item.author ?? ''),
+      match:
+        item.match === 'all'
+          ? ('all' as const)
+          : item.match === 'some'
+            ? ('some' as const)
+            : item.match === 'none'
+              ? ('none' as const)
+              : undefined,
+    }))
+    .filter((hit) => hit.id || hit.url);
+
+  const notes = Array.isArray(result.data.notes)
+    ? result.data.notes.map((note) => String(note))
+    : [];
+  return {
+    ok: true,
+    data: {
+      hits,
+      notes,
+      summary:
+        typeof result.data.summary === 'string'
+          ? result.data.summary
+          : `${hits.length} document(s) found`,
+      page,
+      total: hits.length,
+      documents: hits.length,
+      max_page: page,
+      per_page: hits.length,
+    },
+  };
 }
 
-export function startScribdJob(input: {
+/**
+ * Download: POST /send on the Node server. It passes the links to the file
+ * store, which photographs nothing — it asks the Node server for the page
+ * images, builds the PDF there and keeps it. The answer carries that server's
+ * own heading, so what the dashboard shows is what actually happened.
+ */
+export async function startScribdJob(input: {
   urls?: string[];
   links?: string;
   limit?: number;
   text?: boolean;
   jobs?: number;
 }): Promise<
-  PanelResult<{ ok: boolean; queued: number; channels?: number; started?: boolean; pending?: number }>
+  PanelResult<{ ok: boolean; queued: number; channels?: number; started?: boolean; pending?: number; message?: string }>
 > {
-  return panelJson<{ ok: boolean; queued: number; channels?: number; started?: boolean; pending?: number }>('/run', {
+  const urls = [...(input.urls || [])];
+  for (const line of String(input.links || '').split(/[\s,]+/)) {
+    if (/https?:\/\//i.test(line)) urls.push(line.trim());
+  }
+  const wanted = [...new Set(urls.filter(Boolean))];
+  if (!wanted.length) {
+    return { ok: false, status: 400, error: 'Tick at least one search result to download.' };
+  }
+  const base = scribdSearchUrl();
+  const result = await anyJson<{ ok?: unknown; message?: unknown; sent?: unknown }>(base, '/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      urls: input.urls || [],
-      links: input.links || '',
-      limit: input.limit || 0,
-      text: Boolean(input.text),
-      jobs: input.jobs || 0,
-    }),
+    body: JSON.stringify({ urls: wanted }),
   });
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status,
+      error:
+        result.status === 404
+          ? `The server at ${base} answered but has no /send. Check it runs index.js.`
+          : result.error,
+      extra: result.extra,
+    };
+  }
+  const sent = Array.isArray(result.data.sent) ? result.data.sent.length : wanted.length;
+  const message =
+    typeof result.data.message === 'string' ? result.data.message : `${sent} document(s) sent`;
+  return {
+    ok: true,
+    data: { ok: true, queued: sent, channels: input.jobs || 0, started: true, pending: 0, message },
+  };
 }
 
-/**
- * Stop a job the panel thinks is still running.
- *
- * The panel steps over a job that has not moved for seven minutes by itself;
- * this is the "now" button for when you do not want to wait, and the way out
- * of a stuck download that would otherwise block every new one.
- */
 export function resetScribdJob(): Promise<PanelResult<{ ok: boolean; stopped: boolean }>> {
   return panelJson<{ ok: boolean; stopped: boolean }>('/reset', { method: 'POST' });
 }
