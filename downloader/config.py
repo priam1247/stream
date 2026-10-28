@@ -16,7 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 HOST = "0.0.0.0"
 
 # Fixed browser and Scribd settings.
@@ -74,13 +74,25 @@ BLOCKED_HOST_PARTS = (
 )
 
 
-def port() -> int:
-    """Port for the HTTP panel."""
+def ports() -> list[int]:
+    """Every port the panel listens on — hardcoded, zero configuration.
+
+    Pterodactyl/Botkeep expose ONE allocated port (SERVER_PORT / PORT) and the
+    dashboard is hardcoded to http://195.123.189.187:25811. Binding all of them
+    at once means the same files work on either server without setting a single
+    environment variable. Duplicates are removed; 25811 is always first.
+    """
+    found: list[int] = [25811]
     for name in ("SCRIBD_PANEL_PORT", "SERVER_PORT", "PORT"):
         raw = (os.environ.get(name) or "").strip()
-        if raw.isdigit() and 1 <= int(raw) <= 65535:
-            return int(raw)
-    return 25811
+        if raw.isdigit() and 1 <= int(raw) <= 65535 and int(raw) not in found:
+            found.append(int(raw))
+    return found
+
+
+def port() -> int:
+    """Primary port (kept for callers that want a single number)."""
+    return ports()[0]
 
 
 def panel_key() -> str:
@@ -140,11 +152,39 @@ def raw_cookies() -> str:
 
 
 def chrome_executable() -> str:
-    return (
+    """Path to Chromium, hardcoded to the bundled binary when present.
+
+    @sparticuz/chromium inflates its Chromium to <tmpdir>/chromium and its
+    shared libraries to <tmpdir>/al2023/lib (with fonts in <tmpdir>/fonts).
+    Playwright's own browser download is blocked on these panels, so this is
+    the reliable path. LD_LIBRARY_PATH / FONTCONFIG_PATH are set here too, as
+    a fallback in case the launcher's exports did not reach this process —
+    setting them before launch() is enough for the Chromium child to inherit.
+    """
+    explicit = (
         os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE")
         or os.environ.get("CHROME_PATH")
         or ""
     ).strip()
+    if explicit:
+        return explicit
+    import tempfile
+
+    tmp = Path(tempfile.gettempdir())
+    bundled = tmp / "chromium"
+    lib_dir = tmp / "al2023" / "lib"
+    font_dir = tmp / "fonts"
+    if bundled.is_file():
+        if lib_dir.is_dir():
+            previous = os.environ.get("LD_LIBRARY_PATH", "")
+            if str(lib_dir) not in previous:
+                os.environ["LD_LIBRARY_PATH"] = (
+                    f"{lib_dir}:{previous}" if previous else str(lib_dir)
+                )
+        if font_dir.is_dir():
+            os.environ.setdefault("FONTCONFIG_PATH", str(font_dir))
+        return str(bundled)
+    return ""
 
 
 def chrome_args() -> list[str]:

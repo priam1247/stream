@@ -513,6 +513,7 @@ class Handler(BaseHTTPRequestHandler):
                     "executable": config.chrome_executable() or "playwright managed",
                     "cookies": config.cookie_report(),
                     "output": str(config.out_dir()),
+                    "ports": getattr(self.server, "bound_ports", config.ports()),
                 },
             )
             return
@@ -597,19 +598,61 @@ poll();setInterval(poll,2500);render();
 </script></body></html>"""
 
 
+def _bind(host: str, number: int) -> PanelServer | None:
+    try:
+        return PanelServer((host, number), Handler)
+    except OSError as exc:
+        print(f"[panel] could not bind {host}:{number} ({exc}); skipping", flush=True)
+        return None
+
+
 def make_server(host: str = config.HOST, port: int | None = None) -> PanelServer:
+    """Bind one server. Used by the selftest (port 0) and single-port callers."""
     config.ensure_dirs()
     return PanelServer((host, port if port is not None else config.port()), Handler)
 
 
 def serve(host: str = config.HOST, port: int | None = None) -> None:
-    server = make_server(host, port)
-    actual = server.server_address[1]
-    print(f"Scribd screenshot panel v{config.VERSION} on http://{host}:{actual}", flush=True)
+    """Serve on the hardcoded port(s): 25811 + the host's allocated port.
+
+    A Pterodactyl/Discord panel routes exactly one allocated port to this
+    process. Binding 25811 (the dashboard's hardcoded address) AND whatever
+    SERVER_PORT/PORT the host assigned means the same files work everywhere
+    with no configuration. Extra ports that are already taken are skipped.
+    """
+    config.ensure_dirs()
+    wanted = [port] if port is not None else config.ports()
+    servers: list[PanelServer] = []
+    for number in wanted:
+        server = _bind(host, number)
+        if server is not None:
+            servers.append(server)
+    if not servers:
+        raise SystemExit(f"[panel] no port could be bound (tried {wanted})")
+
+    actual = [server.server_address[1] for server in servers]
+    for server in servers:
+        server.bound_ports = actual
+    print(
+        f"Scribd screenshot panel v{config.VERSION} on "
+        + ", ".join(f"http://{host}:{number}" for number in actual),
+        flush=True,
+    )
     print(f"PDFs: {config.out_dir()} · {config.cookie_report()}", flush=True)
+    print(f"Chromium: {config.chrome_executable() or 'Playwright-managed (not found yet)'}", flush=True)
+
+    # Extra ports run in daemon threads; the first one serves in this thread.
+    for extra in servers[1:]:
+        threading.Thread(
+            target=extra.serve_forever,
+            kwargs={"poll_interval": 0.25},
+            name="scribd-panel-extra",
+            daemon=True,
+        ).start()
     try:
-        server.serve_forever(poll_interval=0.25)
+        servers[0].serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
+        for server in servers:
+            server.server_close()
