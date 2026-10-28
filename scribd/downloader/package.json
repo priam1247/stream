@@ -1,9 +1,0 @@
-{
-  "name": "scribd-screenshot-panel-browser",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Bundled Chromium binary + shared libraries for the Scribd screenshot panel. No system libraries or browser download needed.",
-  "optionalDependencies": {
-    "@sparticuz/chromium": "153.0.0"
-  }
-}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Alias for app.py, so any panel `PY_FILE` setting works unchanged."""
+"""Alias for app.py, so any panel PY_FILE setting works unchanged."""
 import pathlib
 import runpy
 
