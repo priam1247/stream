@@ -1,0 +1,18 @@
+{
+  "name": "scribd-search-panel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scribd search + screenshot download panel (Python) with a bundled Chromium bootstrap. Deploy this folder on its own: the startup command is `node index.js`.",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "selftest": "node index.js --selftest"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "optionalDependencies": {
+    "@sparticuz/chromium": "153.0.0"
+  }
+}

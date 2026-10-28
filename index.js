@@ -18,15 +18,9 @@
 // Override with NODE_ENV=development when debugging locally.
 process.env.NODE_ENV = process.env.NODE_ENV || 'production';
 
-// Boot the Scribd screenshot downloader panel alongside the bot. Zero config:
-// the launcher installs its Python deps, prepares the bundled Chromium and
-// supervises the panel. Adding the downloader/ folder + Restart is the whole
-// deployment. Failures are logged by the launcher and never crash the bot.
-try {
-  require('./utils/scribdLauncher').start();
-} catch (err) {
-  console.error('[scribd] launcher could not start:', err && err.message);
-}
+// The Scribd search + download panel is a SEPARATE server (its own folder,
+// `scribd/`, with its own `node index.js`). This bot does not start it: the
+// dashboard reaches it over HTTP at SCRIBD_PANEL_URL.
 
 const { formatArgs, redactArg } = require('./utils/safeLog');
 const { initializeTempSystem } = require('./utils/tempManager');
