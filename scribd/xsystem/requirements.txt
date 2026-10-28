@@ -1,3 +1,0 @@
-# The file server on this machine uses the Python standard library only.
-# Screenshots run on the Node server, which is where Chromium lives.
-# Nothing to install here.
