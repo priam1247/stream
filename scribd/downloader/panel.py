@@ -511,6 +511,8 @@ class Handler(BaseHTTPRequestHandler):
                     "version": config.VERSION,
                     "browser": "Playwright Chromium",
                     "executable": config.chrome_executable() or "playwright managed",
+                    "browser_ready": config.browser_ready(),
+                    "browsers_path": str(config.browsers_path()),
                     "cookies": config.cookie_report(),
                     "output": str(config.out_dir()),
                     "ports": getattr(self.server, "bound_ports", config.ports()),
@@ -639,7 +641,15 @@ def serve(host: str = config.HOST, port: int | None = None) -> None:
         flush=True,
     )
     print(f"PDFs: {config.out_dir()} · {config.cookie_report()}", flush=True)
-    print(f"Chromium: {config.chrome_executable() or 'Playwright-managed (not found yet)'}", flush=True)
+    if config.browser_ready():
+        where = config.chrome_executable() or str(config.browsers_path())
+        print(f"Chromium: ready ({where})", flush=True)
+    else:
+        print(
+            "Chromium: not installed yet — downloading in the background; "
+            "search works now, screenshots start when it lands (/diag shows when)",
+            flush=True,
+        )
 
     # Extra ports run in daemon threads; the first one serves in this thread.
     for extra in servers[1:]:
