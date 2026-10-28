@@ -1,0 +1,21 @@
+# Bundled browser + Python runtime scratch — never commit
+node_modules/
+downloader/node_modules/
+
+# Screenshots, PDFs and page cache written at runtime
+downloader/downloads/
+downloader/tmp/
+downloads/
+tmp/
+
+# Python bytecode / venvs
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Your own Scribd session cookies (equivalent to a password) and local secrets
+cookies.txt
+*cookies*.txt
+.env
+*.log
