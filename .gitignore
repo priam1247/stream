@@ -65,7 +65,8 @@ tools/downloader/shooter-found.txt
 
 # The Scribd panel lives in scribd/: the Node capture server (with the bundled
 # Chromium) and the Python file server. Runtime scratch and secrets:
-scribd/node_modules/
-scribd/downloads/
-scribd/tmp/
-scribd/.cache/
+scribd/botkeep/node_modules/
+scribd/botkeep/downloads/
+scribd/botkeep/tmp/
+scribd/xsystem/downloads/
+scribd/xsystem/tmp/
