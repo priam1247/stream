@@ -1,22 +1,27 @@
 'use strict';
 /**
- * Scribd search + download panel — standalone entry point.
+ * Scribd search + download panel — entry point for BOTH servers.
  *
- * This folder (`scribd/`) is ONE deployable app for the Python server
- * (XS Systems, 195.123.189.187:25811). It does not import anything from the
- * WhatsApp bot, so it can be uploaded on its own.
+ * The panel is split across two machines that work hand in hand:
  *
- * Startup command on the panel:  node index.js
+ *   Botkeep  (JS, this folder)  ──HTTP──►  XS Systems (Python, 25811)
+ *   no Python, no downloader/              does the Chromium screenshots
  *
- * What it does, with no configuration and no shell commands:
- *   1. inflates the bundled Chromium (@sparticuz/chromium) into /tmp,
- *   2. installs the pinned Python dependencies on first boot,
- *   3. runs the screenshot panel, which binds 0.0.0.0:25811 and the host's
- *      SERVER_PORT/PORT at once,
- *   4. restarts it if it exits, and stops it when this process stops.
+ * Startup command on either server is the same: `node index.js`. It picks a
+ * mode from what is actually on disk, so one folder can be uploaded to either
+ * box without configuration:
  *
- * The browser and the Python panel are one process group: press Restart and
- * everything comes back up.
+ *   • `downloader/` present  → this box IS the Python panel. Prepare the
+ *     bundled Chromium, install the pinned Python deps, run the screenshot
+ *     panel on 0.0.0.0:25811 + the host's assigned port. (XS Systems)
+ *
+ *   • `downloader/` absent   → this box is the JS front door. Serve the panel
+ *     (search UI, JSON routes, PDF downloads) by forwarding to the Python
+ *     panel at SCRIBD_PANEL_URL, hardcoded to http://195.123.189.187:25811.
+ *     No Python needed. (Botkeep)
+ *
+ * `node index.js --selftest` checks whichever mode applies and exits with the
+ * result. Nothing here needs an environment variable.
  */
 
 const { spawn } = require('child_process');
@@ -26,8 +31,8 @@ const path = require('path');
 const HERE = __dirname;
 const APP = path.join(HERE, 'downloader', 'app.py');
 const LAUNCHER = path.join(HERE, 'scribdLauncher.js');
-
-process.env.SCRIBD_PANEL_PORT = process.env.SCRIBD_PANEL_PORT || '25811';
+const wantsSelftest = process.argv.includes('--selftest');
+const hasPythonPanel = fs.existsSync(APP);
 
 function pythonBin() {
   const explicit = (process.env.PYTHON_BIN || '').trim();
@@ -35,37 +40,49 @@ function pythonBin() {
   return process.platform === 'win32' ? 'python' : 'python3';
 }
 
-// `node index.js --selftest` runs the panel's offline checks (no browser, no
-// network) and exits with its status. Handy for verifying an upload.
-if (process.argv.includes('--selftest')) {
-  const child = spawn(pythonBin(), ['-m', 'downloader.app', '--selftest'], {
-    cwd: HERE,
-    stdio: 'inherit',
-  });
-  child.on('exit', (code) => process.exit(code === null ? 1 : code));
-  child.on('error', (err) => {
-    console.error(`[scribd] could not run python: ${err.message}`);
+/** XS Systems mode: this box runs the Python screenshot panel. */
+function runPythonPanel() {
+  if (!fs.existsSync(LAUNCHER)) {
+    console.error('[scribd] downloader/ is here but scribdLauncher.js is missing — upload the whole folder.');
     process.exit(1);
-  });
-  return;
+  }
+  console.log('[scribd] Python panel mode (this box does the screenshots)');
+  console.log(`[scribd] folder: ${HERE}`);
+  console.log('[scribd] Chromium, Python deps and ports are configured automatically.');
+  require(LAUNCHER).start();
+
+  // Keep this process alive even if the child's pipes close, so the panel can
+  // never be orphaned by an early exit.
+  process.on('exit', () => {});
+  setInterval(() => {}, 1 << 30);
 }
 
-if (!fs.existsSync(APP)) {
-  console.error('[scribd] downloader/app.py is missing — upload the whole scribd/ folder.');
-  process.exit(1);
-}
-if (!fs.existsSync(LAUNCHER)) {
-  console.error('[scribd] scribdLauncher.js is missing — upload the whole scribd/ folder.');
-  process.exit(1);
+/** Botkeep mode: JS front door that forwards to the Python panel. */
+function runFrontDoor() {
+  console.log('[scribd] JS front-door mode (screenshots run on the Python server)');
+  console.log(`[scribd] folder: ${HERE}`);
+  require('./proxy').serve();
 }
 
-console.log('[scribd] Scribd search + download panel starting…');
-console.log(`[scribd] folder: ${HERE}`);
-console.log('[scribd] Chromium, Python deps and ports are configured automatically.');
-
-require(LAUNCHER).start();
-
-// The launcher owns the child, but keep this process alive even if the child's
-// pipes close, so the panel is never orphaned by an early exit.
-const keepAlive = setInterval(() => {}, 1 << 30);
-process.on('exit', () => clearInterval(keepAlive));
+if (wantsSelftest) {
+  if (hasPythonPanel) {
+    const child = spawn(pythonBin(), ['-m', 'downloader.app', '--selftest'], {
+      cwd: HERE,
+      stdio: 'inherit',
+    });
+    child.on('exit', (code) => process.exit(code === null ? 1 : code));
+    child.on('error', (err) => {
+      console.error(`[scribd] could not run python: ${err.message}`);
+      console.error('[scribd] this box has downloader/ but no Python — upload the JS-only folder to the JS server.');
+      process.exit(1);
+    });
+  } else {
+    require('./proxy')
+      .selftest()
+      .then((code) => process.exit(code));
+  }
+} else if (hasPythonPanel) {
+  runPythonPanel();
+} else {
+  runFrontDoor();
+}
