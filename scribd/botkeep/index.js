@@ -28,7 +28,6 @@ if (process.argv.includes('--selftest')) {
     JSON.stringify({ ok: true, version: config.VERSION, role: 'panel', locked: Boolean(config.panelKey()) }) + '\n',
   );
 } else {
-  process.env.PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
   console.log(`[panel] Scribd panel v${config.VERSION}`);
   console.log(`[panel] folder: ${path.resolve(__dirname)}`);
   require('./panel').serve();
