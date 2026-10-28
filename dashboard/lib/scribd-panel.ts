@@ -9,13 +9,14 @@
  *     because the request is made by the server, not by the browser.
  *
  * Where the panel is and what its key is comes from `getScribdConnectionConfig()`
- * — environment variables by default, overridable from the Scribd tab (which
- * saves to Cloudflare D1, exactly like the Pterodactyl panel settings):
+ * — environment variables by default, with existing saved settings in D1 taking
+ * precedence:
  *   SCRIBD_PANEL_URL   e.g. http://195.123.189.187:25811
  *   SCRIBD_PANEL_KEY   the panel's PANEL_KEY, if it was locked
  */
 
 import { createHmac } from 'node:crypto';
+import { normalizeScribdHit } from './scribd-search';
 import type {
   ScribdFile,
   ScribdFindPayload,
@@ -131,13 +132,12 @@ export async function scribdPanelConfig(): Promise<ScribdPanelConfig> {
 
 function explainPanelStatus(status: number): string {
   if (status === 401) {
-    return 'The Scribd panel is locked and its key is missing or wrong. Put the panel\'s PANEL_KEY in Panel settings.';
+    return 'The Scribd panel is locked or its key is wrong. Ask the server administrator to check the panel configuration.';
   }
   if (status === 404) {
     return (
-      'That address answered but does not run the panel. It is probably the file ' +
-      'store (25811) instead of the capture panel on the Node server. Open ' +
-      'Panel settings and use the panel address from /diag.'
+      'That address answered but does not run the expected Scribd panel. ' +
+      'Ask the server administrator to check the configured panel address.'
     );
   }
   if (status === 409) {
@@ -322,7 +322,7 @@ export async function testScribdConnection(): Promise<{
     version,
     error:
       status.status === 401
-        ? 'The panel is reachable but refused the key. Copy the panel\'s PANEL_KEY into Panel settings.'
+        ? 'The panel is reachable but refused the key. Ask the server administrator to check the panel configuration.'
         : status.error,
   };
 }
@@ -362,24 +362,8 @@ export async function findScribdDocuments(
   }
   const rawHits = Array.isArray(result.data.hits) ? result.data.hits : [];
   const hits: ScribdHit[] = rawHits
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-    .map((item) => ({
-      id: String(item.id ?? ''),
-      title: String(item.title ?? ''),
-      url: String(item.url ?? ''),
-      pages: Number(item.pages) || 0,
-      views: String(item.views ?? ''),
-      author: String(item.author ?? ''),
-      match:
-        item.match === 'all'
-          ? ('all' as const)
-          : item.match === 'some'
-            ? ('some' as const)
-            : item.match === 'none'
-              ? ('none' as const)
-              : undefined,
-    }))
-    .filter((hit) => hit.id || hit.url);
+    .map(normalizeScribdHit)
+    .filter((hit): hit is ScribdHit => hit !== null);
 
   const notes = Array.isArray(result.data.notes)
     ? result.data.notes.map((note) => String(note))

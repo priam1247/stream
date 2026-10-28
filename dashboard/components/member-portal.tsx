@@ -433,16 +433,18 @@ export function MemberPortal() {
       </header>
 
       <main className="mx-auto max-w-[1080px] px-3.5 pb-12 pt-4 sm:px-5 sm:pt-6">
-        <LiveAnalytics
-          reachable={overview.botReachable}
-          connected={overview.botConnected}
-          botNumber={overview.botNumber}
-          lastSeenSecondsAgo={overview.lastSeenSecondsAgo}
-          uptimeSeconds={overview.uptimeSeconds}
-          commandsTotal={overview.commandsTotal}
-          downloadsSuccess={overview.downloadsSuccess}
-          failedTotal={overview.failedTotal}
-        />
+        {tab !== 'scribd' && (
+          <LiveAnalytics
+            reachable={overview.botReachable}
+            connected={overview.botConnected}
+            botNumber={overview.botNumber}
+            lastSeenSecondsAgo={overview.lastSeenSecondsAgo}
+            uptimeSeconds={overview.uptimeSeconds}
+            commandsTotal={overview.commandsTotal}
+            downloadsSuccess={overview.downloadsSuccess}
+            failedTotal={overview.failedTotal}
+          />
+        )}
 
         {!overview.memberAllowed && (
           <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-semibold text-rose-800">

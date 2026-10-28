@@ -57,35 +57,39 @@ cd dashboard
 npm ci
 npm run dev        # http://localhost:3000 (dev outbox prints 6-digit codes locally)
 npm run typecheck
+npm test
 npm run build
 ```
 
 ## Scribd Library tab
 
-The member console has a fourth tab (**Scribd**) that drives the Python panel in
-[`../tools/downloader/scribd_download.py`](../tools/downloader/scribd_download.py) — search
-Scribd, tick documents, watch the page-by-page progress and save the finished
-PDF. The browser calls only this app (`/api/scribd/*`); the server holds the
-panel key.
+The member console has a fourth tab (**Scribd**) for searching, selecting
+books, and saving finished PDFs. Results use a compact, collapsible cover grid;
+selection is retained when the grid is hidden. **Show more results** reveals the
+next batch already returned by the current search service. The UI can request a
+next page if the dashboard API advertises one, but the current legacy adapter
+does not advertise server pagination. Covers are displayed when the search
+response supplies a Scribd-hosted image; otherwise a placeholder is shown.
+
+The existing dashboard API still expects the legacy search and file-service
+contract. It is not yet connected to the separate `../working scribd` web app.
+The browser calls this app (`/api/scribd/*`); the server holds the panel key.
 
 | file | role |
 |---|---|
 | `lib/scribd-panel.ts` | talks to the panel server-side, with `X-Panel-Key` |
 | `lib/scribd-guard.ts` | session gate (`run` and `config` are admin-only) |
 | `app/api/scribd/*/route.ts` | `status`, `files`, `find`, `run`, `file`, `config`, `reset` |
-| `components/scribd-desk.tsx` | the tab; includes the admin **Panel settings** card |
+| `components/scribd-desk.tsx` | the search, selection, progress, and file UI |
+| `lib/scribd-search.ts` | normalises search results and validates cover URLs |
 
-Every PDF is streamed from the panel through `/api/scribd/file` (no buffering in
-the function, no blob on the phone), so a large book saves on mobile as a normal
-download. The route asks for `maxDuration = 300`; the real limit is the Vercel
-plan (`Hobby` cuts a function at 60 s). A 150 MB book pulled over a slow panel
-upload can hit that, and the save then stops part-way — test one large book after
-deploying, and if it is cut short, fetch that file from the panel address itself. `run` and `reset` are administrator-only; `status`, `files`, `find` and
-`file` work for any signed-in member.
+Without a public panel URL, `/api/scribd/file` streams PDFs through the dashboard
+without buffering the whole file in the browser. Large files can still hit a
+hosting function's time limit. `run` and `reset` are administrator-only;
+`status`, `files`, `find`, and `file` work for signed-in members.
 
-Documents download one at a time and the rest wait in the panel's queue, so the
-tab can keep searching and ticking while a book is in flight — `run` answers
-`started: false, pending: N` and the card shows `book 2 of 5 · 3 waiting`.
+The existing status adapter reports a synthetic idle state rather than the new
+converter's real queue. Connecting live progress is a separate integration task.
 
 ### Big books vs. the function time limit
 
@@ -105,9 +109,8 @@ variable empty and Save falls back to the proxy route.
 (If the panel is behind a Cloudflare Tunnel, use the `https://` hostname instead —
 same mechanism, tidier address.)
 
-The panel address and key are saved from that card into `portal_settings`
-(`scribd_panel_url`, `scribd_panel_key`), so they can be changed without a
-redeploy. `SCRIBD_PANEL_URL` / `SCRIBD_PANEL_KEY` are only the defaults used
-before anything is saved. The card's **Save & test** proves the key: `/health`
-is open, `/status` is not, so a refused key is reported as such instead of
-looking like a healthy panel.
+The removed Scribd-tab settings card does not delete existing values in
+`portal_settings` (`scribd_panel_url`, `scribd_panel_key`). Saved values continue
+to take precedence over `SCRIBD_PANEL_URL` / `SCRIBD_PANEL_KEY`. The existing
+administrator-only configuration API remains available; this UI cleanup does
+not change the service connection.

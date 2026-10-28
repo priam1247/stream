@@ -45,7 +45,7 @@ export async function guardScribdRequest(
   if (options.adminOnly && !session.user.isAdmin) {
     return {
       response: NextResponse.json(
-        { error: 'Only the administrator can change Scribd panel settings or start downloads.' },
+        { error: 'This Scribd action is restricted to administrators.' },
         { status: 403 },
       ),
     };
