@@ -4,19 +4,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   BookOpen,
+  Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Download,
   FileText,
-  Gauge,
   Library,
   ListChecks,
   Loader2,
   RefreshCw,
   RotateCcw,
   Search,
-  Settings2,
 } from 'lucide-react';
 import { authHeaders } from '@/lib/client-session';
+import { safeScribdThumbnail } from '@/lib/scribd-search';
 import type {
   ScribdFile,
   ScribdFindPayload,
@@ -25,6 +27,32 @@ import type {
 } from '@/lib/scribd-types';
 
 const POLL_MS = 2_500;
+const RESULTS_PER_BATCH = 12;
+
+function ResultCover({ thumbnail }: { thumbnail?: string }) {
+  const [failedSrc, setFailedSrc] = useState('');
+  const src = safeScribdThumbnail(thumbnail);
+
+  return (
+    <span aria-hidden="true" className="relative block aspect-[3/4] overflow-hidden bg-slate-100">
+      <span className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-gradient-to-br from-teal-50 via-slate-100 to-slate-200 px-2 text-center text-slate-400">
+        <BookOpen className="h-6 w-6 text-teal-600/50 sm:h-7 sm:w-7" />
+        <span className="text-[9px] font-semibold leading-tight">Cover unavailable</span>
+      </span>
+      {src && src !== failedSrc && (
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={() => setFailedSrc(src)}
+          className="absolute inset-0 h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
+        />
+      )}
+    </span>
+  );
+}
 
 function bytesText(count: number): string {
   if (count >= 1024 * 1024) return `${(count / (1024 * 1024)).toFixed(1)} MB`;
@@ -72,23 +100,16 @@ export function ScribdDesk() {
   const [searchPage, setSearchPage] = useState(0);
   const [searchTotal, setSearchTotal] = useState(0);
   const [searchName, setSearchName] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [hasSearched, setHasSearched] = useState(false);
+  const [resultsOpen, setResultsOpen] = useState(true);
+  const [visibleCount, setVisibleCount] = useState(RESULTS_PER_BATCH);
   const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [more, setMore] = useState(false);
 
-  const [limit, setLimit] = useState('0');
-  const [wantText, setWantText] = useState(false);
-  // how many pages are fetched at once — the panel calls these channels
-  const [channels, setChannels] = useState('16');
   const [starting, setStarting] = useState(false);
   const [resetting, setResetting] = useState(false);
-
-  // panel address/key live in D1 (portal_settings); this is the admin editor
   const [isAdmin, setIsAdmin] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
-  const [panelUrlInput, setPanelUrlInput] = useState('');
-  const [panelKeyInput, setPanelKeyInput] = useState('');
-  const [hasPanelKey, setHasPanelKey] = useState(false);
-  const [savingConfig, setSavingConfig] = useState(false);
 
   const noticeTimer = useRef<number | null>(null);
 
@@ -137,23 +158,8 @@ export function ScribdDesk() {
     }
   }, []);
 
-  const loadConfig = useCallback(async () => {
-    try {
-      const res = await fetch('/api/scribd/config', {
-        headers: authHeaders(),
-        cache: 'no-store',
-      });
-      const json = await readJson(res);
-      if (!res.ok) return;
-      setPanelUrlInput(String(json.panelUrl || ''));
-      setHasPanelKey(Boolean(json.hasPanelKey));
-      setPanelKeyInput(json.hasPanelKey ? '••••••••' : '');
-    } catch {
-      // the status card already says the panel is offline
-    }
-  }, []);
-
   useEffect(() => {
+    let active = true;
     (async () => {
       try {
         const res = await fetch('/api/auth/me', {
@@ -162,47 +168,17 @@ export function ScribdDesk() {
         });
         if (!res.ok) return;
         const json = (await res.json()) as { user?: { isAdmin?: boolean } };
-        if (json.user?.isAdmin) {
-          setIsAdmin(true);
-          await loadConfig();
-        }
+        if (active) setIsAdmin(Boolean(json.user?.isAdmin));
       } catch {
-        // not an admin, or signed out: the settings card simply never appears
+        // The stop control remains unavailable without an admin session.
       }
     })();
-  }, [loadConfig]);
+    return () => { active = false; };
+  }, []);
 
-  const saveConfig = useCallback(async () => {
-    setSavingConfig(true);
-    try {
-      const payload: Record<string, string> = { panelUrl: panelUrlInput };
-      if (panelKeyInput !== '••••••••') payload.panelKey = panelKeyInput;
-      const res = await fetch('/api/scribd/config', {
-        method: 'PATCH',
-        headers: authHeaders(),
-        body: JSON.stringify(payload),
-      });
-      const json = await readJson(res);
-      if (!res.ok) {
-        say(String(json.error || 'Could not save the panel settings.'), true);
-        return;
-      }
-      setHasPanelKey(Boolean(json.hasPanelKey));
-      setPanelKeyInput(json.hasPanelKey ? '••••••••' : '');
-      const connected = json.reachable === true && json.keyAccepted === true;
-      say(
-        connected
-          ? 'Saved — the panel answered and the key works.'
-          : `Saved, but the connection test failed: ${String(json.error || 'unknown reason')}`,
-        !connected,
-      );
-      void loadStatus();
-    } catch {
-      say('Could not reach this dashboard’s API.', true);
-    } finally {
-      setSavingConfig(false);
-    }
-  }, [panelUrlInput, panelKeyInput, say, loadStatus]);
+  useEffect(() => () => {
+    if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
+  }, []);
 
   useEffect(() => {
     void loadStatus();
@@ -224,12 +200,13 @@ export function ScribdDesk() {
   }, [status?.state, status?.verdict, loadFiles]);
 
   const runSearch = useCallback(
-    async (page: number) => {
-      const words = query.trim();
+    async (page: number, previousQuery?: string) => {
+      const words = (previousQuery ?? query).trim();
       if (!words) {
         say('Type a few words to search Scribd for.', true);
         return;
       }
+      if (searching) return;
       setSearching(true);
       try {
         const res = await fetch('/api/scribd/find', {
@@ -244,34 +221,49 @@ export function ScribdDesk() {
         }
         const payload = json as unknown as ScribdFindPayload;
         const found = Array.isArray(payload.hits) ? payload.hits : [];
-        // Scribd repeats documents across pages, so add only what is new.
-        // Work on a plain list here (not inside a state updater): an updater runs
-        // later, during render, so reading its result right after is stale.
-        const seenIds = new Set(page === 1 ? [] : hits.map((hit) => hit.id));
-        const fresh = page === 1 ? found : found.filter((hit) => !seenIds.has(hit.id));
-        const merged = page === 1 ? found : [...hits, ...fresh];
+        const previous = page === 1 ? [] : hits;
+        // A document can appear more than once, including within a single page.
+        const seen = new Set(previous.map((hit) => hit.id || hit.url));
+        const fresh = found.filter((hit) => {
+          const key = hit && (hit.id || hit.url);
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        const merged = [...previous, ...fresh];
+        const thisPage = Math.max(1, Number(payload.page) || page);
+        const maxPage = Math.min(40, Math.max(thisPage, Number(payload.max_page) || thisPage));
+
         setHits(merged);
-        const shown = merged.length;
-        const maxPage = payload.max_page || 40;
-        const total = payload.total || 0;
-        const thisPage = payload.page || page;
+        setHasSearched(true);
+        setSearchQuery(words);
         setSearchPage(thisPage);
-        setSearchTotal(total);
-        setSearchName(payload.summary || `${shown} document(s)`);
-        // Keep "Load more" while the search has any results and pages are left.
-        // It used to be hidden when Scribd sent no total, which is exactly when
-        // a person still wants it; a page that adds nothing simply says so.
-        setMore(merged.length > 0 && found.length > 0 && thisPage < maxPage);
-        if (!found.length) say('No documents match that.', true);
-        else if (page > 1) say(`${found.length} more — ${shown} shown.`);
+        setSearchTotal(Math.max(merged.length, Number(payload.total) || 0));
+        setSearchName(typeof payload.summary === 'string' ? payload.summary : '');
+        setMore(fresh.length > 0 && thisPage < maxPage);
+        if (page === 1) {
+          setVisibleCount(RESULTS_PER_BATCH);
+          setResultsOpen(true);
+        } else {
+          setVisibleCount((count) => count + RESULTS_PER_BATCH);
+          if (!fresh.length) say('No more new results were returned.');
+        }
       } catch {
         say('Could not reach this dashboard’s API.', true);
       } finally {
         setSearching(false);
       }
     },
-    [query, hits, say],
+    [query, hits, say, searching],
   );
+
+  const showMoreResults = useCallback(() => {
+    if (visibleCount < hits.length) {
+      setVisibleCount((count) => Math.min(count + RESULTS_PER_BATCH, hits.length));
+    } else if (more) {
+      void runSearch(searchPage + 1, searchQuery);
+    }
+  }, [visibleCount, hits.length, more, runSearch, searchPage, searchQuery]);
 
   const toggle = useCallback((url: string) => {
     setTicked((current) => {
@@ -289,12 +281,7 @@ export function ScribdDesk() {
         const res = await fetch('/api/scribd/run', {
           method: 'POST',
           headers: authHeaders(),
-          body: JSON.stringify({
-            ...payload,
-            limit: Number(limit) || 0,
-            text: wantText,
-            jobs: Number(channels) || 16,
-          }),
+          body: JSON.stringify(payload),
         });
         const json = await readJson(res);
         if (!res.ok) {
@@ -302,18 +289,18 @@ export function ScribdDesk() {
           void loadStatus();
           return;
         }
-        // "started: false" is the good case here: a book is already downloading
-        // and these were added behind it, not refused.
         const waiting = Number(json.pending) || 0;
+        const sent = Number(json.queued) || payload.urls?.length || 0;
         say(
           json.started === false
-            ? `Added ${Number(json.queued) || 0} to the queue — ${waiting} waiting. The book already downloading finishes first.`
-            : `${Number(json.queued) || 0} document(s) started at ${String(
-                json.channels || channels,
-              )} channels.`,
+            ? `Added ${sent} to the queue — ${waiting} waiting.`
+            : typeof json.message === 'string' && json.message.trim()
+              ? json.message
+              : `${sent} document(s) submitted.`,
         );
-        // let the ticked set go, so the next search starts clean
-        setTicked(new Set());
+        // Keep any new selections made while the request was in flight.
+        const submitted = new Set(payload.urls || []);
+        setTicked((current) => new Set([...current].filter((url) => !submitted.has(url))));
         void loadStatus();
       } catch {
         say('Could not reach this dashboard’s API.', true);
@@ -321,7 +308,7 @@ export function ScribdDesk() {
         setStarting(false);
       }
     },
-    [limit, wantText, channels, say, loadStatus],
+    [say, loadStatus],
   );
 
   const resetJob = useCallback(async () => {
@@ -405,6 +392,8 @@ export function ScribdDesk() {
 
   const logTail = useMemo(() => (status?.log || []).slice(-14).join('\n'), [status?.log]);
   const tone = verdictTone(status?.verdict || '');
+  const visibleHits = hits.slice(0, visibleCount);
+  const selectableHits = hits.filter((hit) => Boolean(hit.url));
 
   return (
     <div className="space-y-4">
@@ -450,68 +439,9 @@ export function ScribdDesk() {
           </div>
         </div>
         <p className="mt-2 text-xs text-slate-600">
-          Books come from Scribd into the server beside this dashboard, and land here as PDFs.
-          Search, tick what you want (or mark all), and download.
+          Search for documents, select the ones you need, and save finished PDFs here.
         </p>
       </section>
-
-      {isAdmin && (
-        <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <button
-            type="button"
-            onClick={() => setConfigOpen((open) => !open)}
-            className="flex w-full items-center justify-between gap-2 text-left"
-          >
-            <span className="flex items-center gap-2 text-sm font-bold text-slate-900">
-              <Settings2 className="h-4 w-4 text-teal-600" /> Panel settings
-            </span>
-            <span className="text-[11px] font-semibold text-slate-500">
-              {hasPanelKey ? 'key saved' : 'open panel'} · {configOpen ? 'hide' : 'show'}
-            </span>
-          </button>
-
-          {configOpen && (
-            <div className="mt-3 space-y-2">
-              <label className="block text-[11px] font-semibold text-slate-600">
-                Panel address
-                <input
-                  value={panelUrlInput}
-                  onChange={(event) => setPanelUrlInput(event.target.value)}
-                  placeholder="http://195.123.189.187:25811"
-                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 font-mono text-xs text-slate-900 outline-none focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
-                />
-              </label>
-              <label className="block text-[11px] font-semibold text-slate-600">
-                Panel key <span className="font-normal text-slate-400">(blank = panel is open)</span>
-                <input
-                  value={panelKeyInput}
-                  onChange={(event) => setPanelKeyInput(event.target.value)}
-                  placeholder="the panel's PANEL_KEY"
-                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 font-mono text-xs text-slate-900 outline-none focus:border-teal-300 focus:ring-2 focus:ring-teal-100"
-                />
-              </label>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void saveConfig()}
-                  disabled={savingConfig}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
-                >
-                  {savingConfig ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                  )}
-                  Save &amp; test
-                </button>
-                <span className="text-[11px] text-slate-500">
-                  Saved in D1 (portal_settings), so no redeploy is needed.
-                </span>
-              </div>
-            </div>
-          )}
-        </section>
-      )}
 
       {notice && (
         <div
@@ -541,181 +471,174 @@ export function ScribdDesk() {
       )}
 
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-        <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
-          <Search className="h-4 w-4 text-teal-600" /> Find a book
-        </h3>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') void runSearch(1);
-            }}
-            placeholder="physics 12th"
-            /* 16px on a phone stops iOS zooming the page when the box is tapped,
-               which is what used to push the Find button out of reach */
-            className="min-w-0 flex-1 touch-manipulation rounded-xl border border-slate-200 bg-white px-3 py-2 text-base text-slate-900 outline-none placeholder:text-slate-400 focus:border-teal-300 focus:ring-2 focus:ring-teal-100 sm:text-sm"
-          />
-          <button
-            type="button"
-            onClick={() => void runSearch(1)}
-            disabled={searching}
-            className="inline-flex min-h-11 w-full touch-manipulation items-center justify-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-700 disabled:opacity-50 sm:min-h-0 sm:w-auto sm:text-xs"
-          >
-            {searching ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Search className="h-3.5 w-3.5" />
-            )}
-            Find
-          </button>
-          {searchName && (
-            <span className="text-[11px] font-semibold text-slate-500">
-              {searchName}
-              {searchTotal > 0 ? ` · ${searchTotal} match(es)` : ''}
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+              <Search className="h-4 w-4 text-teal-600" /> Find a book
+            </h3>
+            <p className="mt-1 text-xs text-slate-500">Search by title or subject, then select the books you want.</p>
+          </div>
+          {ticked.size > 0 && (
+            <span className="rounded-full bg-teal-50 px-2.5 py-1 text-[11px] font-bold text-teal-700">
+              {ticked.size} selected
             </span>
           )}
         </div>
 
-        {hits.length > 0 && (
-          <div className="mt-3 divide-y divide-slate-100 rounded-xl border border-slate-100">
-            {hits.map((hit) => (
-              <label
-                key={hit.id}
-                className="flex cursor-pointer items-start gap-2.5 px-3 py-2.5 hover:bg-slate-50"
-              >
-                <input
-                  type="checkbox"
-                  checked={ticked.has(hit.url)}
-                  onChange={() => toggle(hit.url)}
-                  className="mt-0.5 h-4 w-4 shrink-0 accent-teal-600"
-                />
-                <span className="min-w-0">
-                  <span
-                    className={`block line-clamp-2 text-xs font-semibold ${
-                      hit.match === 'none' ? 'text-slate-600' : 'text-slate-900'
-                    }`}
-                  >
-                    {hit.title}
-                    {hit.match === 'none' && (
-                      <span className="ml-1.5 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
-                        related
-                      </span>
-                    )}
-                  </span>
-                  <span className="block truncate text-[11px] text-slate-500">
-                    {[hit.pages ? `${hit.pages} pages` : '', hit.views ? `${hit.views} views` : '', hit.author]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </span>
-                </span>
-              </label>
-            ))}
+        <form
+          className="mt-3 flex flex-wrap gap-2"
+          onSubmit={(event) => { event.preventDefault(); void runSearch(1); }}
+        >
+          <label htmlFor="scribd-query" className="sr-only">Search Scribd</label>
+          <input
+            id="scribd-query"
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search for a title or subject"
+            autoComplete="off"
+            className="min-w-0 flex-1 touch-manipulation rounded-xl border border-slate-200 bg-white px-3 py-2 text-base text-slate-900 outline-none placeholder:text-slate-400 focus:border-teal-300 focus:ring-2 focus:ring-teal-100 sm:text-sm"
+          />
+          <button
+            type="submit"
+            disabled={searching}
+            className="inline-flex min-h-11 w-full touch-manipulation items-center justify-center gap-1.5 rounded-xl bg-teal-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-teal-700 disabled:opacity-50 sm:min-h-0 sm:w-auto sm:text-xs"
+          >
+            {searching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+            {searching ? 'Searching…' : 'Find'}
+          </button>
+        </form>
+
+        {hasSearched && (
+          <div className="mt-4 border-t border-slate-100 pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0" aria-live="polite">
+                <h4 className="text-xs font-bold text-slate-800">Search results</h4>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {hits.length
+                    ? resultsOpen
+                      ? `Showing ${visibleHits.length} of ${hits.length}${searchTotal > hits.length ? ` · ${searchTotal} total` : ''}`
+                      : `${hits.length} result${hits.length === 1 ? '' : 's'} hidden`
+                    : `No results for “${searchQuery}”`}
+                </p>
+              </div>
+              {hits.length > 0 && (
+                <button
+                  type="button"
+                  aria-expanded={resultsOpen}
+                  aria-controls="scribd-search-results"
+                  onClick={() => setResultsOpen((open) => !open)}
+                  className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+                >
+                  {resultsOpen ? 'Hide results' : 'Show results'}
+                  {resultsOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </button>
+              )}
+            </div>
+
+            {searchName && hits.length > 0 && (
+              <p className="mt-1 text-[11px] text-slate-400">{searchName}</p>
+            )}
+
+            {hits.length === 0 ? (
+              <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-center text-xs text-slate-500">
+                Try a different title or a broader subject.
+              </div>
+            ) : (
+              <div id="scribd-search-results" hidden={!resultsOpen} className="mt-3">
+                <div className="grid grid-cols-2 gap-2 min-[360px]:grid-cols-3 min-[460px]:grid-cols-4 sm:grid-cols-5 lg:grid-cols-6">
+                  {visibleHits.map((hit) => {
+                    const selected = Boolean(hit.url) && ticked.has(hit.url);
+                    return (
+                      <label
+                        key={`${hit.id}:${hit.url}`}
+                        className={`group relative flex min-w-0 flex-col overflow-hidden rounded-xl border bg-white transition focus-within:ring-2 focus-within:ring-teal-500 focus-within:ring-offset-2 ${
+                          selected
+                            ? 'border-teal-500 ring-2 ring-teal-100'
+                            : hit.url
+                              ? 'cursor-pointer border-slate-200 hover:border-teal-300 hover:shadow-sm'
+                              : 'cursor-not-allowed border-slate-200 opacity-60'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${hit.title}`}
+                          checked={selected}
+                          disabled={!hit.url}
+                          onChange={() => toggle(hit.url)}
+                          className="sr-only"
+                        />
+                        <ResultCover thumbnail={hit.thumbnail} />
+                        <span
+                          aria-hidden="true"
+                          className={`absolute left-1.5 top-1.5 z-10 grid h-5 w-5 place-items-center rounded-md border shadow-sm ${
+                            selected ? 'border-teal-600 bg-teal-600 text-white' : 'border-white/80 bg-slate-900/45 text-white'
+                          }`}
+                        >
+                          {selected && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col gap-1 px-2 py-2">
+                          <span title={hit.title} className="line-clamp-2 min-h-[2.25em] text-[11px] font-semibold leading-tight text-slate-800">
+                            {hit.title}
+                          </span>
+                          <span className="truncate text-[10px] text-slate-500">
+                            {[hit.pages ? `${hit.pages} pages` : '', hit.views ? `${hit.views} views` : '']
+                              .filter(Boolean).join(' · ') || (hit.url ? 'Scribd document' : 'Link unavailable')}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {(visibleCount < hits.length || more) && (
+                  <div className="mt-3 flex justify-center">
+                    <button
+                      type="button"
+                      onClick={showMoreResults}
+                      disabled={searching}
+                      className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700 disabled:opacity-50"
+                    >
+                      {searching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      {searching ? 'Loading…' : 'Show more results'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
-        {hits.length > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+          {selectableHits.length > 0 && (
             <button
               type="button"
-              onClick={() => setTicked(new Set(hits.map((hit) => hit.url)))}
-              className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
+              onClick={() => setTicked((current) => new Set([...current, ...selectableHits.map((hit) => hit.url)]))}
+              className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
             >
-              <ListChecks className="h-3.5 w-3.5" /> Mark all ({hits.length})
+              <ListChecks className="h-3.5 w-3.5" /> Select all ({selectableHits.length})
             </button>
+          )}
+          {ticked.size > 0 && (
             <button
               type="button"
               onClick={() => setTicked(new Set())}
-              className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
+              className="inline-flex min-h-9 items-center rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
             >
-              Clear
+              Clear selection
             </button>
-            <span className="text-[11px] font-semibold text-slate-500">
-              {ticked.size ? `${ticked.size} ticked` : 'nothing ticked yet'}
-            </span>
-          </div>
-        )}
-
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+          )}
+          <span aria-live="polite" className="text-[11px] font-semibold text-slate-500">
+            {ticked.size} selected
+          </span>
           <button
             type="button"
             onClick={() => void start({ urls: [...ticked] })}
             disabled={starting || ticked.size === 0}
-            className="inline-flex min-h-11 w-full touch-manipulation items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-40 sm:min-h-0 sm:w-auto sm:text-xs"
+            className="inline-flex min-h-11 w-full touch-manipulation items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-40 sm:ml-auto sm:min-h-9 sm:w-auto sm:text-xs"
           >
-            <Download className="h-3.5 w-3.5" />
-            {running ? `Add to queue (${ticked.size})` : `Download ticked (${ticked.size})`}
+            {starting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            {starting ? 'Submitting…' : running ? `Add to queue (${ticked.size})` : `Download selected (${ticked.size})`}
           </button>
-          {more && (
-            <button
-              type="button"
-              onClick={() => void runSearch(searchPage + 1)}
-              disabled={searching}
-              className="rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700 disabled:opacity-50"
-            >
-              Load more
-            </button>
-          )}
-        </div>
-      </section>
-
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-        <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
-          <Gauge className="h-4 w-4 text-teal-600" /> How it downloads
-        </h3>
-        <div className="mt-3 space-y-3">
-          <div>
-            <p className="text-[11px] font-semibold text-slate-600">Channels</p>
-            <div className="mt-1.5 grid grid-cols-4 gap-1.5 rounded-xl bg-slate-100 p-1">
-              {['8', '12', '16', '24'].map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  onClick={() => setChannels(value)}
-                  className={`min-h-9 rounded-lg px-2 py-1.5 text-xs font-bold tabular-nums transition ${
-                    channels === value
-                      ? 'bg-white text-slate-900 shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {value}
-                </button>
-              ))}
-            </div>
-            <p className="mt-1.5 text-[11px] text-slate-500">
-              Pages fetched at once. More is not always faster: Scribd throttles by
-              address, so 24 can be slower than 16 — the log shows the rate it
-              actually reached.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
-              pages
-              <input
-                type="number"
-                min={0}
-                value={limit}
-                onChange={(event) => setLimit(event.target.value)}
-                className="w-16 rounded-lg border border-slate-200 px-2 py-1.5 text-base text-slate-900 outline-none focus:border-teal-300 sm:text-xs"
-              />
-              <span className="font-normal text-slate-400">0 = whole document</span>
-            </label>
-            <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600">
-              <input
-                type="checkbox"
-                checked={wantText}
-                onChange={(event) => setWantText(event.target.checked)}
-                className="h-4 w-4 accent-teal-600"
-              />
-              searchable text
-            </label>
-          </div>
-          <p className="text-[11px] text-slate-500">
-            Searchable text adds each page&rsquo;s real words, one extra request per
-            page, so the PDF can be searched and copied.
-          </p>
         </div>
       </section>
 
@@ -869,8 +792,7 @@ export function ScribdDesk() {
           </ul>
         )}
         <p className="mt-2 text-[11px] text-slate-400">
-          Tap a file name to save it. The PDF is streamed through this dashboard, so a
-          phone never has to hold the whole book in memory.
+          Tap a file name to save it.
         </p>
       </section>
     </div>

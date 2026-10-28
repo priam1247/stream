@@ -67,6 +67,8 @@ export interface ScribdHit {
   pages: number;
   views: string;
   author: string;
+  /** A Scribd-hosted cover, when the search service provides one. */
+  thumbnail?: string;
   /** how well the title matches the words that were typed */
   score?: number;
   match?: 'all' | 'some' | 'none';
