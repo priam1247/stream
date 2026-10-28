@@ -63,7 +63,9 @@ tools/downloader/tmp/
 tools/shooter-found.txt
 tools/downloader/shooter-found.txt
 
-# The Scribd search + download panel is its own app in scribd/ (see
-# scribd/.gitignore for its bundled browser and runtime scratch).
+# The Scribd panel lives in scribd/: the Node capture server (with the bundled
+# Chromium) and the Python file server. Runtime scratch and secrets:
 scribd/node_modules/
-scribd/downloader/node_modules/
+scribd/downloads/
+scribd/tmp/
+scribd/.cache/
