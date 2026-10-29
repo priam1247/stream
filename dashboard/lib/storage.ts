@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_SCRIBD_WEB_URL } from './scribd-config';
 import {
   ApprovedUser,
   BotCommandRecord,
@@ -1157,34 +1158,12 @@ export async function getBotCommandById(
 }
 
 // ---------------------------------------------------------------------------
-// Scribd download panel (tools/downloader/scribd_download.py)
+// Legacy Scribd panel settings (not used by the current web-service adapter).
 // ---------------------------------------------------------------------------
-// Same shape as the Pterodactyl panel settings above: the environment supplies
-// the defaults, a saved row in portal_settings overrides them, and the disk
-// store stands in when D1 is not configured (local dev).
-/**
- * The two servers, and which one answers what.
- *
- * Node server (Botkeep) runs index.js: it searches (/search), photographs the
- * pages (/shot, /shots) and passes links on with /send.
- *
- * File store (XS Systems) keeps the finished PDFs: /files, /file, /reset — and
- * it is the one that downloads, because /send is answered there.
- */
+// Retained for compatibility with existing stored settings. The defaults here
+// must not diverge from the current web-service address.
 export const DEFAULT_SCRIBD_SEARCH_URL = 'http://node6.botkeep.cloud:45009';
-export const DEFAULT_SCRIBD_PANEL_URL = 'http://195.123.189.187:25811';
-
-/** Addresses that only store PDFs. */
-const STORE_ONLY_PANEL_URLS = new Set([
-  'http://195.123.189.187:25811',
-  'https://195.123.189.187:25811',
-]);
-
-/** True when a saved address is the store, not the panel. */
-export function isStoreOnlyPanelUrl(raw: string): boolean {
-  const value = String(raw || '').trim().replace(/\/+$/, '');
-  return STORE_ONLY_PANEL_URLS.has(value);
-}
+export const DEFAULT_SCRIBD_PANEL_URL = DEFAULT_SCRIBD_WEB_URL;
 
 export async function getScribdConnectionConfig(): Promise<ScribdConnectionConfig> {
   const envUrl = (process.env.SCRIBD_PANEL_URL || DEFAULT_SCRIBD_PANEL_URL).trim();

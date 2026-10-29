@@ -4,7 +4,9 @@
  */
 import { normalizeScribdHit, safeScribdThumbnail, scribdDocumentId } from './scribd-search';
 import { filesFromJob, safeScribdName } from './scribd-job';
+import { DEFAULT_SCRIBD_WEB_URL } from './scribd-config';
 export { filesFromJob, safeScribdName } from './scribd-job';
+export { DEFAULT_SCRIBD_WEB_URL } from './scribd-config';
 import type {
   ScribdFile,
   ScribdFindPayload,
@@ -14,9 +16,6 @@ import type {
   ScribdPanelHealth,
   ScribdPanelStatus,
 } from './scribd-types';
-// The existing Scribd web server's documented panel allocation. The address is
-// public configuration, not a secret; the optional token remains server-side.
-export const DEFAULT_SCRIBD_WEB_URL = 'http://195.123.189.187:25811';
 
 const REQUEST_TIMEOUT_MS = 20_000;
 // Search starts Chromium and can wait for Scribd's challenge/reader to load.
@@ -48,7 +47,7 @@ export function cleanPanelUrl(raw: string): string {
 }
 
 /**
- * Use the documented server by default. Legacy panel settings may refer to a
+ * Use the current server by default. Legacy panel settings may refer to a
  * different service, so neither their address nor their key is used here.
  * Environment overrides remain available if the server moves or is secured.
  */

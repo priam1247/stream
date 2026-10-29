@@ -76,18 +76,22 @@ browser.
 
 ### Server address and optional token
 
-The dashboard defaults to `http://195.123.189.187:25811`, the allocation documented
-in `../working scribd/README.md`. If the web service is running there **without a
-token**, neither `SCRIBD_WEB_URL` nor `SCRIBD_WEB_TOKEN` needs to be set. The
+The dashboard defaults to the current panel at `http://195.123.189.181:25803`.
+Older Scribd server documentation may still refer to the retired panel address.
+If the web service is running at the current address **without a token**, neither
+`SCRIBD_WEB_URL` nor `SCRIBD_WEB_TOKEN` needs to be set. The
 address is only a destination: deploying the dashboard does not start the Python
 service. Its host must run `scribd_web.py` and accept connections from the dashboard.
 The live service's availability has not been verified by this repository.
 
 If the service moves, set the optional server-side `SCRIBD_WEB_URL` in the dashboard
-deployment (for example, Vercel's environment settings) and redeploy. Use the
-host's public IP or HTTPS domain and allocated port, not the `0.0.0.0` bind address
-printed by the server. The public `/health` endpoint should return `ok`; `/api/job`
-should return a job list, or HTTP 401 if a token is required.
+deployment (for example, Vercel's environment settings) and redeploy. An existing
+value pointing to the retired panel must be removed or updated: it overrides the
+built-in address. Likewise, update or remove any old `SCRIBD_WEB_TOKEN` to match
+the new server. Use the host's public IP or HTTPS domain and allocated port, not
+the `0.0.0.0` bind address printed by the server. The public `/health` endpoint
+should return `ok`; `/api/job` should return a job list, or HTTP 401 if a token is
+required.
 
 `SCRIBD_WEB_TOKEN` is needed only when the running service has a token. It is the
 value configured for that server as `--token` or `WEB_TOKEN`, not a new dashboard
