@@ -4,13 +4,13 @@ name: Deploy bot to XS Systems panel
 # no webhook, no git in the File Manager, and the console is the bot's stdin —
 # typing "git pull" there does nothing. So:
 #   1. `selftest` runs the bot tests in `Whatsapp bot/` and builds `dashboard/`.
-#   2. Only after `selftest` passes on `main` (or manual dispatch), `deploy`
-#      uploads the contents of `Whatsapp bot/` to the panel root over SFTP,
-#      then triggers a restart over HTTPS via `PANEL_API_KEY`.
+#   2. After `selftest` passes, `deploy` uploads only for bot changes on main or
+#      a manual run from main. It uploads the bot folder over SFTP and may
+#      request a restart over HTTPS via `PANEL_API_KEY`.
 #
 #   Repo → Settings → Secrets and variables → Actions
-#   secrets:  PANEL_SFTP_HOST  PANEL_SFTP_PORT  PANEL_SFTP_USER  PANEL_SFTP_PASS
-#             PANEL_API_KEY   (client key from a restricted panel subuser)
+#   secrets:  PANEL_SFTP_HOST  PANEL_SFTP_PORT  PANEL_SFTP_USER
+#             PANEL_SFTP_PASS or PANEL_SSH_KEY, plus optional PANEL_API_KEY
 #   vars:     PANEL_URL  PANEL_SERVER_ID  (enables automatic HTTPS restart)
 
 on:
@@ -22,9 +22,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# A newer dashboard run must not cancel an in-progress bot upload.
 concurrency:
-  group: panel-deploy-${{ github.ref }}
-  cancel-in-progress: true
+  group: panel-deploy-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   selftest:
@@ -40,6 +41,9 @@ jobs:
           cache-dependency-path: |
             Whatsapp bot/package-lock.json
             dashboard/package-lock.json
+
+      - name: Test bot deployment safeguards
+        run: node --test .github/tests/deploy-bot-gate.test.cjs
 
       - name: Install bot dependencies & run offline selftest
         working-directory: Whatsapp bot
@@ -58,28 +62,49 @@ jobs:
           npm run typecheck
           npm run build
 
-  deploy:
-    name: Upload to panel over SFTP
+  bot_changes:
+    name: Check for bot changes
     needs: selftest
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.bot_changes.outputs.deploy }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Check whether the bot needs an upload
+        id: bot_changes
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: bash .github/scripts/should-deploy-bot.sh
+
+  deploy:
+    name: Upload to panel over SFTP
+    needs: bot_changes
+    if: needs.bot_changes.outputs.deploy == 'true'
+    # Only actual uploads enter this queue. Do not interrupt an upload in flight.
+    concurrency:
+      group: panel-bot-production
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Verify the tested bot is current
+        id: freshness
+        run: bash .github/scripts/check-bot-freshness.sh
 
       - name: Are the panel secrets configured?
         id: cfg
+        if: steps.freshness.outputs.fresh == 'true'
         env:
           H: ${{ secrets.PANEL_SFTP_HOST }}
           U: ${{ secrets.PANEL_SFTP_USER }}
           P: ${{ secrets.PANEL_SFTP_PASS }}
           K: ${{ secrets.PANEL_SSH_KEY }}
-        run: |
-          if [ -n "$H" ] && [ -n "$U" ] && { [ -n "$P" ] || [ -n "$K" ]; }; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::PANEL_SFTP_HOST / PANEL_SFTP_USER and (PANEL_SSH_KEY or PANEL_SFTP_PASS) are not all set — skipping the panel deploy."
-          fi
+        run: bash .github/scripts/check-panel-config.sh
 
       - uses: actions/setup-node@v4
         if: steps.cfg.outputs.ready == 'true'
@@ -126,6 +151,7 @@ jobs:
             --exclude-glob data/
             --exclude-glob secrets/
             --exclude-glob cookies/
+            --exclude-glob database/
             --exclude-glob .env
             --exclude-glob .env.local
             --exclude-glob .env.production
@@ -172,110 +198,8 @@ jobs:
 
       - name: Restart the server so the new code runs
         if: steps.cfg.outputs.ready == 'true'
-        shell: bash
         env:
           PANEL_URL: ${{ vars.PANEL_URL || secrets.PANEL_URL }}
           PANEL_SERVER_ID: ${{ vars.PANEL_SERVER_ID || secrets.PANEL_SERVER_ID }}
           PANEL_API_KEY: ${{ secrets.PANEL_API_KEY }}
-          SFTP_HOST: ${{ secrets.PANEL_SFTP_HOST }}
-        run: |
-          set +e
-          if [ -z "$PANEL_API_KEY" ]; then
-            echo "::notice::Restart skipped: PANEL_API_KEY not set. Files were uploaded — press Restart in the panel."
-            exit 0
-          fi
-
-          # HTTPS-only candidate list so PANEL_API_KEY is never sent over cleartext HTTP
-          CANDS=()
-          [ -n "$PANEL_URL" ] && CANDS+=("$PANEL_URL")
-          if [ -n "$SFTP_HOST" ]; then
-            BASE_HOST="panel.${SFTP_HOST#*.}"
-            CANDS+=("https://$BASE_HOST")
-          fi
-          [ ${#CANDS[@]} -eq 0 ] && CANDS=("https://panel.xsystemshosting.com")
-
-          IDS=()
-          if [ -n "$PANEL_SERVER_ID" ]; then
-            IDS+=("$PANEL_SERVER_ID")
-            case "$PANEL_SERVER_ID" in
-              *-*) IDS+=("${PANEL_SERVER_ID%%-*}") ;;
-            esac
-          else
-            # Auto-discover server identifier via GET /api/client when PANEL_SERVER_ID is blank
-            for raw in "${CANDS[@]}"; do
-              BASE=${raw%/}; BASE=${BASE%%/server/*}
-              case "$BASE" in https://*) ;; *) continue ;; esac
-              disc=$(curl -sS --max-time 15 "$BASE/api/client" \
-                -H "Authorization: Bearer $PANEL_API_KEY" \
-                -H 'Accept: application/json' 2>/dev/null)
-              found=$(printf '%s' "$disc" | node -e '
-                let d=""; process.stdin.on("data",c=>d+=c).on("end",()=>{
-                  try {
-                    const j=JSON.parse(d);
-                    const ids=(j.data||[]).map(x=>x.attributes&&x.attributes.identifier).filter(Boolean);
-                    console.log(ids.join(" "));
-                  } catch {}
-                });
-              ')
-              if [ -n "$found" ]; then
-                for fid in $found; do IDS+=("$fid"); done
-                break
-              fi
-            done
-          fi
-
-          if [ ${#IDS[@]} -eq 0 ]; then
-            echo "::warning::Could not auto-discover PANEL_SERVER_ID via /api/client. Set PANEL_SERVER_ID in repo Variables."
-            exit 0
-          fi
-
-          ok=""; LAST="none"
-          for raw in "${CANDS[@]}"; do
-            BASE=${raw%/}
-            BASE=${BASE%%/server/*}
-            case "$BASE" in https://*) ;; *) continue ;; esac
-            for id in "${IDS[@]}"; do
-              echo "→ $BASE  server=$id"
-              code=$(curl -sS --max-time 20 -o /tmp/out -w '%{http_code}' -X POST \
-                "$BASE/api/client/servers/$id/power" \
-                -H "Authorization: Bearer $PANEL_API_KEY" \
-                -H 'Accept: application/json' \
-                -H 'Content-Type: application/json' \
-                -d '{"signal":"restart"}' 2>/tmp/err) || code="curl:$?"
-              err=$(head -c 160 /tmp/err 2>/dev/null | tr -d '\n')
-              echo "   status=$code $err"
-              LAST="$code @ $BASE (server=$id)"
-              case "$code" in
-                200|204) ok="$BASE"; break 2 ;;
-                404) continue ;;
-                000|curl:6|curl:7|curl:28|curl:35) continue 2 ;;
-                *) break 2 ;;
-              esac
-            done
-          done
-
-          if [ -z "$ok" ]; then
-            for raw in "${CANDS[@]}"; do
-              BASE=${raw%/}; BASE=${BASE%%/server/*}
-              case "$BASE" in https://*) ;; *) continue ;; esac
-              for id in "${IDS[@]}"; do
-                code=$(curl -sS --max-time 20 -o /tmp/out -w '%{http_code}' -X POST \
-                  "$BASE/api/application/servers/$id/power" \
-                  -H "Authorization: Bearer $PANEL_API_KEY" \
-                  -H 'Accept: application/json' \
-                  -H 'Content-Type: application/json' \
-                  -d '{"signal":"restart"}' 2>/dev/null) || code="curl:$?"
-                echo "   application API: $code ($BASE server=$id)"
-                LAST="$code @ $BASE (application key, server=$id)"
-                [ "$code" = "204" ] && { ok="$BASE (application)"; break 3; }
-              done
-            done
-          fi
-
-          rm -f /tmp/out /tmp/err
-          if [ -n "$ok" ]; then
-            echo "::notice::✅ Restart requested via $ok"
-            exit 0
-          fi
-          echo "::warning::Restart not accepted ($LAST). The files ARE uploaded — press Restart in the panel."
-          exit 0
+        run: bash .github/scripts/restart-panel.sh
