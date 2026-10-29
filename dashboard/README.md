@@ -1,10 +1,10 @@
 # ZaFar Control Room (Web Portal)
 
-Standalone Next.js 16 application for member sign-in, WhatsApp number self-service, and the administrator console (`/admin`). It talks to the live bot over `/admin/api/*` (`utils/adminApi.js`, started directly by `index.js`) through a server-side proxy (`lib/bot-proxy.ts`) so `ADMIN_DASHBOARD_TOKEN` never leaves the server.
+Standalone Next.js 16 application for member sign-in, WhatsApp number self-service, and the administrator console (`/admin`). It talks to the live bot over `/admin/api/*` (`Whatsapp bot/utils/adminApi.js`, started by `Whatsapp bot/index.js`) through a server-side proxy (`lib/bot-proxy.ts`) so `ADMIN_DASHBOARD_TOKEN` never leaves the server.
 
 ## Deploying on Vercel (or Self-Hosted Node)
 
-The WhatsApp bot lives at the repository root (`node --expose-gc index.js`). This portal has its own `dashboard/package.json` and `dashboard/package-lock.json`:
+The WhatsApp bot lives in `Whatsapp bot/` (`cd "Whatsapp bot" && npm start`). This portal is separate and has its own `dashboard/package.json` and `dashboard/package-lock.json`:
 
 1. **Vercel → Project → Settings → General → Root Directory** → set to `dashboard` and click **Save**.
 2. Keep the framework preset on **Next.js** (`npm install` / `npm run build`).

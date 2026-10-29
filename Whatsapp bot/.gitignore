@@ -1,0 +1,29 @@
+# Dependencies and downloaded executables
+node_modules/
+bin/
+
+# Temporary downloads and runtime data
+temp/
+tmp/
+data/
+*.log
+
+# WhatsApp session credentials and private bot state
+session/
+*.session/
+database/*.json
+database/*.bak
+database/*.corrupt*
+database/*.tmp
+database/*.sqlite*
+
+# Local secrets and cookies
+.env
+.env.*
+!.env.example
+secrets/
+cookies/
+cookies.txt
+*cookies*.txt
+*.wvd
+*.arl

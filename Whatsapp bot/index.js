@@ -2,6 +2,10 @@
  * WhatsApp MD Bot - Main Entry Point
  */
 
+// Keep .env, session/ and other cwd-relative runtime files with the bot even
+// when the entry point is started from the repository root or a panel script.
+process.chdir(__dirname);
+
 // A fresh install (or a panel reinstall) has no node_modules yet. Say that in
 // one line instead of letting the first require() throw a 40-line stack.
 (function checkDependencies() {
@@ -18,9 +22,8 @@
 // Override with NODE_ENV=development when debugging locally.
 process.env.NODE_ENV = process.env.NODE_ENV || 'production';
 
-// The Scribd search + download panel is a SEPARATE server (its own folder,
-// `scribd/`, with its own `node index.js`). This bot does not start it: the
-// dashboard reaches it over HTTP at SCRIBD_PANEL_URL.
+// The Scribd search + download panel is a separate server in `working scribd/`.
+// This bot does not start it; the dashboard talks to it independently.
 
 const { formatArgs, redactArg } = require('./utils/safeLog');
 const { initializeTempSystem } = require('./utils/tempManager');
