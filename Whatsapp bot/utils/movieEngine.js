@@ -15,7 +15,7 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const config = require('../config');
 
-const ROOT = path.join(__dirname, '..');           // repo root (= the bot)
+const ROOT = path.join(__dirname, '..');           // bot root
 const ENGINE = path.join(ROOT, 'engine');
 
 let enginePromise = null;

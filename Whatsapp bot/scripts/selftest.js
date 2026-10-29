@@ -22,7 +22,11 @@ const { pathToFileURL } = require('url');
 const http = require('http');
 const assert = require('assert');
 
+// The bot is self-contained; its dashboard and GitHub workflow live one level
+// above it only when this is a full repository checkout.
 const REPO = path.join(__dirname, '..');
+const WORKSPACE = path.dirname(REPO);
+const FULL_REPOSITORY = fs.existsSync(path.join(WORKSPACE, '.git'));
 
 // ─── tiny test harness ────────────────────────────────────────────────────────
 let passed = 0;
@@ -156,6 +160,52 @@ const MT = require(path.join(REPO, 'utils/mediaTransfer.js'));
 const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
 
 (async () => {
+  await test('the bot entry point uses its own directory even when started elsewhere', () => {
+    const { spawnSync } = require('node:child_process');
+    // Stop at dependency resolution: this checks the real entry point without
+    // opening a WhatsApp connection or creating session files.
+    const check = `
+      const Module = require('node:module');
+      const original = Module._resolveFilename;
+      Module._resolveFilename = function(request, ...args) {
+        if (request === '@whiskeysockets/baileys') {
+          process.stdout.write(process.cwd());
+          process.exit(0);
+        }
+        return original.call(this, request, ...args);
+      };
+      require(process.argv[1]);
+    `;
+    const child = spawnSync(process.execPath, ['-e', check, path.join(REPO, 'index.js')], {
+      cwd: sandbox,
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    assert.strictEqual(child.status, 0, child.stderr || 'entry point did not start');
+    assert.strictEqual(fs.realpathSync(child.stdout), fs.realpathSync(REPO));
+  });
+
+  if (FULL_REPOSITORY) {
+    await test('nested bot runtime credentials and data remain ignored by Git', () => {
+      const { spawnSync } = require('node:child_process');
+      const sensitive = [
+        'Whatsapp bot/.env', 'Whatsapp bot/.env.production',
+        'Whatsapp bot/session/creds.json', 'Whatsapp bot/database/whitelist.json',
+        'Whatsapp bot/database/jobs.sqlite', 'Whatsapp bot/database/jobs.sqlite-wal',
+        'Whatsapp bot/secrets/rclone.conf', 'Whatsapp bot/cookies/youtube.txt',
+        'Whatsapp bot/node_modules/package/index.js', 'Whatsapp bot/temp/download.mp4',
+      ];
+      const ignored = spawnSync('git', ['-C', WORKSPACE, 'check-ignore', '--no-index', '-z', '--stdin'], {
+        input: `${sensitive.join('\0')}\0`,
+        encoding: 'utf8',
+      });
+      assert.strictEqual(ignored.status, 0, ignored.stderr);
+      assert.deepStrictEqual(new Set(ignored.stdout.split('\0').filter(Boolean)), new Set(sensitive));
+      const example = spawnSync('git', ['-C', WORKSPACE, 'check-ignore', '--no-index', '-q', 'Whatsapp bot/.env.example']);
+      assert.strictEqual(example.status, 1, '.env.example must remain shareable');
+    });
+  }
+
   console.log('\n── 1. yt-dlp discovery & capabilities ──');
 
   await test('finds the yt-dlp binary and reads its version', () => {
@@ -2319,20 +2369,24 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
         await api.stop();
       }
 
-      const jwtSrc = fs.readFileSync(path.join(REPO, 'dashboard/lib/jwt.ts'), 'utf8');
-      assert.match(jwtSrc, /JWT_SECRET_KEY environment variable is required in production/);
-      assert.ok(fs.existsSync(path.join(REPO, 'dashboard/instrumentation.ts')));
-      assert.ok(fs.existsSync(path.join(REPO, 'dashboard/scripts/check-prod-env.mjs')));
+      if (FULL_REPOSITORY) {
+        const jwtSrc = fs.readFileSync(path.join(WORKSPACE, 'dashboard/lib/jwt.ts'), 'utf8');
+        assert.match(jwtSrc, /JWT_SECRET_KEY environment variable is required in production/);
+        assert.ok(fs.existsSync(path.join(WORKSPACE, 'dashboard/instrumentation.ts')));
+        assert.ok(fs.existsSync(path.join(WORKSPACE, 'dashboard/scripts/check-prod-env.mjs')));
 
-      const authSrc = fs.readFileSync(path.join(REPO, 'dashboard/lib/auth-engine.ts'), 'utf8');
-      assert.ok(!authSrc.includes('bloody-brigitta-ahzafar'), 'hardcoded Koyeb URL still in auth-engine.ts');
+        const authSrc = fs.readFileSync(path.join(WORKSPACE, 'dashboard/lib/auth-engine.ts'), 'utf8');
+        assert.ok(!authSrc.includes('bloody-brigitta-ahzafar'), 'hardcoded Koyeb URL still in auth-engine.ts');
 
-      const loginSrc = fs.readFileSync(path.join(REPO, 'dashboard/app/api/auth/login/route.ts'), 'utf8');
-      assert.match(loginSrc, /checkRateLimit/);
-      assert.match(loginSrc, /status:\s*429/);
+        const loginSrc = fs.readFileSync(path.join(WORKSPACE, 'dashboard/app/api/auth/login/route.ts'), 'utf8');
+        assert.match(loginSrc, /checkRateLimit/);
+        assert.match(loginSrc, /status:\s*429/);
 
-      const proxySrc = fs.readFileSync(path.join(REPO, 'dashboard/lib/bot-proxy.ts'), 'utf8');
-      assert.match(proxySrc, /STATUS_TIMEOUT_MS\s*=\s*3_000/);
+        const proxySrc = fs.readFileSync(path.join(WORKSPACE, 'dashboard/lib/bot-proxy.ts'), 'utf8');
+        assert.match(proxySrc, /STATUS_TIMEOUT_MS\s*=\s*3_000/);
+      } else {
+        console.log('  - Dashboard source checks skipped in standalone bot installation');
+      }
     });
 
     await test('Phase 6 & Secrets: CI selftest gate, Procfile alignment, log redaction, and clean config defaults', async () => {
@@ -2340,12 +2394,18 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       const procfile = fs.readFileSync(path.join(REPO, 'Procfile'), 'utf8').trim();
       assert.strictEqual(procfile, `web: ${pkg.scripts.start}`, 'Procfile and package.json start script drifted');
 
-      const wf = fs.readFileSync(path.join(REPO, '.github/workflows/deploy-panel.yml'), 'utf8');
-      assert.match(wf, /npm ci/);
-      assert.match(wf, /npm run selftest/);
-      assert.match(wf, /needs:\s*selftest/);
-      assert.match(wf, /database\/\*\.json/);
-      assert.ok(!wf.includes('"http://$BASE_HOST"'), 'deploy workflow must not try cleartext HTTP with PANEL_API_KEY');
+      if (FULL_REPOSITORY) {
+        const wf = fs.readFileSync(path.join(WORKSPACE, '.github/workflows/deploy-panel.yml'), 'utf8');
+        assert.match(wf, /npm ci/);
+        assert.match(wf, /npm run selftest/);
+        assert.match(wf, /needs:\s*selftest/);
+        assert.match(wf, /database\/\*\.json/);
+        assert.match(wf, /working-directory:\s*Whatsapp bot/);
+        assert.ok(wf.includes("git archive 'HEAD:Whatsapp bot'"), 'deploy must archive only the bot subtree');
+        assert.ok(!wf.includes('"http://$BASE_HOST"'), 'deploy workflow must not try cleartext HTTP with PANEL_API_KEY');
+      } else {
+        console.log('  - Repository workflow checks skipped in standalone bot installation');
+      }
 
       const { redactSecrets } = require(path.join(REPO, 'utils/safeLog.js'));
       const dirty =
