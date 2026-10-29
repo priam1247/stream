@@ -43,11 +43,11 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 describe('Scribd service configuration', () => {
-  it('uses the documented address and no token without consulting old settings', async () => {
+  it('uses the current panel address and no token without consulting old settings', async () => {
     vi.stubEnv('SCRIBD_WEB_URL', undefined);
     vi.stubEnv('SCRIBD_WEB_TOKEN', undefined);
     mocks.getConfig.mockRejectedValueOnce(new Error('D1 unavailable'));
-    expect(DEFAULT_SCRIBD_WEB_URL).toBe('http://195.123.189.187:25811');
+    expect(DEFAULT_SCRIBD_WEB_URL).toBe('http://195.123.189.181:25803');
     expect(await scribdPanelConfig()).toEqual({ baseUrl: DEFAULT_SCRIBD_WEB_URL, key: '' });
     expect(mocks.getConfig).not.toHaveBeenCalled();
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
