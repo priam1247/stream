@@ -18,3 +18,16 @@ it('shows linking instructions and expires from the original issuance time', () 
   expect(screen.queryByText('ABCD-EFGH')).toBeNull();
   expect(screen.getByRole('button', { name: 'Copy' }).hasAttribute('disabled')).toBe(true);
 });
+
+
+it('never displays an already expired code and caps the initial countdown under clock skew', () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-29T12:00:10Z'));
+  const expired = { ok: true, number: '15550001111', code: 'EXPIRED', issuedAt: Date.now() - 70_000, expiresInSeconds: 60 };
+  const { rerender } = render(<PairingCodeBanner activePair={expired} onDismiss={() => {}} />);
+  expect(screen.queryByText('EXPIRED')).toBeNull();
+  expect(screen.getByText('Code expired')).toBeTruthy();
+  rerender(<PairingCodeBanner activePair={{ ...expired, code: 'FUTURE', issuedAt: Date.now() + 30_000 }} onDismiss={() => {}} />);
+  expect(screen.getByText('FUTURE')).toBeTruthy();
+  expect(screen.getByText('60s')).toBeTruthy();
+});

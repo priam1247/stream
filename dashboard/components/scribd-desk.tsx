@@ -23,6 +23,8 @@ import {
 import { authHeaders } from '@/lib/client-session';
 import { normalizeScribdHit, safeScribdThumbnail, scribdDocumentId } from '@/lib/scribd-search';
 import { filesFromJob } from '@/lib/scribd-job';
+import type { ScribdPage } from '@/lib/control-room';
+import { SectionNav } from './section-nav';
 import type {
   ScribdFindPayload,
   ScribdHit,
@@ -31,6 +33,11 @@ import type {
 
 const POLL_MS = 2_500;
 const RESULTS_PER_BATCH = 12;
+const PAGES: { id: ScribdPage; label: string }[] = [
+  { id: 'search', label: 'Search' },
+  { id: 'queue', label: 'Queue' },
+  { id: 'files', label: 'Files' },
+];
 
 function ResultCover({ thumbnail }: { thumbnail?: string }) {
   const [failedSrc, setFailedSrc] = useState('');
@@ -92,7 +99,15 @@ function restoreHits(value: unknown): Map<string, ScribdHit> {
 }
 
 /** Device-local preferences are separated by account and contain no credentials. */
-export function ScribdDesk({ bottomNav = false }: { bottomNav?: boolean } = {}) {
+export function ScribdDesk({ bottomNav = false, active = true, page: controlledPage, onPageChange }: {
+  bottomNav?: boolean;
+  active?: boolean;
+  page?: ScribdPage;
+  onPageChange?: (page: ScribdPage) => void;
+} = {}) {
+  const [localPage, setLocalPage] = useState<ScribdPage>('search');
+  const page = controlledPage ?? localPage;
+  const changePage = onPageChange ?? setLocalPage;
   const [status, setStatus] = useState<ScribdStatusPayload | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ text: string; bad?: boolean } | null>(null);
@@ -202,13 +217,14 @@ export function ScribdDesk({ bottomNav = false }: { bottomNav?: boolean } = {}) 
   }, []);
 
   useEffect(() => {
+    if (!active) return;
     void loadStatus();
     const timer = window.setInterval(() => {
       if (document.hidden) return;
       void loadStatus();
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [loadStatus]);
+  }, [active, loadStatus]);
 
   const runSearch = useCallback(
     async (page: number, previousQuery?: string) => {
@@ -314,7 +330,7 @@ export function ScribdDesk({ bottomNav = false }: { bottomNav?: boolean } = {}) 
         void loadStatus();
         return;
       }
-      say(typeof json.message === 'string' ? json.message : 'Request sent. Check the queue below.');
+      say(typeof json.message === 'string' ? json.message : 'Request sent. Check the Queue tab.');
       // The service ignores IDs already present in its history. Retain those
       // selections and any new choices made while the request was in flight.
       const submitted = new Set(docs.map((doc) => doc.id));
@@ -380,11 +396,10 @@ export function ScribdDesk({ bottomNav = false }: { bottomNav?: boolean } = {}) 
 
   return (
     <div className="space-y-4">
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-0.5">
           <div className="flex items-center gap-2">
-            <Library className="h-4 w-4 text-teal-600" />
-            <h2 className="text-sm font-bold text-slate-900 sm:text-base">Scribd Library</h2>
+            <Library className="h-5 w-5 text-teal-600" />
+            <h1 className="text-2xl font-bold tracking-tight text-slate-950">Scribd</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold">
             <span
@@ -406,17 +421,15 @@ export function ScribdDesk({ bottomNav = false }: { bottomNav?: boolean } = {}) 
             <button
               type="button"
               onClick={() => void loadStatus()}
+              aria-label="Refresh Scribd status"
               title="Refresh"
-              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
+              className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
             >
               <RefreshCw className="h-3.5 w-3.5" />
             </button>
           </div>
-        </div>
-        <p className="mt-2 text-xs text-slate-600">
-          Search for documents, select the ones you need, and save finished PDFs here.
-        </p>
-      </section>
+      </div>
+      <SectionNav label="Scribd pages" items={PAGES} value={page} onChange={changePage} />
 
       {statusError && (
         <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-medium text-rose-800">
@@ -451,13 +464,12 @@ export function ScribdDesk({ bottomNav = false }: { bottomNav?: boolean } = {}) 
         </div>
       )}
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+      {page === 'search' && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
-            <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+            <h2 className="flex items-center gap-2 text-sm font-bold text-slate-900">
               <Search className="h-4 w-4 text-teal-600" /> Find a book
-            </h3>
-            <p className="mt-1 text-xs text-slate-500">Search by title or subject, then select the books you want.</p>
+            </h2>
           </div>
           {ticked.size > 0 && (
             <span className="rounded-full bg-teal-50 px-2.5 py-1 text-[11px] font-bold text-teal-700">
@@ -634,13 +646,13 @@ export function ScribdDesk({ bottomNav = false }: { bottomNav?: boolean } = {}) 
         {isAdmin === false && (
           <p className="mt-2 text-[11px] text-slate-500">Only administrators can start or cancel downloads.</p>
         )}
-      </section>
+      </section>}
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+      {page === 'queue' && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
-            <BookOpen className="h-4 w-4 text-teal-600" /> Progress
-          </h3>
+          <h2 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+            <BookOpen className="h-4 w-4 text-teal-600" /> Download queue
+          </h2>
           {status && (
             <span className="text-[11px] font-semibold text-slate-500">
               {status.active || 0} active · {status.finished || 0} finished · {status.failed || 0} failed
@@ -721,13 +733,13 @@ export function ScribdDesk({ bottomNav = false }: { bottomNav?: boolean } = {}) 
             })}
           </ul>
         )}
-      </section>
+      </section>}
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-        <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+      {page === 'files' && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <h2 className="flex items-center gap-2 text-sm font-bold text-slate-900">
           <FileText className="h-4 w-4 text-teal-600" /> Finished PDFs
           <span className="font-mono text-[11px] font-normal text-slate-500 tabular-nums">{files.length}</span>
-        </h3>
+        </h2>
         {files.length > 0 && <div className="mt-3 flex flex-wrap gap-2"><input type="search" aria-label="Search finished PDFs" value={fileQuery} onChange={(event) => setFileQuery(event.target.value)} placeholder="Find a finished PDF" className="min-h-10 min-w-0 flex-1 basis-40 rounded-xl border border-slate-200 bg-slate-50 px-3 text-base text-slate-900 outline-none focus:border-teal-400 sm:text-sm" /><select aria-label="Filter PDF location" value={fileFilter} onChange={(event) => setFileFilter(event.target.value as 'all' | 'server' | 'drime')} className="min-h-10 rounded-xl border border-slate-200 bg-white px-2 text-xs text-slate-700"><option value="all">All locations</option><option value="server">On server</option><option value="drime">Drime</option></select></div>}
         {!status ? (
           <p className="mt-2 text-xs text-slate-500">{statusError ? 'Files are unavailable while the server is offline.' : 'Checking for finished files…'}</p>
@@ -768,9 +780,8 @@ export function ScribdDesk({ bottomNav = false }: { bottomNav?: boolean } = {}) 
             })}
           </ul>
         )}
-        <p className="mt-2 text-[11px] text-slate-400">Files and statuses are reported by the Scribd server.</p>
-      </section>
-      {ticked.size > 0 && <div role="status" className={`fixed inset-x-3 z-[35] mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl border border-teal-200 bg-white/95 p-2.5 shadow-[0_8px_35px_rgba(15,23,42,0.18)] backdrop-blur-md ${bottomNav ? 'bottom-[calc(4.5rem+env(safe-area-inset-bottom))] sm:bottom-4' : 'bottom-4'}`}>
+      </section>}
+      {page === 'search' && ticked.size > 0 && <div role="status" className={`fixed inset-x-3 z-[35] mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl border border-teal-200 bg-white/95 p-2.5 shadow-[0_8px_35px_rgba(15,23,42,0.18)] backdrop-blur-md ${bottomNav ? 'bottom-[calc(4.5rem+env(safe-area-inset-bottom))] sm:bottom-4' : 'bottom-4'}`}>
         <div className="min-w-0 pl-1"><p className="text-sm font-bold text-slate-900">{ticked.size} selected</p><p className="text-[11px] text-slate-500">Ready in your selection</p></div>
         <button type="button" aria-label="Submit selected books" onClick={() => void start()} disabled={starting || isAdmin !== true} className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl bg-teal-600 px-3.5 text-xs font-bold text-white disabled:opacity-40"><Download className="h-4 w-4" /> {starting ? 'Submitting…' : 'Queue'}</button>
       </div>}

@@ -5,7 +5,7 @@ import { AdminConsole } from '../components/admin-console';
 const router = { replace: vi.fn() };
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 vi.mock('next/link', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));
-vi.mock('../components/scribd-desk', () => ({ ScribdDesk: () => <div>Scribd desk</div> }));
+vi.mock('../components/scribd-desk', () => ({ ScribdDesk: ({ page }: { page?: string }) => <div data-testid="scribd-desk" data-page={page}>Scribd desk</div> }));
 
 const member = { email: 'member@example.com', name: 'A Member', isAdmin: false, isVerified: true, allowed: true, scribdAllowed: false, numbersCount: 1, createdAt: '2026-01-01' };
 const overview = {
@@ -20,12 +20,12 @@ const overview = {
 function reply(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
 }
-function mockApi() {
+function mockApi(scribdFailed = 0) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === '/api/auth/me') return reply({ user: { id: 1, name: 'Owner', email: 'owner@example.com', isAdmin: true }, quota: null });
     if (url === '/api/admin/status') return reply(overview);
-    if (url === '/api/scribd/status') return reply({ panelOnline: true, state: 'idle', active: 0, finished: 0, failed: 0, cancelled: false, items: [] });
+    if (url === '/api/scribd/status') return reply({ panelOnline: true, state: 'idle', active: 0, finished: 0, failed: scribdFailed, cancelled: false, items: [] });
     if (url === '/api/admin/panel/status') return reply({ configured: true, reachable: true, state: 'running', error: null, checkedAt: Date.now() });
     if (url === '/api/admin/activity') return reply({ ok: true, storage: 'local', events: [{ id: '1', category: 'members', action: 'Scribd access granted', actor: 'owner@example.com', detail: 'member@example.com', outcome: 'success', createdAt: '2026-01-01T12:00:00Z' }] });
     if (url === '/api/admin/members/scribd') return reply({ ok: true, members: [{ ...member, scribdAllowed: JSON.parse(String(init?.body)).allowed }] });
@@ -37,7 +37,7 @@ function mockApi() {
   return fetchMock;
 }
 beforeEach(() => { window.scrollTo = vi.fn(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('owner control room', () => {
   it('shows separate observed service states, warnings and website-only activity', async () => {
@@ -51,8 +51,11 @@ describe('owner control room', () => {
     expect(await screen.findByText('Scribd direct access may be open')).toBeTruthy();
     const nav = screen.getByRole('navigation', { name: 'Owner sections' });
     fireEvent.click(within(nav).getByRole('button', { name: 'Activity' }));
-    expect(screen.getByText(/Checks update while this page is open/)).toBeTruthy();
+    expect(screen.getByText(/Website-only alerts update/)).toBeTruthy();
+    expect(screen.queryByRole('searchbox', { name: 'Search activity' })).toBeNull();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Activity pages' })).getByRole('button', { name: 'History' }));
     expect(screen.getByText(/server’s local disk/)).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Current alerts' })).toBeNull();
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search activity' }), { target: { value: 'member@example.com' } });
     expect(screen.getByText('Scribd access granted')).toBeTruthy();
   });
@@ -80,8 +83,115 @@ describe('owner control room', () => {
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' }), { target: { value: 'Mobile' } });
     fireEvent.click(screen.getByRole('button', { name: 'Retry sync for +265991234567' }));
     expect(await screen.findByText(/Sync is not yet confirmed/)).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Power' }));
     fireEvent.click(screen.getByRole('button', { name: 'Stop service' }));
     expect(confirm).toHaveBeenCalled();
     expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/api/admin/panel' && init?.method === 'POST')).toBe(false);
   });
+
+  it('separates WhatsApp numbers, status, power and connection settings without losing drafts', async () => {
+    mockApi();
+    render(<AdminConsole />);
+    const mainNav = await screen.findByRole('navigation', { name: 'Owner sections' });
+    fireEvent.click(within(mainNav).getByRole('button', { name: 'WhatsApp' }));
+    const pages = screen.getByRole('navigation', { name: 'WhatsApp pages' });
+    expect(within(pages).getByRole('button', { name: 'Numbers' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Live Server Analytics' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Stop service' })).toBeNull();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' }), { target: { value: 'Mobile' } });
+
+    fireEvent.click(within(pages).getByRole('button', { name: 'Status' }));
+    expect(screen.getByRole('region', { name: 'Live Server Analytics' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Stop service' })).toBeNull();
+    expect(screen.queryByRole('searchbox', { name: 'Search WhatsApp numbers' })).toBeNull();
+
+    fireEvent.click(within(pages).getByRole('button', { name: 'Power' }));
+    expect(screen.getByRole('button', { name: 'Stop service' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Live Server Analytics' })).toBeNull();
+
+    fireEvent.click(within(pages).getByRole('button', { name: 'Sync' }));
+    const token = screen.getByLabelText('BOT_SYNC_TOKEN') as HTMLInputElement;
+    fireEvent.change(token, { target: { value: 'draft sync token' } });
+    expect(screen.queryByLabelText('PANEL_URL')).toBeNull();
+    fireEvent.click(within(pages).getByRole('button', { name: 'Hosting' }));
+    expect(screen.getByLabelText('PANEL_URL')).toBeTruthy();
+    expect(screen.queryByLabelText('BOT_SYNC_TOKEN')).toBeNull();
+    fireEvent.click(within(pages).getByRole('button', { name: 'Sync' }));
+    expect((screen.getByLabelText('BOT_SYNC_TOKEN') as HTMLInputElement).value).toBe('draft sync token');
+    fireEvent.click(within(pages).getByRole('button', { name: 'Numbers' }));
+    expect((screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' }) as HTMLInputElement).value).toBe('Mobile');
+    expect(screen.getByText(/Pausing stops new requests, not approved numbers/)).toBeTruthy();
+  });
+
+  it('keeps activity filters and sends a number-sync alert to the numbers page', async () => {
+    mockApi();
+    render(<AdminConsole />);
+    const mainNav = await screen.findByRole('navigation', { name: 'Owner sections' });
+    fireEvent.click(within(mainNav).getByRole('button', { name: 'Activity' }));
+    const pages = screen.getByRole('navigation', { name: 'Activity pages' });
+    fireEvent.click(within(pages).getByRole('button', { name: 'History' }));
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search activity' }), { target: { value: 'member@example.com' } });
+    fireEvent.click(within(pages).getByRole('button', { name: 'Alerts' }));
+    fireEvent.click(screen.getByRole('button', { name: /Number list awaiting sync/ }));
+    expect(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Numbers' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' })).toBeTruthy();
+    fireEvent.click(within(mainNav).getByRole('button', { name: 'Activity' }));
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Activity pages' })).getByRole('button', { name: 'History' }));
+    expect((screen.getByRole('searchbox', { name: 'Search activity' }) as HTMLInputElement).value).toBe('member@example.com');
+  });
+
+
+  it('opens a failed Scribd alert on the queue even after the desk was visited', async () => {
+    mockApi(1);
+    render(<AdminConsole />);
+    const mainNav = await screen.findByRole('navigation', { name: 'Owner sections' });
+    fireEvent.click(within(mainNav).getByRole('button', { name: 'Scribd' }));
+    expect(screen.getByTestId('scribd-desk').getAttribute('data-page')).toBe('search');
+    fireEvent.click(within(mainNav).getByRole('button', { name: 'Activity' }));
+    fireEvent.click(await screen.findByRole('button', { name: /1 failed Scribd job/ }));
+    expect(screen.getByTestId('scribd-desk').getAttribute('data-page')).toBe('queue');
+    expect(within(mainNav).getByRole('button', { name: 'Scribd' }).getAttribute('aria-current')).toBe('page');
+  });
+
+
+  it('keeps a pairing code and its unlinked status when moving between WhatsApp pages', async () => {
+    const receivedAt = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(receivedAt);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/auth/me') return reply({ user: { id: 1, name: 'Owner', email: 'owner@example.com', isAdmin: true }, quota: null });
+      if (url === '/api/admin/status') return reply({ ...overview, accounts: [{ number: '265991234567', state: 'awaiting_link' }] });
+      if (url === '/api/scribd/status') return reply({ panelOnline: true, state: 'idle', active: 0, finished: 0, failed: 0, cancelled: false, items: [] });
+      if (url === '/api/admin/panel/status') return reply({ configured: true, reachable: true, state: 'running', error: null, checkedAt: Date.now() });
+      if (url === '/api/admin/activity') return reply({ ok: true, storage: 'cloudflare-d1', events: [] });
+      if (url === '/api/admin/pair' && init?.method === 'POST') return reply({ ok: true, code: 'TEST-CODE', expiresInSeconds: 60, issuedAt: receivedAt + 30_000 });
+      return reply({ error: `Unexpected request: ${url}` }, 404);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<AdminConsole />);
+    const nav = await screen.findByRole('navigation', { name: 'Owner sections' });
+    fireEvent.click(within(nav).getByRole('button', { name: 'WhatsApp' }));
+    expect(screen.getByText('Waiting for linking')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Get code' }));
+    expect(await screen.findByText('TEST-CODE')).toBeTruthy();
+    const pages = screen.getByRole('navigation', { name: 'WhatsApp pages' });
+    fireEvent.click(within(pages).getByRole('button', { name: 'Status' }));
+    expect(screen.queryByText('TEST-CODE')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'View code' }));
+    expect(within(pages).getByRole('button', { name: 'Numbers' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByText('TEST-CODE')).toBeTruthy();
+    expect(screen.getByText('Waiting for linking')).toBeTruthy();
+    // A future server timestamp must not extend the lifetime after returning to the page.
+    clock.mockReturnValue(receivedAt + 61_000);
+    fireEvent.click(within(pages).getByRole('button', { name: 'Status' }));
+    fireEvent.click(screen.getByRole('button', { name: 'View code' }));
+    expect(screen.getByText('Code expired')).toBeTruthy();
+    expect(screen.queryByText('TEST-CODE')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss pairing code' }));
+    expect(screen.queryByRole('button', { name: 'View code' })).toBeNull();
+    const pairCall = fetchMock.mock.calls.find(([url]) => String(url) === '/api/admin/pair');
+    expect(JSON.parse(String(pairCall?.[1]?.body))).toEqual({ number: '265991234567' });
+  });
+
 });
