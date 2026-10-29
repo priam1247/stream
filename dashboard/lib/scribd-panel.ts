@@ -14,7 +14,9 @@ import type {
   ScribdPanelHealth,
   ScribdPanelStatus,
 } from './scribd-types';
-import { DEFAULT_SCRIBD_PANEL_URL, getScribdConnectionConfig } from './storage';
+// The existing Scribd web server's documented panel allocation. The address is
+// public configuration, not a secret; the optional token remains server-side.
+export const DEFAULT_SCRIBD_WEB_URL = 'http://195.123.189.187:25811';
 
 const REQUEST_TIMEOUT_MS = 20_000;
 // Search starts Chromium and can wait for Scribd's challenge/reader to load.
@@ -46,21 +48,15 @@ export function cleanPanelUrl(raw: string): string {
 }
 
 /**
- * Dedicated web-service environment variables override the legacy saved panel
- * settings. If the URL is explicitly changed, do not send an old saved key to
- * a different host: its WEB_TOKEN must be provided explicitly.
+ * Use the documented server by default. Legacy panel settings may refer to a
+ * different service, so neither their address nor their key is used here.
+ * Environment overrides remain available if the server moves or is secured.
  */
 export async function scribdPanelConfig(): Promise<ScribdPanelConfig> {
-  const webUrl = (process.env.SCRIBD_WEB_URL || '').trim();
-  const webToken = process.env.SCRIBD_WEB_TOKEN;
-  // A dedicated URL fully determines the connection. Do not consult D1 on
-  // every status/cover request, or make this connection depend on legacy
-  // settings being available.
-  if (webUrl) return { baseUrl: cleanPanelUrl(webUrl), key: webToken?.trim() || '' };
-  const saved = await getScribdConnectionConfig();
+  const webUrl = (process.env.SCRIBD_WEB_URL || '').trim() || DEFAULT_SCRIBD_WEB_URL;
   return {
-    baseUrl: cleanPanelUrl(saved?.panelUrl || DEFAULT_SCRIBD_PANEL_URL),
-    key: webToken !== undefined ? webToken.trim() : (saved?.panelKey || '').trim(),
+    baseUrl: cleanPanelUrl(webUrl),
+    key: (process.env.SCRIBD_WEB_TOKEN || '').trim(),
   };
 }
 
