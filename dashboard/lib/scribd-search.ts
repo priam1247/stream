@@ -20,6 +20,20 @@ export function safeScribdThumbnail(value: unknown): string | undefined {
   }
 }
 
+/** Extract a document ID without accepting links to unrelated hosts. */
+export function scribdDocumentId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.port ||
+        (host !== 'scribd.com' && !host.endsWith('.scribd.com'))) return undefined;
+    return /^\/document\/(\d{1,20})(?:\/|$)/.exec(url.pathname)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
 function thumbnailFrom(item: Record<string, unknown>): string | undefined {
   for (const candidate of [
     item.thumbnail,

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { guardScribdRequest } from '@/lib/scribd-guard';
-import { cleanPanelUrl, testScribdConnection } from '@/lib/scribd-panel';
+import { cleanPanelUrl, scribdPanelConfig, testScribdConnection } from '@/lib/scribd-panel';
 import { getScribdConnectionConfig, saveScribdConnectionConfig } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -16,13 +16,13 @@ export async function GET(req: NextRequest) {
   if ('response' in gate) return gate.response;
 
   const config = await getScribdConnectionConfig();
+  const effective = await scribdPanelConfig();
   const check = await testScribdConnection();
 
   return NextResponse.json({
     ok: true,
-    // The address actually used: a saved store-only address is healed to the panel.
-    panelUrl: cleanPanelUrl(config.panelUrl),
-    hasPanelKey: Boolean(config.panelKey),
+    panelUrl: effective.baseUrl,
+    hasPanelKey: Boolean(effective.key),
     updatedAt: config.updatedAt || null,
     ...check,
   });
@@ -56,7 +56,7 @@ export async function PATCH(req: NextRequest) {
       } catch {
         parsed = null;
       }
-      if (!parsed || !/^https?:$/.test(parsed.protocol)) {
+      if (!parsed || !/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password || !cleanPanelUrl(typed)) {
         return NextResponse.json(
           { error: 'The panel address must be a full URL, e.g. http://195.123.189.187:25811.' },
           { status: 400 },
@@ -79,12 +79,13 @@ export async function PATCH(req: NextRequest) {
   }
 
   const saved = await saveScribdConnectionConfig(patch);
+  const effective = await scribdPanelConfig();
   const check = await testScribdConnection();
 
   return NextResponse.json({
     ok: true,
-    panelUrl: saved.panelUrl,
-    hasPanelKey: Boolean(saved.panelKey),
+    panelUrl: effective.baseUrl,
+    hasPanelKey: Boolean(effective.key),
     updatedAt: saved.updatedAt || null,
     ...check,
   });
