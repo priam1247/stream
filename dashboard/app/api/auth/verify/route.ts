@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { recordActivity } from '@/lib/activity';
 import { AuthServiceError, verifyUserEmailCode } from '@/lib/auth-engine';
 import { attachSessionCookie } from '@/lib/jwt';
 
@@ -14,9 +15,11 @@ export async function POST(req: NextRequest) {
     const result = await verifyUserEmailCode({
       email: String(body.email || ''),
       code: String(body.code || ''),
-      password: body.password ? String(body.password) : undefined,
     });
 
+    if (result.user) {
+      await recordActivity({ category: 'account', action: 'Email verified', actor: result.user.email, outcome: 'success', detail: '' });
+    }
     const res = NextResponse.json({
       ok: true,
       message: result.message,

@@ -5,10 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { NextRequest } from 'next/server';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const auth = vi.hoisted(() => ({ role: 'admin' as 'admin' | 'member' | 'anonymous' }));
+const auth = vi.hoisted(() => ({ role: 'admin' as 'admin' | 'member' | 'granted' | 'blocked' | 'anonymous' }));
+vi.mock('../lib/activity', () => ({ recordActivity: vi.fn() }));
 vi.mock('../lib/auth-engine', () => ({
   getAuthenticatedSession: vi.fn(async () => auth.role === 'anonymous' ? null : {
-    user: { isAdmin: auth.role === 'admin' }, quota: null,
+    user: { isAdmin: auth.role === 'admin', email: 'owner@example.com', memberAllowed: auth.role !== 'blocked', scribdAllowed: auth.role === 'granted' || auth.role === 'blocked' }, quota: null,
   }),
 }));
 vi.mock('../lib/storage', () => ({
@@ -82,7 +83,13 @@ describe.sequential('dashboard routes with the real Python Scribd web handler', 
     expect((await run(request('/api/scribd/run', { docs: [{ id: '100001' }] }))).status).toBe(403);
     expect((await cancel(request('/api/scribd/reset', {}))).status).toBe(403);
     expect((await clear(request('/api/scribd/clear', {}))).status).toBe(403);
+    expect((await status(request('/api/scribd/status'))).status).toBe(403);
+    expect((await files(request('/api/scribd/files'))).status).toBe(403);
+    auth.role = 'blocked';
+    expect((await status(request('/api/scribd/status'))).status).toBe(403);
+    auth.role = 'granted';
     expect((await status(request('/api/scribd/status'))).status).toBe(200);
+    expect((await run(request('/api/scribd/run', { docs: [{ id: '100001' }] }))).status).toBe(403);
   });
 
   it('searches and proxies a cover with query-token authentication', async () => {

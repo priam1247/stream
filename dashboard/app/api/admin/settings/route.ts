@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
 import { fetchLiveBotStatus, parseAndValidateBotUrl } from '@/lib/bot-proxy';
 import { saveBotConnectionConfig, setFastPollWindow } from '@/lib/storage';
@@ -46,6 +47,9 @@ export async function POST(req: NextRequest) {
   });
 
   await setFastPollWindow(30_000).catch(() => {});
+  await recordActivity({ category: 'bot', action: typeof body.botEnabledForMembers === 'boolean'
+    ? (body.botEnabledForMembers ? 'Member linking enabled' : 'Member linking paused') : 'Bot connection updated',
+    actor: session.user.email, outcome: 'success', detail: '' });
 
   const parsed = parseAndValidateBotUrl(saved.botApiUrl);
   const probe = parsed.baseUrl

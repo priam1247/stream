@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAdminEmail, getAuthenticatedSession } from '@/lib/auth-engine';
 import { fetchLiveBotStatus, getResolvedBotTarget } from '@/lib/bot-proxy';
 import { JwtConfigError } from '@/lib/jwt';
+import { whitelistSyncState } from '@/lib/sync-status';
 import { listStoredWhatsAppUsers } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -24,11 +25,12 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const [target, numbers, live] = await Promise.all([
+  const [target, allNumbers, live] = await Promise.all([
     getResolvedBotTarget(),
-    listStoredWhatsAppUsers(session.user.email),
+    listStoredWhatsAppUsers(),
     fetchLiveBotStatus(),
   ]);
+  const numbers = allNumbers.filter((item) => (item.addedBy || '').toLowerCase() === session.user.email.toLowerCase());
 
   const botLinked =
     live.connectionMode === 'heartbeat' ||
@@ -38,17 +40,19 @@ export async function GET(req: NextRequest) {
     ok: true,
     adminEmail: getAdminEmail(),
     memberAllowed: session.user.memberAllowed,
+    scribdAllowed: session.user.scribdAllowed === true,
     botEnabledForMembers: target.botEnabledForMembers,
     botServerLinked: botLinked,
     botReachable: live.reachable,
     botError: live.error || null,
     lastSeenSecondsAgo: live.lastSeenSecondsAgo ?? null,
+    whitelistSync: whitelistSyncState(live, allNumbers, target.botEnabledForMembers),
     botConnected: live.connected,
     botNumber: live.botNumber,
     uptimeSeconds: live.uptimeSeconds ?? null,
-    commandsTotal: live.commandsTotal ?? 0,
-    downloadsSuccess: live.downloadsSuccess ?? 0,
-    failedTotal: live.failedTotal ?? 0,
+    commandsTotal: live.commandsTotal ?? null,
+    downloadsSuccess: live.downloadsSuccess ?? null,
+    failedTotal: live.failedTotal ?? null,
     ramUsedMB: live.ramUsedMB ?? null,
     diskUsedMB: live.diskUsedMB ?? null,
     diskBudgetMB: live.diskBudgetMB ?? null,

@@ -10,6 +10,8 @@ import {
   ChevronUp,
   Download,
   FileText,
+  Heart,
+  Clock3,
   Library,
   ListChecks,
   Loader2,
@@ -19,7 +21,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { authHeaders } from '@/lib/client-session';
-import { safeScribdThumbnail } from '@/lib/scribd-search';
+import { normalizeScribdHit, safeScribdThumbnail, scribdDocumentId } from '@/lib/scribd-search';
 import { filesFromJob } from '@/lib/scribd-job';
 import type {
   ScribdFindPayload,
@@ -81,7 +83,16 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
   }
 }
 
-export function ScribdDesk() {
+function restoreHits(value: unknown): Map<string, ScribdHit> {
+  if (!Array.isArray(value)) return new Map();
+  return new Map(value.slice(0, 200).flatMap((raw) => {
+    const hit = normalizeScribdHit(raw);
+    return hit && /^\d{1,20}$/.test(hit.id) && scribdDocumentId(hit.url) === hit.id ? [[hit.id, hit] as const] : [];
+  }));
+}
+
+/** Device-local preferences are separated by account and contain no credentials. */
+export function ScribdDesk({ bottomNav = false }: { bottomNav?: boolean } = {}) {
   const [status, setStatus] = useState<ScribdStatusPayload | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ text: string; bad?: boolean } | null>(null);
@@ -98,6 +109,13 @@ export function ScribdDesk() {
   const [visibleCount, setVisibleCount] = useState(RESULTS_PER_BATCH);
   const [ticked, setTicked] = useState<Map<string, ScribdHit>>(new Map());
   const [more, setMore] = useState(false);
+  const [favorites, setFavorites] = useState<Map<string, ScribdHit>>(new Map());
+  const [searchHistory, setSearchHistory] = useState<string[]>([]);
+  const [showSaved, setShowSaved] = useState(false);
+  const [sortBy, setSortBy] = useState<'relevance' | 'title' | 'pages'>('relevance');
+  const [storageKey, setStorageKey] = useState<string | null>(null);
+  const [fileFilter, setFileFilter] = useState<'all' | 'server' | 'drime'>('all');
+  const [fileQuery, setFileQuery] = useState('');
 
   const [starting, setStarting] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -151,14 +169,33 @@ export function ScribdDesk() {
           if (active) setIsAdmin(false);
           return;
         }
-        const json = (await res.json()) as { user?: { isAdmin?: boolean } };
-        if (active) setIsAdmin(Boolean(json.user?.isAdmin));
+        const json = (await res.json()) as { user?: { isAdmin?: boolean; email?: string } };
+        if (!active) return;
+        setIsAdmin(Boolean(json.user?.isAdmin));
+        if (typeof json.user?.email === 'string' && json.user.email.trim()) {
+          const key = `zafar_scribd_preferences_v1:${json.user.email.trim().toLowerCase()}`;
+          try {
+            const saved = JSON.parse(localStorage.getItem(key) || '{}') as { selected?: unknown; favorites?: unknown; history?: unknown };
+            const restored = restoreHits(saved.selected);
+            setTicked((current) => new Map([...current, ...[...restored].filter(([id]) => !current.has(id))].slice(0, 200)));
+            setFavorites(restoreHits(saved.favorites));
+            setSearchHistory(Array.isArray(saved.history) ? saved.history.filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length <= 200).slice(0, 8) : []);
+          } catch { /* Storage can be disabled or corrupt. The desk still works. */ }
+          setStorageKey(key);
+        }
       } catch {
         if (active) setIsAdmin(false);
       }
     })();
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ selected: [...ticked.values()], favorites: [...favorites.values()], history: searchHistory }));
+    } catch { /* Private browsing or a full device must not break the queue. */ }
+  }, [storageKey, ticked, favorites, searchHistory]);
 
   useEffect(() => () => {
     if (noticeTimer.current) window.clearTimeout(noticeTimer.current);
@@ -216,6 +253,8 @@ export function ScribdDesk() {
         setSearchName(typeof payload.summary === 'string' ? payload.summary : '');
         setMore(fresh.length > 0 && thisPage < maxPage);
         if (page === 1) {
+          setSearchHistory((previous) => [words, ...previous.filter((item) => item.toLowerCase() !== words.toLowerCase())].slice(0, 8));
+          setShowSaved(false);
           setVisibleCount(RESULTS_PER_BATCH);
           setResultsOpen(true);
         } else {
@@ -232,18 +271,29 @@ export function ScribdDesk() {
   );
 
   const showMoreResults = useCallback(() => {
-    if (visibleCount < hits.length) {
-      setVisibleCount((count) => Math.min(count + RESULTS_PER_BATCH, hits.length));
-    } else if (more) {
+    const total = showSaved ? favorites.size : hits.length;
+    if (visibleCount < total) {
+      setVisibleCount((count) => Math.min(count + RESULTS_PER_BATCH, total));
+    } else if (!showSaved && more) {
       void runSearch(searchPage + 1, searchQuery);
     }
-  }, [visibleCount, hits.length, more, runSearch, searchPage, searchQuery]);
+  }, [visibleCount, hits.length, favorites.size, showSaved, more, runSearch, searchPage, searchQuery]);
 
   const toggle = useCallback((hit: ScribdHit) => {
+    if (!ticked.has(hit.id) && ticked.size >= 200) { say('Select at most 200 documents at a time.', true); return; }
     setTicked((current) => {
       const next = new Map(current);
       if (next.has(hit.id)) next.delete(hit.id);
       else next.set(hit.id, hit);
+      return next;
+    });
+  }, [ticked, say]);
+
+  const toggleFavorite = useCallback((hit: ScribdHit) => {
+    setFavorites((current) => {
+      const next = new Map(current);
+      if (next.has(hit.id)) next.delete(hit.id);
+      else if (next.size < 200) next.set(hit.id, hit);
       return next;
     });
   }, []);
@@ -318,8 +368,15 @@ export function ScribdDesk() {
 
   const fileUrl = useCallback((name: string) => `/api/scribd/file?name=${encodeURIComponent(name)}`, []);
   const files = useMemo(() => filesFromJob(status?.items || []), [status]);
-  const visibleHits = hits.slice(0, visibleCount);
-  const selectableHits = hits.filter((hit) => Boolean(hit.url));
+  const shownFiles = files.filter((file) => (fileFilter === 'all' || file.source === fileFilter) && `${file.name} ${file.title}`.toLowerCase().includes(fileQuery.trim().toLowerCase()));
+  const displayHits = useMemo(() => {
+    const list = showSaved ? [...favorites.values()] : [...hits];
+    if (sortBy === 'title') list.sort((a, b) => a.title.localeCompare(b.title));
+    if (sortBy === 'pages') list.sort((a, b) => b.pages - a.pages);
+    return list;
+  }, [showSaved, favorites, hits, sortBy]);
+  const visibleHits = displayHits.slice(0, visibleCount);
+  const selectableHits = displayHits.filter((hit) => Boolean(hit.url));
 
   return (
     <div className="space-y-4">
@@ -433,20 +490,26 @@ export function ScribdDesk() {
           </button>
         </form>
 
-        {hasSearched && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => { setShowSaved((current) => !current); setVisibleCount(RESULTS_PER_BATCH); setResultsOpen(true); }} aria-pressed={showSaved} className={`inline-flex min-h-9 items-center gap-1.5 rounded-full border px-3 text-xs font-semibold ${showSaved ? 'border-teal-300 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-600'}`}><Heart className={`h-3.5 w-3.5 ${showSaved ? 'fill-current text-teal-600' : ''}`} /> Favourites ({favorites.size})</button>
+          {storageKey && <span className="text-[11px] text-slate-400">Saved on this device</span>}
+        </div>
+        {searchHistory.length > 0 && <div className="mt-2 flex items-center gap-1.5 overflow-x-auto pb-1"><Clock3 className="h-3.5 w-3.5 shrink-0 text-slate-400" /><span className="shrink-0 text-[11px] text-slate-500">Recent:</span>{searchHistory.slice(0, 5).map((word) => <button key={word} type="button" disabled={searching} onClick={() => { setQuery(word); void runSearch(1, word); }} className="min-h-8 shrink-0 rounded-full bg-slate-100 px-2.5 text-[11px] font-medium text-slate-600 hover:bg-teal-50 hover:text-teal-800">{word}</button>)}<button type="button" onClick={() => setSearchHistory([])} className="min-h-8 shrink-0 px-1 text-[11px] font-semibold text-slate-500 underline">Clear</button></div>}
+
+        {(hasSearched || showSaved) && (
           <div className="mt-4 border-t border-slate-100 pt-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="min-w-0" aria-live="polite">
-                <h4 className="text-xs font-bold text-slate-800">Search results</h4>
+                <h4 className="text-xs font-bold text-slate-800">{showSaved ? 'Favourite books' : 'Search results'}</h4>
                 <p className="mt-1 text-[11px] text-slate-500">
-                  {hits.length
+                  {displayHits.length
                     ? resultsOpen
-                      ? `Showing ${visibleHits.length} of ${hits.length}${searchTotal > hits.length ? ` · ${searchTotal} total` : ''}`
-                      : `${hits.length} result${hits.length === 1 ? '' : 's'} hidden`
-                    : `No results for “${searchQuery}”`}
+                      ? `Showing ${visibleHits.length} of ${displayHits.length}${!showSaved && searchTotal > displayHits.length ? ` · ${searchTotal} total` : ''}`
+                      : `${displayHits.length} result${displayHits.length === 1 ? '' : 's'} hidden`
+                    : showSaved ? 'No favourites saved on this device' : `No results for “${searchQuery}”`}
                 </p>
               </div>
-              {hits.length > 0 && (
+              {displayHits.length > 0 && (
                 <button
                   type="button"
                   aria-expanded={resultsOpen}
@@ -460,23 +523,24 @@ export function ScribdDesk() {
               )}
             </div>
 
-            {searchName && hits.length > 0 && (
+            {!showSaved && searchName && displayHits.length > 0 && (
               <p className="mt-1 text-[11px] text-slate-400">{searchName}</p>
             )}
 
-            {hits.length === 0 ? (
+            {displayHits.length === 0 ? (
               <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-5 text-center text-xs text-slate-500">
-                Try a different title or a broader subject.
+                {showSaved ? 'Save a book from search results to find it here later.' : 'Try a different title or a broader subject.'}
               </div>
             ) : (
               <div id="scribd-search-results" hidden={!resultsOpen} className="mt-3">
+                <div className="mb-2 flex items-center justify-end gap-2"><label htmlFor="scribd-sort" className="text-[11px] text-slate-500">Sort loaded results</label><select id="scribd-sort" value={sortBy} onChange={(event) => setSortBy(event.target.value as 'relevance' | 'title' | 'pages')} className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"><option value="relevance">Original order</option><option value="title">Title</option><option value="pages">Most pages</option></select></div>
                 <div className="grid grid-cols-2 gap-2 min-[360px]:grid-cols-3 min-[460px]:grid-cols-4 sm:grid-cols-5 lg:grid-cols-6">
                   {visibleHits.map((hit) => {
                     const selected = Boolean(hit.url) && ticked.has(hit.id);
                     return (
+                      <div key={`${hit.id}:${hit.url}`} className="relative min-w-0">
                       <label
-                        key={`${hit.id}:${hit.url}`}
-                        className={`group relative flex min-w-0 flex-col overflow-hidden rounded-xl border bg-white transition focus-within:ring-2 focus-within:ring-teal-500 focus-within:ring-offset-2 ${
+                        className={`group relative flex h-full min-w-0 flex-col overflow-hidden rounded-xl border bg-white transition focus-within:ring-2 focus-within:ring-teal-500 focus-within:ring-offset-2 ${
                           selected
                             ? 'border-teal-500 ring-2 ring-teal-100'
                             : hit.url
@@ -511,10 +575,12 @@ export function ScribdDesk() {
                           </span>
                         </span>
                       </label>
+                      <button type="button" aria-label={`${favorites.has(hit.id) ? 'Remove' : 'Save'} ${hit.title} ${favorites.has(hit.id) ? 'from favourites' : 'to favourites'}`} onClick={() => toggleFavorite(hit)} className={`absolute right-1.5 top-1.5 z-10 grid h-8 w-8 place-items-center rounded-lg border border-white/80 shadow-sm ${favorites.has(hit.id) ? 'bg-white text-rose-500' : 'bg-slate-900/50 text-white'}`}><Heart className={`h-4 w-4 ${favorites.has(hit.id) ? 'fill-current' : ''}`} /></button>
+                      </div>
                     );
                   })}
                 </div>
-                {(visibleCount < hits.length || more) && (
+                {(visibleCount < displayHits.length || (!showSaved && more)) && (
                   <div className="mt-3 flex justify-center">
                     <button
                       type="button"
@@ -536,7 +602,7 @@ export function ScribdDesk() {
           {selectableHits.length > 0 && (
             <button
               type="button"
-              onClick={() => setTicked((current) => new Map([...current, ...selectableHits.map((hit) => [hit.id, hit] as const)]))}
+              onClick={() => setTicked((current) => new Map([...current, ...selectableHits.map((hit) => [hit.id, hit] as const)].slice(0, 200)))}
               className="inline-flex min-h-9 items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700"
             >
               <ListChecks className="h-3.5 w-3.5" /> Select all ({selectableHits.length})
@@ -564,6 +630,7 @@ export function ScribdDesk() {
             {starting ? 'Submitting…' : running ? `Add to queue (${ticked.size})` : `Download selected (${ticked.size})`}
           </button>
         </div>
+        {ticked.size > 0 && <details className="mt-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2"><summary className="cursor-pointer text-xs font-semibold text-slate-700">Review selected books ({ticked.size})</summary><ul className="mt-2 max-h-44 divide-y divide-slate-200 overflow-y-auto">{[...ticked.values()].map((hit) => <li key={hit.id} className="flex items-center justify-between gap-2 py-2"><span className="min-w-0 break-words text-xs text-slate-600">{hit.title}</span><button type="button" onClick={() => toggle(hit)} aria-label={`Remove ${hit.title} from selection`} className="min-h-8 shrink-0 text-xs font-semibold text-rose-700">Remove</button></li>)}</ul></details>}
         {isAdmin === false && (
           <p className="mt-2 text-[11px] text-slate-500">Only administrators can start or cancel downloads.</p>
         )}
@@ -661,13 +728,16 @@ export function ScribdDesk() {
           <FileText className="h-4 w-4 text-teal-600" /> Finished PDFs
           <span className="font-mono text-[11px] font-normal text-slate-500 tabular-nums">{files.length}</span>
         </h3>
+        {files.length > 0 && <div className="mt-3 flex flex-wrap gap-2"><input type="search" aria-label="Search finished PDFs" value={fileQuery} onChange={(event) => setFileQuery(event.target.value)} placeholder="Find a finished PDF" className="min-h-10 min-w-0 flex-1 basis-40 rounded-xl border border-slate-200 bg-slate-50 px-3 text-base text-slate-900 outline-none focus:border-teal-400 sm:text-sm" /><select aria-label="Filter PDF location" value={fileFilter} onChange={(event) => setFileFilter(event.target.value as 'all' | 'server' | 'drime')} className="min-h-10 rounded-xl border border-slate-200 bg-white px-2 text-xs text-slate-700"><option value="all">All locations</option><option value="server">On server</option><option value="drime">Drime</option></select></div>}
         {!status ? (
           <p className="mt-2 text-xs text-slate-500">{statusError ? 'Files are unavailable while the server is offline.' : 'Checking for finished files…'}</p>
         ) : files.length === 0 ? (
           <p className="mt-2 text-xs text-slate-500">No finished PDFs reported by the server.</p>
+        ) : shownFiles.length === 0 ? (
+          <p className="mt-3 text-xs text-slate-500">No finished PDFs match this filter.</p>
         ) : (
           <ul className="mt-2 divide-y divide-slate-100">
-            {files.map((file) => {
+            {shownFiles.map((file) => {
               const info = [file.source === 'drime' ? 'Stored in Drime' : 'On server', file.bytes ? bytesText(file.bytes) : '', file.when ? whenText(file.when) : ''].filter(Boolean).join(' · ');
               return (
                 <li key={`${file.id}:${file.name}`} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
@@ -700,6 +770,10 @@ export function ScribdDesk() {
         )}
         <p className="mt-2 text-[11px] text-slate-400">Files and statuses are reported by the Scribd server.</p>
       </section>
+      {ticked.size > 0 && <div role="status" className={`fixed inset-x-3 z-[35] mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl border border-teal-200 bg-white/95 p-2.5 shadow-[0_8px_35px_rgba(15,23,42,0.18)] backdrop-blur-md ${bottomNav ? 'bottom-[calc(4.5rem+env(safe-area-inset-bottom))] sm:bottom-4' : 'bottom-4'}`}>
+        <div className="min-w-0 pl-1"><p className="text-sm font-bold text-slate-900">{ticked.size} selected</p><p className="text-[11px] text-slate-500">Ready in your selection</p></div>
+        <button type="button" aria-label="Submit selected books" onClick={() => void start()} disabled={starting || isAdmin !== true} className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl bg-teal-600 px-3.5 text-xs font-bold text-white disabled:opacity-40"><Download className="h-4 w-4" /> {starting ? 'Submitting…' : 'Queue'}</button>
+      </div>}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { recordActivity } from '@/lib/activity';
 import { guardScribdRequest } from '@/lib/scribd-guard';
 import { startScribdJob } from '@/lib/scribd-panel';
 
@@ -24,7 +25,9 @@ export async function POST(req: NextRequest) {
   const links = typeof body.links === 'string' ? body.links : '';
   const result = await startScribdJob({ docs, urls, links });
   if (!result.ok) {
+    await recordActivity({ category: 'scribd', action: 'Download request failed', actor: gate.user.email, outcome: 'failed', detail: 'The Scribd service did not accept the request.' });
     return NextResponse.json({ error: result.error }, { status: result.status === 400 ? 400 : 502 });
   }
+  await recordActivity({ category: 'scribd', action: 'Download submitted', actor: gate.user.email, outcome: 'requested', detail: `${result.data.acceptedIds.length} document(s) reported accepted.` });
   return NextResponse.json(result.data);
 }

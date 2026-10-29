@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAdminEmail, getAuthenticatedSession } from '@/lib/auth-engine';
 import {
   checkQueuedPairCommand,
@@ -16,12 +17,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Authentication required.' }, { status: 401 });
   }
 
+  if (!session.user.memberAllowed) {
+    return NextResponse.json({ error: 'Your account access has been restricted.' }, { status: 403 });
+  }
+
   const requestId = req.nextUrl.searchParams.get('requestId')?.trim() || '';
   if (!requestId) {
     return NextResponse.json({ error: 'Missing requestId.' }, { status: 400 });
   }
 
-  const res = await checkQueuedPairCommand(requestId);
+  const res = await checkQueuedPairCommand(requestId, session.user.email);
   if (!res.ok) {
     return NextResponse.json({ error: res.error }, { status: res.status });
   }
@@ -33,7 +38,7 @@ export async function GET(req: NextRequest) {
     ok: true,
     code: res.code,
     expiresInSeconds: res.expiresInSeconds || 60,
-    issuedAt: Date.now(),
+    issuedAt: res.issuedAt || Date.now(),
   });
 }
 
@@ -81,6 +86,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const requestedAt = Date.now();
   const result = await requestLiveBotPairingCode(
     number,
     `${existing.label || session.user.name} (${session.user.email})`,
@@ -89,6 +95,8 @@ export async function POST(req: NextRequest) {
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: result.status });
   }
+
+  await recordActivity({ category: 'numbers', action: 'Pairing code requested', actor: session.user.email, outcome: 'requested', detail: maskedNumber(number) });
 
   if (result.pending && result.requestId) {
     return NextResponse.json(
@@ -107,6 +115,6 @@ export async function POST(req: NextRequest) {
     code: result.code,
     expiresInSeconds: result.expiresInSeconds || 60,
     number,
-    issuedAt: Date.now(),
+    issuedAt: result.issuedAt ?? requestedAt,
   });
 }

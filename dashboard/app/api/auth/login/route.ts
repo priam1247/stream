@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { recordActivity } from '@/lib/activity';
 import { AuthServiceError, signInWithEmailPassword } from '@/lib/auth-engine';
 import { attachSessionCookie, JwtConfigError } from '@/lib/jwt';
 import {
@@ -59,6 +60,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (accountKey) clearRateLimit(accountKey);
+    await recordActivity({ category: 'account', action: 'Signed in', actor: user.email, outcome: 'success', detail: '' });
 
     const res = NextResponse.json({
       ok: true,
@@ -74,6 +76,7 @@ export async function POST(req: NextRequest) {
       if (err.status === 401) {
         recordRateLimitHit(ipKey, LOGIN_WINDOW_MS);
         if (accountKey) recordRateLimitHit(accountKey, LOGIN_WINDOW_MS);
+        await recordActivity({ category: 'account', action: 'Sign-in failed', actor: email, outcome: 'failed', detail: 'Incorrect credentials.' });
       }
       return NextResponse.json(
         {

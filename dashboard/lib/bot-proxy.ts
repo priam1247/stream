@@ -92,12 +92,13 @@ export async function fetchLiveBotStatus(customTarget?: {
   token: string;
 }): Promise<{
   reachable: boolean;
-  connected: boolean;
+  connected: boolean | null;
   botNumber: string | null;
   connectionMode: 'heartbeat' | 'direct' | 'unconfigured';
   lastSeenAt?: number | null;
   lastSeenSecondsAgo?: number | null;
   version?: string | null;
+  whitelistVersion?: string | null;
   uptimeSeconds?: number | null;
   commandsTotal?: number | null;
   downloadsSuccess?: number | null;
@@ -117,21 +118,22 @@ export async function fetchLiveBotStatus(customTarget?: {
       if (ageSec <= HEARTBEAT_FRESH_SECONDS) {
         return {
           reachable: true,
-          connected: Boolean(hb.connected),
+          connected: typeof hb.connected === 'boolean' ? hb.connected : null,
           botNumber: hb.botNumber || null,
           connectionMode: 'heartbeat',
           lastSeenAt: hb.lastSeenAt,
           lastSeenSecondsAgo: ageSec,
           version: hb.version || null,
+          whitelistVersion: hb.whitelistVersion || null,
           uptimeSeconds: hb.uptimeSeconds ?? null,
-          commandsTotal: hb.commandsTotal ?? 0,
-          downloadsSuccess: hb.downloadsSuccess ?? 0,
-          failedTotal: hb.failedTotal ?? 0,
+          commandsTotal: hb.commandsTotal ?? null,
+          downloadsSuccess: hb.downloadsSuccess ?? null,
+          failedTotal: hb.failedTotal ?? null,
           ramUsedMB: hb.ramUsedMB ?? null,
           diskUsedMB: hb.diskUsedMB ?? null,
           diskBudgetMB: hb.diskBudgetMB ?? null,
-          queueLight: hb.queueLight ?? 0,
-          queueHeavy: hb.queueHeavy ?? 0,
+          queueLight: hb.queueLight ?? null,
+          queueHeavy: hb.queueHeavy ?? null,
         };
       }
     }
@@ -142,27 +144,28 @@ export async function fetchLiveBotStatus(customTarget?: {
         const ageSec = Math.max(0, Math.floor((Date.now() - hb.lastSeenAt) / 1000));
         return {
           reachable: false,
-          connected: false,
+          connected: null,
           botNumber: hb.botNumber || null,
           connectionMode: 'heartbeat',
           lastSeenAt: hb.lastSeenAt,
           lastSeenSecondsAgo: ageSec,
           version: hb.version || null,
-          uptimeSeconds: 0,
-          commandsTotal: hb.commandsTotal ?? 0,
-          downloadsSuccess: hb.downloadsSuccess ?? 0,
-          failedTotal: hb.failedTotal ?? 0,
+          whitelistVersion: hb.whitelistVersion || null,
+          uptimeSeconds: null,
+          commandsTotal: null,
+          downloadsSuccess: null,
+          failedTotal: null,
           ramUsedMB: null,
-          diskUsedMB: hb.diskUsedMB ?? null,
-          diskBudgetMB: hb.diskBudgetMB ?? null,
-          queueLight: 0,
-          queueHeavy: 0,
+          diskUsedMB: null,
+          diskBudgetMB: null,
+          queueLight: null,
+          queueHeavy: null,
           error: `Offline (${ageSec}s since heartbeat).`,
         };
       }
       return {
         reachable: false,
-        connected: false,
+        connected: null,
         botNumber: null,
         connectionMode: 'unconfigured',
       };
@@ -179,7 +182,7 @@ async function probeDirectBotStatus(target: {
   token: string;
 }): Promise<{
   reachable: boolean;
-  connected: boolean;
+  connected: boolean | null;
   botNumber: string | null;
   connectionMode: 'direct';
   latencyMs?: number;
@@ -188,7 +191,7 @@ async function probeDirectBotStatus(target: {
   if (!target.baseUrl) {
     return {
       reachable: false,
-      connected: false,
+      connected: null,
       botNumber: null,
       connectionMode: 'direct',
     };
@@ -196,7 +199,7 @@ async function probeDirectBotStatus(target: {
   if (!target.token) {
     return {
       reachable: false,
-      connected: false,
+      connected: null,
       botNumber: null,
       connectionMode: 'direct',
       error: 'ADMIN_DASHBOARD_TOKEN is not set yet.',
@@ -223,7 +226,7 @@ async function probeDirectBotStatus(target: {
           : data?.error || `Bot server returned HTTP ${res.status}`;
       return {
         reachable: false,
-        connected: false,
+        connected: null,
         botNumber: null,
         connectionMode: 'direct',
         latencyMs,
@@ -232,7 +235,7 @@ async function probeDirectBotStatus(target: {
     }
     return {
       reachable: true,
-      connected: Boolean(data.connected),
+      connected: typeof data.connected === 'boolean' ? data.connected : null,
       botNumber: data.botNumber ? String(data.botNumber) : null,
       connectionMode: 'direct',
       latencyMs,
@@ -240,7 +243,7 @@ async function probeDirectBotStatus(target: {
   } catch (err) {
     return {
       reachable: false,
-      connected: false,
+      connected: null,
       botNumber: null,
       connectionMode: 'direct',
       error: humanizeBotFetchError(err),
@@ -256,26 +259,28 @@ export async function syncNumberToLiveBot(
   number: string,
   label: string,
   enabled: boolean,
-): Promise<void> {
+): Promise<'accepted' | 'pending'> {
   await setFastPollWindow(30_000).catch(() => {});
   const { baseUrl, token } = await getResolvedBotTarget();
-  if (!baseUrl || !token) return;
-
-  try {
-    await fetch(`${baseUrl}/admin/api/users`, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ number, label, enabled }),
-      cache: 'no-store',
-      signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
-    });
-  } catch {
-    // D1 state + outbound sync cover offline/NAT bots
+  if (baseUrl && token) {
+    try {
+      const response = await fetch(`${baseUrl}/admin/api/users`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ number, label, enabled }),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
+      });
+      if (response.ok) return 'accepted';
+    } catch {
+      // The stored snapshot can still be picked up by outbound heartbeat sync.
+    }
   }
+  return 'pending';
 }
 
 export async function removeNumberFromLiveBot(number: string): Promise<void> {
@@ -298,24 +303,35 @@ export async function removeNumberFromLiveBot(number: string): Promise<void> {
   }
 }
 
-export async function checkQueuedPairCommand(requestId: string): Promise<{
+export async function checkQueuedPairCommand(requestId: string, requestedBy?: string): Promise<{
   ok: boolean;
   status: number;
   pending?: boolean;
   code?: string;
   expiresInSeconds?: number;
+  issuedAt?: number;
   error?: string;
 }> {
   const cmd = await getBotCommandById(requestId);
-  if (!cmd || cmd.type !== 'pair') {
+  if (
+    !cmd || cmd.type !== 'pair' ||
+    (requestedBy && (cmd.requestedBy || '').toLowerCase() !== requestedBy.toLowerCase())
+  ) {
     return { ok: false, status: 404, error: 'Pairing request not found.' };
   }
   if (cmd.status === 'completed' && cmd.result?.code) {
+    const reportedSeconds = Number(cmd.result.expiresInSeconds);
+    const expiresInSeconds = Number.isFinite(reportedSeconds) ? Math.min(600, Math.max(1, reportedSeconds)) : 60;
+    // Conservative: the request was created before the bot generated the code.
+    if (Date.now() >= cmd.createdAt + expiresInSeconds * 1000) {
+      return { ok: false, status: 410, error: 'This pairing code has expired. Request a new one.' };
+    }
     return {
       ok: true,
       status: 200,
       code: String(cmd.result.code),
-      expiresInSeconds: Number(cmd.result.expiresInSeconds) || 60,
+      expiresInSeconds,
+      issuedAt: cmd.createdAt,
     };
   }
   if (cmd.status === 'failed') {
@@ -346,6 +362,7 @@ export async function requestLiveBotPairingCode(
   requestId?: string;
   code?: string;
   expiresInSeconds?: number;
+  issuedAt?: number;
   error?: string;
 }> {
   const [{ baseUrl, token }, hb] = await Promise.all([

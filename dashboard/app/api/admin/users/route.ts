@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
 import { normalizePhoneNumber, syncNumberToLiveBot } from '@/lib/bot-proxy';
 import { saveStoredWhatsAppUser } from '@/lib/storage';
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
 
   const users = await saveStoredWhatsAppUser(number, label, ownerEmail);
   await syncNumberToLiveBot(number, label, true);
+  await recordActivity({ category: 'numbers', action: 'Number approved', actor: session.user.email, outcome: 'success', detail: maskedNumber(number) });
 
   return NextResponse.json({ ok: true, users }, { status: 201 });
 }

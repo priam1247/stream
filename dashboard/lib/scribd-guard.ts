@@ -1,13 +1,10 @@
 /**
  * One gate in front of every `/api/scribd/*` route.
  *
- * Same rules as the rest of the dashboard: a signed-in session is required.
- * Starting a download is administrator-only by default, because the panel
- * downloads with the owner's own Scribd cookies and only one job can run at a
- * time — a member starting a 400-page book would block everyone.
- *
- * To let every member download as well, call `guardScribdRequest(req)` without
- * `adminOnly` in `app/api/scribd/run/route.ts`.
+ * A signed-in owner can use all routes. Members may read the shared queue and
+ * files only after an explicit owner grant, and lose access while blocked.
+ * Starting, cancelling and clearing jobs remain administrator-only because
+ * the web service uses a single shared queue and the owner's Scribd cookies.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -46,6 +43,15 @@ export async function guardScribdRequest(
     return {
       response: NextResponse.json(
         { error: 'This Scribd action is restricted to administrators.' },
+        { status: 403 },
+      ),
+    };
+  }
+
+  if (!session.user.isAdmin && (!session.user.memberAllowed || !session.user.scribdAllowed)) {
+    return {
+      response: NextResponse.json(
+        { error: 'Scribd access has not been granted for this account.' },
         { status: 403 },
       ),
     };

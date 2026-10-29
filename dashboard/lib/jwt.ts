@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export const SESSION_COOKIE_NAME = 'zafar_session';
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
+// Reject pre-fix sessions, which may have been issued by the old verification bypass.
+export const SESSION_VERSION = 2;
 const MIN_SECRET_LENGTH = 16;
 
 export class JwtConfigError extends Error {
@@ -21,6 +23,7 @@ export interface SessionClaims {
   uid?: number | string;
   exp: number;
   iat?: number;
+  ver?: number;
 }
 
 function isProductionRuntime(): boolean {
@@ -94,6 +97,7 @@ export function signSessionJwt(
   const payload = toBase64Url(
     JSON.stringify({
       ...claims,
+      ver: SESSION_VERSION,
       iat: now,
       exp: now + expiresInSeconds,
     }),
@@ -141,7 +145,12 @@ export function verifySessionJwt(token: string): SessionClaims | null {
     ) as SessionClaims;
 
     const now = Math.floor(Date.now() / 1000);
-    if (!payload.sub || typeof payload.exp !== 'number' || payload.exp <= now) {
+    if (
+      !payload.sub ||
+      payload.ver !== SESSION_VERSION ||
+      typeof payload.exp !== 'number' ||
+      payload.exp <= now
+    ) {
       return null;
     }
 

@@ -15,6 +15,7 @@ import {
 import {
   findAccountByEmailOrUsername,
   isMemberEmailAllowed,
+  isMemberScribdAllowed,
   setMemberPermission,
   upsertAccount,
 } from './storage';
@@ -63,6 +64,9 @@ function getOptionalLegacyAuthUrl(): string | null {
 }
 
 function isEmailVerificationRequired(): boolean {
+  // A public deployment must not let someone create an account for an
+  // arbitrary email (especially an administrator) without proving ownership.
+  if (process.env.NODE_ENV === 'production') return true;
   return !/^(0|false|no|off)$/i.test(
     String(process.env.EMAIL_VERIFICATION_REQUIRED || 'true'),
   );
@@ -99,6 +103,7 @@ async function buildAuthUser(input: {
 }): Promise<AuthUser> {
   const admin = isAdminEmail(input.email);
   const memberAllowed = admin ? true : await isMemberEmailAllowed(input.email);
+  const scribdAllowed = admin || (memberAllowed && await isMemberScribdAllowed(input.email));
   return {
     id: input.id,
     name: input.name || input.username || 'Member',
@@ -107,6 +112,7 @@ async function buildAuthUser(input: {
     isVerified: input.isVerified,
     isAdmin: admin,
     memberAllowed,
+    scribdAllowed,
     createdAt: input.createdAt,
   };
 }
@@ -248,6 +254,11 @@ export async function registerUserAccount(params: {
   if (existing && existing.isVerified) {
     throw new AuthServiceError(400, 'An account with this email already exists.');
   }
+  if (existing && !(await bcrypt.compare(password, existing.passwordHash))) {
+    // Do not let a second registration replace the password of a pending
+    // account immediately before its owner completes email verification.
+    throw new AuthServiceError(409, 'This account is awaiting verification. Sign in with the original password to continue.');
+  }
 
   const requireVerify = isEmailVerificationRequired();
   if (
@@ -304,7 +315,6 @@ export async function registerUserAccount(params: {
 export async function verifyUserEmailCode(params: {
   email: string;
   code: string;
-  password?: string;
 }): Promise<{
   verified: true;
   message: string;
@@ -326,7 +336,13 @@ export async function verifyUserEmailCode(params: {
     throw new AuthServiceError(404, 'Account not found.');
   }
 
-  if (!account.isVerified) {
+  // Email verification is a one-time operation, not an alternative sign-in
+  // method. Never issue a session for an already-verified account here.
+  if (account.isVerified) {
+    throw new AuthServiceError(400, 'This account is already verified. Please sign in with your password.');
+  }
+
+  {
     if (account.verificationAttempts >= MAX_CODE_ATTEMPTS) {
       throw new AuthServiceError(
         429,
@@ -340,10 +356,8 @@ export async function verifyUserEmailCode(params: {
       });
       throw new AuthServiceError(400, 'Incorrect verification code.');
     }
-    if (
-      account.codeExpiresAt &&
-      new Date(account.codeExpiresAt).getTime() < Date.now()
-    ) {
+    const expiresAt = account.codeExpiresAt ? Date.parse(account.codeExpiresAt) : NaN;
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
       throw new AuthServiceError(
         400,
         'Verification code expired — request a new one.',
@@ -373,20 +387,6 @@ export async function verifyUserEmailCode(params: {
       user,
     };
   }
-
-  const user = await buildAuthUser(account);
-  const sessionToken = signSessionJwt({
-    sub: user.email,
-    email: user.email,
-    name: user.name,
-    uid: user.id,
-  });
-  return {
-    verified: true,
-    message: 'Account verified.',
-    sessionToken,
-    user,
-  };
 }
 
 export async function resendVerificationEmailCode(
@@ -542,10 +542,8 @@ export async function completePasswordReset(params: {
     });
     throw new AuthServiceError(400, 'Incorrect or expired reset code.');
   }
-  if (
-    account.resetExpiresAt &&
-    new Date(account.resetExpiresAt).getTime() < Date.now()
-  ) {
+  const resetExpiresAt = account.resetExpiresAt ? Date.parse(account.resetExpiresAt) : NaN;
+  if (!Number.isFinite(resetExpiresAt) || resetExpiresAt <= Date.now()) {
     throw new AuthServiceError(400, 'Reset code expired — request a new one.');
   }
 
