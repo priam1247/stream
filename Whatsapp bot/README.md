@@ -1,4 +1,4 @@
-# ZaFar WhatsApp Bot
+# WhatsApp Service
 
 A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper Vault, streaming media & movie/series downloader, 9 GB folder-quota disk guard, and a standalone Next.js 16 Control Room in the sibling `dashboard/` folder. **The bot responds to prefixed commands only — natural-language/AI routing and edited-message re-execution are disabled.**
 
@@ -74,6 +74,7 @@ cp .env.example .env   # configure privately, or use your host's startup variabl
 npm ci
 npm run selftest       # offline checks; no WhatsApp connection
 npm run test:jobs      # offline background-job tests
+npm run test:sessions  # offline pairing, permissions, and delivery tests
 npm start
 ```
 
@@ -83,9 +84,34 @@ Optionally run `npm run ytdlp:install` on a host that needs yt-dlp installed.
 The entry point uses this folder as its working directory, including when it is
 started from another directory. Do not commit or share `.env` or session files.
 
+## Linking additional WhatsApp accounts
+
+Update both the dashboard and the WhatsApp service, and make sure the service
+has `DASHBOARD_URL` and the matching `BOT_SYNC_TOKEN` configured. On the dashboard,
+approve and enable the number, then select **Get code**. On that phone, open
+WhatsApp → Linked devices → Link a device → Link with phone number instead, and
+enter the code. A code being issued does not mean that linking is complete;
+check the individual connection status after entering it. Existing linked
+accounts are not replaced by the request. By default, up to 20 additional
+accounts can be linked; adjust `MAX_LINKED_ACCOUNTS` if necessary (maximum 100).
+
+Each additional account has independent credentials under
+`<SESSION_NAME>/linked/`. Keep the entire session directory on persistent,
+private storage and back it up securely before moving servers. Never commit,
+share, or delete credential files just to request another code. Revoking a
+number pauses its ability to respond; re-enabling it resumes access without
+granting administrator privileges. Existing sender allowlist and administrator
+rules still apply separately to every message. `OWNER_NUMBER` and
+`ADMIN_NUMBERS` should be set privately for your installation; their existing
+fallbacks are retained for compatibility when these variables are empty.
+
+If a custom `SESSION_NAME` is used, keep that whole directory out of Git and
+backups/logs shared with others. The default `session/` and common Baileys key
+files are ignored, but a custom directory can contain additional private files.
+
 ## Disk Budget & Concurrency (10 GB Panel Plan)
 
-Shared container panels often report the entire host node's free space via `statfs`. ZaFar Bot protects against `ENOSPC` crashes with two layers (`utils/diskSpace.js` + `utils/diskGuard.js`):
+Shared container panels often report the entire host node's free space via `statfs`. The service protects against `ENOSPC` crashes with two layers (`utils/diskSpace.js` + `utils/diskGuard.js`):
 
 1. **Bot-Folder Quota (`DISK_BUDGET_MB=9000`)**: Tracks actual bytes inside the bot directory (including `session/`, `database/`, `node_modules/`, and `temp/`) plus **per-job byte reservations** so concurrent downloads can never over-commit a 10 GB plan.
 2. **Comparison Logging & Status**: Startup, periodic warnings, and `.status` print both `bot folder: X / 9000 MB` and `host statfs free: Y MB` so operators can compare against the panel's disk meter.
@@ -117,7 +143,10 @@ bot installation, stop it and securely back up and transfer its `.env`,
 `secrets/` or `cookies/` to the bot's new working directory. Preserve the originals
 until the new installation has been verified. These files are private; never
 commit them or post them in support tickets. For a fresh installation, configure
-its own environment and pair again instead. Temporary downloads need not be moved.
+its own environment and pair again instead. Completed downloads awaiting delivery
+are recorded with absolute paths. To resume those jobs after a move, preserve the
+job database and their media files at the same absolute paths; otherwise request
+the affected downloads again. Other temporary files need not be moved.
 
 If an existing panel already runs the bot with its files at the panel root, the
 SFTP workflow described below continues uploading the **contents** there, so its

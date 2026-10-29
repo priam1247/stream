@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAdminEmail, getAuthenticatedSession } from '@/lib/auth-engine';
+import { getAuthenticatedSession } from '@/lib/auth-engine';
 import { fetchLiveBotStatus, getResolvedBotTarget } from '@/lib/bot-proxy';
 import { JwtConfigError } from '@/lib/jwt';
 import { whitelistSyncState } from '@/lib/sync-status';
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    adminEmail: getAdminEmail(),
+    adminEmail: '',
     memberAllowed: session.user.memberAllowed,
     scribdAllowed: session.user.scribdAllowed === true,
     botEnabledForMembers: target.botEnabledForMembers,
@@ -48,7 +48,9 @@ export async function GET(req: NextRequest) {
     lastSeenSecondsAgo: live.lastSeenSecondsAgo ?? null,
     whitelistSync: whitelistSyncState(live, allNumbers, target.botEnabledForMembers),
     botConnected: live.connected,
-    botNumber: live.botNumber,
+    // Never expose the primary account's number to other members.
+    botNumber: null,
+    accounts: live.accounts ? live.accounts.filter((account) => numbers.some((item) => item.number === account.number)) : null,
     uptimeSeconds: live.uptimeSeconds ?? null,
     commandsTotal: live.commandsTotal ?? null,
     downloadsSuccess: live.downloadsSuccess ?? null,

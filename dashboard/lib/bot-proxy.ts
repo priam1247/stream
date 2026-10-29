@@ -3,12 +3,15 @@ import {
   getBotCommandById,
   getBotConnectionConfig,
   getBotHeartbeat,
+  getStoredWhatsAppUser,
   setFastPollWindow,
 } from './storage';
+import type { WhatsAppAccountStatus } from './types';
+import { readAccountStatuses, serviceText } from './whatsapp-accounts';
 
 const STATUS_TIMEOUT_MS = 3_000;
 const SYNC_TIMEOUT_MS = 2_500;
-const PAIR_TIMEOUT_MS = 10_000;
+const PAIR_TIMEOUT_MS = 45_000;
 export const HEARTBEAT_FRESH_SECONDS = 45;
 
 export function normalizePhoneNumber(input: unknown): string {
@@ -30,7 +33,7 @@ export function parseAndValidateBotUrl(rawUrl: string): {
       return {
         baseUrl: null,
         hostLabel: null,
-        error: 'Bot Server URL must start with http:// or https://',
+        error: 'Service URL must start with http:// or https://',
       };
     }
     const cleanPath = parsed.pathname
@@ -49,7 +52,7 @@ export function parseAndValidateBotUrl(rawUrl: string): {
       baseUrl: null,
       hostLabel: null,
       error:
-        'Invalid Bot Server URL format (expected e.g. https://bot-tunnel.trycloudflare.com or leave blank to use outbound Bot Heartbeat Sync)',
+        'Invalid service URL format (use an HTTPS origin or leave blank for outbound heartbeat sync)',
     };
   }
 }
@@ -77,14 +80,14 @@ export async function getResolvedBotTarget(): Promise<{
 }
 
 function humanizeBotFetchError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : 'Unable to reach bot server';
+  const raw = err instanceof Error ? err.message : 'Unable to reach the WhatsApp server';
   if (/aborted|timeout/i.test(raw)) {
-    return 'Bot server offline or unreachable (timed out after 3s).';
+    return 'WhatsApp server offline or unreachable (request timed out).';
   }
   if (/ECONNREFUSED|fetch failed/i.test(raw)) {
-    return 'Bot server offline or port closed.';
+    return 'WhatsApp server offline or port closed.';
   }
-  return raw;
+  return serviceText(raw);
 }
 
 export async function fetchLiveBotStatus(customTarget?: {
@@ -94,6 +97,7 @@ export async function fetchLiveBotStatus(customTarget?: {
   reachable: boolean;
   connected: boolean | null;
   botNumber: string | null;
+  accounts?: WhatsAppAccountStatus[];
   connectionMode: 'heartbeat' | 'direct' | 'unconfigured';
   lastSeenAt?: number | null;
   lastSeenSecondsAgo?: number | null;
@@ -120,6 +124,7 @@ export async function fetchLiveBotStatus(customTarget?: {
           reachable: true,
           connected: typeof hb.connected === 'boolean' ? hb.connected : null,
           botNumber: hb.botNumber || null,
+          accounts: readAccountStatuses(hb.accounts),
           connectionMode: 'heartbeat',
           lastSeenAt: hb.lastSeenAt,
           lastSeenSecondsAgo: ageSec,
@@ -184,6 +189,7 @@ async function probeDirectBotStatus(target: {
   reachable: boolean;
   connected: boolean | null;
   botNumber: string | null;
+  accounts?: WhatsAppAccountStatus[];
   connectionMode: 'direct';
   latencyMs?: number;
   error?: string;
@@ -222,21 +228,22 @@ async function probeDirectBotStatus(target: {
     if (!res.ok) {
       const errorMsg =
         res.status === 401
-          ? 'ADMIN_DASHBOARD_TOKEN mismatch (bot rejected token with HTTP 401).'
-          : data?.error || `Bot server returned HTTP ${res.status}`;
+          ? 'ADMIN_DASHBOARD_TOKEN mismatch (service rejected token with HTTP 401).'
+          : data?.error || `Service returned HTTP ${res.status}`;
       return {
         reachable: false,
         connected: null,
         botNumber: null,
         connectionMode: 'direct',
         latencyMs,
-        error: errorMsg,
+        error: serviceText(String(errorMsg)),
       };
     }
     return {
       reachable: true,
       connected: typeof data.connected === 'boolean' ? data.connected : null,
       botNumber: data.botNumber ? String(data.botNumber) : null,
+      accounts: readAccountStatuses(data.accounts),
       connectionMode: 'direct',
       latencyMs,
     };
@@ -319,33 +326,47 @@ export async function checkQueuedPairCommand(requestId: string, requestedBy?: st
   ) {
     return { ok: false, status: 404, error: 'Pairing request not found.' };
   }
+  // Approval can be revoked or ownership transferred while a request is in
+  // flight. Never disclose an outstanding code to a no-longer-authorized user.
+  const number = normalizePhoneNumber(cmd.payload?.number);
+  const stored = number ? await getStoredWhatsAppUser(number) : null;
+  if (!stored?.enabled || (requestedBy && (stored.addedBy || '').toLowerCase() !== requestedBy.toLowerCase())) {
+    return { ok: false, status: 403, error: 'This number is no longer approved for linking.' };
+  }
   if (cmd.status === 'completed' && cmd.result?.code) {
     const reportedSeconds = Number(cmd.result.expiresInSeconds);
-    const expiresInSeconds = Number.isFinite(reportedSeconds) ? Math.min(600, Math.max(1, reportedSeconds)) : 60;
-    // Conservative: the request was created before the bot generated the code.
-    if (Date.now() >= cmd.createdAt + expiresInSeconds * 1000) {
-      return { ok: false, status: 410, error: 'This pairing code has expired. Request a new one.' };
+    const expiresInSeconds = Number.isFinite(reportedSeconds) ? Math.min(60, Math.max(1, reportedSeconds)) : 60;
+    const reportedAt = Number(cmd.result.issuedAt);
+    const receivedAt = Number(cmd.result._dashboardReceivedAt);
+    // Both bounds are immutable: comparing with the current time would accept
+    // a future timestamp on a later poll and silently extend the countdown.
+    // Older results without a receipt timestamp use the conservative request time.
+    const issuedAt = Number.isFinite(receivedAt) && receivedAt >= cmd.createdAt &&
+      Number.isFinite(reportedAt) && reportedAt >= cmd.createdAt && reportedAt <= receivedAt
+      ? reportedAt : cmd.createdAt;
+    if (Date.now() >= issuedAt + expiresInSeconds * 1000) {
+      return { ok: false, status: 410, error: 'This linking code has expired. Request a new one.' };
     }
     return {
       ok: true,
       status: 200,
       code: String(cmd.result.code),
       expiresInSeconds,
-      issuedAt: cmd.createdAt,
+      issuedAt,
     };
   }
   if (cmd.status === 'failed') {
     return {
       ok: false,
       status: 409,
-      error: cmd.error || 'Bot could not issue a pairing code.',
+      error: serviceText(cmd.error || 'The service could not issue a linking code.'),
     };
   }
   if (Date.now() > cmd.expiresAt) {
     return {
       ok: false,
       status: 504,
-      error: 'Bot did not pick up the pairing request before it expired.',
+      error: 'The service did not pick up the linking request before it expired.',
     };
   }
   return { ok: true, status: 202, pending: true };
@@ -355,6 +376,7 @@ export async function requestLiveBotPairingCode(
   number: string,
   label: string,
   requestedBy?: string,
+  requireNumberOwnership = false,
 ): Promise<{
   ok: boolean;
   status: number;
@@ -373,22 +395,30 @@ export async function requestLiveBotPairingCode(
   const hbFresh =
     Boolean(hb) && Date.now() - (hb?.lastSeenAt || 0) <= HEARTBEAT_FRESH_SECONDS * 1000;
 
-  // Prefer outbound command queue whenever bot has a fresh heartbeat and no direct URL is set
-  // (or fall back to outbound queue if direct URL fails).
+  // A fresh outbound heartbeat can queue the request without opening a port or
+  // holding a serverless function during the WhatsApp handshake.
+  if (hbFresh) {
+    const queued = await enqueueBotCommand({
+      type: 'pair',
+      payload: { number, label },
+      requestedBy,
+      ttlMs: 90_000,
+    });
+
+    const deadline = Date.now() + 2_500;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 400));
+      const check = await checkQueuedPairCommand(queued.id, requireNumberOwnership ? requestedBy : undefined);
+      if (!check.pending) return check;
+    }
+    return { ok: true, status: 202, pending: true, requestId: queued.id };
+  }
+
   if (baseUrl && token) {
     try {
-      await fetch(`${baseUrl}/admin/api/users`, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ number, label, enabled: true }),
-        cache: 'no-store',
-        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
-      });
-
+      // Approval is synchronized separately; pairing must never re-enable a
+      // number that was revoked while this request was in flight.
+      const requestedAt = Date.now();
       const res = await fetch(`${baseUrl}/admin/api/pair`, {
         method: 'POST',
         headers: {
@@ -402,68 +432,33 @@ export async function requestLiveBotPairingCode(
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.code) {
-        return {
-          ok: true,
-          status: 200,
-          code: String(data.code),
-          expiresInSeconds: Number(data.expiresInSeconds) || 60,
-        };
+        const stored = await getStoredWhatsAppUser(number);
+        if (!stored?.enabled || (requireNumberOwnership && (!requestedBy || (stored.addedBy || '').toLowerCase() !== requestedBy.toLowerCase()))) {
+          return { ok: false, status: 403, error: 'This number is no longer approved for linking.' };
+        }
+        const reportedSeconds = Number(data.expiresInSeconds);
+        const expiresInSeconds = Number.isFinite(reportedSeconds) ? Math.min(60, Math.max(1, reportedSeconds)) : 60;
+        const reportedAt = Number(data.issuedAt);
+        const issuedAt = Number.isFinite(reportedAt) && reportedAt >= requestedAt && reportedAt <= Date.now() ? reportedAt : requestedAt;
+        if (Date.now() >= issuedAt + expiresInSeconds * 1000) {
+          return { ok: false, status: 410, error: 'This linking code has expired. Request a new one.' };
+        }
+        return { ok: true, status: 200, code: String(data.code), expiresInSeconds, issuedAt };
       }
-      if (!hbFresh) {
-        return {
-          ok: false,
-          status: res.status,
-          error: data?.error || `Bot server returned HTTP ${res.status}`,
-        };
-      }
-    } catch (err) {
-      if (!hbFresh) {
-        return {
-          ok: false,
-          status: 502,
-          error: humanizeBotFetchError(err),
-        };
-      }
-    }
-  }
-
-  if (hbFresh) {
-    if (hb?.connected && hb?.botNumber) {
       return {
         ok: false,
-        status: 409,
-        error: `This bot is already linked to +${hb.botNumber}. Log it out in WhatsApp → Linked devices before linking another number.`,
+        status: res.ok ? 502 : res.status,
+        error: serviceText(String(data?.error || (res.ok ? 'The service did not return a linking code.' : `Service returned HTTP ${res.status}`))),
       };
+    } catch (err) {
+      return { ok: false, status: 502, error: humanizeBotFetchError(err) };
     }
-
-    const queued = await enqueueBotCommand({
-      type: 'pair',
-      payload: { number, label },
-      requestedBy,
-      ttlMs: 45_000,
-    });
-
-    // Brief 2.5s check in case the bot is already fast-polling; otherwise return
-    // 202 + requestId so the browser polls cleanly without holding a Vercel function.
-    const deadline = Date.now() + 2_500;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 400));
-      const check = await checkQueuedPairCommand(queued.id);
-      if (!check.pending) return check;
-    }
-
-    return {
-      ok: true,
-      status: 202,
-      pending: true,
-      requestId: queued.id,
-    };
   }
 
   return {
     ok: false,
     status: 400,
     error:
-      'The WhatsApp bot is offline or not linked yet. Set DASHBOARD_URL + BOT_SYNC_TOKEN on the bot (no open port required) and start it.',
+      'The WhatsApp service is offline. Set DASHBOARD_URL + BOT_SYNC_TOKEN on the server and start it.',
   };
 }

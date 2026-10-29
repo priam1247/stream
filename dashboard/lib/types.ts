@@ -88,10 +88,17 @@ export interface PanelServerSummary {
   name: string;
 }
 
+export type WhatsAppAccountState = 'connected' | 'connecting' | 'awaiting_link' | 'expired' | 'logged_out' | 'paused';
+export interface WhatsAppAccountStatus {
+  number: string;
+  state: WhatsAppAccountState;
+}
+
 export interface BotHeartbeatRecord {
   lastSeenAt: number;
   connected: boolean | null;
   botNumber: string | null;
+  accounts?: WhatsAppAccountStatus[];
   botName?: string;
   version?: string;
   uptimeSeconds?: number;
@@ -135,6 +142,7 @@ export interface AdminOverviewPayload {
   botError?: string | null;
   connected: boolean | null;
   botNumber: string | null;
+  accounts?: WhatsAppAccountStatus[] | null;
   lastSeenAt?: number | null;
   lastSeenSecondsAgo?: number | null;
   whitelistSync?: WhitelistSyncState;
@@ -172,6 +180,7 @@ export interface MemberOverviewPayload {
   scribdAllowed?: boolean;
   botConnected: boolean | null;
   botNumber: string | null;
+  accounts?: WhatsAppAccountStatus[] | null;
   uptimeSeconds?: number | null;
   commandsTotal?: number | null;
   downloadsSuccess?: number | null;

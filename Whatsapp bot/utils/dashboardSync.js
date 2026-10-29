@@ -113,29 +113,6 @@ function applyWhitelistSnapshot(users, wlFile = WL_FILE) {
   return true;
 }
 
-function upsertAllowedNumber(number, label, wlFile = WL_FILE) {
-  const num = cleanDigits(number);
-  if (num.length < 7 || num.length > 15) return;
-  const data = readWL({ force: true, filePath: wlFile });
-  if (!Array.isArray(data.users)) data.users = [];
-  const existing = data.users.find((u) => cleanDigits(u?.number) === num);
-  if (existing) {
-    existing.enabled = true;
-    existing.syncedToPortal = true;
-    if (label) existing.label = String(label);
-  } else {
-    data.users.push({
-      number: num,
-      label: String(label || 'Portal Linked'),
-      addedBy: 'dashboard',
-      addedAt: Date.now(),
-      enabled: true,
-      syncedToPortal: true,
-    });
-  }
-  writeWL(data, { filePath: wlFile });
-}
-
 function startDashboardSync(opts = {}) {
   const env = opts.env || process.env;
   const fetchImpl = opts.fetchImpl || fetch;
@@ -183,13 +160,19 @@ function startDashboardSync(opts = {}) {
     try {
       if (cmd.type === 'pair') {
         const number = cleanDigits(cmd.payload?.number);
-        const label = String(cmd.payload?.label || 'Portal Linked');
         if (number.length < 7 || number.length > 15) {
           throw new Error('Invalid phone number in pairing command.');
         }
-        upsertAllowedNumber(number, label, wlFile);
+        if (Number(cmd.expiresAt) && Date.now() > Number(cmd.expiresAt)) {
+          throw new Error('This linking request has expired. Please try again.');
+        }
+        // Never re-enable a number from a stale queued request. The latest
+        // dashboard snapshot must still explicitly allow it.
+        if (!readWL({ force: true, filePath: wlFile }).users.some((user) => String(user.number) === number && user.enabled !== false)) {
+          throw new Error('This number is no longer approved or enabled.');
+        }
         if (typeof opts.requestPairing !== 'function') {
-          throw new Error('Bot pairing handler is not wired.');
+          throw new Error('Linking is not available on this service.');
         }
         const res = await opts.requestPairing(number);
         pendingResults.push({
@@ -198,6 +181,7 @@ function startDashboardSync(opts = {}) {
           result: {
             code: res.code,
             expiresInSeconds: res.expiresInSeconds || 60,
+            issuedAt: res.issuedAt || Date.now(),
           },
         });
         return;
@@ -227,7 +211,7 @@ function startDashboardSync(opts = {}) {
       pendingResults.push({
         id: cmd.id,
         ok: false,
-        error: err?.message || 'Command failed on bot',
+        error: err?.message || 'Command failed on the service',
       });
     }
   }
@@ -240,57 +224,59 @@ function startDashboardSync(opts = {}) {
     }
 
     inFlight = true;
-    const status =
-      typeof opts.getStatus === 'function'
-        ? opts.getStatus() || {}
-        : { connected: false, botNumber: null };
-
-    let diskUsedMB;
-    let diskBudgetMB;
+    let batchResults = [];
     try {
-      const d = inspectDisk();
-      diskUsedMB = Math.round(d.folderUsedMB);
-      diskBudgetMB = Math.round(d.budgetMB);
-    } catch {
-      /* non-fatal */
-    }
+      const status =
+        typeof opts.getStatus === 'function'
+          ? opts.getStatus() || {}
+          : { connected: false, botNumber: null };
 
-    const stats = telemetry.snapshot();
-    let queueLight = 0;
-    let queueHeavy = 0;
-    try {
-      const q = jobQueue.stats();
-      queueLight = (q.light?.active || 0) + (q.light?.queued || 0);
-      queueHeavy = (q.heavy?.active || 0) + (q.heavy?.queued || 0);
-    } catch {
-      /* non-fatal */
-    }
+      let diskUsedMB;
+      let diskBudgetMB;
+      try {
+        const d = inspectDisk();
+        diskUsedMB = Math.round(d.folderUsedMB);
+        diskBudgetMB = Math.round(d.budgetMB);
+      } catch {
+        /* non-fatal */
+      }
 
-    const localUsers = collectUnsyncedLocalUsers(wlFile);
-    const batchResults = pendingResults.splice(0, pendingResults.length);
-    const bodyObj = {
-      connected: Boolean(status.connected),
-      botNumber: status.botNumber || null,
-      botName: config.botName,
-      version: botVersion,
-      uptimeSeconds: Math.floor((Date.now() - BOT_BOOT_AT) / 1000),
-      commandsTotal: stats.commandsTotal,
-      downloadsSuccess: stats.downloadsSuccess,
-      failedTotal: stats.failedTotal,
-      ramUsedMB: stats.ramUsedMB,
-      queueLight,
-      queueHeavy,
-      diskUsedMB,
-      diskBudgetMB,
-      whitelistVersion: lastWhitelistVersion,
-      ...(localUsers.length ? { localUsers } : {}),
-      completedResults: batchResults,
-    };
+      const stats = telemetry.snapshot();
+      let queueLight = 0;
+      let queueHeavy = 0;
+      try {
+        const q = jobQueue.stats();
+        queueLight = (q.light?.active || 0) + (q.light?.queued || 0);
+        queueHeavy = (q.heavy?.active || 0) + (q.heavy?.queued || 0);
+      } catch {
+        /* non-fatal */
+      }
 
-    const bodyText = JSON.stringify(bodyObj);
-    const urlPath = '/api/bot/sync';
+      const localUsers = collectUnsyncedLocalUsers(wlFile);
+      batchResults = pendingResults.splice(0, pendingResults.length);
+      const bodyObj = {
+        connected: Boolean(status.connected),
+        botNumber: status.botNumber || null,
+        ...(Array.isArray(status.accounts) ? { accounts: status.accounts } : {}),
+        botName: config.botName,
+        version: botVersion,
+        uptimeSeconds: Math.floor((Date.now() - BOT_BOOT_AT) / 1000),
+        commandsTotal: stats.commandsTotal,
+        downloadsSuccess: stats.downloadsSuccess,
+        failedTotal: stats.failedTotal,
+        ramUsedMB: stats.ramUsedMB,
+        queueLight,
+        queueHeavy,
+        diskUsedMB,
+        diskBudgetMB,
+        whitelistVersion: lastWhitelistVersion,
+        ...(localUsers.length ? { localUsers } : {}),
+        completedResults: batchResults,
+      };
 
-    try {
+      const bodyText = JSON.stringify(bodyObj);
+      const urlPath = '/api/bot/sync';
+
       const headers = buildSignedHeaders(token, 'POST', urlPath, bodyText);
       const res = await fetchImpl(`${baseUrl}${urlPath}`, {
         method: 'POST',
@@ -316,6 +302,7 @@ function startDashboardSync(opts = {}) {
 
       if (data.whitelistChanged && Array.isArray(data.users)) {
         applyWhitelistSnapshot(data.users, wlFile);
+        try { opts.onWhitelistChanged?.(); } catch { /* non-fatal */ }
         if (typeof data.whitelistVersion === 'string') {
           lastWhitelistVersion = data.whitelistVersion;
         }
@@ -324,8 +311,14 @@ function startDashboardSync(opts = {}) {
       }
 
       const commands = Array.isArray(data.commands) ? data.commands : [];
+      // A slow linking handshake must not block heartbeats or another account's
+      // code. Report each result as soon as it is available.
       for (const cmd of commands) {
-        await executeCommand(cmd);
+        void executeCommand(cmd).finally(() => {
+          if (stopped) return;
+          if (inFlight) rerunImmediately = true;
+          else scheduleNext(150);
+        });
       }
 
       inFlight = false;

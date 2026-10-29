@@ -23,6 +23,7 @@ const {
 } = require('@whiskeysockets/baileys');
 const { decryptPollVote } = require('@whiskeysockets/baileys/lib/Utils/process-message');
 const { jidVariants } = require('./jid');
+const { sessionKey, PRIMARY_SESSION } = require('./accountSockets');
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 const MAX_POLL_OPTIONS = 12;
@@ -78,11 +79,13 @@ function quoteOpts(msg) {
   return canQuote(msg) ? { quoted: msg } : {};
 }
 
-function senderKeys(chatId, sender) {
-  const variants = [...jidVariants(sender)];
-  if (!variants.length) return [`${chatId}:${String(sender || '')}`];
-  return variants.map((v) => `${chatId}:${v}`);
+function senderKeys(chatId, sender, scope = PRIMARY_SESSION, sessionDir = null) {
+  const variants = [...jidVariants(sender, sessionDir)];
+  if (!variants.length) return [`${scope}\0${chatId}:${String(sender || '')}`];
+  return variants.map((v) => `${scope}\0${chatId}:${v}`);
 }
+
+const messageKey = (scope, id) => `${scope || PRIMARY_SESSION}\0${String(id)}`;
 
 function removeEntry(entry) {
   if (!entry || entry.consumed) return;
@@ -90,14 +93,15 @@ function removeEntry(entry) {
   for (const k of entry.keys || []) {
     if (pending.get(k) === entry) pending.delete(k);
   }
-  if (entry.promptMessageId && pendingByMsgId.get(entry.promptMessageId) === entry) {
-    pendingByMsgId.delete(entry.promptMessageId);
+  const promptKey = messageKey(entry.scope, entry.promptMessageId);
+  if (entry.promptMessageId && pendingByMsgId.get(promptKey) === entry) {
+    pendingByMsgId.delete(promptKey);
   }
   if (entry.offerId && pendingByOfferId.get(entry.offerId) === entry) {
     pendingByOfferId.delete(entry.offerId);
   }
   if (entry.pollMessageId) {
-    pendingPolls.delete(entry.pollMessageId);
+    pendingPolls.delete(messageKey(entry.scope, entry.pollMessageId));
   }
 }
 
@@ -128,7 +132,7 @@ function prune() {
 
 function senderMatches(entry, sender) {
   if (!entry) return false;
-  const incoming = new Set(jidVariants(sender));
+  const incoming = new Set(jidVariants(sender, entry.sessionDir));
   if (!incoming.size) return entry.rawSender === String(sender || '');
   for (const allowed of entry.senderSet) {
     if (incoming.has(allowed)) return true;
@@ -150,6 +154,8 @@ function offer({
   promptMessageId = null,
   offerId: explicitOfferId = null,
   originMsg = null,
+  scope = PRIMARY_SESSION,
+  sessionDir = null,
 }) {
   if (!Array.isArray(items) || !items.length || typeof run !== 'function') {
     throw new Error('offer() needs items and a run callback');
@@ -157,8 +163,8 @@ function offer({
   prune();
 
   const offerId = explicitOfferId || nextOfferId();
-  const keys = senderKeys(chatId, sender);
-  const senderSet = new Set(jidVariants(sender));
+  const keys = senderKeys(chatId, sender, scope, sessionDir);
+  const senderSet = new Set(jidVariants(sender, sessionDir));
   const rawIds = Array.isArray(ids) && ids.length === items.length
     ? ids.map((x) => String(x))
     : items.map((_, i) => String(i));
@@ -172,6 +178,8 @@ function offer({
   const entry = {
     offerId,
     chatId,
+    scope,
+    sessionDir,
     rawSender: Array.isArray(sender) ? String(sender[0] || '') : String(sender || ''),
     senderSet,
     keys,
@@ -191,7 +199,7 @@ function offer({
   for (const k of keys) pending.set(k, entry);
   pendingByOfferId.set(offerId, entry);
   if (entry.promptMessageId) {
-    pendingByMsgId.set(entry.promptMessageId, entry);
+    pendingByMsgId.set(messageKey(scope, entry.promptMessageId), entry);
   }
 
   return offerId;
@@ -222,6 +230,7 @@ async function sendPollOrText(sock, msg, extra, spec) {
   const chatId = extra?.from || msg?.key?.remoteJid;
   const senderList = [
     extra?.sender,
+    ...(extra?.senderIds || []),
     msg?.key?.participant,
     msg?.key?.participantAlt,
     msg?.key?.remoteJidAlt,
@@ -229,7 +238,8 @@ async function sendPollOrText(sock, msg, extra, spec) {
   const sender = senderList.length ? senderList : [chatId];
 
   // Clear stale choices first so a failed send never leaves stale state behind.
-  clear(chatId, sender);
+  const scope = sessionKey(sock);
+  clear(chatId, sender, { scope, sessionDir: sock?.__sessionDir });
 
   const {
     pollName,
@@ -407,6 +417,8 @@ async function sendPollOrText(sock, msg, extra, spec) {
   const offerId = offer({
     offerId: preOfferId,
     chatId,
+    scope,
+    sessionDir: sock?.__sessionDir,
     sender,
     items,
     ids,
@@ -438,7 +450,7 @@ async function sendPollOrText(sock, msg, extra, spec) {
       });
 
     entry.pollMessageId = promptMessageId;
-    pendingPolls.set(promptMessageId, {
+    pendingPolls.set(messageKey(scope, promptMessageId), {
       pollMsgId: promptMessageId,
       chatId,
       messageSecret: Buffer.from(secret),
@@ -471,13 +483,15 @@ async function sendTextPrompt(sock, msg, extra, {
   const chatId = extra?.from || msg?.key?.remoteJid;
   const senderList = [
     extra?.sender,
+    ...(extra?.senderIds || []),
     msg?.key?.participant,
     msg?.key?.participantAlt,
     msg?.key?.remoteJidAlt,
   ].filter(Boolean);
   const sender = senderList.length ? senderList : [chatId];
 
-  clear(chatId, sender);
+  const scope = sessionKey(sock);
+  clear(chatId, sender, { scope, sessionDir: sock?.__sessionDir });
 
   const qOpts = quoteOpts(msg);
   const sent = image
@@ -488,6 +502,8 @@ async function sendTextPrompt(sock, msg, extra, {
   const promptMessageId = sent?.key?.id ? String(sent.key.id) : null;
   const offerId = offer({
     chatId,
+    scope,
+    sessionDir: sock?.__sessionDir,
     sender,
     items,
     ids,
@@ -512,7 +528,7 @@ function resolvePollVote(sock, msg) {
   if (!pollUpdate?.pollCreationMessageKey?.id || !pollUpdate?.vote) return null;
 
   const pollMsgId = String(pollUpdate.pollCreationMessageKey.id);
-  const poll = pendingPolls.get(pollMsgId);
+  const poll = pendingPolls.get(messageKey(sessionKey(sock), pollMsgId));
   if (!poll || !poll.entry || poll.entry.consumed) return null;
 
   const voterRawList = [
@@ -541,7 +557,7 @@ function resolvePollVote(sock, msg) {
   const voterJids = [];
   for (const v of voterRawList) {
     try { voterJids.push(jidNormalizedUser(v)); } catch { /* ignore */ }
-    for (const variant of jidVariants(v)) {
+    for (const variant of jidVariants(v, sock?.__sessionDir)) {
       try { voterJids.push(jidNormalizedUser(variant)); } catch { voterJids.push(variant); }
     }
   }
@@ -622,31 +638,31 @@ const isCancel = (text) => /^(cancel|stop|no|nevermind|never mind)$/i.test(Strin
  * If `quotedMessageId` is supplied AND the pending entry has a `promptMessageId`,
  * they MUST match — quoting an unrelated chat message will never match!
  */
-function peek(chatId, sender, { quotedMessageId = null, rawText = null } = {}) {
+function peek(chatId, sender, { quotedMessageId = null, rawText = null, scope = PRIMARY_SESSION, sessionDir = null } = {}) {
   prune();
   if (rawText) {
     const m = /^((?:sel)_\d+_[a-z0-9]+):/i.exec(String(rawText).trim());
     if (m) {
       const byOffer = pendingByOfferId.get(m[1]);
-      if (byOffer && byOffer.chatId === chatId && senderMatches(byOffer, sender)) {
+      if (byOffer && byOffer.scope === scope && byOffer.chatId === chatId && senderMatches(byOffer, sender)) {
         return byOffer;
       }
     }
   }
 
   if (quotedMessageId) {
-    const byMsg = pendingByMsgId.get(String(quotedMessageId));
+    const byMsg = pendingByMsgId.get(messageKey(scope, quotedMessageId));
     if (byMsg && byMsg.chatId === chatId && senderMatches(byMsg, sender)) {
       return byMsg;
     }
-    for (const k of senderKeys(chatId, sender)) {
+    for (const k of senderKeys(chatId, sender, scope, sessionDir)) {
       const entry = pending.get(k);
       if (entry && !entry.promptMessageId) return entry;
     }
     return null;
   }
 
-  for (const k of senderKeys(chatId, sender)) {
+  for (const k of senderKeys(chatId, sender, scope, sessionDir)) {
     const entry = pending.get(k);
     if (entry) return entry;
   }
@@ -679,10 +695,10 @@ function match(chatId, sender, text, opts = {}) {
 }
 
 /** Drop a pending choice (used by "cancel", send failures, and finished commands). */
-function clear(chatId, sender, { quotedMessageId = null } = {}) {
+function clear(chatId, sender, { quotedMessageId = null, scope = PRIMARY_SESSION, sessionDir = null } = {}) {
   prune();
   if (quotedMessageId) {
-    const byMsg = pendingByMsgId.get(String(quotedMessageId));
+    const byMsg = pendingByMsgId.get(messageKey(scope, quotedMessageId));
     if (byMsg && byMsg.chatId === chatId && senderMatches(byMsg, sender)) {
       removeEntry(byMsg);
       return true;
@@ -690,7 +706,7 @@ function clear(chatId, sender, { quotedMessageId = null } = {}) {
     return false;
   }
   let had = false;
-  for (const k of senderKeys(chatId, sender)) {
+  for (const k of senderKeys(chatId, sender, scope, sessionDir)) {
     const entry = pending.get(k);
     if (entry) {
       removeEntry(entry);

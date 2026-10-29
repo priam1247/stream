@@ -6,7 +6,7 @@ module.exports = {
   aliases: ['off'],
   ownerOnly: true,
   category: 'admin',
-  description: 'Enable or disable the bot globally',
+  description: 'Enable or disable the service globally',
   usage: '.on | .off',
 
   async execute(sock, msg, args, extra) {
@@ -21,11 +21,11 @@ module.exports = {
     if (turningOn) {
       database.setBotState(true);
       await sock.sendMessage(extra.from, { react: { text: '✅', key: msg.key } });
-      return extra.reply('🟢 Bot ON');
+      return extra.reply('🟢 Service ON');
     } else {
       database.setBotState(false);
       await sock.sendMessage(extra.from, { react: { text: '🔴', key: msg.key } });
-      return extra.reply('🔴 Bot OFF');
+      return extra.reply('🔴 Service OFF');
     }
   },
 };

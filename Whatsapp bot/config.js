@@ -31,7 +31,12 @@
 })();
 
 const env = process.env;
-const list = (raw, fallback) => String(raw || fallback).split(',').map(s => s.trim()).filter(Boolean);
+const list = (raw, fallback = '') => String(raw || fallback).split(',').map(s => s.trim()).filter(Boolean);
+// Ignore legacy branding in existing environment files without changing access rules.
+const displayName = (raw, fallback) => {
+  const value = String(raw || '').trim();
+  return value && !/zafar|\bbot\b/i.test(value) ? value : fallback;
+};
 // WhatsApp documents cap at 2 GB: that is the download ceiling too.
 const movieCapDefault = Math.min(2000, Number(env.VIDEO_MAX_MB || 2000));
 
@@ -39,9 +44,9 @@ module.exports = {
   ownerNumber: list(env.OWNER_NUMBER, '265894016453'),
   // Bot admins: full owner-level access, no need to .allow them
   adminNumbers: list(env.ADMIN_NUMBERS, '265997564836,265986741036,265894016451'),
-  ownerName: list(env.OWNER_NAME, 'ZaFar'),
+  ownerName: list(env.OWNER_NAME),
 
-  botName: env.BOT_NAME || 'ZaFar Bot',
+  botName: displayName(env.BOT_NAME, 'WhatsApp'),
   prefix: env.PREFIX || '.',
   cooldownMs: Math.max(0, Number(env.COMMAND_COOLDOWN_MS ?? 2000)),
   sessionName: env.SESSION_NAME || 'session',
@@ -49,7 +54,7 @@ module.exports = {
   // ZaFarBot! session string from your pairing/auth step.
   sessionID: env.SESSION_ID || '',
 
-  packname: env.PACK_NAME || 'ZaFar Bot',
+  packname: displayName(env.PACK_NAME, 'Stickers'),
 
   // Gifted API (optional fallback downloader). Set GIFTED_API_KEY in .env.
   giftedApi: {
@@ -143,7 +148,7 @@ module.exports = {
 
   messages: {
     error: '❌ Something went wrong.',
-    ownerOnly: '👑 This command is only for the bot owner.',
+    ownerOnly: '❌ This command is restricted.',
   },
 
   timezone: env.TZ || 'Africa/Blantyre',

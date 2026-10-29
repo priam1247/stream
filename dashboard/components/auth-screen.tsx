@@ -219,11 +219,11 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
         <div className="mb-4 flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2.5">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-600 font-mono text-sm font-extrabold text-white shadow-sm">
-              ZF
+              <Server className="h-4 w-4" />
             </div>
             <div className="min-w-0">
               <div className="truncate text-sm font-bold text-slate-900">
-                ZaFar Server
+                Control Room
               </div>
               <div className="font-mono text-[11px] text-slate-500">
                 Console Access

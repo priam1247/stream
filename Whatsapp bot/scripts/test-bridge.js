@@ -1,0 +1,98 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { startDashboardSync } = require('../utils/dashboardSync');
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+function fixture(t, firstResponse, requestPairing) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-bridge-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const wlFile = path.join(root, 'whitelist.json');
+  const bodies = [];
+  let first = true;
+  let notifications = 0;
+  const sync = startDashboardSync({
+    dashboardUrl: 'https://dashboard.example', token: 'test-token', manualOnly: true, wlFile,
+    getStatus: () => ({ connected: true, accounts: [{ number: '15550000001', state: 'connected' }] }),
+    onWhitelistChanged: () => { notifications++; },
+    requestPairing,
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      const value = first ? firstResponse : { whitelistChanged: false, commands: [] };
+      first = false;
+      return { ok: true, json: async () => value };
+    },
+  });
+  t.after(() => sync.stop());
+  return { sync, bodies, wlFile, notifications: () => notifications };
+}
+
+test('a slow pairing handshake does not block heartbeats or other pairing commands', async (t) => {
+  let finishSlow;
+  let finishFast;
+  const slow = new Promise((resolve) => { finishSlow = resolve; });
+  const fast = new Promise((resolve) => { finishFast = resolve; });
+  const calls = [];
+  const fx = fixture(t, {
+    whitelistChanged: true, whitelistVersion: '0123456789abcdef',
+    users: [{ number: '15550001111', enabled: true }, { number: '15550002222', enabled: true }],
+    commands: [
+      { id: 'slow', type: 'pair', payload: { number: '15550001111' }, expiresAt: Date.now() + 60_000 },
+      { id: 'fast', type: 'pair', payload: { number: '15550002222' }, expiresAt: Date.now() + 60_000 },
+    ],
+  }, (number) => { calls.push(number); return number.endsWith('1111') ? slow : fast; });
+
+  await fx.sync.syncNow();
+  assert.deepEqual(calls, ['15550001111', '15550002222']);
+  assert.equal(fx.notifications(), 1);
+  await fx.sync.syncNow();
+  assert.equal(fx.bodies.length, 2, 'another heartbeat should run while both requests are pending');
+  assert.deepEqual(fx.bodies[1].accounts, [{ number: '15550000001', state: 'connected' }]);
+  assert.deepEqual(fx.bodies[1].completedResults, []);
+  const issuedAt = Date.now();
+  finishFast({ code: 'FASTCODE', expiresInSeconds: 60, issuedAt });
+  await flush();
+  await fx.sync.syncNow();
+  assert.deepEqual(fx.bodies[2].completedResults, [{ id: 'fast', ok: true, result: { code: 'FASTCODE', expiresInSeconds: 60, issuedAt } }]);
+  finishSlow({ code: 'SLOWCODE', expiresInSeconds: 60, issuedAt });
+  await flush();
+  await fx.sync.syncNow();
+  assert.deepEqual(fx.bodies[3].completedResults.map((r) => r.id), ['slow']);
+});
+
+test('revoked, absent and expired queued requests cannot re-enable a number or get a code', async (t) => {
+  const calls = [];
+  const fx = fixture(t, {
+    whitelistChanged: true, whitelistVersion: 'fedcba9876543210',
+    users: [{ number: '15550001111', enabled: false }, { number: '15550003333', enabled: true }],
+    commands: [
+      { id: 'disabled', type: 'pair', payload: { number: '15550001111' } },
+      { id: 'removed', type: 'pair', payload: { number: '15550002222' } },
+      { id: 'expired', type: 'pair', payload: { number: '15550003333' }, expiresAt: Date.now() - 1 },
+    ],
+  }, (number) => { calls.push(number); return Promise.resolve({ code: 'NEVER' }); });
+  await fx.sync.syncNow();
+  await flush();
+  await fx.sync.syncNow();
+  assert.deepEqual(calls, []);
+  assert.equal(fx.bodies[1].completedResults.length, 3);
+  assert.ok(fx.bodies[1].completedResults.every((r) => !r.ok && !JSON.stringify(r).includes('NEVER')));
+  const stored = JSON.parse(fs.readFileSync(fx.wlFile, 'utf8'));
+  assert.equal(stored.users.find((u) => u.number === '15550001111').enabled, false);
+  assert.equal(stored.users.some((u) => u.number === '15550002222'), false);
+});
+
+test('a corrupted local allowlist fails closed without permanently wedging heartbeat sync', async (t) => {
+  const fx = fixture(t, { whitelistChanged: false, commands: [] }, async () => ({ code: 'NEVER' }));
+  fs.writeFileSync(fx.wlFile, '{corrupt');
+  assert.equal((await fx.sync.syncNow()).ok, false);
+  assert.equal(fx.bodies.length, 0);
+  fs.writeFileSync(fx.wlFile, JSON.stringify({ users: [] }));
+  assert.equal((await fx.sync.syncNow()).ok, true);
+  assert.equal(fx.bodies.length, 1);
+});

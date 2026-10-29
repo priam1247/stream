@@ -171,7 +171,7 @@ async function offerChoices(sock, msg, extra, matches, job, kind) {
     selector: {
       headerTitle: `🎬 ${job.title}`,
       bodyText: `${matches.length} matches found — tap below to select:`,
-      footerText: 'ZaFar Movies',
+      footerText: 'Movies',
       buttonText: isSeries ? 'Select Series' : 'Select Movie',
       sectionTitle: isSeries ? 'Matching Series' : 'Matching Movies',
       rows: matches.map((m, idx) => ({
@@ -227,7 +227,7 @@ async function askQuality(sock, msg, extra, meta, job) {
     selector: {
       headerTitle: `🎬 ${title}`,
       bodyText: 'Select download quality:',
-      footerText: 'ZaFar Movies',
+      footerText: 'Movies',
       buttonText: 'Select Quality',
       sectionTitle: 'Available Qualities',
       rows: options.map((o) => ({

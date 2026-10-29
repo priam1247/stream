@@ -35,6 +35,7 @@ import {
   setSavedSessionToken,
 } from '@/lib/client-session';
 import { PairingCodeBanner } from './pairing-code-banner';
+import { accountStatusLabel } from '@/lib/whatsapp-accounts';
 import { CommandDirectory } from './command-directory';
 import { MediaVaultDesk } from './media-vault-desk';
 import { ScribdDesk } from './scribd-desk';
@@ -56,7 +57,7 @@ export function MemberPortal() {
 
   const [overview, setOverview] = useState<MemberOverviewPayload>({
     ok: true,
-    adminEmail: 'troykunsauka@gmail.com',
+    adminEmail: '',
     memberAllowed: true,
     botEnabledForMembers: true,
     botServerLinked: false,
@@ -162,6 +163,7 @@ export function MemberPortal() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || 'Update failed');
+      if (!enabled && activePair?.number === num) setActivePair(null);
       setOverview((prev) => ({ ...prev, numbers: json.numbers || [] }));
       setNotice({
         text: enabled ? `Enabled +${num}` : `Paused +${num}`,
@@ -212,7 +214,7 @@ export function MemberPortal() {
 
       if (json.pending && json.requestId) {
         setNotice({ text: `Requesting code for +${num}…` });
-        const deadline = Date.now() + 26_000;
+        const deadline = Date.now() + 75_000;
         while (Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 1500));
           const pollRes = await fetch(
@@ -235,9 +237,10 @@ export function MemberPortal() {
             return;
           }
         }
-        throw new Error('Timed out waiting for bot.');
+        throw new Error('Timed out waiting for the service. Please try again.');
       }
 
+      if (!json.code) throw new Error('The service did not return a linking code. Please try again.');
       setActivePair({
         ok: true,
         code: json.code,
@@ -299,11 +302,11 @@ export function MemberPortal() {
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2.5">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-teal-600 font-mono text-xs font-extrabold text-white shadow-sm">
-                ZF
+                <Smartphone className="h-4 w-4" />
               </div>
               <div className="min-w-0">
                 <div className="truncate text-sm font-bold text-slate-900">
-                  ZaFar Console
+                  Control Room
                 </div>
                 <div className="flex items-center gap-1.5 font-mono text-[10px] text-slate-500">
                   {overview.memberAllowed ? (
@@ -399,7 +402,7 @@ export function MemberPortal() {
 
         {!overview.memberAllowed && (
           <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-semibold text-rose-800">
-            Account restricted ({overview.adminEmail})
+            Account restricted
           </div>
         )}
 
@@ -441,7 +444,7 @@ export function MemberPortal() {
               </span>
             </div>
 
-            <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600"><span className="font-semibold">{overview.whitelistSync === 'synced' ? 'Bot reports the latest number list' : overview.whitelistSync === 'pending' ? 'Waiting for bot sync' : 'Number sync not confirmed'}</span><span className="block">Approval allows a number to use the bot. Pairing links a device and should be completed only by the WhatsApp account owner.</span></div>
+            <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600"><span className="font-semibold">{overview.whitelistSync === 'synced' ? 'Service reports the latest number list' : overview.whitelistSync === 'pending' ? 'Waiting for service sync' : 'Number sync not confirmed'}</span><span className="block">Approve your number, then request a code to link that WhatsApp account. Existing linked accounts stay connected. Check the status below after entering the code.</span></div>
             {!overview.botEnabledForMembers && !user.isAdmin && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800">New number approvals and pairing are paused by the owner. Existing approvals are not automatically disabled.</p>}
             <form
               onSubmit={handleAllowNumber}
@@ -513,6 +516,7 @@ export function MemberPortal() {
                 filteredNumbers.map((item) => {
                   const busy = busyNumber === item.number;
                   const confirming = confirmDelete === item.number;
+                  const accountState = overview.accounts?.find((account) => account.number === item.number)?.state;
                   return (
                     <div
                       key={item.number}
@@ -533,6 +537,7 @@ export function MemberPortal() {
                             {item.enabled ? 'Allowed' : 'Paused'}
                           </span>
                         </div>
+                        <p className="mt-1 text-xs font-medium text-teal-700">{accountStatusLabel(overview.botReachable === false ? null : overview.accounts, item.number)}</p>
                         {item.label && (
                           <p className="mt-0.5 truncate text-xs text-slate-500">
                             {item.label}
@@ -547,7 +552,8 @@ export function MemberPortal() {
                             !item.enabled ||
                             !canLinkNumbers ||
                             busy ||
-                            overview.botReachable === false
+                            overview.botReachable === false ||
+                            accountState === 'connected' || accountState === 'connecting'
                           }
                           onClick={() => handleRequestCode(item.number)}
                           className="inline-flex items-center gap-1 rounded-xl bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-40"

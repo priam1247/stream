@@ -47,12 +47,14 @@ jobs:
           npm ci
           npm run selftest
           npm run test:jobs
+          npm run test:sessions
           node scripts/test-nm3u8dl-live.js
 
       - name: Verify standalone dashboard typecheck & build
         working-directory: dashboard
         run: |
           npm ci
+          npm test
           npm run typecheck
           npm run build
 

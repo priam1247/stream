@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import type { AdminOverviewPayload, ActivityEvent, PanelLiveStatus } from '@/lib/types';
 import { formatCheckedTime, type OwnerTab, type RoomAlert, type ScribdSnapshot } from '@/lib/control-room';
+import { serviceText } from '@/lib/whatsapp-accounts';
 
 interface Props {
   name: string;
@@ -51,7 +52,7 @@ export function ControlRoomHome({ name, data, overviewCheckedAt, overviewError, 
   const scribdValue = scribd.status ? 'Reachable' : scribd.error ? 'Unavailable' : 'Checking';
   const syncValue = !hasBotCheck || !data.whitelistSync || data.whitelistSync === 'unknown'
     ? 'Unconfirmed' : data.whitelistSync === 'synced' ? 'Up to date' : 'Pending';
-  const firstName = name.trim().split(/\s+/)[0] || 'Owner';
+  const firstName = name.trim().split(/\s+/)[0] || 'Administrator';
   const disk = hasBotCheck && data.botReachable && data.diskUsedMB != null
     ? `${data.diskUsedMB} MB${data.diskBudgetMB != null ? ` / ${data.diskBudgetMB} MB` : ' used'}` : 'Not reported';
   const ram = hasBotCheck && data.botReachable && data.ramUsedMB != null ? `${data.ramUsedMB} MB` : 'Not reported';
@@ -63,7 +64,7 @@ export function ControlRoomHome({ name, data, overviewCheckedAt, overviewError, 
         <div className="relative flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-teal-700">
-              <span className="h-2 w-2 rounded-full bg-teal-500 motion-safe:animate-pulse" /> Owner workspace
+              <span className="h-2 w-2 rounded-full bg-teal-500 motion-safe:animate-pulse" /> Administrator workspace
             </div>
             <h1 className="mt-3 text-[26px] font-bold leading-tight tracking-tight text-slate-950 sm:text-3xl">Your control room</h1>
             <p className="mt-1.5 max-w-md text-sm leading-6 text-slate-600">Welcome back, {firstName}. Here is what your services are reporting.</p>
@@ -81,10 +82,10 @@ export function ControlRoomHome({ name, data, overviewCheckedAt, overviewError, 
         <span className="text-[11px] text-slate-500">Live checks</span>
       </div>
       <section aria-label="Service status" className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3">
-        <StatusCard icon={Server} label="Bot bridge" value={botValue} note={data.lastSeenSecondsAgo != null && hasBotCheck ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : 'Connection to your bot'} tone={!hasBotCheck ? 'muted' : data.botReachable ? 'good' : 'warning'} onClick={() => onNavigate('server')} />
-        <StatusCard icon={Smartphone} label="WhatsApp" value={whatsappValue} note={!hasBotCheck || !data.botReachable || data.connected == null ? 'Waiting for bot status' : data.connected ? 'Bot reports a connection' : 'Bot is awaiting connection'} tone={!hasBotCheck || !data.botReachable || data.connected == null ? 'muted' : data.connected ? 'good' : 'warning'} onClick={() => onNavigate('server')} />
+        <StatusCard icon={Server} label="Service bridge" value={botValue} note={data.lastSeenSecondsAgo != null && hasBotCheck ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : 'Connection to your service'} tone={!hasBotCheck ? 'muted' : data.botReachable ? 'good' : 'warning'} onClick={() => onNavigate('server')} />
+        <StatusCard icon={Smartphone} label="WhatsApp" value={whatsappValue} note={!hasBotCheck || !data.botReachable || data.connected == null ? 'Waiting for service status' : data.connected ? 'Service reports a connection' : 'Service is awaiting connection'} tone={!hasBotCheck || !data.botReachable || data.connected == null ? 'muted' : data.connected ? 'good' : 'warning'} onClick={() => onNavigate('server')} />
         <StatusCard icon={Library} label="Scribd" value={scribdValue} note={scribd.status ? `${scribd.status.active} active · ${scribd.status.finished} finished` : formatCheckedTime(scribd.checkedAt)} tone={scribd.status ? 'good' : scribd.error ? 'warning' : 'muted'} onClick={() => onNavigate('scribd')} />
-        <StatusCard icon={ListChecks} label="Number list" value={syncValue} note={data.whitelistSync === 'synced' && hasBotCheck ? 'Bot reports the latest list' : data.whitelistSync === 'pending' && hasBotCheck ? 'Waiting for bot check-in' : 'No confirmation available'} tone={syncValue === 'Up to date' ? 'good' : syncValue === 'Pending' ? 'warning' : 'muted'} onClick={() => onNavigate('server')} />
+        <StatusCard icon={ListChecks} label="Number list" value={syncValue} note={data.whitelistSync === 'synced' && hasBotCheck ? 'Service reports the latest list' : data.whitelistSync === 'pending' && hasBotCheck ? 'Waiting for service check-in' : 'No confirmation available'} tone={syncValue === 'Up to date' ? 'good' : syncValue === 'Pending' ? 'warning' : 'muted'} onClick={() => onNavigate('server')} />
       </section>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.15fr_0.85fr]">
@@ -114,16 +115,16 @@ export function ControlRoomHome({ name, data, overviewCheckedAt, overviewError, 
 
         <section className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm sm:p-5">
           <div className="flex items-center justify-between gap-3">
-            <div><p className="text-[11px] font-bold uppercase tracking-[0.13em] text-teal-700">Bot resources</p><h2 className="mt-1 text-base font-bold text-slate-900">System snapshot</h2></div>
+            <div><p className="text-[11px] font-bold uppercase tracking-[0.13em] text-teal-700">Service resources</p><h2 className="mt-1 text-base font-bold text-slate-900">System snapshot</h2></div>
             <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-100 text-slate-600"><HardDrive className="h-[18px] w-[18px]" /></span>
           </div>
           <dl className="mt-3 divide-y divide-slate-100 text-sm">
             <div className="flex justify-between gap-3 py-2.5"><dt className="text-slate-500">Hosting server</dt><dd className="text-right font-semibold capitalize text-slate-800">{!panel ? 'Checking' : panel.configured === false ? 'Not configured' : panel.state === 'unknown' ? 'Unknown' : panel.state}</dd></div>
             <div className="flex justify-between gap-3 py-2.5"><dt className="text-slate-500">Memory</dt><dd className="text-right font-semibold text-slate-800">{ram}</dd></div>
             <div className="flex justify-between gap-3 py-2.5"><dt className="text-slate-500">Disk budget</dt><dd className="text-right font-semibold text-slate-800">{disk}</dd></div>
-            <div className="flex justify-between gap-3 py-2.5"><dt className="text-slate-500">Bot queues</dt><dd className="text-right font-semibold text-slate-800">{hasBotCheck && data.botReachable && data.queueLight != null && data.queueHeavy != null ? `${data.queueLight} light · ${data.queueHeavy} heavy` : 'Not reported'}</dd></div>
+            <div className="flex justify-between gap-3 py-2.5"><dt className="text-slate-500">Service queues</dt><dd className="text-right font-semibold text-slate-800">{hasBotCheck && data.botReachable && data.queueLight != null && data.queueHeavy != null ? `${data.queueLight} light · ${data.queueHeavy} heavy` : 'Not reported'}</dd></div>
           </dl>
-          <p className="mt-2 text-xs leading-5 text-slate-400">Resources are reported by the bot; hosting status comes from the panel.</p>
+          <p className="mt-2 text-xs leading-5 text-slate-400">Resources are reported by the service; hosting status comes from the panel.</p>
         </section>
       </div>
 
@@ -131,7 +132,7 @@ export function ControlRoomHome({ name, data, overviewCheckedAt, overviewError, 
         <div className="flex items-center justify-between gap-3"><div><p className="text-[11px] font-bold uppercase tracking-[0.13em] text-teal-700">Jump back in</p><h2 className="mt-1 text-base font-bold text-slate-900">Quick actions</h2></div></div>
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
           {([
-            { label: 'Bot & numbers', tab: 'server', icon: Smartphone },
+            { label: 'WhatsApp & numbers', tab: 'server', icon: Smartphone },
             { label: 'Open Scribd', tab: 'scribd', icon: BookOpen },
             { label: 'Manage members', tab: 'members', icon: Users },
             { label: 'View activity', tab: 'activity', icon: Activity },
@@ -145,7 +146,7 @@ export function ControlRoomHome({ name, data, overviewCheckedAt, overviewError, 
 
       <section className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex items-center justify-between gap-3"><div><p className="text-[11px] font-bold uppercase tracking-[0.13em] text-teal-700">Recently</p><h2 className="mt-1 text-base font-bold text-slate-900">Activity</h2></div><button type="button" onClick={() => onNavigate('activity')} className="min-h-10 text-xs font-bold text-teal-700">See all</button></div>
-        {events.length ? <ul className="mt-2 divide-y divide-slate-100">{events.slice(0, 3).map((event) => <li key={event.id} className="flex items-start justify-between gap-3 py-3"><div className="min-w-0"><p className="text-sm font-semibold text-slate-800">{event.action}</p><p className="mt-0.5 break-all text-xs text-slate-500">{event.actor || 'System'}</p></div><span className="shrink-0 text-right text-[11px] text-slate-400">{niceWhen(event.createdAt)}</span></li>)}</ul>
+        {events.length ? <ul className="mt-2 divide-y divide-slate-100">{events.slice(0, 3).map((event) => <li key={event.id} className="flex items-start justify-between gap-3 py-3"><div className="min-w-0"><p className="text-sm font-semibold text-slate-800">{serviceText(event.action)}</p><p className="mt-0.5 break-all text-xs text-slate-500">{event.actor || 'System'}</p></div><span className="shrink-0 text-right text-[11px] text-slate-400">{niceWhen(event.createdAt)}</span></li>)}</ul>
           : <p className="mt-3 text-xs leading-5 text-slate-500">{eventsLoading ? 'Loading recent activity…' : 'No recorded activity yet. New actions will appear here.'}</p>}
       </section>
     </div>

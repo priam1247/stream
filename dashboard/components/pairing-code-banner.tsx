@@ -80,7 +80,7 @@ export function PairingCodeBanner({ activePair, onDismiss }: PairingCodeBannerPr
         </button>
       </div>
 
-      <p className="mt-2 text-xs leading-5 text-teal-900">Only the WhatsApp account owner should enter this code. It links a device; keep it private.</p>
+      <p className="mt-2 text-xs leading-5 text-teal-900">On that phone, open WhatsApp → Linked devices → Link a device → Link with phone number instead, then enter this code. Keep it private. The connection status updates only after linking succeeds.</p>
       <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
         <div
           className={`h-full transition-all duration-500 ${

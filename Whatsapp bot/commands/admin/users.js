@@ -6,7 +6,7 @@ async function react(sock, msg, emoji) {
   catch (_) {}
 }
 
-function resolveTarget(args, msg) {
+function resolveTarget(args, msg, sessionDir) {
   const mentioned = msg?.message?.extendedTextMessage?.contextInfo?.mentionedJid;
   let jid = mentioned?.length ? mentioned[0] : null;
   if (!jid && args[0]) {
@@ -14,7 +14,7 @@ function resolveTarget(args, msg) {
     if (n) jid = `${n}@s.whatsapp.net`;
   }
   if (!jid) return null;
-  const { number, alt } = canonicalIdentity(jid);
+  const { number, alt } = canonicalIdentity(jid, sessionDir);
   return number ? { number, alt, jid } : null;
 }
 
@@ -27,11 +27,11 @@ module.exports = [
     usage: '.allow <number>',
     ownerOnly: true,
     async execute(sock, msg, args, extra) {
-      const target = resolveTarget(args, msg);
+      const target = resolveTarget(args, msg, sock.__sessionDir);
       if (!target) return extra.reply('Usage: .allow <number>');
       const { number, alt, jid } = target;
       const wl = readWL();
-      if (findUserIndex(wl.users, jid) !== -1) {
+      if (findUserIndex(wl.users, jid, sock.__sessionDir) !== -1) {
         await react(sock, msg, '⚠️');
         return extra.reply(`⚠️ Already allowed: +${number}`);
       }
@@ -43,6 +43,7 @@ module.exports = [
         addedAt: Date.now(),
       });
       writeWL(wl);
+      try { require('../../utils/jobDelivery').resumePending(); } catch { /* non-fatal */ }
       try { require('../../utils/dashboardSync').triggerImmediateSync(); } catch { /* ignore */ }
       await react(sock, msg, '✅');
       return extra.reply(`✅ Allowed +${number}`);
@@ -56,11 +57,11 @@ module.exports = [
     usage: '.disallow <number>',
     ownerOnly: true,
     async execute(sock, msg, args, extra) {
-      const target = resolveTarget(args, msg);
+      const target = resolveTarget(args, msg, sock.__sessionDir);
       if (!target) return extra.reply('Usage: .disallow <number>');
       const { number, jid } = target;
       const wl  = readWL();
-      const idx = findUserIndex(wl.users, jid);
+      const idx = findUserIndex(wl.users, jid, sock.__sessionDir);
       if (idx === -1) {
         await react(sock, msg, '⚠️');
         return extra.reply(`⚠️ Not found: +${number}`);

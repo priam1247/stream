@@ -69,7 +69,7 @@ export async function verifyBotSyncRequest(
     (sec) => providedBearer && timingSafeStr(providedBearer, sec),
   );
   if (!matchedSecret) {
-    return { ok: false, status: 401, error: 'Unauthorized bot token.' };
+    return { ok: false, status: 401, error: 'Unauthorized service token.' };
   }
 
   const tsHeader = req.headers.get('x-bot-timestamp')?.trim();
@@ -83,14 +83,14 @@ export async function verifyBotSyncRequest(
       return {
         ok: false,
         status: 401,
-        error: 'Bot request timestamp outside allowed 5-minute window.',
+        error: 'Service request timestamp outside allowed 5-minute window.',
       };
     }
     if (!nonceHeader || nonceHeader.length < 8 || !consumeNonce(nonceHeader)) {
       return {
         ok: false,
         status: 409,
-        error: 'Duplicate or invalid bot request nonce (replay blocked).',
+        error: 'Duplicate or invalid service request nonce (replay blocked).',
       };
     }
     const expectedSig =
@@ -100,7 +100,7 @@ export async function verifyBotSyncRequest(
         .update(`${tsHeader}.${nonceHeader}.${rawBody}`)
         .digest('hex');
     if (!sigHeader || !timingSafeStr(sigHeader, expectedSig)) {
-      return { ok: false, status: 401, error: 'Invalid bot HMAC signature.' };
+      return { ok: false, status: 401, error: 'Invalid service HMAC signature.' };
     }
   }
 

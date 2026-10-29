@@ -17,6 +17,16 @@ export function isMailDeliveryConfigured(): boolean {
   return isResendConfigured() || isDirectSmtpConfigured();
 }
 
+function senderAddress(fallback: string): string {
+  const configured = process.env.EMAIL_FROM?.trim();
+  if (!configured) return `Control Room <${fallback}>`;
+  // Keep the actual delivery address, including any legacy-looking local part.
+  // Only replace an old display name, never rewrite an email address.
+  const match = configured.match(/^(.+?)\s*<([^<>]+)>$/);
+  if (match && /zafar|\bbot\b/i.test(match[1])) return `Control Room <${match[2].trim()}>`;
+  return configured;
+}
+
 async function sendViaResend(options: {
   to: string;
   subject: string;
@@ -24,11 +34,7 @@ async function sendViaResend(options: {
   html: string;
 }): Promise<EmailSendResult> {
   const apiKey = process.env.RESEND_API_KEY?.trim() || '';
-  const from =
-    process.env.EMAIL_FROM?.trim() ||
-    (process.env.SMTP_USER?.trim()
-      ? `ZaFar Portal <${process.env.SMTP_USER.trim()}>`
-      : 'ZaFar Portal <onboarding@resend.dev>');
+  const from = senderAddress(process.env.SMTP_USER?.trim() || 'onboarding@resend.dev');
 
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -70,7 +76,7 @@ async function dispatchMail(options: {
   if (!isDirectSmtpConfigured()) {
     if (process.env.NODE_ENV !== 'production') {
       console.info(
-        `[ZaFar Local Dev Outbox] Mail provider not configured — code for ${options.to}: ${options.code}`,
+        `[Local Dev Outbox] Mail provider not configured — code for ${options.to}: ${options.code}`,
       );
       return { delivered: false, devPreviewCode: options.code };
     }
@@ -97,7 +103,7 @@ async function dispatchMail(options: {
 
   try {
     await transporter.sendMail({
-      from: process.env.EMAIL_FROM?.trim() || `"ZaFar Portal" <${user}>`,
+      from: senderAddress(user),
       to: options.to,
       subject: options.subject,
       text: options.text,
@@ -110,7 +116,7 @@ async function dispatchMail(options: {
       !(err as { responseCode?: number })?.responseCode
     ) {
       console.info(
-        `[ZaFar Local Dev Outbox] Outbound SMTP unreachable in dev container — code for ${options.to}: ${options.code}`,
+        `[Local Dev Outbox] Outbound SMTP unreachable in dev container — code for ${options.to}: ${options.code}`,
       );
       return { delivered: false, devPreviewCode: options.code };
     }
@@ -127,7 +133,7 @@ export async function sendVerificationEmail(
   const text = [
     greeting,
     '',
-    `Your ZaFar verification code is: ${code}`,
+    `Your account verification code is: ${code}`,
     '',
     'This 6-digit code expires in 10 minutes.',
     'If you did not request this email, you can safely ignore it.',
@@ -135,9 +141,9 @@ export async function sendVerificationEmail(
 
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:28px;background:#ffffff;color:#0f172a;border-radius:16px;border:1px solid #e2e8f0;">
-      <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#0d9488;">ZaFar Portal</div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#0d9488;">Control Room</div>
       <h2 style="margin:10px 0 8px;font-size:20px;color:#0f172a;">Verify your email address</h2>
-      <p style="margin:0 0 20px;font-size:14px;line-height:1.6;color:#475569;">${greeting} enter the 6-digit code below to activate your ZaFar account:</p>
+      <p style="margin:0 0 20px;font-size:14px;line-height:1.6;color:#475569;">${greeting} enter the 6-digit code below to activate your account:</p>
       <div style="padding:18px;text-align:center;background:#f8fafc;border:1px solid #cbd5e1;border-radius:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:30px;font-weight:800;letter-spacing:0.28em;color:#0f766e;">
         ${code}
       </div>
@@ -147,7 +153,7 @@ export async function sendVerificationEmail(
 
   return dispatchMail({
     to: email,
-    subject: `${code} is your ZaFar verification code`,
+    subject: `${code} is your verification code`,
     text,
     html,
     code,
@@ -161,7 +167,7 @@ export async function sendPasswordResetEmail(
   const text = [
     'Hello,',
     '',
-    `Your ZaFar password reset code is: ${code}`,
+    `Your password reset code is: ${code}`,
     '',
     'This code expires in 10 minutes.',
     'If you did not request a password reset, you can safely ignore this email — your password will stay unchanged.',
@@ -169,9 +175,9 @@ export async function sendPasswordResetEmail(
 
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:480px;margin:0 auto;padding:28px;background:#ffffff;color:#0f172a;border-radius:16px;border:1px solid #e2e8f0;">
-      <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#0d9488;">ZaFar Security</div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#0d9488;">Account Security</div>
       <h2 style="margin:10px 0 8px;font-size:20px;color:#0f172a;">Reset your password</h2>
-      <p style="margin:0 0 20px;font-size:14px;line-height:1.6;color:#475569;">Use the 6-digit code below to set a new password for your ZaFar account:</p>
+      <p style="margin:0 0 20px;font-size:14px;line-height:1.6;color:#475569;">Use the 6-digit code below to set a new password for your account:</p>
       <div style="padding:18px;text-align:center;background:#f8fafc;border:1px solid #cbd5e1;border-radius:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:30px;font-weight:800;letter-spacing:0.28em;color:#0f766e;">
         ${code}
       </div>
@@ -181,7 +187,7 @@ export async function sendPasswordResetEmail(
 
   return dispatchMail({
     to: email,
-    subject: `${code} is your ZaFar password reset code`,
+    subject: `${code} is your password reset code`,
     text,
     html,
     code,

@@ -23,7 +23,7 @@ async function status() {
     lines.push(`Ignored bad proxy: ${diag.invalidProxy}`);
   }
   if (diag.lastError) {
-    lines.push(`Last error: ${diag.lastError.code}`);
+    lines.push(`Last error: ${YT.displayCode(diag.lastError.code)}`);
   }
   return lines.join('\n');
 }
@@ -92,18 +92,18 @@ module.exports = {
             try {
               const itInfo = await ytInnertube.getVideoInfo(url);
               if (itInfo?.title) {
-                return s.update(`✅ Innertube OK — ${itInfo.title}\n(yt-dlp: ${YT.classify(e).code})`);
+                return s.update(`✅ Innertube OK — ${itInfo.title}\n(yt-dlp: ${YT.displayCode(YT.classify(e).code)})`);
               }
             } catch { /* fall through */ }
             try {
               const hit = await providers.resolveMedia(url, { kind: 'audio', timeoutMs: 35000 });
               if (hit?.url) {
-                return s.update(`✅ Remote (${hit.provider}) OK — ${hit.title || 'stream ready'}\n(yt-dlp: ${YT.classify(e).code})`);
+                return s.update(`✅ Remote (${hit.provider}) OK — ${hit.title || 'stream ready'}\n(yt-dlp: ${YT.displayCode(YT.classify(e).code)})`);
               }
             } catch { /* fall through */ }
           }
           const info = YT.classify(e);
-          return s.update(`❌ ${info.code}: ${YT.friendlyError(e, { isOwner: true })}`);
+          return s.update(`❌ ${YT.displayCode(info.code)}: ${YT.friendlyError(e, { isOwner: true })}`);
         }
       }
 

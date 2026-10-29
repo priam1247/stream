@@ -254,9 +254,12 @@ function succeed(job, result) {
   let encoded;
   try { encoded = JSON.stringify(payload); } catch { encoded = JSON.stringify({ error: 'unserialisable result' }); }
 
+  // Notifications survive a restart or disconnection. Legacy jobs with a
+  // chat but no account key are delivered only through the primary account.
+  const status = job.req?.chatId ? 'pending_delivery' : 'done';
   openDb().prepare(
-    "UPDATE jobs SET status='done', result=?, error=NULL, finished_at=? WHERE id=?",
-  ).run(encoded, Date.now(), job.id);
+    'UPDATE jobs SET status=?, result=?, error=NULL, finished_at=? WHERE id=?',
+  ).run(status, encoded, Date.now(), job.id);
 
   const out = { ...payload, id: job.id, provider: job.provider, req: job.req };
   log.info(`#${job.id} ${job.provider} done`);
@@ -276,9 +279,10 @@ function fail(job, err) {
     return;
   }
 
+  const status = job.req?.chatId ? 'pending_failure' : 'dead';
   openDb().prepare(
-    "UPDATE jobs SET status='dead', error=?, finished_at=? WHERE id=?",
-  ).run(message, Date.now(), job.id);
+    'UPDATE jobs SET status=?, error=?, finished_at=? WHERE id=?',
+  ).run(status, message, Date.now(), job.id);
   log.error(`#${job.id} ${job.provider} dead after ${job.attempts} attempts: ${message}`);
   emitter.emit('fail', { id: job.id, provider: job.provider, req: job.req, error: message, attempts: job.attempts });
 }
@@ -332,8 +336,24 @@ function list({ status = null, limit = 50 } = {}) {
   return rows.map(rowToJob);
 }
 
+function listPendingNotifications() {
+  const rows = openDb().prepare(
+    "SELECT * FROM jobs WHERE status IN ('pending_delivery','pending_failure') ORDER BY id",
+  ).all();
+  return rows.map(rowToJob);
+}
+
+// Only mark a scoped result after its original account accepts the delivery.
+function markNotified(id, expectedStatus) {
+  if (!['pending_delivery', 'pending_failure'].includes(expectedStatus)) return false;
+  const finalStatus = expectedStatus === 'pending_delivery' ? 'done' : 'dead';
+  const result = openDb().prepare('UPDATE jobs SET status=? WHERE id=? AND status=?')
+    .run(finalStatus, Number(id), expectedStatus);
+  return Number(result.changes) === 1;
+}
+
 function stats() {
-  const out = { queued: 0, running: 0, done: 0, dead: 0, total: 0 };
+  const out = { queued: 0, running: 0, done: 0, dead: 0, pending_delivery: 0, pending_failure: 0, total: 0 };
   for (const row of openDb().prepare('SELECT status, COUNT(*) AS n FROM jobs GROUP BY status').all()) {
     const n = Number(row.n) || 0;
     if (Object.hasOwn(out, row.status)) out[row.status] = n;
@@ -369,6 +389,8 @@ const api = {
   stop,
   get,
   list,
+  listPendingNotifications,
+  markNotified,
   stats,
   recover,
   on: (event, fn) => { emitter.on(event, fn); return api; },

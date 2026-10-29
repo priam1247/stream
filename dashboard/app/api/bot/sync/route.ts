@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAdminEmail } from '@/lib/auth-engine';
 import { verifyBotSyncRequest } from '@/lib/bot-sync-auth';
+import { readAccountStatuses } from '@/lib/whatsapp-accounts';
 import {
   checkRateLimit,
   getClientIp,
@@ -93,6 +94,7 @@ export async function POST(req: NextRequest) {
     lastSeenAt: Date.now(),
     connected: typeof body.connected === 'boolean' ? body.connected : null,
     botNumber: body.botNumber ? String(body.botNumber) : null,
+    accounts: readAccountStatuses(body.accounts),
     botName: typeof body.botName === 'string' ? body.botName : prevHb?.botName,
     version: typeof body.version === 'string' ? body.version : prevHb?.version,
     uptimeSeconds:

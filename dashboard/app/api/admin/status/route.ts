@@ -72,6 +72,7 @@ export async function GET(req: NextRequest) {
     botError: liveStatus.error || null,
     connected: liveStatus.connected,
     botNumber: liveStatus.botNumber,
+    accounts: liveStatus.accounts ?? null,
     lastSeenAt: liveStatus.lastSeenAt ?? null,
     lastSeenSecondsAgo: liveStatus.lastSeenSecondsAgo ?? null,
     whitelistSync: whitelistSyncState(liveStatus, users, target.botEnabledForMembers),

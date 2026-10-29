@@ -44,7 +44,7 @@ describe('owner control room', () => {
     mockApi();
     render(<AdminConsole />);
     const status = await screen.findByRole('region', { name: 'Service status' });
-    expect(within(status).getByText('Bot bridge')).toBeTruthy();
+    expect(within(status).getByText('Service bridge')).toBeTruthy();
     expect(within(status).getByText('Reachable')).toBeTruthy();
     expect(within(status).getByText('Connected')).toBeTruthy();
     expect(within(status).getByText('Pending')).toBeTruthy();
@@ -74,13 +74,13 @@ describe('owner control room', () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     render(<AdminConsole />);
     const nav = await screen.findByRole('navigation', { name: 'Owner sections' });
-    fireEvent.click(within(nav).getByRole('button', { name: 'Bot' }));
+    fireEvent.click(within(nav).getByRole('button', { name: 'WhatsApp' }));
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' }), { target: { value: 'unmatched' } });
     expect(screen.getByText('No numbers match this filter')).toBeTruthy();
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' }), { target: { value: 'Mobile' } });
     fireEvent.click(screen.getByRole('button', { name: 'Retry sync for +265991234567' }));
     expect(await screen.findByText(/Sync is not yet confirmed/)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Stop bot' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop service' }));
     expect(confirm).toHaveBeenCalled();
     expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/api/admin/panel' && init?.method === 'POST')).toBe(false);
   });

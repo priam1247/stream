@@ -214,7 +214,7 @@ async function resolveTargetAndQuality(sock, msg, extra, meta, job) {
     selector: {
       headerTitle: `📺 ${showTitle}`,
       bodyText: 'Select episodes to download:',
-      footerText: 'ZaFar Series',
+      footerText: 'Series',
       buttonText: 'Select Episodes',
       sectionTitle: 'Download Options',
       rows: choices.map((c, idx) => ({
@@ -248,7 +248,7 @@ async function offerChoices(sock, msg, extra, matches, job) {
     selector: {
       headerTitle: `📺 ${job.title}`,
       bodyText: `${matches.length} matches found — tap below to select:`,
-      footerText: 'ZaFar Series',
+      footerText: 'Series',
       buttonText: 'Select Series',
       sectionTitle: 'Matching Series',
       rows: matches.map((m, idx) => ({
@@ -301,7 +301,7 @@ async function askQuality(sock, msg, extra, meta, job) {
     selector: {
       headerTitle: `📺 ${title}`,
       bodyText: 'Select download quality:',
-      footerText: 'ZaFar Series',
+      footerText: 'Series',
       buttonText: 'Select Quality',
       sectionTitle: 'Available Qualities',
       rows: options.map((o) => ({

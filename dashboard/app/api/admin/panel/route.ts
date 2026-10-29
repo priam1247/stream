@@ -128,7 +128,7 @@ export async function POST(req: NextRequest) {
     if (cfg.panelApiKey) {
       const res = await sendPanelPowerSignal(signal);
       if (res.ok) {
-        await recordActivity({ category: 'bot', action: `Bot ${signal} requested`, actor: session.user.email, outcome: 'requested', detail: 'Panel accepted the request.' });
+        await recordActivity({ category: 'bot', action: `Service ${signal} requested`, actor: session.user.email, outcome: 'requested', detail: 'Panel accepted the request.' });
         return NextResponse.json({
           ok: true,
           via: 'panel-api',
@@ -151,18 +151,18 @@ export async function POST(req: NextRequest) {
           requestedBy: session.user.email,
           ttlMs: 45_000,
         });
-        await recordActivity({ category: 'bot', action: 'Bot restart requested', actor: session.user.email, outcome: 'requested', detail: 'Queued for the bot.' });
+        await recordActivity({ category: 'bot', action: 'Service restart requested', actor: session.user.email, outcome: 'requested', detail: 'Queued for the service.' });
         return NextResponse.json({
           ok: true,
           via: 'bot-queue',
           message: panelError
-            ? `Queued live restart directly to your online bot (picks up in ~2s). Panel API note: ${panelError}`
-            : 'Queued restart command for the live bot (picks up in ~2s).',
+            ? `Queued live restart directly to your online service (picks up in ~2s). Panel API note: ${panelError}`
+            : 'Queued restart command for the live service (picks up in ~2s).',
         });
       }
     }
 
-    await recordActivity({ category: 'bot', action: `Bot ${signal} request failed`, actor: session.user.email, outcome: 'failed', detail: 'Panel or bot did not accept the request.' });
+    await recordActivity({ category: 'bot', action: `Service ${signal} request failed`, actor: session.user.email, outcome: 'failed', detail: 'Panel or service did not accept the request.' });
     return NextResponse.json(
       {
         error:

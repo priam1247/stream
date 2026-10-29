@@ -1,8 +1,8 @@
 /**
- * ZaFar Bot — Menu
+ * Command menu
  *
  * One clean, aligned card. Grouped by what the user is trying to do, honouring
- * configured `config.prefix` and `config.botName`, and hiding admin-only
+ * configured `config.prefix`, and hiding admin-only
  * commands from regular users.
  *
  *   .menu          everything permitted for the caller
@@ -58,7 +58,7 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
       title: 'ADMIN',
       rows: [
         [`${p}allow ${p}disallow ${p}listusers`, 'whitelist'],
-        [`${p}on ${p}off`, 'enable/disable the bot globally'],
+        [`${p}on ${p}off`, 'enable/disable the service globally'],
         [`${p}ytlogin ${p}cookies ${p}ytdl`, 'youtube'],
         [`${p}restart ${p}status ${p}broadcast`, 'server'],
       ],
@@ -77,15 +77,6 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
   return groups;
 }
 
-const timeNow = () => {
-  try {
-    return new Date().toLocaleString('en-GB', {
-      timeZone: config.timezone || 'Africa/Blantyre',
-      hour: '2-digit', minute: '2-digit', hour12: false,
-    });
-  } catch { return new Date().toISOString().slice(11, 16); }
-};
-
 const SECTION_ALIASES = {
   movie: 'media', movies: 'media', song: 'media', ytv: 'media', dl: 'media',
   paper: 'papers', papers: 'papers',
@@ -93,14 +84,13 @@ const SECTION_ALIASES = {
   admin: 'admin', all: null, help: null,
 };
 
-function buildCard(groups, user, { prefix = config.prefix || '.', botName = config.botName || 'ZaFar Bot' } = {}) {
+function buildCard(groups, _user, { prefix = config.prefix || '.' } = {}) {
   const width = 34;
   const line = '─'.repeat(width);
   const out = [];
 
   out.push(`╭${line}╮`);
-  out.push(`│ 🎬 *${botName}*`);
-  out.push(`│ 👤 ${user || 'user'}  ·  🕒 ${timeNow()}`);
+  out.push('│ *COMMANDS*');
   out.push(`╰${line}╯`);
 
   for (const g of groups) {
@@ -133,22 +123,18 @@ module.exports = {
     try {
       const isOwner = Boolean(extra?.isOwner);
       const prefix = config.prefix || '.';
-      const botName = config.botName || 'ZaFar Bot';
-      const senderJid = extra?.sender || '';
-      const user = String(senderJid).split('@')[0].split(':')[0];
 
       const wanted = String(args[0] || '').toLowerCase();
       const section = wanted in SECTION_ALIASES ? SECTION_ALIASES[wanted] : null;
       if (section === 'admin' && !isOwner) {
-        return extra.reply(config.messages?.ownerOnly || '❌ Only the bot owner can view admin commands.');
+        return extra.reply(config.messages?.ownerOnly || '❌ This section is restricted.');
       }
 
       const allGroups = buildGroups(prefix, { isOwner });
       const groups = section ? allGroups.filter((g) => g.key === section) : allGroups;
 
       await sock.sendMessage(extra.from, {
-        text: buildCard(groups.length ? groups : allGroups, user, { prefix, botName }),
-        mentions: senderJid ? [senderJid] : [],
+        text: buildCard(groups.length ? groups : allGroups, null, { prefix }),
       }, { quoted: msg });
     } catch (err) {
       console.error('[menu] error:', err.message);

@@ -242,7 +242,7 @@ export async function sendPanelPowerSignal(
       ok: false,
       status: 404,
       error: discovered.ok
-        ? 'Your API key works, but 0 servers were found on that panel account. Make sure you created the hydro_… key while logged into the exact XS Systems account that owns your bot server!'
+        ? 'Your API key works, but 0 servers were found on that panel account. Make sure you created the hydro_… key while logged into the exact XS Systems account that owns your WhatsApp server!'
         : discovered.error || 'No Server ID configured or discovered.',
     };
   }

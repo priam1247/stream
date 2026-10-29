@@ -79,7 +79,7 @@ it('filters the member’s own numbers and distinguishes approval from pairing',
     : reply({ ok: true, adminEmail: 'owner@example.com', memberAllowed: true, scribdAllowed: false, botEnabledForMembers: true, botServerLinked: true, botConnected: true, botNumber: null, whitelistSync: 'pending', numbers: [{ number: '265991234567', label: 'Mobile', enabled: true }] })));
   render(<MemberPortal />);
   await screen.findByRole('navigation', { name: 'Console sections' });
-  expect(screen.getByText(/Approval allows a number to use the bot/)).toBeTruthy();
+  expect(screen.getByText(/Approve your number, then request a code/)).toBeTruthy();
   fireEvent.change(screen.getByRole('searchbox', { name: 'Search my numbers' }), { target: { value: 'no match' } });
   expect(screen.getByText('No matching numbers')).toBeTruthy();
   fireEvent.change(screen.getByRole('searchbox', { name: 'Search my numbers' }), { target: { value: 'Mobile' } });
@@ -95,4 +95,36 @@ it('explains a linking pause while still allowing a member to pause their existi
   expect(screen.getByText(/New number approvals and pairing are paused/)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Get Code' }).hasAttribute('disabled')).toBe(true);
   expect(screen.getByRole('button', { name: 'Pause' }).hasAttribute('disabled')).toBe(false);
+});
+
+it('requests a second account code without treating issuance as a completed link', async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/auth/me') return reply({ user: { id: 1, name: 'Member', email: 'member@example.com', isAdmin: false } });
+    if (url === '/api/member/pair' && init?.method === 'POST') {
+      return reply({ ok: true, code: 'TEST-CODE', expiresInSeconds: 60, issuedAt: Date.now() });
+    }
+    return reply({
+      ok: true, memberAllowed: true, scribdAllowed: false, botEnabledForMembers: true,
+      botServerLinked: true, botReachable: true, botConnected: true, botNumber: null,
+      numbers: [
+        { number: '15550001111', label: 'First', enabled: true },
+        { number: '15550002222', label: 'Second', enabled: true },
+      ],
+      accounts: [{ number: '15550001111', state: 'connected' }, { number: '15550002222', state: 'awaiting_link' }],
+    });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  render(<MemberPortal />);
+  await screen.findByText('Linked and connected');
+  expect(screen.getByText('Waiting for linking')).toBeTruthy();
+  const buttons = screen.getAllByRole('button', { name: 'Get Code' });
+  expect(buttons[0].hasAttribute('disabled')).toBe(true);
+  expect(buttons[1].hasAttribute('disabled')).toBe(false);
+  fireEvent.click(buttons[1]);
+  expect(await screen.findByText('TEST-CODE')).toBeTruthy();
+  expect(screen.getByText(/status updates only after linking succeeds/)).toBeTruthy();
+  expect(screen.getByText('Waiting for linking')).toBeTruthy();
+  const call = fetchMock.mock.calls.find(([url]) => String(url) === '/api/member/pair');
+  expect(JSON.parse(String(call?.[1]?.body))).toEqual({ number: '15550002222' });
 });

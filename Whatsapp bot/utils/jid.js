@@ -12,12 +12,12 @@ const config = require('../config');
 // Read a LID <-> PN mapping from the session folder (never cache misses:
 // the mapping file can appear after the first message)
 const lidCache = new Map();
-const getLidMappingValue = (user, direction) => {
+const getLidMappingValue = (user, direction, sessionDir = null) => {
   if (!user) return null;
-  const cacheKey = `${direction}:${user}`;
+  const sessionPath = path.resolve(sessionDir || path.join(__dirname, '..', config.sessionName || 'session'));
+  const cacheKey = `${sessionPath}:${direction}:${user}`;
   if (lidCache.has(cacheKey)) return lidCache.get(cacheKey);
 
-  const sessionPath = path.join(__dirname, '..', config.sessionName || 'session');
   const suffix = direction === 'pnToLid' ? '.json' : '_reverse.json';
   const filePath = path.join(sessionPath, `lid-mapping-${user}${suffix}`);
   try {
@@ -40,7 +40,7 @@ const normalizeJid = (jid) => {
 };
 
 // Map a LID JID to its phone-number JID when the mapping is known
-const normalizeJidWithLid = (jid) => {
+const normalizeJidWithLid = (jid, sessionDir = null) => {
   if (!jid) return jid;
   try {
     const decoded = jidDecode(jid);
@@ -48,7 +48,7 @@ const normalizeJidWithLid = (jid) => {
     let user = decoded.user;
     let server = decoded.server === 'c.us' ? 's.whatsapp.net' : decoded.server;
     if (server === 'lid' || server === 'hosted.lid') {
-      const pn = getLidMappingValue(user, 'lidToPn');
+      const pn = getLidMappingValue(user, 'lidToPn', sessionDir);
       if (pn) { user = pn; server = server === 'hosted.lid' ? 'hosted' : 's.whatsapp.net'; }
     }
     return jidEncode(user, server === 'hosted' ? 'hosted' : 's.whatsapp.net');
@@ -58,22 +58,22 @@ const normalizeJidWithLid = (jid) => {
 };
 
 // The phone number and LID of one JID (either may be null)
-const splitIdentity = (jid) => {
+const splitIdentity = (jid, sessionDir = null) => {
   if (!jid || typeof jid !== 'string') return { pn: null, lid: null };
   const user = normalizeJid(jid);
   if (!user) return { pn: null, lid: null };
   const server = jid.includes('@') ? jid.split('@')[1] : 's.whatsapp.net';
   if (server === 'lid' || server === 'hosted.lid') {
-    return { lid: user, pn: getLidMappingValue(user, 'lidToPn') };
+    return { lid: user, pn: getLidMappingValue(user, 'lidToPn', sessionDir) };
   }
-  return { pn: user, lid: getLidMappingValue(user, 'pnToLid') };
+  return { pn: user, lid: getLidMappingValue(user, 'pnToLid', sessionDir) };
 };
 
 // Every known number for one person (or a list of JIDs for the same person)
-const jidVariants = (jids) => {
+const jidVariants = (jids, sessionDir = null) => {
   const out = new Set();
   for (const jid of [].concat(jids || [])) {
-    const { pn, lid } = splitIdentity(jid);
+    const { pn, lid } = splitIdentity(jid, sessionDir);
     if (pn) out.add(String(pn));
     if (lid) out.add(String(lid));
   }
@@ -81,8 +81,8 @@ const jidVariants = (jids) => {
 };
 
 // How a person is stored in the allowed list: phone number first, LID as alias
-const canonicalIdentity = (jid) => {
-  const { pn, lid } = splitIdentity(jid);
+const canonicalIdentity = (jid, sessionDir = null) => {
+  const { pn, lid } = splitIdentity(jid, sessionDir);
   const number = pn || lid;
   const alt = pn && lid ? [String(lid)] : [];
   return { number: number ? String(number) : null, alt };

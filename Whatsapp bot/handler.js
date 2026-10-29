@@ -2,8 +2,6 @@
  * Message Handler - Processes incoming messages and executes commands
  */
 
-const fs = require('fs');
-const path = require('path');
 const config = require('./config');
 const database = require('./database');
 const selections = require('./utils/selections');
@@ -14,9 +12,8 @@ const { safeErrorMessage } = require('./utils/userErrors');
 const telemetry = require('./utils/telemetry');
 const jobs = require('./utils/persistentJobs');
 const router = require('./utils/providerRouter');
-const rcloneStore = require('./utils/rcloneStore');
-const mediaTransfer = require('./utils/mediaTransfer');
-const { getTempDir, deleteTempFile } = require('./utils/tempManager');
+const accountSockets = require('./utils/accountSockets');
+const jobDelivery = require('./utils/jobDelivery');
 
 // Load all commands
 const commands = loadCommands();
@@ -57,21 +54,21 @@ const getMessageContent = (msg) => {
 };
 
 // Owners and hardcoded bot admins (matches PN or LID forms of the sender)
-const isOwner = (ids) => {
-  const sender = jidVariants(ids);
+const isOwner = (ids, sessionDir = null) => {
+  const sender = jidVariants(ids, sessionDir);
   if (!sender.size) return false;
   return [...config.ownerNumber, ...(config.adminNumbers || [])].some(n => {
-    const staff = jidVariants(`${n}@s.whatsapp.net`);
+    const staff = jidVariants(`${n}@s.whatsapp.net`, sessionDir);
     return [...staff].some(x => sender.has(x));
   });
 };
 
 // Owner/admin or whitelisted user — everyone else gets no response at all
-const isAllowedSender = (ids) => {
-  if (isOwner(ids)) return true;
+const isAllowedSender = (ids, sessionDir = null) => {
+  if (isOwner(ids, sessionDir)) return true;
   try {
     // enabled:false (dashboard "Disallow") = present but blocked
-    return findAllowedUserIndex(readWL().users, ids) !== -1;
+    return findAllowedUserIndex(readWL().users, ids, sessionDir) !== -1;
   } catch {
     return false;
   }
@@ -87,8 +84,8 @@ const cooldownKeyOf = (senderIds, fallback) => {
   }
   return String(fallback || '');
 };
-const checkCooldown = (senderIds, sender) => {
-  if (isOwner(senderIds)) return { limited: false, waitMs: 0 };
+const checkCooldown = (senderIds, sender, sessionId = accountSockets.PRIMARY_SESSION, sessionDir = null) => {
+  if (isOwner(senderIds, sessionDir)) return { limited: false, waitMs: 0 };
   const windowMs = Math.max(0, Number(config.cooldownMs ?? 2000));
   if (!windowMs) return { limited: false, waitMs: 0 };
 
@@ -98,7 +95,7 @@ const checkCooldown = (senderIds, sender) => {
       if (now - ts > windowMs * 2) userCooldowns.delete(k);
     }
   }
-  const key = cooldownKeyOf(senderIds, sender);
+  const key = `${sessionId}:${cooldownKeyOf(senderIds, sender)}`;
   const prev = userCooldowns.get(key) || 0;
   if (now - prev < windowMs) {
     return { limited: true, waitMs: windowMs - (now - prev) };
@@ -112,8 +109,10 @@ const resetCooldowns = () => userCooldowns.clear();
 const buildExtra = (sock, msg, { from, sender, senderIds, commandName = '' }) => ({
   from,
   sender,
+  senderIds,
   commandName,
-  isOwner: isOwner(senderIds),
+  sessionId: accountSockets.sessionKey(sock),
+  isOwner: isOwner(senderIds, sock.__sessionDir),
   reply: (text) => sock.sendMessage(from, { text }, selections.quoteOpts(msg)),
   status: async (initialText) => {
     const sent = await sock.sendMessage(from, { text: initialText }, selections.quoteOpts(msg));
@@ -146,18 +145,18 @@ async function runCommand(sock, msg, name, args, { from, sender, senderIds }) {
   const command = commands.get(invoked);
   if (!command) return false;
 
-  if (command.ownerOnly && !isOwner(senderIds)) {
+  if (command.ownerOnly && !isOwner(senderIds, sock.__sessionDir)) {
     await sock.sendMessage(from, { text: config.messages.ownerOnly }, { quoted: msg });
     return true;
   }
 
-  const cd = checkCooldown(senderIds, sender);
+  const cd = checkCooldown(senderIds, sender, accountSockets.sessionKey(sock), sock.__sessionDir);
   if (cd.limited) {
     await sock.sendMessage(from, { react: { text: '⏳', key: msg.key } }).catch(() => {});
     return true;
   }
 
-  console.log(`Executing command: ${invoked} from ${sender}`);
+  console.log(`Executing command: ${invoked}`);
   telemetry.recordCommand(command.name || invoked);
   try {
     await command.execute(
@@ -175,7 +174,7 @@ async function runCommand(sock, msg, name, args, { from, sender, senderIds }) {
 
 // Tap-selector & "reply with a number" answers are resolved here.
 async function handleSelection(sock, msg, body, { from, sender, senderIds, quotedMessageId = null }) {
-  const opts = { quotedMessageId, rawText: body };
+  const opts = { quotedMessageId, rawText: body, scope: accountSockets.sessionKey(sock), sessionDir: sock.__sessionDir };
   const open = selections.peek(from, senderIds, opts);
   if (!open) return false;
 
@@ -195,7 +194,7 @@ async function handleSelection(sock, msg, body, { from, sender, senderIds, quote
       try {
         await sock.sendMessage(
           from,
-          { text: safeErrorMessage(e, { isOwner: isOwner(senderIds) }) },
+          { text: safeErrorMessage(e, { isOwner: isOwner(senderIds, sock.__sessionDir) }) },
           selections.quoteOpts(msg),
         );
       } catch { /* ignore */ }
@@ -218,121 +217,7 @@ async function handleSelection(sock, msg, body, { from, sender, senderIds, quote
 // worker pool instead of blocking the message handler. Small results come back
 // as normal WhatsApp media, large ones as an rclone share link.
 const URL_ONLY = /^https?:\/\/\S+$/i;
-let activeSock = null;
-let jobsStarted = false;
-
 const urlJobsEnabled = () => String(process.env.URL_JOBS ?? '1') !== '0';
-
-const shortError = (text, max = 160) => {
-  const line = String(text || 'failed').split('\n').map(s => s.trim()).filter(Boolean).pop() || 'failed';
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
-};
-
-const isOwnerJid = (jid) => isOwner([String(jid || '')]);
-
-async function say(chatId, text, quoted) {
-  if (!activeSock || !chatId) return;
-  try {
-    await activeSock.sendMessage(chatId, { text }, quoted ? { quoted } : {});
-  } catch (e) {
-    console.error('jobs: reply failed:', e.message);
-  }
-}
-
-// Only files this bot produced (MEDIA_DIR or temp/) are ever removed here.
-const ownedByBot = (file) => {
-  const target = path.resolve(String(file || ''));
-  return [router.mediaDir(), getTempDir()]
-    .map((dir) => path.resolve(dir))
-    .some((dir) => target === dir || target.startsWith(`${dir}${path.sep}`));
-};
-
-function discardJob(job) {
-  for (const file of [job.path, ...(job.subs || [])]) {
-    if (!file) continue;
-    if (ownedByBot(file)) {
-      try { fs.rmSync(file, { force: true }); } catch { /* already gone */ }
-    } else {
-      deleteTempFile(file);
-    }
-  }
-}
-
-/** Send a finished download inline (media picks) or as a document. */
-async function sendJobInline(sock, chatId, job, size) {
-  const sniff = mediaTransfer.sniffFile(job.path);
-  const name = mediaTransfer.safeName(job.title || path.basename(job.path), 'media');
-  const caption = `📥 *${job.title || name}*${job.quality ? `\n🎞️ ${job.quality}` : ''}\n📦 ${mediaTransfer.fmtMB(size)}`;
-
-  if (sniff.kind === 'video') {
-    const ready = await mediaTransfer.ensureWhatsAppMp4(job.path, path.join(getTempDir(), `${path.basename(job.path)}.wa.mp4`));
-    try {
-      const finalSize = fs.statSync(ready).size;
-      const payload = finalSize > 50 * 1024 * 1024
-        ? { document: { url: ready }, mimetype: 'video/mp4', fileName: `${name}.mp4`, caption }
-        : { video: { url: ready }, mimetype: 'video/mp4', caption };
-      await sock.sendMessage(chatId, payload);
-    } finally {
-      if (ready !== job.path) deleteTempFile(ready);
-    }
-    return;
-  }
-
-  if (sniff.kind === 'audio') {
-    await sock.sendMessage(chatId, {
-      audio: { url: job.path }, mimetype: sniff.mime, fileName: `${name}.${sniff.ext}`, ptt: false,
-    });
-    return;
-  }
-
-  if (sniff.kind === 'image') {
-    await sock.sendMessage(chatId, { image: { url: job.path }, caption });
-    return;
-  }
-
-  await sock.sendMessage(chatId, {
-    document: { url: job.path }, mimetype: sniff.mime, fileName: `${name}.${sniff.ext}`, caption,
-  });
-}
-
-/** Deliver a finished job, then delete its temp files. */
-async function deliverJob(job) {
-  const chatId = job.req?.chatId;
-  const file = job.path;
-
-  try {
-    if (!chatId || !file || !fs.existsSync(file)) return;
-    const size = Number(job.size) || fs.statSync(file).size;
-
-    if (size > rcloneStore.inlineLimit()) {
-      const link = await rcloneStore.put(file, size);
-      await say(chatId, `📦 *${job.title || path.basename(file)}* — ${mediaTransfer.fmtMB(size)}\n${link}`);
-      return;
-    }
-
-    if (!activeSock) return;
-    await sendJobInline(activeSock, chatId, job, size);
-  } catch (e) {
-    const isOwner = Boolean(job.req?.sender) && isOwnerJid(job.req.sender);
-    await say(chatId, `❌ ${safeErrorMessage(e, { isOwner })}`);
-  } finally {
-    discardJob(job);
-  }
-}
-
-/** Boot the worker pool on first use so imports stay side-effect free. */
-function ensureJobs() {
-  if (jobsStarted) return;
-  jobsStarted = true;
-  jobs.on('done', (job) => {
-    deliverJob(job).catch((e) => console.error('jobs: delivery failed:', e.message));
-  });
-  jobs.on('fail', (job) => {
-    say(job.req?.chatId, `❌ ${shortError(job.error)}`).catch(() => {});
-  });
-  jobs.start();
-  console.log('jobs: worker pool online');
-}
 
 /**
  * Queue a bare link. Returns true when the message was handled here.
@@ -356,9 +241,9 @@ async function queueLinkJob(sock, msg, body, { from, sender }) {
     return true;
   }
 
-  ensureJobs();
+  jobDelivery.start();
   try {
-    const id = jobs.enqueue({ provider: target.provider, req: { url: body, chatId: from, sender } });
+    const id = jobs.enqueue({ provider: target.provider, req: { url: body, chatId: from, sender, sessionId: accountSockets.sessionKey(sock) } });
     await sock.sendMessage(from, { text: `⚙️ Queued #${id}` }, { quoted: msg });
   } catch (e) {
     if (e.code === 'QUEUE_FULL') await sock.sendMessage(from, { text: '⚠️ Queue is full, try again later.' }, { quoted: msg });
@@ -373,6 +258,8 @@ const handleMessage = async (sock, msg) => {
   try {
     if (!msg.message) return;
     if (isEditedMessage(msg)) return;
+    // Linked accounts stop serving requests when their dashboard approval is paused.
+    if (typeof sock.__canRespond === 'function' && !sock.__canRespond()) return;
 
     const from = msg.key.remoteJid;
     if (isSystemJid(from)) return;
@@ -390,11 +277,8 @@ const handleMessage = async (sock, msg) => {
     // ── Gates ─────────────────────────────────────────────────────────────
     // Bot on/off, then permission: owner bypasses, everyone else must be
     // allowed via .allow. Non-allowed users get no response at all.
-    if (!database.getBotState() && !isOwner(senderIds)) return;
-    if (!isAllowedSender(senderIds)) return;
-
-    // The worker pool delivers finished jobs through this socket.
-    activeSock = sock;
+    if (!database.getBotState() && !isOwner(senderIds, sock.__sessionDir)) return;
+    if (!isAllowedSender(senderIds, sock.__sessionDir)) return;
 
     // ── Poll votes (`pollUpdateMessage`) ──────────────────────────────────
     if (content.pollUpdateMessage) {
@@ -418,7 +302,7 @@ const handleMessage = async (sock, msg) => {
           try {
             await sock.sendMessage(
               voteHit.chatId,
-              { text: safeErrorMessage(e, { isOwner: isOwner(senderIds) }) },
+              { text: safeErrorMessage(e, { isOwner: isOwner(senderIds, sock.__sessionDir) }) },
             );
           } catch { /* ignore */ }
         }
@@ -480,7 +364,7 @@ const handleMessage = async (sock, msg) => {
         : msg.key.participant || msg.key.remoteJid;
       const senderIds = [sender, msg.key.participantAlt, msg.key.remoteJidAlt].filter(Boolean);
       await sock.sendMessage(msg.key.remoteJid, {
-        text: safeErrorMessage(error, { isOwner: isOwner(senderIds) }),
+        text: safeErrorMessage(error, { isOwner: isOwner(senderIds, sock.__sessionDir) }),
       }, { quoted: msg });
     } catch (e) {
       if (!e.message || !e.message.includes('rate-overlimit')) {
@@ -492,6 +376,10 @@ const handleMessage = async (sock, msg) => {
 
 module.exports = {
   handleMessage,
+  onSocketOpen: () => {
+    if (!urlJobsEnabled()) return;
+    try { jobDelivery.start(); } catch (err) { console.error('Could not start background downloads:', err.message); }
+  },
   isEditedMessage,
   isSystemJid,
   resetCooldowns,
