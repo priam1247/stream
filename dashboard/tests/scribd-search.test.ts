@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { normalizeScribdHit, safeScribdThumbnail } from '../lib/scribd-search';
+import { normalizeScribdHit, safeScribdThumbnail, scribdDocumentId } from '../lib/scribd-search';
 
 vi.mock('../lib/storage', () => ({
   DEFAULT_SCRIBD_PANEL_URL: 'https://panel.example',
@@ -63,30 +63,45 @@ describe('Scribd search results', () => {
     }
   });
 
-  it('forwards cover data through the existing search adapter without changing its request', async () => {
+  it('accepts only Scribd document URLs when deriving IDs', () => {
+    expect(scribdDocumentId('https://www.scribd.com/document/123456789/Algebra')).toBe('123456789');
+    expect(scribdDocumentId('https://evil.example/document/123456789')).toBeUndefined();
+    expect(scribdDocumentId('https://scribd.com.evil.example/document/123456789')).toBeUndefined();
+    expect(scribdDocumentId('https://www.scribd.com/document/not-a-number')).toBeUndefined();
+  });
+
+  it('forwards the web service search page, token, and real cover data', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({
-        hits: [{
+      json: async () => ({
+        page: 2,
+        items: [{
           id: '123456789',
           title: 'Algebra',
-          url: 'https://www.scribd.com/document/123456789',
-          thumbnail_url: 'https://img.scribdassets.com/book.jpg',
+          url: '/document/123456789',
+          thumb: 'https://img.scribdassets.com/book.jpg',
         }],
       }),
     });
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubEnv('SCRIBD_SEARCH_URL', 'https://search.example');
+    vi.stubEnv('SCRIBD_WEB_URL', 'https://web.example');
+    vi.stubEnv('SCRIBD_WEB_TOKEN', 'test-token');
 
-    const result = await findScribdDocuments('algebra', 1);
+    const result = await findScribdDocuments('algebra & geometry', 2);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.error);
     expect(result.data.hits[0].thumbnail).toBe('https://img.scribdassets.com/book.jpg');
-    expect(result.data.max_page).toBe(1);
+    expect(result.data.max_page).toBe(3);
     expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://search.example/search');
-    expect(JSON.parse(String(init.body))).toEqual({ query: 'algebra', mode: 'auto' });
+    const [requested, init] = fetchMock.mock.calls[0];
+    const url = new URL(String(requested));
+    expect(url.origin).toBe('https://web.example');
+    expect(url.pathname).toBe('/api/search');
+    expect(url.searchParams.get('q')).toBe('algebra & geometry');
+    expect(url.searchParams.get('page')).toBe('2');
+    expect(url.searchParams.get('t')).toBe('test-token');
+    expect(init.method).toBe('GET');
+    expect(init.redirect).toBe('error');
   });
 });

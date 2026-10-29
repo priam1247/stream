@@ -61,56 +61,76 @@ npm test
 npm run build
 ```
 
+The Scribd contract test requires Python 3 and the `working scribd` directory
+from this repository. It runs the unmodified web handler against temporary
+state, with search, covers, and conversion stubbed; it does not contact Scribd
+or Drime.
+
 ## Scribd Library tab
 
-The member console has a fourth tab (**Scribd**) for searching, selecting
-books, and saving finished PDFs. Results use a compact, collapsible cover grid;
-selection is retained when the grid is hidden. **Show more results** reveals the
-next batch already returned by the current search service. The UI can request a
-next page if the dashboard API advertises one, but the current legacy adapter
-does not advertise server pagination. Covers are displayed when the search
-response supplies a Scribd-hosted image; otherwise a placeholder is shown.
+The dashboard integrates with the **existing** `../working scribd/scribd_web.py`
+service. Only the dashboard adapter changes; no server modification is required.
+The browser talks to the dashboard's `/api/scribd/*` routes, and the dashboard
+calls the web service server-to-server. The web service token is not sent to the
+browser.
 
-The existing dashboard API still expects the legacy search and file-service
-contract. It is not yet connected to the separate `../working scribd` web app.
-The browser calls this app (`/api/scribd/*`); the server holds the panel key.
+### Configure the dashboard
+
+Set these **server-side** environment variables in the dashboard deployment
+(e.g. Vercel), then redeploy:
+
+```text
+SCRIBD_WEB_URL=http://195.123.189.187:25811
+SCRIBD_WEB_TOKEN=<the web server's WEB_TOKEN, if enabled>
+```
+
+Use the actual reachable server address if it differs. If the web server is
+currently open, leave the token empty, but restrict access and enable its token
+before exposing it publicly. Use HTTPS or a trusted private network: the existing
+web service uses `?t=` authentication, so a token sent over plain HTTP is not
+confidential and may appear in upstream access logs. Never put the token in a
+`NEXT_PUBLIC_` variable or commit it. The server's `/health` is public; the
+adapter checks `/api/job` to verify the protected service.
+
+`SCRIBD_WEB_URL` overrides any legacy saved Scribd panel address. When it is not
+set, the previous saved address / `SCRIBD_PANEL_URL` / built-in address remain a
+fallback. `SCRIBD_WEB_TOKEN` overrides the previous saved panel key. If a new
+`SCRIBD_WEB_URL` is set, an old saved key is **not** sent to that new host; set
+`SCRIBD_WEB_TOKEN` explicitly when the new server is locked. The old Scribd-tab
+settings card stays removed.
+
+### Behaviour and limitations
+
+- Search proxies `GET /api/search` and preserves real cover URLs. Covers are
+  fetched through the web service and dashboard; failed covers show a placeholder.
+- **Show more results** reveals existing results in batches and requests the next
+  search page. The web service does not report a page count, so the dashboard
+  stops when a page returns no new items (at most 40 pages).
+- Download submits document IDs, titles, and page counts to `POST /api/download`.
+  The server ignores IDs already in its queue or history, including failures;
+  the dashboard retains those selections and explains how to clear the queue.
+  Its duplicate pre-check cannot be atomic with submissions by other clients,
+  because the service does not return an explicit list of accepted IDs.
+- Live job states, reported page counts, errors, cancel, and clear are mapped from
+  `/api/job`, `/api/cancel`, and `/api/clear`. Clearing also removes waiting jobs
+  and history but does not stop the currently running job. The current server's
+  clear operation does not itself save the changed history to disk.
+- Finished local PDFs are streamed through `/api/scribd/file`. When the server
+  says a PDF was offloaded to Drime, the dashboard uses its share link if one was
+  provided; otherwise the user must open the Drime folder. The dashboard cannot
+  retrieve a deleted local file without a share link or a separate Drime integration.
+- The web service does not support the old HMAC direct-file links. The legacy
+  `SCRIBD_PUBLIC_URL` direct-download setting is not used. Very large streamed
+  files or long searches can still exceed the deployment platform's limits.
+- Starting, cancelling, and clearing downloads remain administrator-only. Search,
+  job status, and file access require a signed-in dashboard session. The service
+  reports whether a job completed; the dashboard cannot independently guarantee
+  that every page is present in a PDF.
 
 | file | role |
 |---|---|
-| `lib/scribd-panel.ts` | talks to the panel server-side, with `X-Panel-Key` |
-| `lib/scribd-guard.ts` | session gate (`run` and `config` are admin-only) |
-| `app/api/scribd/*/route.ts` | `status`, `files`, `find`, `run`, `file`, `config`, `reset` |
-| `components/scribd-desk.tsx` | the search, selection, progress, and file UI |
-| `lib/scribd-search.ts` | normalises search results and validates cover URLs |
-
-Without a public panel URL, `/api/scribd/file` streams PDFs through the dashboard
-without buffering the whole file in the browser. Large files can still hit a
-hosting function's time limit. `run` and `reset` are administrator-only;
-`status`, `files`, `find`, and `file` work for signed-in members.
-
-The existing status adapter reports a synthetic idle state rather than the new
-converter's real queue. Connecting live progress is a separate integration task.
-
-### Big books vs. the function time limit
-
-`/api/scribd/file` streams, but a Vercel function still has a wall-clock limit
-(60 s on Hobby, 300 s on Pro). Set one variable and Save stops using it:
-
-```text
-SCRIBD_PUBLIC_URL=http://195.123.189.187:25811
-```
-
-Now `GET /api/scribd/link?name=Book.pdf` mints a **signed, short-lived** link
-(`?t=<hmac>&e=<expiry>`, keyed with `PANEL_KEY`) and the browser downloads
-straight from the panel. The key is never in a URL, `http://` is fine because the
-browser only navigates to it, and nothing needs a tunnel or a domain. Leave the
-variable empty and Save falls back to the proxy route.
-
-(If the panel is behind a Cloudflare Tunnel, use the `https://` hostname instead —
-same mechanism, tidier address.)
-
-The removed Scribd-tab settings card does not delete existing values in
-`portal_settings` (`scribd_panel_url`, `scribd_panel_key`). Saved values continue
-to take precedence over `SCRIBD_PANEL_URL` / `SCRIBD_PANEL_KEY`. The existing
-administrator-only configuration API remains available; this UI cleanup does
-not change the service connection.
+| `lib/scribd-panel.ts` | server-side adapter and web-service token |
+| `lib/scribd-search.ts` / `lib/scribd-job.ts` | cover/document validation and job-file mapping |
+| `lib/scribd-guard.ts` | session gate for the dashboard routes |
+| `app/api/scribd/*/route.ts` | authenticated search, status, download, cancel, clear, cover and file proxies |
+| `components/scribd-desk.tsx` | compact results, selection, progress, and file UI |
