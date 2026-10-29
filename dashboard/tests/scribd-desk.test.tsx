@@ -22,10 +22,10 @@ function book(n: number): ScribdHit {
 
 type SearchReply = (page: number, query: string) => Record<string, unknown>;
 
-function mockApi(search: SearchReply, run?: () => Promise<Response>, status?: () => Record<string, unknown>, isAdmin = true) {
+function mockApi(search: SearchReply, run?: () => Promise<Response>, status?: () => Record<string, unknown>, isAdmin = true, email = 'owner@example.com') {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url === '/api/auth/me') return reply({ user: { isAdmin } });
+    if (url === '/api/auth/me') return reply({ user: { isAdmin, email } });
     if (url === '/api/scribd/status') {
       return reply(status ? status() : { panelOnline: true, state: 'idle', active: 0, finished: 0, failed: 0, cancelled: false, items: [] });
     }
@@ -52,6 +52,7 @@ function submitSearch(term = 'mathematics') {
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
   vi.unstubAllGlobals();
 });
 
@@ -252,4 +253,44 @@ describe('Scribd desk', () => {
     expect((screen.getByRole('checkbox', { name: 'Select Book 1' }) as HTMLInputElement).checked).toBe(false);
     expect((screen.getByRole('checkbox', { name: 'Select Book 2' }) as HTMLInputElement).checked).toBe(true);
   });
+
+  it('keeps selected books, favourites and recent searches on this device for the same account only', async () => {
+    mockApi(() => ({ hits: [book(1)], page: 1, max_page: 1, total: 1 }));
+    const first = render(<ScribdDesk bottomNav />);
+    submitSearch('algebra');
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Book 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Book 1 to favourites' }));
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem('zafar_scribd_preferences_v1:owner@example.com') || '{}');
+      expect(saved.selected).toHaveLength(1);
+      expect(saved.favorites).toHaveLength(1);
+      expect(saved.history).toContain('algebra');
+    });
+    first.unmount();
+
+    const sameAccount = render(<ScribdDesk bottomNav />);
+    expect(await screen.findByRole('button', { name: 'Download selected (1)' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Favourites \(1\)/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'algebra' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Favourites \(1\)/ }));
+    expect((screen.getByRole('checkbox', { name: 'Select Book 1' }) as HTMLInputElement).checked).toBe(true);
+    sameAccount.unmount();
+
+    mockApi(() => ({ hits: [book(1)], page: 1, max_page: 1, total: 1 }), undefined, undefined, false, 'other@example.com');
+    render(<ScribdDesk />);
+    expect(await screen.findByText('Only administrators can start or cancel downloads.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Download selected (0)' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'algebra' })).toBeNull();
+  });
+
+  it('sorts loaded results without changing the search request', async () => {
+    mockApi(() => ({ hits: [book(2), book(1)], page: 1, max_page: 1, total: 2 }));
+    render(<ScribdDesk />);
+    submitSearch();
+    await screen.findByRole('checkbox', { name: 'Select Book 1' });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sort loaded results' }), { target: { value: 'title' } });
+    const boxes = screen.getAllByRole('checkbox');
+    expect(boxes[0].getAttribute('aria-label')).toBe('Select Book 1');
+  });
+
 });

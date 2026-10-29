@@ -32,6 +32,7 @@ export function PairingCodeBanner({ activePair, onDismiss }: PairingCodeBannerPr
   );
 
   const handleCopy = async () => {
+    if (remaining <= 0) return;
     try {
       await navigator.clipboard.writeText(activePair.code);
       setCopied(true);
@@ -66,18 +67,20 @@ export function PairingCodeBanner({ activePair, onDismiss }: PairingCodeBannerPr
 
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <code className="min-w-0 max-w-full break-all rounded-xl border border-teal-200 bg-white px-3 py-2 font-mono text-lg font-extrabold tracking-[0.14em] text-slate-900 shadow-sm tabular-nums sm:px-4 sm:text-xl sm:tracking-[0.2em]">
-          {activePair.code}
+          {remaining > 0 ? activePair.code : 'Code expired'}
         </code>
         <button
           type="button"
           onClick={handleCopy}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-teal-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700"
+          disabled={remaining <= 0}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-teal-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50"
         >
           {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
 
+      <p className="mt-2 text-xs leading-5 text-teal-900">Only the WhatsApp account owner should enter this code. It links a device; keep it private.</p>
       <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
         <div
           className={`h-full transition-all duration-500 ${

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAdminEmail, getAuthenticatedSession } from '@/lib/auth-engine';
 import {
   normalizePhoneNumber,
@@ -56,6 +57,7 @@ export async function PATCH(
     );
   }
 
+  if (updated) await recordActivity({ category: 'numbers', action: updated.enabled ? 'Number enabled' : 'Number paused', actor: session.user.email, outcome: 'success', detail: maskedNumber(cleanNumber) });
   const numbers = await listStoredWhatsAppUsers(session.user.email);
   return NextResponse.json({ ok: true, numbers });
 }
@@ -82,6 +84,7 @@ export async function DELETE(
 
   await deleteStoredWhatsAppUser(cleanNumber);
   await removeNumberFromLiveBot(cleanNumber);
+  await recordActivity({ category: 'numbers', action: 'Number removed', actor: session.user.email, outcome: 'success', detail: maskedNumber(cleanNumber) });
 
   const numbers = await listStoredWhatsAppUsers(session.user.email);
   return NextResponse.json({ ok: true, numbers });

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_SCRIBD_WEB_URL } from './scribd-config';
 import {
+  ActivityEvent,
   ApprovedUser,
   BotCommandRecord,
   BotConnectionConfig,
@@ -35,11 +36,19 @@ interface StoredMemberPermission {
   updatedAt: string;
 }
 
+interface StoredMemberFeatures {
+  email: string;
+  scribdAllowed: boolean;
+  updatedAt: string;
+}
+
 interface DiskStoreSchema {
   nextUserId: number;
   accounts: StoredPortalAccount[];
   whatsappUsers: ApprovedUser[];
   memberPermissions: StoredMemberPermission[];
+  memberFeatures: StoredMemberFeatures[];
+  activity: ActivityEvent[];
   botCommands: BotCommandRecord[];
   settings: Record<string, string>;
 }
@@ -49,7 +58,9 @@ const DATA_FILE = path.join(DATA_DIR, 'zafar-db.json');
 
 declare global {
   // eslint-disable-next-line no-var
-  var __zafarD1SchemaV3Ready: boolean | undefined;
+  var __zafarD1SchemaV4Ready: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __zafarD1SchemaV4Promise: Promise<boolean> | undefined;
   // eslint-disable-next-line no-var
   var __zafarD1UnreachableInDev: boolean | undefined;
 }
@@ -100,8 +111,18 @@ async function queryD1<T = Record<string, unknown>>(
 async function ensureD1Tables(): Promise<boolean> {
   const cfg = getD1Config();
   if (!cfg || globalThis.__zafarD1UnreachableInDev) return false;
-  if (globalThis.__zafarD1SchemaV3Ready) return true;
+  if (globalThis.__zafarD1SchemaV4Ready) return true;
+  if (globalThis.__zafarD1SchemaV4Promise) return globalThis.__zafarD1SchemaV4Promise;
+  const pending = initializeD1Tables();
+  globalThis.__zafarD1SchemaV4Promise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (globalThis.__zafarD1SchemaV4Promise === pending) globalThis.__zafarD1SchemaV4Promise = undefined;
+  }
+}
 
+async function initializeD1Tables(): Promise<boolean> {
   const r1 = await queryD1(`
     CREATE TABLE IF NOT EXISTS portal_accounts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,6 +162,27 @@ async function ensureD1Tables(): Promise<boolean> {
   `);
 
   await queryD1(`
+    CREATE TABLE IF NOT EXISTS portal_member_features (
+      email TEXT PRIMARY KEY,
+      scribd_allowed INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  await queryD1(`
+    CREATE TABLE IF NOT EXISTS portal_activity (
+      id TEXT PRIMARY KEY,
+      category TEXT NOT NULL,
+      action TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    )
+  `);
+  await queryD1(`CREATE INDEX IF NOT EXISTS portal_activity_created_at ON portal_activity(created_at DESC)`);
+
+  await queryD1(`
     CREATE TABLE IF NOT EXISTS portal_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -162,7 +204,8 @@ async function ensureD1Tables(): Promise<boolean> {
     )
   `);
 
-  globalThis.__zafarD1SchemaV3Ready = true;
+  if (globalThis.__zafarD1UnreachableInDev) return false;
+  globalThis.__zafarD1SchemaV4Ready = true;
   return true;
 }
 
@@ -177,19 +220,25 @@ function readDiskStore(): DiskStoreSchema {
         memberPermissions: Array.isArray(parsed.memberPermissions)
           ? parsed.memberPermissions
           : [],
+        memberFeatures: Array.isArray(parsed.memberFeatures) ? parsed.memberFeatures : [],
+        activity: Array.isArray(parsed.activity) ? parsed.activity : [],
         botCommands: Array.isArray(parsed.botCommands) ? parsed.botCommands : [],
         settings:
           parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {},
       };
     }
   } catch {
-    // fresh store
+    // Never replace a corrupt or unreadable store with an empty one: that can
+    // silently discard accounts, permissions and activity on the next write.
+    throw new Error('Dashboard local storage could not be read. Restore it or configure Cloudflare D1.');
   }
   return {
     nextUserId: 1,
     accounts: [],
     whatsappUsers: [],
     memberPermissions: [],
+    memberFeatures: [],
+    activity: [],
     botCommands: [],
     settings: {},
   };
@@ -200,7 +249,7 @@ function writeDiskStore(data: DiskStoreSchema): void {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
   } catch {
-    // ignore ephemeral read-only fs if D1 is active
+    throw new Error('Dashboard storage is unavailable. Configure a writable local store or Cloudflare D1.');
   }
 }
 
@@ -433,10 +482,55 @@ export async function removeMemberPermissionRecord(email: string): Promise<void>
   await setMemberPermission(clean, false);
 }
 
+/** Scribd is private by default. This grant never bypasses the member block. */
+export async function isMemberScribdAllowed(email: string): Promise<boolean> {
+  const clean = email.trim().toLowerCase();
+  if (!clean) return false;
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(
+      `SELECT scribd_allowed FROM portal_member_features WHERE email = ? LIMIT 1`,
+      [clean],
+    );
+    return Boolean(rows?.length && Number(rows[0].scribd_allowed));
+  }
+  return readDiskStore().memberFeatures.find((item) => item.email === clean)?.scribdAllowed === true;
+}
+
+export async function setMemberScribdAllowed(email: string, allowed: boolean): Promise<void> {
+  const clean = email.trim().toLowerCase();
+  if (!clean) throw new Error('Member email required.');
+  const now = new Date().toISOString();
+  if (await ensureD1Tables()) {
+    await queryD1(
+      `INSERT INTO portal_member_features (email, scribd_allowed, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(email) DO UPDATE SET scribd_allowed = excluded.scribd_allowed, updated_at = excluded.updated_at`,
+      [clean, allowed ? 1 : 0, now],
+    );
+    return;
+  }
+  const store = readDiskStore();
+  const existing = store.memberFeatures.find((item) => item.email === clean);
+  if (existing) {
+    existing.scribdAllowed = allowed;
+    existing.updatedAt = now;
+  } else {
+    store.memberFeatures.push({ email: clean, scribdAllowed: allowed, updatedAt: now });
+  }
+  writeDiskStore(store);
+}
+
+async function memberScribdGrants(): Promise<Set<string>> {
+  if (await ensureD1Tables()) {
+    const rows = (await queryD1(`SELECT email FROM portal_member_features WHERE scribd_allowed = 1`)) || [];
+    return new Set(rows.map((row) => String(row.email).toLowerCase()));
+  }
+  return new Set(readDiskStore().memberFeatures.filter((item) => item.scribdAllowed).map((item) => item.email.toLowerCase()));
+}
+
 export async function listAllMembers(
   checkAdmin: (email: string) => boolean,
 ): Promise<MemberRecord[]> {
-  const whatsappAll = await listStoredWhatsAppUsers();
+  const [whatsappAll, scribdGrants] = await Promise.all([listStoredWhatsAppUsers(), memberScribdGrants()]);
   const countByEmail = new Map<string, number>();
   for (const item of whatsappAll) {
     const owner = (item.addedBy || '').toLowerCase();
@@ -476,6 +570,7 @@ export async function listAllMembers(
         isVerified: Boolean(Number(r.is_verified)),
         isAdmin: checkAdmin(em),
         allowed: checkAdmin(em) ? true : perm ? perm.allowed : true,
+        scribdAllowed: checkAdmin(em) || scribdGrants.has(em),
         numbersCount: countByEmail.get(em) || 0,
         createdAt: String(r.created_at || new Date().toISOString()),
       });
@@ -496,6 +591,7 @@ export async function listAllMembers(
           isVerified: Boolean(Number(r.is_verified ?? 1)),
           isAdmin: checkAdmin(em),
           allowed: checkAdmin(em) ? true : perm ? perm.allowed : true,
+          scribdAllowed: checkAdmin(em) || scribdGrants.has(em),
           numbersCount: countByEmail.get(em) || 0,
           createdAt: String(r.created_at || new Date().toISOString()),
         });
@@ -512,6 +608,7 @@ export async function listAllMembers(
           isVerified: false,
           isAdmin: checkAdmin(em),
           allowed: checkAdmin(em) ? true : perm.allowed,
+          scribdAllowed: checkAdmin(em) || scribdGrants.has(em),
           numbersCount: countByEmail.get(em) || 0,
           createdAt: perm.updatedAt,
         });
@@ -534,6 +631,7 @@ export async function listAllMembers(
       isVerified: acc.isVerified,
       isAdmin: checkAdmin(em),
       allowed: checkAdmin(em) ? true : perm ? perm.allowed : true,
+      scribdAllowed: checkAdmin(em) || scribdGrants.has(em),
       numbersCount: countByEmail.get(em) || 0,
       createdAt: acc.createdAt,
     });
@@ -547,6 +645,7 @@ export async function listAllMembers(
         isVerified: false,
         isAdmin: checkAdmin(em),
         allowed: checkAdmin(em) ? true : perm.allowed,
+        scribdAllowed: checkAdmin(em) || scribdGrants.has(em),
         numbersCount: countByEmail.get(em) || 0,
         createdAt: perm.updatedAt,
       });
@@ -961,6 +1060,18 @@ export async function getNextBotPollMs(): Promise<number> {
   return 10_000;
 }
 
+function canonicalWhitelist(users: ApprovedUser[]) {
+  return users
+    .map((u) => ({ number: u.number, label: u.label || '', enabled: Boolean(u.enabled) }))
+    .sort((a, b) => a.number.localeCompare(b.number));
+}
+
+export function whitelistVersionFor(users: ApprovedUser[], botEnabledForMembers: boolean): string {
+  return crypto.createHash('sha1')
+    .update(JSON.stringify({ botEnabledForMembers, users: canonicalWhitelist(users) }))
+    .digest('hex').slice(0, 16);
+}
+
 export async function computeWhitelistSnapshot(): Promise<{
   version: string;
   botEnabledForMembers: boolean;
@@ -971,34 +1082,12 @@ export async function computeWhitelistSnapshot(): Promise<{
     getBotConnectionConfig(),
     listStoredWhatsAppUsers(),
   ]);
-  const canonical = users
-    .map((u) => ({
-      number: u.number,
-      label: u.label || '',
-      enabled: Boolean(u.enabled),
-    }))
-    .sort((a, b) => a.number.localeCompare(b.number));
-
-  const version = crypto
-    .createHash('sha1')
-    .update(
-      JSON.stringify({
-        botEnabledForMembers: cfg.botEnabledForMembers,
-        users: canonical,
-      }),
-    )
-    .digest('hex')
-    .slice(0, 16);
-
-  const activeNumbers = cfg.botEnabledForMembers
-    ? canonical.filter((u) => u.enabled).map((u) => u.number)
-    : [];
-
+  const canonical = canonicalWhitelist(users);
   return {
-    version,
+    version: whitelistVersionFor(users, cfg.botEnabledForMembers),
     botEnabledForMembers: cfg.botEnabledForMembers,
     users,
-    numbers: activeNumbers,
+    numbers: cfg.botEnabledForMembers ? canonical.filter((u) => u.enabled).map((u) => u.number) : [],
   };
 }
 
@@ -1155,6 +1244,59 @@ export async function getBotCommandById(
     return mapD1BotCommand(rows[0]);
   }
   return readDiskStore().botCommands.find((c) => c.id === id) || null;
+}
+
+// ---------------------------------------------------------------------------
+// Owner activity history. Never put credentials, pairing codes or PDF contents
+// in these records. D1 is durable; the disk fallback is for local/self-hosting.
+// ---------------------------------------------------------------------------
+
+export async function appendActivity(event: Omit<ActivityEvent, 'id' | 'createdAt'>): Promise<void> {
+  const now = new Date().toISOString();
+  const entry: ActivityEvent = {
+    id: crypto.randomUUID(),
+    category: event.category,
+    action: event.action.slice(0, 100),
+    actor: event.actor.trim().toLowerCase().slice(0, 160),
+    outcome: event.outcome,
+    detail: event.detail.replace(/[\r\n\x00-\x1f]/g, ' ').slice(0, 200),
+    createdAt: now,
+  };
+  if (await ensureD1Tables()) {
+    await queryD1(
+      `INSERT INTO portal_activity (id, category, action, actor, outcome, detail, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [entry.id, entry.category, entry.action, entry.actor, entry.outcome, entry.detail, entry.createdAt],
+    );
+    // Bound retention so the history does not grow indefinitely.
+    const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    await queryD1(`DELETE FROM portal_activity WHERE created_at < ?`, [cutoff]);
+    return;
+  }
+  const store = readDiskStore();
+  store.activity = [entry, ...store.activity].slice(0, 1000);
+  writeDiskStore(store);
+}
+
+export async function listRecentActivity(limit = 100): Promise<ActivityEvent[]> {
+  const safeLimit = Math.max(1, Math.min(200, Math.floor(limit) || 100));
+  if (await ensureD1Tables()) {
+    const rows = (await queryD1(
+      `SELECT id, category, action, actor, outcome, detail, created_at
+       FROM portal_activity ORDER BY created_at DESC, id DESC LIMIT ?`,
+      [safeLimit],
+    )) || [];
+    return rows.map((row) => ({
+      id: String(row.id),
+      category: String(row.category) as ActivityEvent['category'],
+      action: String(row.action),
+      actor: String(row.actor),
+      outcome: String(row.outcome) as ActivityEvent['outcome'],
+      detail: String(row.detail || ''),
+      createdAt: String(row.created_at),
+    }));
+  }
+  return readDiskStore().activity.slice(0, safeLimit);
 }
 
 // ---------------------------------------------------------------------------

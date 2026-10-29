@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
 import { JwtConfigError } from '@/lib/jwt';
 import {
@@ -86,15 +87,15 @@ export async function POST(req: NextRequest) {
           'API key authenticated, but 0 servers were returned on this panel account. Make sure you created the hydro_… key under the exact XS Systems account that owns server ' +
           (saved.panelServerId || '32197077') +
           '.';
-      } else if (
-        !effectiveServerId ||
-        !discovery.servers.some(
-          (s) => s.id === effectiveServerId || s.uuid === effectiveServerId,
-        )
-      ) {
-        // Auto-correct Server ID to match the actual server returned by the API key
+      } else if (!effectiveServerId && discovery.servers.length === 1) {
+        // A single discovered server is unambiguous. With multiple servers,
+        // the owner must choose rather than risking a different power target.
         effectiveServerId = discovery.servers[0].id;
         await savePanelConnectionConfig({ panelServerId: effectiveServerId });
+      } else if (!effectiveServerId && discovery.servers.length > 1) {
+        discoveryError = 'Multiple servers found. Enter the intended Server ID before sending power commands.';
+      } else if (!discovery.servers.some((s) => s.id === effectiveServerId || s.uuid === effectiveServerId || s.uuid.split('-')[0] === effectiveServerId)) {
+        discoveryError = 'The saved Server ID was not found on this panel account. Choose the correct ID; no other server will be selected automatically.';
       }
     }
 
@@ -103,7 +104,7 @@ export async function POST(req: NextRequest) {
       panelUrl: saved.panelUrl,
       panelServerId: effectiveServerId,
       hasPanelApiKey: Boolean(saved.panelApiKey),
-      discoveryOk: discovery.ok && discovery.servers.length > 0,
+      discoveryOk: discovery.ok && discovery.servers.length > 0 && !discoveryError,
       discoveryError,
       matchedEndpoint: discovery.matchedEndpoint || null,
       servers: discovery.servers,
@@ -111,7 +112,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (action === 'power') {
-    const rawSignal = String(body.signal || 'restart').toLowerCase();
+    const rawSignal = typeof body.signal === 'string' ? body.signal.toLowerCase() : '';
     if (!['restart', 'start', 'stop', 'kill'].includes(rawSignal)) {
       return NextResponse.json(
         { error: 'Unsupported power signal.' },
@@ -122,10 +123,12 @@ export async function POST(req: NextRequest) {
 
     const cfg = await getPanelConnectionConfig();
     let panelError: string | undefined;
+    let panelStatus: number | undefined;
 
     if (cfg.panelApiKey) {
       const res = await sendPanelPowerSignal(signal);
       if (res.ok) {
+        await recordActivity({ category: 'bot', action: `Bot ${signal} requested`, actor: session.user.email, outcome: 'requested', detail: 'Panel accepted the request.' });
         return NextResponse.json({
           ok: true,
           via: 'panel-api',
@@ -134,10 +137,12 @@ export async function POST(req: NextRequest) {
         });
       }
       panelError = res.error;
+      panelStatus = res.status;
     }
 
-    // Automatic fallback when signal === 'restart' and the bot is online via outbound sync!
-    if (signal === 'restart') {
+    // Only fall back when the panel clearly rejected the request (or is not
+    // configured). A timeout or server error can leave its outcome uncertain.
+    if (signal === 'restart' && (!cfg.panelApiKey || [400, 401, 403, 404, 405].includes(panelStatus || 0))) {
       const hb = await getBotHeartbeat();
       if (hb && Date.now() - hb.lastSeenAt <= 45_000) {
         await enqueueBotCommand({
@@ -146,6 +151,7 @@ export async function POST(req: NextRequest) {
           requestedBy: session.user.email,
           ttlMs: 45_000,
         });
+        await recordActivity({ category: 'bot', action: 'Bot restart requested', actor: session.user.email, outcome: 'requested', detail: 'Queued for the bot.' });
         return NextResponse.json({
           ok: true,
           via: 'bot-queue',
@@ -156,13 +162,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    await recordActivity({ category: 'bot', action: `Bot ${signal} request failed`, actor: session.user.email, outcome: 'failed', detail: 'Panel or bot did not accept the request.' });
     return NextResponse.json(
       {
         error:
           panelError ||
           'Save your Hydrodactyl / Pterodactyl PANEL_API_KEY below first so the portal can restart or start the server directly.',
       },
-      { status: panelError ? 404 : 400 },
+      { status: panelStatus && panelStatus >= 400 && panelStatus <= 599 ? panelStatus : 400 },
     );
   }
 

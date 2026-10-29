@@ -14,7 +14,7 @@ import {
 
 interface LiveAnalyticsProps {
   reachable?: boolean;
-  connected?: boolean;
+  connected?: boolean | null;
   botNumber?: string | null;
   lastSeenSecondsAgo?: number | null;
   uptimeSeconds?: number | null;
@@ -30,7 +30,7 @@ interface LiveAnalyticsProps {
 }
 
 function formatUptime(totalSec: number | null | undefined, reachable?: boolean): string {
-  if (!reachable || totalSec == null || totalSec <= 0) return 'Offline';
+  if (!reachable || totalSec == null || !Number.isFinite(totalSec)) return '—';
   const s = Math.max(0, Math.floor(totalSec));
   const d = Math.floor(s / 86400);
   const h = Math.floor((s % 86400) / 3600);
@@ -44,13 +44,13 @@ function formatUptime(totalSec: number | null | undefined, reachable?: boolean):
 
 export function LiveAnalytics({
   reachable = false,
-  connected = false,
+  connected = null,
   botNumber = null,
   lastSeenSecondsAgo = null,
   uptimeSeconds = null,
-  commandsTotal = 0,
-  downloadsSuccess = 0,
-  failedTotal = 0,
+  commandsTotal = null,
+  downloadsSuccess = null,
+  failedTotal = null,
   ramUsedMB = null,
   diskUsedMB = null,
   diskBudgetMB = null,
@@ -71,12 +71,13 @@ export function LiveAnalytics({
 
   const liveUptime =
     reachable && uptimeSeconds != null ? uptimeSeconds + tickOffset : uptimeSeconds;
-  const cmds = Math.max(0, Number(commandsTotal) || 0);
-  const okCount = Math.max(0, Number(downloadsSuccess) || 0);
-  const failCount = Math.max(0, Number(failedTotal) || 0);
-  const totalJobs = okCount + failCount;
-  const successRate =
-    totalJobs > 0 ? Math.round((okCount / totalJobs) * 100) : null;
+  const asCount = (value: number | null) => value != null && Number.isFinite(value) ? Math.max(0, value) : null;
+  const cmds = asCount(commandsTotal);
+  const okCount = asCount(downloadsSuccess);
+  const failCount = asCount(failedTotal);
+  const totalJobs = okCount != null && failCount != null ? okCount + failCount : null;
+  const successRate = totalJobs != null && totalJobs > 0 && okCount != null
+    ? Math.round((okCount / totalJobs) * 100) : null;
 
   const diskPct =
     diskUsedMB != null && diskBudgetMB && diskBudgetMB > 0
@@ -89,11 +90,11 @@ export function LiveAnalytics({
       className="mb-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
     >
       {/* Server Telemetry Header Strip */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-900 px-3.5 py-2.5 text-white sm:px-5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3.5 py-2.5 text-slate-900 sm:px-5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="relative flex h-2.5 w-2.5 shrink-0">
             {reachable && (
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75 motion-reduce:animate-none" />
             )}
             <span
               className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
@@ -105,24 +106,24 @@ export function LiveAnalytics({
               }`}
             />
           </span>
-          <Activity className="h-3.5 w-3.5 shrink-0 text-teal-400" />
+          <Activity className="h-3.5 w-3.5 shrink-0 text-teal-600" />
           <span className="truncate font-mono text-[11px] font-bold uppercase tracking-wider">
             Live Analytics
           </span>
           <span
             className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${
               connected
-                ? 'bg-emerald-500/20 text-emerald-300'
+                ? 'bg-emerald-100 text-emerald-800'
                 : reachable
-                  ? 'bg-amber-500/20 text-amber-300'
-                  : 'bg-rose-500/20 text-rose-300'
+                  ? 'bg-amber-100 text-amber-800'
+                  : 'bg-slate-200 text-slate-600'
             }`}
           >
-            {connected ? 'ONLINE' : reachable ? 'STANDBY' : 'OFFLINE'}
+            {reachable && connected === true ? 'WHATSAPP CONNECTED' : reachable && connected === false ? 'WHATSAPP DISCONNECTED' : 'NO CURRENT STATUS'}
           </span>
         </div>
 
-        <div className="flex min-w-0 items-center gap-2.5 font-mono text-[11px] text-slate-300 tabular-nums">
+        <div className="flex min-w-0 items-center gap-2.5 font-mono text-[11px] text-slate-600 tabular-nums">
           {botNumber && <span className="truncate">+{botNumber}</span>}
           {lastSeenSecondsAgo != null && (
             <span className="text-slate-400">
@@ -140,7 +141,7 @@ export function LiveAnalytics({
             <Terminal className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           </div>
           <div className="mt-1 font-mono text-xl font-extrabold text-slate-900 tabular-nums sm:text-2xl">
-            {cmds.toLocaleString()}
+            {cmds == null ? '—' : cmds.toLocaleString()}
           </div>
         </div>
 
@@ -151,7 +152,7 @@ export function LiveAnalytics({
           </div>
           <div className="mt-1 flex items-baseline gap-1.5">
             <span className="font-mono text-xl font-extrabold text-emerald-700 tabular-nums sm:text-2xl">
-              {okCount.toLocaleString()}
+              {okCount == null ? '—' : okCount.toLocaleString()}
             </span>
             {successRate !== null && (
               <span className="font-mono text-[11px] font-semibold text-emerald-600 tabular-nums">
@@ -167,7 +168,7 @@ export function LiveAnalytics({
             <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-500" />
           </div>
           <div className="mt-1 font-mono text-xl font-extrabold text-rose-600 tabular-nums sm:text-2xl">
-            {failCount.toLocaleString()}
+            {failCount == null ? '—' : failCount.toLocaleString()}
           </div>
         </div>
 
@@ -223,7 +224,7 @@ export function LiveAnalytics({
               Queues
             </span>
             <span className="font-bold text-slate-800">
-              L:{queueLight ?? 0} · H:{queueHeavy ?? 0}
+              L:{queueLight ?? '—'} · H:{queueHeavy ?? '—'}
             </span>
           </div>
         </div>

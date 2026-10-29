@@ -19,11 +19,11 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 | `JWT_SECRET_KEY` | **Required in production** | Signs HS256 session cookies (min 16 chars; generate via `openssl rand -hex 32`). Production startup refuses to run without it. |
 | `ADMIN_EMAIL` | Recommended | Comma-separated administrator email(s) allowed into `/admin` (default: `troykunsauka@gmail.com`). |
 | `ADMIN_INITIAL_PASSWORD` | Optional | Bootstraps the verified `ADMIN_EMAIL` account in D1 on first sign-in before email delivery is configured. |
-| `CLOUDFLARE_ACCOUNT_ID` / `D1_DATABASE_ID` / `CLOUDFLARE_API_TOKEN` | Recommended | Cloudflare D1 database storing verified accounts (`bcryptjs`), member permissions, approved WhatsApp numbers, and bot link settings. Falls back to `.data/zafar-db.json` in local dev. |
+| `CLOUDFLARE_ACCOUNT_ID` / `D1_DATABASE_ID` / `CLOUDFLARE_API_TOKEN` | Required for durable serverless state | Cloudflare D1 stores accounts, permissions, numbers, bot settings and activity. Without D1 the portal uses `.data/zafar-db.json` on local disk, which must be writable and may be ephemeral or inconsistent across serverless instances. |
 | `RESEND_API_KEY` + `EMAIL_FROM` | Pick Resend **or** SMTP | Sends 6-digit verification & password-reset codes over HTTPS (works cleanly on serverless/edge hosts). |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Pick Resend **or** SMTP | Direct SMTP mail delivery (e.g. Gmail App Password on port `587` or `465`). |
 | `ZAFAR_AUTH_API_URL` | Optional (legacy migration only) | Leave empty. If set during migration from an older external auth service, existing accounts are verified once (6 s cap) and migrated permanently into local D1. |
-| `BOT_API_URL` / `ADMIN_DASHBOARD_TOKEN` | Optional | Defaults if not yet saved inside `/admin` → **Bot & Numbers**. |
+| `BOT_API_URL` / `ADMIN_DASHBOARD_TOKEN` | Optional | Defaults if not yet saved inside `/admin` → **Bot**. |
 
 ## Linking the Bot Securely (HTTPS Tunnel Recommended)
 
@@ -35,7 +35,7 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
    # Optional if any browser origin ever calls the bot directly:
    ADMIN_CORS_ORIGINS=https://your-portal.vercel.app
    ```
-   Restart the bot and confirm `🌐 Dashboard API: on (port …)` in the console.
+   Restart the bot and confirm `Dashboard API: on` in the console.
 2. **Expose `/admin/api` over HTTPS (Cloudflare Tunnel recommended)**:
    Plain `http://<node-ip>:<port>` works through the server-side proxy, but sends `ADMIN_DASHBOARD_TOKEN` unencrypted across the network. Whenever possible, put `cloudflared` or an HTTPS reverse proxy in front of the bot port:
    ```bash
@@ -45,10 +45,35 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
    # Permanent production tunnel (Cloudflare Zero Trust → Networks → Tunnels):
    # Route https://bot-api.yourdomain.com → http://127.0.0.1:3000
    ```
-3. **Save inside `/admin` → Bot & Numbers**:
+3. **Save inside `/admin` → Bot**:
    Paste the `https://` tunnel URL (or `http://<node-ip>:<allocated-port>`) and the same `ADMIN_DASHBOARD_TOKEN`, then click **Test & Save Bot Link**.
-   - Status probes time out in **3 seconds** and distinguish **Online**, **Awaiting Pair**, **Bot Offline**, and **Not Linked** immediately.
-   - If the bot is behind strict NAT with no inbound port or tunnel, keep `DASHBOARD_URL` set on the bot: `utils/allowlistSync.js` pulls `/api/bot/whitelist` every 5 minutes so member Allow/Disallow changes still apply.
+   - The owner view separates the bot bridge from the bot's reported WhatsApp connection. A missing or stale heartbeat is not proof that the hosting server itself is offline.
+   - If the bot has no inbound tunnel, keep `DASHBOARD_URL` and `BOT_SYNC_TOKEN` set so the bot can synchronize via its outbound heartbeat. The displayed list sync state compares the most recent reported whitelist version, not a guarantee that every individual action was applied.
+
+## Owner control room and security
+
+- The owner home combines bot bridge, WhatsApp, Scribd, number-list and optional
+  hosting-panel checks. Hosting status is requested only when a panel API key and
+  explicit server ID are configured, at most once per minute during routine polling
+  while the page is open. Unreachable or unrecognized panel responses remain
+  **unknown**, not automatically offline. Power actions require confirmation;
+  multiple discovered servers require an explicit ID and a failed command is never
+  retried on a different server.
+- The member-linking pause blocks new linking and pairing requests. It is not a
+  reliable kill switch for numbers already approved on the bot. Blocking or allowing
+  a member changes that member's stored numbers too; allowing re-enables them.
+- Activity is owner-only and best effort: actions are recorded without passwords,
+  pairing codes, tokens or full phone numbers. D1 retains entries for approximately
+  90 days (cleanup occurs when writing); local fallback keeps the latest 1,000.
+  Alerts are derived from checks while a page is open; there is no background or
+  email notification when the website is closed.
+- This version closes a verified-account verification bypass and rejects older
+  session tokens. All existing users must sign in again after deployment. Deploy
+  the fix promptly and remove or restrict any older publicly accessible deployment
+  that still contains the vulnerable route. Production registration always requires
+  email verification (even if `EMAIL_VERIFICATION_REQUIRED=false` was previously
+  set); configure an email provider. Retrying a pending registration requires its
+  original password so another registration cannot replace it.
 
 ## Local Development
 
@@ -134,10 +159,19 @@ effective connection, but rejects attempts to save legacy settings.
 - The web service does not support the old HMAC direct-file links. The legacy
   `SCRIBD_PUBLIC_URL` direct-download setting is not used. Very large streamed
   files or long searches can still exceed the deployment platform's limits.
-- Starting, cancelling, and clearing downloads remain administrator-only. Search,
-  job status, and file access require a signed-in dashboard session. The service
-  reports whether a job completed; the dashboard cannot independently guarantee
-  that every page is present in a PDF.
+- Scribd is private to the owner in the dashboard by default. Under **Members**,
+  the owner can individually grant or revoke access for active members. Granted
+  members can search and see the shared job status and files, but only owners can
+  start, cancel, or clear downloads. Blocking a member also blocks Scribd regardless
+  of the saved grant. These dashboard controls do **not** protect a directly
+  reachable Scribd service; enforce its own token or restrict network access.
+- Favourites, recent searches, and the current selection are stored in the browser
+  on that device, separated by dashboard account. They do not sync across devices;
+  clearing browser data removes them. Sorting applies only to already-loaded results.
+- The existing service supports cancellation and clearing only for the shared queue,
+  not retry/cancel of individual items. The dashboard does not invent those actions.
+  The service reports whether a job completed; the dashboard cannot independently
+  guarantee that every page is present in a PDF.
 
 | file | role |
 |---|---|

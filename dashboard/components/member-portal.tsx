@@ -12,6 +12,8 @@ import {
   Library,
   Link2,
   Loader2,
+  LockKeyhole,
+  Search,
   LogOut,
   Plus,
   RefreshCw,
@@ -69,6 +71,7 @@ export function MemberPortal() {
   const [busyNumber, setBusyNumber] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [activePair, setActivePair] = useState<PairCodePayload | null>(null);
+  const [numberSearch, setNumberSearch] = useState('');
 
   const loadMemberStatus = useCallback(
     async (silent = false) => {
@@ -226,7 +229,7 @@ export function MemberPortal() {
               code: pollJson.code,
               expiresInSeconds: Number(pollJson.expiresInSeconds) || 60,
               number: num,
-              issuedAt: Date.now(),
+              issuedAt: Number(pollJson.issuedAt) || Date.now(),
             });
             setNotice({ text: `Code issued for +${num}` });
             return;
@@ -240,7 +243,7 @@ export function MemberPortal() {
         code: json.code,
         expiresInSeconds: Number(json.expiresInSeconds) || 60,
         number: num,
-        issuedAt: Date.now(),
+        issuedAt: Number(json.issuedAt) || Date.now(),
       });
       setNotice({ text: `Code issued for +${num}` });
     } catch (err) {
@@ -283,8 +286,10 @@ export function MemberPortal() {
     );
   }
 
-  const canManageNumbers =
+  const canLinkNumbers =
     overview.memberAllowed && (overview.botEnabledForMembers || user.isAdmin);
+  const canAccessScribd = user.isAdmin || (overview.memberAllowed && overview.scribdAllowed === true);
+  const filteredNumbers = overview.numbers.filter((item) => `${item.number} ${item.label || ''}`.toLowerCase().includes(numberSearch.trim().toLowerCase()));
 
   return (
     <div className="bg-portal-canvas min-h-screen w-full overflow-x-hidden">
@@ -365,74 +370,20 @@ export function MemberPortal() {
             </div>
           </div>
 
-          <nav
-            aria-label="Console sections"
-            className="mt-2.5 grid grid-cols-4 gap-1 rounded-xl bg-slate-100 p-1"
-          >
-            <button
-              type="button"
-              onClick={() => setTab('numbers')}
-              className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
-                tab === 'numbers'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Smartphone
-                className={`h-3.5 w-3.5 shrink-0 ${tab === 'numbers' ? 'text-teal-600' : ''}`}
-              />
-              <span className="truncate">Numbers ({overview.numbers.length})</span>
-            </button>
 
-            <button
-              type="button"
-              onClick={() => setTab('commands')}
-              className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
-                tab === 'commands'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Command
-                className={`h-3.5 w-3.5 shrink-0 ${tab === 'commands' ? 'text-teal-600' : ''}`}
-              />
-              <span className="truncate">Commands</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setTab('vault')}
-              className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
-                tab === 'vault'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <BookOpen
-                className={`h-3.5 w-3.5 shrink-0 ${tab === 'vault' ? 'text-teal-600' : ''}`}
-              />
-              <span className="truncate">Vault</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setTab('scribd')}
-              className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
-                tab === 'scribd'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Library
-                className={`h-3.5 w-3.5 shrink-0 ${tab === 'scribd' ? 'text-teal-600' : ''}`}
-              />
-              <span className="truncate">Scribd</span>
-            </button>
-          </nav>
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1080px] px-3.5 pb-12 pt-4 sm:px-5 sm:pt-6">
+      <nav aria-label="Console sections" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur-md sm:static sm:mx-auto sm:mt-3 sm:max-w-[1080px] sm:gap-1 sm:rounded-2xl sm:border sm:bg-slate-100 sm:p-1 sm:shadow-none">
+        {([
+          { key: 'numbers', label: 'Numbers', icon: Smartphone },
+          { key: 'commands', label: 'Commands', icon: Command },
+          { key: 'vault', label: 'Vault', icon: BookOpen },
+          { key: 'scribd', label: 'Scribd', icon: Library },
+        ] as const).map(({ key, label, icon: Icon }) => <button key={key} type="button" aria-label={key === 'numbers' ? `Numbers (${overview.numbers.length})` : label} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); window.scrollTo({ top: 0, behavior: 'auto' }); }} className={`flex min-h-[60px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-1.5 text-[10px] font-semibold transition sm:min-h-11 sm:flex-row sm:gap-2 sm:text-xs ${tab === key ? 'text-teal-700 sm:bg-white sm:shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}><Icon className="h-[19px] w-[19px]" /><span className="truncate">{label}</span></button>)}
+      </nav>
+
+      <main className="mx-auto max-w-[1080px] px-3.5 pb-28 pt-4 sm:px-5 sm:pb-12 sm:pt-6">
         {tab !== 'scribd' && (
           <LiveAnalytics
             reachable={overview.botReachable}
@@ -486,10 +437,12 @@ export function MemberPortal() {
                 WhatsApp Access
               </h2>
               <span className="font-mono text-xs text-slate-500 tabular-nums">
-                {overview.numbers.length} linked
+                {overview.numbers.length} approved
               </span>
             </div>
 
+            <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600"><span className="font-semibold">{overview.whitelistSync === 'synced' ? 'Bot reports the latest number list' : overview.whitelistSync === 'pending' ? 'Waiting for bot sync' : 'Number sync not confirmed'}</span><span className="block">Approval allows a number to use the bot. Pairing links a device and should be completed only by the WhatsApp account owner.</span></div>
+            {!overview.botEnabledForMembers && !user.isAdmin && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800">New number approvals and pairing are paused by the owner. Existing approvals are not automatically disabled.</p>}
             <form
               onSubmit={handleAllowNumber}
               className="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-[1.15fr_0.95fr_auto] sm:items-end"
@@ -506,7 +459,7 @@ export function MemberPortal() {
                   type="text"
                   inputMode="numeric"
                   required
-                  disabled={!canManageNumbers}
+                  disabled={!canLinkNumbers}
                   value={number}
                   onChange={(e) => setNumber(e.target.value)}
                   placeholder="265991234567"
@@ -525,7 +478,7 @@ export function MemberPortal() {
                   id="member-wa-label"
                   type="text"
                   maxLength={80}
-                  disabled={!canManageNumbers}
+                  disabled={!canLinkNumbers}
                   value={label}
                   onChange={(e) => setLabel(e.target.value)}
                   placeholder="Mobile"
@@ -535,7 +488,7 @@ export function MemberPortal() {
 
               <button
                 type="submit"
-                disabled={!canManageNumbers || submitting}
+                disabled={!canLinkNumbers || submitting}
                 className="inline-flex h-[42px] items-center justify-center gap-1.5 rounded-xl bg-teal-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50"
               >
                 <Plus className="h-4 w-4" />
@@ -550,13 +503,14 @@ export function MemberPortal() {
               />
             </div>
 
+            <div className="relative mt-3"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input type="search" aria-label="Search my numbers" value={numberSearch} onChange={(event) => setNumberSearch(event.target.value)} placeholder="Search number or label" className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-base text-slate-900 outline-none focus:border-teal-400 focus:bg-white sm:text-sm" /></div>
             <div className="mt-2 divide-y divide-slate-100">
-              {overview.numbers.length === 0 ? (
+              {filteredNumbers.length === 0 ? (
                 <p className="py-8 text-center font-mono text-xs text-slate-400">
-                  No numbers linked
+                  {overview.numbers.length ? 'No matching numbers' : 'No numbers approved'}
                 </p>
               ) : (
-                overview.numbers.map((item) => {
+                filteredNumbers.map((item) => {
                   const busy = busyNumber === item.number;
                   const confirming = confirmDelete === item.number;
                   return (
@@ -576,7 +530,7 @@ export function MemberPortal() {
                                 : 'bg-slate-100 text-slate-600'
                             }`}
                           >
-                            {item.enabled ? 'Active' : 'Paused'}
+                            {item.enabled ? 'Allowed' : 'Paused'}
                           </span>
                         </div>
                         {item.label && (
@@ -591,7 +545,7 @@ export function MemberPortal() {
                           type="button"
                           disabled={
                             !item.enabled ||
-                            !canManageNumbers ||
+                            !canLinkNumbers ||
                             busy ||
                             overview.botReachable === false
                           }
@@ -604,7 +558,7 @@ export function MemberPortal() {
 
                         <button
                           type="button"
-                          disabled={!canManageNumbers || busy}
+                          disabled={!overview.memberAllowed || busy}
                           onClick={() =>
                             handleToggleOwnNumber(item.number, !item.enabled)
                           }
@@ -652,7 +606,7 @@ export function MemberPortal() {
 
         {tab === 'commands' && <CommandDirectory hideOwnerCommands />}
         {tab === 'vault' && <MediaVaultDesk />}
-        {tab === 'scribd' && <ScribdDesk />}
+        {tab === 'scribd' && (canAccessScribd ? <ScribdDesk bottomNav /> : <section className="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm"><span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-50 text-teal-700"><LockKeyhole className="h-6 w-6" /></span><h2 className="mt-4 text-base font-bold text-slate-900">Scribd is private</h2><p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">The owner can grant your account access to the shared library. Contact the owner if you need access.</p></section>)}
       </main>
 
       <AccountModal

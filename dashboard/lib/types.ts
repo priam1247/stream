@@ -6,6 +6,8 @@ export interface AuthUser {
   isVerified: boolean;
   isAdmin: boolean;
   memberAllowed: boolean;
+  /** Explicit access to the shared Scribd library; owners always have access. */
+  scribdAllowed?: boolean;
   createdAt?: string;
 }
 
@@ -24,8 +26,31 @@ export interface MemberRecord {
   isVerified: boolean;
   isAdmin: boolean;
   allowed: boolean;
+  scribdAllowed: boolean;
   numbersCount: number;
   createdAt: string;
+}
+
+export type ActivityCategory = 'account' | 'members' | 'numbers' | 'bot' | 'scribd';
+export type ActivityOutcome = 'success' | 'failed' | 'requested';
+
+export interface ActivityEvent {
+  id: string;
+  category: ActivityCategory;
+  action: string;
+  actor: string;
+  outcome: ActivityOutcome;
+  detail: string;
+  createdAt: string;
+}
+
+export type WhitelistSyncState = 'synced' | 'pending' | 'unknown';
+export interface PanelLiveStatus {
+  configured: boolean | null;
+  reachable: boolean | null;
+  state: 'running' | 'offline' | 'starting' | 'stopping' | 'suspended' | 'unknown';
+  error: string | null;
+  checkedAt: number;
 }
 
 export interface ApprovedUser {
@@ -65,7 +90,7 @@ export interface PanelServerSummary {
 
 export interface BotHeartbeatRecord {
   lastSeenAt: number;
-  connected: boolean;
+  connected: boolean | null;
   botNumber: string | null;
   botName?: string;
   version?: string;
@@ -78,6 +103,8 @@ export interface BotHeartbeatRecord {
   diskBudgetMB?: number;
   queueLight?: number;
   queueHeavy?: number;
+  /** Version of the last whitelist snapshot the bot reports applying. */
+  whitelistVersion?: string;
 }
 
 export interface BotCommandRecord {
@@ -106,10 +133,11 @@ export interface AdminOverviewPayload {
   isInsecureHttp?: boolean;
   botReachable?: boolean;
   botError?: string | null;
-  connected: boolean;
+  connected: boolean | null;
   botNumber: string | null;
   lastSeenAt?: number | null;
   lastSeenSecondsAgo?: number | null;
+  whitelistSync?: WhitelistSyncState;
   botVersion?: string | null;
   uptimeSeconds?: number | null;
   commandsTotal?: number | null;
@@ -124,6 +152,8 @@ export interface AdminOverviewPayload {
   panelUrl?: string;
   panelServerId?: string;
   hasPanelApiKey?: boolean;
+  scribdTokenConfigured?: boolean;
+  scribdSecureTransport?: boolean;
   users: ApprovedUser[];
   members: MemberRecord[];
   latencyMs?: number;
@@ -138,7 +168,9 @@ export interface MemberOverviewPayload {
   botReachable?: boolean;
   botError?: string | null;
   lastSeenSecondsAgo?: number | null;
-  botConnected: boolean;
+  whitelistSync?: WhitelistSyncState;
+  scribdAllowed?: boolean;
+  botConnected: boolean | null;
   botNumber: string | null;
   uptimeSeconds?: number | null;
   commandsTotal?: number | null;

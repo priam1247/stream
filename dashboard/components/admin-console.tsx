@@ -1,10 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   Activity,
+  Bell,
+  BookOpen,
+  Home,
+  Library,
+  Smartphone,
   AlertCircle,
   CheckCircle2,
   ExternalLink,
@@ -26,9 +31,11 @@ import {
   Users,
 } from 'lucide-react';
 import {
+  ActivityEvent,
   AdminOverviewPayload,
   AuthUser,
   PairCodePayload,
+  PanelLiveStatus,
   UserQuota,
 } from '@/lib/types';
 import {
@@ -40,8 +47,13 @@ import {
 import { PairingCodeBanner } from './pairing-code-banner';
 import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
+import { ScribdDesk } from './scribd-desk';
+import { ControlRoomHome } from './control-room-home';
+import { ControlRoomActivity } from './control-room-activity';
+import { getRoomAlerts, type OwnerTab, type ScribdSnapshot } from '@/lib/control-room';
+import type { ScribdStatusPayload } from '@/lib/scribd-types';
 
-type AdminTab = 'server' | 'members';
+type AdminTab = OwnerTab;
 type MemberFilter = 'all' | 'allowed' | 'disallowed';
 
 export function AdminConsole() {
@@ -51,9 +63,18 @@ export function AdminConsole() {
   const [quota, setQuota] = useState<UserQuota | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
 
-  const [tab, setTab] = useState<AdminTab>('server');
+  const [tab, setTab] = useState<AdminTab>('overview');
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState<{ text: string; bad?: boolean } | null>(null);
+  const [overviewCheckedAt, setOverviewCheckedAt] = useState<number | null>(null);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [scribd, setScribd] = useState<ScribdSnapshot>({ status: null, error: null, checkedAt: null });
+  const scribdCheckInFlight = useRef(false);
+  const [panelStatus, setPanelStatus] = useState<PanelLiveStatus | null>(null);
+  const [events, setEvents] = useState<ActivityEvent[]>([]);
+  const [eventsStorage, setEventsStorage] = useState<'cloudflare-d1' | 'local' | null>(null);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventsError, setEventsError] = useState<string | null>(null);
 
   const [data, setData] = useState<AdminOverviewPayload>({
     ok: true,
@@ -98,6 +119,8 @@ export function AdminConsole() {
   const [addingNumber, setAddingNumber] = useState(false);
   const [busyNumber, setBusyNumber] = useState<string | null>(null);
   const [confirmDeleteNum, setConfirmDeleteNum] = useState<string | null>(null);
+  const [numberSearch, setNumberSearch] = useState('');
+  const [numberFilter, setNumberFilter] = useState<'all' | 'allowed' | 'blocked'>('all');
   const [activePair, setActivePair] = useState<PairCodePayload | null>(null);
 
   const loadOverview = useCallback(
@@ -119,6 +142,8 @@ export function AdminConsole() {
         const json = (await res.json()) as AdminOverviewPayload & { error?: string };
         if (!res.ok) throw new Error(json.error || 'Failed to load server status');
         setData(json);
+        setOverviewCheckedAt(Date.now());
+        setOverviewError(null);
         if (hydrateInputs) {
           setBotUrlInput(json.botApiUrl || '');
           setBotTokenInput(json.hasBotToken ? '••••••••' : '');
@@ -128,16 +153,54 @@ export function AdminConsole() {
           setPanelKeyInput(json.hasPanelApiKey ? '••••••••' : '');
         }
       } catch (err) {
-        setNotice({
-          text: err instanceof Error ? err.message : 'Unable to fetch status',
-          bad: true,
-        });
+        const message = err instanceof Error ? err.message : 'Unable to fetch status';
+        setOverviewError(message);
+        if (!silent) setNotice({ text: message, bad: true });
       } finally {
         setRefreshing(false);
       }
     },
     [router],
   );
+
+  const loadScribdStatus = useCallback(async () => {
+    if (scribdCheckInFlight.current) return;
+    scribdCheckInFlight.current = true;
+    try {
+      const res = await fetch('/api/scribd/status', { headers: authHeaders(), cache: 'no-store' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof json.error === 'string' ? json.error : 'Could not reach Scribd.');
+      setScribd({ status: { ...json, items: Array.isArray(json.items) ? json.items : [] } as ScribdStatusPayload, error: null, checkedAt: Date.now() });
+    } catch (error) {
+      setScribd({ status: null, error: error instanceof Error ? error.message : 'Could not reach Scribd.', checkedAt: Date.now() });
+    }
+  }, []);
+
+  const loadPanelStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/panel/status', { headers: authHeaders(), cache: 'no-store' });
+      if (!res.ok) throw new Error('Panel status could not be checked.');
+      setPanelStatus(await res.json() as PanelLiveStatus);
+    } catch {
+      setPanelStatus({ configured: null, reachable: false, state: 'unknown', error: 'Panel status could not be checked.', checkedAt: Date.now() });
+    }
+  }, []);
+
+  const loadActivity = useCallback(async (silent = true) => {
+    if (!silent) setEventsLoading(true);
+    try {
+      const res = await fetch('/api/admin/activity', { headers: authHeaders(), cache: 'no-store' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof json.error === 'string' ? json.error : 'Could not load activity.');
+      setEvents(Array.isArray(json.events) ? json.events : []);
+      setEventsStorage(json.storage === 'cloudflare-d1' ? 'cloudflare-d1' : 'local');
+      setEventsError(null);
+    } catch (error) {
+      setEventsError(error instanceof Error ? error.message : 'Could not load activity.');
+    } finally {
+      setEventsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -159,11 +222,23 @@ export function AdminConsole() {
 
   useEffect(() => {
     if (!user) return;
+    void loadScribdStatus();
+    void loadActivity(false);
     const id = setInterval(() => {
+      if (document.hidden) return;
       void loadOverview(true, false);
-    }, 10_000);
+      void loadScribdStatus();
+      void loadActivity();
+    }, 15_000);
     return () => clearInterval(id);
-  }, [user, loadOverview]);
+  }, [user, loadOverview, loadScribdStatus, loadActivity]);
+
+  useEffect(() => {
+    if (!user) return;
+    void loadPanelStatus();
+    const id = window.setInterval(() => { if (!document.hidden) void loadPanelStatus(); }, 60_000);
+    return () => window.clearInterval(id);
+  }, [user, loadPanelStatus]);
 
   const filteredMembers = useMemo(() => {
     const q = memberSearch.trim().toLowerCase();
@@ -176,6 +251,43 @@ export function AdminConsole() {
       );
     });
   }, [data.members, memberSearch, memberFilter]);
+
+  const filteredNumbers = useMemo(() => {
+    const query = numberSearch.trim().toLowerCase();
+    return data.users.filter((item) => {
+      if (numberFilter === 'allowed' && !item.enabled) return false;
+      if (numberFilter === 'blocked' && item.enabled) return false;
+      return !query || `${item.number} ${item.label || ''} ${item.addedBy || ''}`.toLowerCase().includes(query);
+    });
+  }, [data.users, numberSearch, numberFilter]);
+
+  const handleToggleScribd = async (email: string, allowed: boolean) => {
+    setBusyEmail(email);
+    try {
+      const res = await fetch('/api/admin/members/scribd', { method: 'PATCH', headers: authHeaders(), body: JSON.stringify({ email, allowed }) });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || 'Could not update Scribd access.');
+      setData((prev) => ({ ...prev, members: json.members || prev.members }));
+      setNotice({ text: allowed ? `Scribd access granted to ${email}.` : `Scribd access revoked for ${email}.` });
+      void loadActivity();
+    } catch (error) {
+      setNotice({ text: error instanceof Error ? error.message : 'Could not update Scribd access.', bad: true });
+    } finally { setBusyEmail(null); }
+  };
+
+  const handleSyncNumber = async (number: string) => {
+    setBusyNumber(number);
+    try {
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(number)}/sync`, { method: 'POST', headers: authHeaders() });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || 'Could not request sync.');
+      setNotice({ text: json.message || 'Sync requested.' });
+      void loadOverview(true, false);
+      void loadActivity();
+    } catch (error) {
+      setNotice({ text: error instanceof Error ? error.message : 'Could not request sync.', bad: true });
+    } finally { setBusyNumber(null); }
+  };
 
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -212,6 +324,7 @@ export function AdminConsole() {
     allowed: boolean,
     name: string,
   ) => {
+    if (!window.confirm(`${allowed ? 'Allow' : 'Block'} ${email}? This will also ${allowed ? 'enable' : 'disable'} their linked numbers.`)) return;
     setBusyEmail(email);
     try {
       const res = await fetch('/api/admin/members', {
@@ -275,6 +388,7 @@ export function AdminConsole() {
 
   const handleToggleGlobalBot = async () => {
     const nextState = !data.botEnabledForMembers;
+    if (!nextState && !window.confirm('Pause new member linking? This does not automatically disable already-approved numbers.')) return;
     try {
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
@@ -285,7 +399,7 @@ export function AdminConsole() {
       if (!res.ok) throw new Error(json?.error || 'Failed to toggle access');
       setData((prev) => ({ ...prev, botEnabledForMembers: nextState }));
       setNotice({
-        text: nextState ? 'Member access enabled.' : 'Member access paused.',
+        text: nextState ? 'New member linking enabled.' : 'New member linking paused. Already-approved numbers are not automatically disabled.',
       });
     } catch (err) {
       setNotice({
@@ -387,6 +501,7 @@ export function AdminConsole() {
       if (json.panelServerId) setPanelServerIdInput(json.panelServerId);
       if (json.hasPanelApiKey) setPanelKeyInput('••••••••');
       await loadOverview(true, false);
+      void loadPanelStatus();
 
       if (json.discoveryOk) {
         const names = (json.servers || [])
@@ -414,6 +529,7 @@ export function AdminConsole() {
   };
 
   const handlePanelPower = async (signal: 'restart' | 'start' | 'stop') => {
+    if (!window.confirm(`${signal[0].toUpperCase()}${signal.slice(1)} the bot server? This affects the bot, not the Scribd service.`)) return;
     setSendingPower(signal);
     try {
       const res = await fetch('/api/admin/panel', {
@@ -423,7 +539,9 @@ export function AdminConsole() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || `Could not ${signal} bot`);
-      setNotice({ text: json.message || `Signal sent: ${signal}` });
+      setNotice({ text: `${json.message || `Signal accepted: ${signal}.`} Check the bot status to confirm the result.` });
+      void loadActivity();
+      window.setTimeout(() => { void loadOverview(true, false); void loadPanelStatus(); }, 3000);
     } catch (err) {
       setNotice({
         text: err instanceof Error ? err.message : 'Power command failed',
@@ -464,7 +582,7 @@ export function AdminConsole() {
               code: pollJson.code,
               expiresInSeconds: Number(pollJson.expiresInSeconds) || 60,
               number,
-              issuedAt: Date.now(),
+              issuedAt: Number(pollJson.issuedAt) || Date.now(),
             });
             setNotice({ text: `Code issued for +${number}` });
             return;
@@ -478,7 +596,7 @@ export function AdminConsole() {
         code: json.code,
         expiresInSeconds: Number(json.expiresInSeconds) || 60,
         number,
-        issuedAt: Date.now(),
+        issuedAt: Number(json.issuedAt) || Date.now(),
       });
       setNotice({ text: `Code issued for +${number}` });
     } catch (err) {
@@ -523,6 +641,7 @@ export function AdminConsole() {
 
   const allowedMembersCount = data.members.filter((m) => m.allowed).length;
   const enabledNumbersCount = data.users.filter((u) => u.enabled).length;
+  const alerts = getRoomAlerts(data, overviewCheckedAt, overviewError, scribd, panelStatus);
 
   return (
     <div className="bg-portal-canvas min-h-screen w-full overflow-x-hidden">
@@ -537,15 +656,14 @@ export function AdminConsole() {
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className="truncate text-sm font-bold text-slate-900">
-                    ZaFar Server
+                    ZaFar Control Room
                   </span>
                   <span className="shrink-0 rounded bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-teal-700 ring-1 ring-teal-200">
-                    ROOT
+                    OWNER
                   </span>
                 </div>
                 <div className="truncate font-mono text-[10px] text-slate-500">
-                  {data.storageEngine}
-                  {data.botVersion ? ` · v${data.botVersion}` : ''}
+                  Owner workspace{data.botVersion ? ` · v${data.botVersion}` : ''}
                 </div>
               </div>
             </div>
@@ -562,7 +680,7 @@ export function AdminConsole() {
 
               <button
                 type="button"
-                onClick={() => loadOverview(false, false)}
+                onClick={() => { void loadOverview(false, false); void loadScribdStatus(); void loadPanelStatus(); void loadActivity(false); }}
                 disabled={refreshing}
                 title="Refresh"
                 className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
@@ -598,63 +716,54 @@ export function AdminConsole() {
             </div>
           </div>
 
-          <nav
-            aria-label="Server sections"
-            className="mt-2.5 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1"
-          >
-            <button
-              type="button"
-              onClick={() => setTab('server')}
-              className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
-                tab === 'server'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Server
-                className={`h-3.5 w-3.5 shrink-0 ${tab === 'server' ? 'text-teal-600' : ''}`}
-              />
-              <span className="truncate">
-                Server &amp; Numbers ({enabledNumbersCount}/{data.users.length})
-              </span>
-            </button>
 
-            <button
-              type="button"
-              onClick={() => setTab('members')}
-              className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
-                tab === 'members'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Users
-                className={`h-3.5 w-3.5 shrink-0 ${tab === 'members' ? 'text-teal-600' : ''}`}
-              />
-              <span className="truncate">
-                Members ({allowedMembersCount}/{data.members.length})
-              </span>
-            </button>
-          </nav>
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1140px] px-3.5 pb-14 pt-4 sm:px-5 sm:pt-6">
+      <nav aria-label="Owner sections" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur-md sm:static sm:mx-auto sm:mt-3 sm:max-w-[1140px] sm:gap-1 sm:rounded-2xl sm:border sm:bg-slate-100 sm:p-1 sm:shadow-none">
+        {([
+          { key: 'overview', label: 'Home', icon: Home },
+          { key: 'server', label: 'Bot', icon: Smartphone },
+          { key: 'scribd', label: 'Scribd', icon: Library },
+          { key: 'members', label: 'Members', icon: Users },
+          { key: 'activity', label: 'Activity', icon: Bell },
+        ] as const).map(({ key, label, icon: Icon }) => (
+          <button key={key} type="button" aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); window.scrollTo({ top: 0, behavior: 'auto' }); }}
+            className={`relative flex min-h-[60px] min-w-0 touch-manipulation flex-col items-center justify-center gap-1 rounded-xl px-1 py-1.5 text-[10px] font-semibold transition sm:min-h-11 sm:flex-row sm:gap-2 sm:px-3 sm:text-xs ${tab === key ? 'text-teal-700 sm:bg-white sm:shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>
+            <span className="relative"><Icon className={`h-[19px] w-[19px] ${tab === key ? 'text-teal-600' : ''}`} />{key === 'activity' && alerts.length > 0 && <span className="absolute -right-1.5 -top-1 h-2.5 w-2.5 rounded-full border-2 border-white bg-rose-500" />}</span>
+            <span className="truncate">{label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <main className="mx-auto max-w-[1140px] px-3.5 pb-28 pt-4 sm:px-5 sm:pb-14 sm:pt-6">
+        {tab === 'server' && (<>
+        <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+          <p className="text-[11px] font-bold uppercase tracking-[0.13em] text-teal-700">Manage connections</p>
+          <h1 className="mt-1 text-xl font-bold tracking-tight text-slate-950">Bot &amp; WhatsApp</h1>
+          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Hosting server</p><p className="mt-1 text-sm font-semibold capitalize text-slate-800">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p><p className="mt-1 text-[11px] text-slate-500">{panelStatus?.error || (panelStatus?.configured ? 'Reported by the hosting panel' : 'Set panel key and server ID')}</p></div>
+            <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Bot bridge</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-slate-500">{data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
+            <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">WhatsApp</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p><p className="mt-1 text-[11px] text-slate-500">{data.botReachable ? 'Status reported by bot' : 'Waiting for bot status'}</p></div>
+          </div>
+          {overviewError && <p role="alert" className="mt-3 text-xs text-rose-700">Status could not be refreshed. Check the bot connection below.</p>}
+          {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-amber-700">{data.botError} Check the bot process, sync token and connection settings below.</p>}
+        </section>
         {/* Live Server Analytics: Commands, Successful Downloads, Failed, Uptime + RAM/Disk/Queues */}
         <LiveAnalytics
-          reachable={data.botReachable}
-          connected={data.connected}
+          reachable={overviewError ? false : data.botReachable}
+          connected={overviewError ? null : data.connected}
           botNumber={data.botNumber}
           lastSeenSecondsAgo={data.lastSeenSecondsAgo}
-          uptimeSeconds={data.uptimeSeconds}
-          commandsTotal={data.commandsTotal}
-          downloadsSuccess={data.downloadsSuccess}
-          failedTotal={data.failedTotal}
-          ramUsedMB={data.ramUsedMB}
-          diskUsedMB={data.diskUsedMB}
-          diskBudgetMB={data.diskBudgetMB}
-          queueLight={data.queueLight}
-          queueHeavy={data.queueHeavy}
+          uptimeSeconds={overviewError ? null : data.uptimeSeconds}
+          commandsTotal={overviewError ? null : data.commandsTotal}
+          downloadsSuccess={overviewError ? null : data.downloadsSuccess}
+          failedTotal={overviewError ? null : data.failedTotal}
+          ramUsedMB={overviewError ? null : data.ramUsedMB}
+          diskUsedMB={overviewError ? null : data.diskUsedMB}
+          diskBudgetMB={overviewError ? null : data.diskBudgetMB}
+          queueLight={overviewError ? null : data.queueLight}
+          queueHeavy={overviewError ? null : data.queueHeavy}
           showResources
         />
 
@@ -670,7 +779,7 @@ export function AdminConsole() {
               <RefreshCw
                 className={`h-3.5 w-3.5 ${sendingPower === 'restart' ? 'animate-spin' : ''}`}
               />
-              {sendingPower === 'restart' ? 'Restarting…' : 'Restart'}
+              {sendingPower === 'restart' ? 'Restarting…' : 'Restart bot'}
             </button>
 
             <button
@@ -679,7 +788,7 @@ export function AdminConsole() {
               onClick={() => handlePanelPower('start')}
               className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-50"
             >
-              {sendingPower === 'start' ? 'Starting…' : 'Start'}
+              {sendingPower === 'start' ? 'Starting…' : 'Start bot'}
             </button>
 
             <button
@@ -688,7 +797,7 @@ export function AdminConsole() {
               onClick={() => handlePanelPower('stop')}
               className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
             >
-              {sendingPower === 'stop' ? 'Stopping…' : 'Stop'}
+              {sendingPower === 'stop' ? 'Stopping…' : 'Stop bot'}
             </button>
           </div>
 
@@ -703,10 +812,14 @@ export function AdminConsole() {
           >
             <Power className="h-3.5 w-3.5 shrink-0" />
             <span>
-              Members: {data.botEnabledForMembers ? 'ACTIVE' : 'PAUSED'}
+              Member linking: {data.botEnabledForMembers ? 'OPEN' : 'PAUSED'}
             </span>
           </button>
+          <p className="w-full text-[11px] leading-5 text-slate-500">Pausing member linking prevents new linking requests; it does not disable numbers already approved. Power targets the configured server; restart may instead be queued to the bot.</p>
+          {events.find((event) => event.action === 'Bot restart requested') && <p className="w-full text-[11px] text-slate-500">Last restart request: {new Date(events.find((event) => event.action === 'Bot restart requested')!.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
         </section>
+
+        </>)}
 
         {notice && (
           <div
@@ -735,6 +848,10 @@ export function AdminConsole() {
           </div>
         )}
 
+        {tab === 'overview' && <ControlRoomHome name={user.name} data={data} overviewCheckedAt={overviewCheckedAt} overviewError={overviewError} scribd={scribd} panel={panelStatus} alerts={alerts} events={events} eventsLoading={eventsLoading} onNavigate={setTab} />}
+        {tab === 'scribd' && <ScribdDesk bottomNav />}
+        {tab === 'activity' && <ControlRoomActivity alerts={alerts} events={events} storage={eventsStorage} loading={eventsLoading} error={eventsError} onRefresh={() => { void loadActivity(false); void loadOverview(true, false); void loadScribdStatus(); void loadPanelStatus(); }} onNavigate={setTab} />}
+
         {/* TAB 1: SERVER & WHATSAPP NUMBERS */}
         {tab === 'server' && (
           <div className="space-y-4">
@@ -745,9 +862,15 @@ export function AdminConsole() {
                   WhatsApp Numbers
                 </h2>
                 <span className="font-mono text-xs text-slate-500 tabular-nums">
-                  {enabledNumbersCount} active / {data.users.length} total
+                  {enabledNumbersCount} allowed / {data.users.length} total
                 </span>
               </div>
+
+              <div className={`mt-3 rounded-xl border px-3 py-2.5 text-xs leading-5 ${data.whitelistSync === 'synced' && !overviewError ? 'border-teal-100 bg-teal-50/60 text-teal-800' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                <span className="font-semibold">{overviewError ? 'Sync status unavailable' : data.whitelistSync === 'synced' ? 'Bot reports the latest number list' : data.whitelistSync === 'pending' ? 'Number list waiting for bot sync' : 'Number sync not confirmed'}</span>
+                <span className="block">{data.whitelistSync === 'synced' && !overviewError ? 'The latest heartbeat reported the current list version.' : 'Saved numbers can be retried; direct connections may not report a list version.'}</span>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-slate-500">Approval lets a number use the bot. A pairing code links a WhatsApp account to a device; only the account owner should enter it.</p>
 
               <form
                 onSubmit={handleAddNumber}
@@ -804,13 +927,17 @@ export function AdminConsole() {
                 />
               </div>
 
+              <div className="mt-3 flex flex-wrap gap-2">
+                <div className="relative min-w-0 flex-1 basis-44"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input type="search" aria-label="Search WhatsApp numbers" value={numberSearch} onChange={(event) => setNumberSearch(event.target.value)} placeholder="Search number, label or owner" className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-base text-slate-900 outline-none focus:border-teal-400 focus:bg-white sm:text-sm" /></div>
+                <select aria-label="Filter WhatsApp numbers" value={numberFilter} onChange={(event) => setNumberFilter(event.target.value as 'all' | 'allowed' | 'blocked')} className="min-h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700"><option value="all">All numbers</option><option value="allowed">Allowed</option><option value="blocked">Blocked</option></select>
+              </div>
               <div className="mt-2 divide-y divide-slate-100">
-                {data.users.length === 0 ? (
+                {filteredNumbers.length === 0 ? (
                   <p className="py-6 text-center font-mono text-xs text-slate-400">
-                    No numbers approved
+                    {data.users.length ? 'No numbers match this filter' : 'No numbers approved'}
                   </p>
                 ) : (
-                  data.users.map((u) => {
+                  filteredNumbers.map((u) => {
                     const busy = busyNumber === u.number;
                     const confirming = confirmDeleteNum === u.number;
                     return (
@@ -847,6 +974,7 @@ export function AdminConsole() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-1.5">
+                          <button type="button" disabled={busy} onClick={() => handleSyncNumber(u.number)} aria-label={`Retry sync for +${u.number}`} className="inline-flex min-h-9 items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 disabled:opacity-40"><RefreshCw className="h-3.5 w-3.5 text-teal-600" /> Sync</button>
                           <button
                             type="button"
                             disabled={!u.enabled || busy}
@@ -1121,6 +1249,7 @@ export function AdminConsole() {
               </div>
             </div>
 
+            <p className="mt-2 text-xs leading-5 text-slate-500">{allowedMembersCount} allowed of {data.members.length} accounts. Scribd is private unless you grant access; members with access can view the shared queue and files but cannot control downloads.</p>
             <form
               onSubmit={handleAddMember}
               className="mt-3.5 grid grid-cols-1 gap-2.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-[1.2fr_1fr_auto] sm:items-end"
@@ -1218,39 +1347,23 @@ export function AdminConsole() {
                             {member.email}
                           </span>
                           <span>·</span>
-                          <span>{member.numbersCount} num</span>
+                          <span>{member.numbersCount} {member.numbersCount === 1 ? 'number' : 'numbers'}</span>
+                          <span>·</span><span>{member.isVerified ? 'Verified' : 'Not verified'}</span>
                         </div>
+                        {!member.isAdmin && <p className="mt-1 text-xs text-slate-500">Scribd: {member.scribdAllowed ? (member.allowed ? 'shared access granted' : 'grant suspended while blocked') : 'private'}{events.find((event) => event.actor === member.email) ? ` · Last recorded activity ${new Date(events.find((event) => event.actor === member.email)!.createdAt).toLocaleDateString()}` : ''}</p>}
                       </div>
 
-                      <div className="shrink-0">
+                      <div className="flex shrink-0 flex-wrap gap-2">
                         {member.isAdmin ? (
-                          <span className="font-mono text-[11px] font-semibold text-slate-400">
-                            Owner
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() =>
-                              handleToggleMember(
-                                member.email,
-                                !member.allowed,
-                                member.name,
-                              )
-                            }
-                            className={`rounded-xl px-3.5 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
-                              member.allowed
-                                ? 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
-                                : 'bg-teal-600 text-white hover:bg-teal-700'
-                            }`}
-                          >
-                            {busy
-                              ? 'Saving…'
-                              : member.allowed
-                                ? 'Block'
-                                : 'Allow'}
+                          <span className="font-mono text-[11px] font-semibold text-slate-400">Owner</span>
+                        ) : (<>
+                          <button type="button" disabled={busy} onClick={() => handleToggleScribd(member.email, !member.scribdAllowed)} aria-label={`${member.scribdAllowed ? 'Revoke' : 'Grant'} Scribd access for ${member.email}`} className={`min-h-10 rounded-xl border px-3 text-xs font-semibold transition disabled:opacity-50 ${member.scribdAllowed ? 'border-teal-200 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>
+                            {member.scribdAllowed ? 'Scribd: Granted' : 'Grant Scribd'}
                           </button>
-                        )}
+                          <button type="button" disabled={busy} onClick={() => handleToggleMember(member.email, !member.allowed, member.name)} className={`min-h-10 rounded-xl px-3.5 text-xs font-semibold transition disabled:opacity-50 ${member.allowed ? 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100' : 'bg-teal-600 text-white hover:bg-teal-700'}`}>
+                            {busy ? 'Saving…' : member.allowed ? 'Block' : 'Allow'}
+                          </button>
+                        </>)}
                       </div>
                     </div>
                   );

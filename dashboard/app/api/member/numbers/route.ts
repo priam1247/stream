@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAdminEmail, getAuthenticatedSession } from '@/lib/auth-engine';
 import {
   getResolvedBotTarget,
@@ -72,6 +73,7 @@ export async function POST(req: NextRequest) {
 
   await saveStoredWhatsAppUser(number, label, session.user.email);
   await syncNumberToLiveBot(number, `${label} (${session.user.email})`, true);
+  await recordActivity({ category: 'numbers', action: 'Number added', actor: session.user.email, outcome: 'success', detail: maskedNumber(number) });
 
   const numbers = await listStoredWhatsAppUsers(session.user.email);
   return NextResponse.json({ ok: true, numbers }, { status: 201 });

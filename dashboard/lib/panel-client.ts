@@ -129,6 +129,7 @@ export async function discoverPanelServers(custom?: {
         method: 'GET',
         headers: buildAuthHeaders(apiKey),
         cache: 'no-store',
+        redirect: 'error',
         signal: AbortSignal.timeout(PANEL_TIMEOUT_MS),
       });
 
@@ -200,29 +201,39 @@ export async function sendPanelPowerSignal(
   }
 
   const candidateIds: string[] = [];
-  if (cfg.panelServerId) {
-    candidateIds.push(cfg.panelServerId);
-    if (cfg.panelServerId.includes('-')) {
-      candidateIds.push(cfg.panelServerId.split('-')[0]);
-    }
-  }
+  const requestedId = cfg.panelServerId.trim();
 
-  // Also query discovery if blank OR so we have any alternate UUID/identifier on the account
+  // Discovery can provide the alternate UUID for the *same* server. Never try
+  // an unrelated server after a failed power request: an account may own more
+  // than one server, and restarting the wrong one is destructive.
   const discovered = await discoverPanelServers({
     panelUrl: normalized.baseUrl,
     panelApiKey: cfg.panelApiKey,
   });
 
-  if (discovered.ok) {
-    for (const s of discovered.servers) {
-      if (s.id) candidateIds.push(s.id);
-      if (s.uuid) candidateIds.push(s.uuid);
-    }
-    if (!cfg.panelServerId && discovered.servers[0]?.id) {
-      await savePanelConnectionConfig({ panelServerId: discovered.servers[0].id });
-    }
-  } else if (discovered.status === 401 || discovered.status === 403) {
+  if (!discovered.ok && (discovered.status === 401 || discovered.status === 403)) {
     return { ok: false, status: discovered.status, error: discovered.error };
+  }
+
+  if (requestedId) {
+    const matching = discovered.ok ? discovered.servers.find((server) =>
+      server.id === requestedId || server.uuid === requestedId ||
+      server.uuid.split('-')[0] === requestedId,
+    ) : undefined;
+    if (discovered.ok && discovered.servers.length > 0 && !matching) {
+      return { ok: false, status: 404, error: 'The configured server ID was not found on this panel account. Select the correct server before sending a power signal.' };
+    }
+    candidateIds.push(requestedId);
+    if (matching?.id) candidateIds.push(matching.id);
+    if (matching?.uuid) candidateIds.push(matching.uuid);
+    if (requestedId.includes('-')) candidateIds.push(requestedId.split('-')[0]);
+  } else if (discovered.ok && discovered.servers.length === 1) {
+    const onlyServer = discovered.servers[0];
+    if (onlyServer.id) candidateIds.push(onlyServer.id);
+    if (onlyServer.uuid) candidateIds.push(onlyServer.uuid);
+    if (onlyServer.id) await savePanelConnectionConfig({ panelServerId: onlyServer.id });
+  } else if (discovered.ok && discovered.servers.length > 1) {
+    return { ok: false, status: 400, error: 'This panel account has multiple servers. Set the intended server ID before sending a power signal.' };
   }
 
   const uniqueIds = Array.from(new Set(candidateIds.filter(Boolean)));
@@ -257,6 +268,7 @@ export async function sendPanelPowerSignal(
           },
           body: JSON.stringify(route.body),
           cache: 'no-store',
+          redirect: 'error',
           signal: AbortSignal.timeout(PANEL_TIMEOUT_MS),
         });
 
@@ -282,6 +294,9 @@ export async function sendPanelPowerSignal(
         }
         lastStatus = res.status;
         if (res.status === 404 || res.status === 405) continue;
+        // A server error is not proof that a power request was ignored. Do not
+        // send it again to alternate endpoints or identifiers.
+        return { ok: false, status: res.status, error: `The panel did not confirm the ${signal} request (HTTP ${res.status}). Check server status before retrying.` };
       } catch (err) {
         return {
           ok: false,

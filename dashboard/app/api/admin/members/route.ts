@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession, isAdminEmail } from '@/lib/auth-engine';
 import { syncNumberToLiveBot } from '@/lib/bot-proxy';
 import {
@@ -34,6 +35,7 @@ export async function POST(req: NextRequest) {
   }
 
   await setMemberPermission(email, isAdminEmail(email) ? true : allowed, name);
+  await recordActivity({ category: 'members', action: allowed ? 'Member allowed' : 'Member blocked', actor: session.user.email, outcome: 'success', detail: email });
   const members = await listAllMembers(isAdminEmail);
   return NextResponse.json({ ok: true, members }, { status: 201 });
 }
@@ -52,8 +54,11 @@ export async function PATCH(req: NextRequest) {
 
   const body = await req.json().catch(() => null);
   const email = String(body?.email || '').trim().toLowerCase();
-  const allowed = Boolean(body?.allowed);
+  const allowed = body?.allowed;
 
+  if (typeof allowed !== 'boolean') {
+    return NextResponse.json({ error: 'Choose whether the member is allowed.' }, { status: 400 });
+  }
   if (!email) {
     return NextResponse.json({ error: 'Member email required.' }, { status: 400 });
   }
@@ -74,6 +79,7 @@ export async function PATCH(req: NextRequest) {
     ),
   );
 
+  await recordActivity({ category: 'members', action: allowed ? 'Member allowed' : 'Member blocked', actor: session.user.email, outcome: 'success', detail: email });
   const [members, users] = await Promise.all([
     listAllMembers(isAdminEmail),
     listStoredWhatsAppUsers(),

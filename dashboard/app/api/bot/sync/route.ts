@@ -91,36 +91,24 @@ export async function POST(req: NextRequest) {
   const prevHb = await getBotHeartbeat();
   await saveBotHeartbeat({
     lastSeenAt: Date.now(),
-    connected: Boolean(body.connected),
+    connected: typeof body.connected === 'boolean' ? body.connected : null,
     botNumber: body.botNumber ? String(body.botNumber) : null,
     botName: typeof body.botName === 'string' ? body.botName : prevHb?.botName,
     version: typeof body.version === 'string' ? body.version : prevHb?.version,
     uptimeSeconds:
       typeof body.uptimeSeconds === 'number' ? body.uptimeSeconds : prevHb?.uptimeSeconds,
-    commandsTotal:
-      typeof body.commandsTotal === 'number'
-        ? body.commandsTotal
-        : (prevHb?.commandsTotal ?? 0),
-    downloadsSuccess:
-      typeof body.downloadsSuccess === 'number'
-        ? body.downloadsSuccess
-        : (prevHb?.downloadsSuccess ?? 0),
-    failedTotal:
-      typeof body.failedTotal === 'number'
-        ? body.failedTotal
-        : (prevHb?.failedTotal ?? 0),
-    ramUsedMB:
-      typeof body.ramUsedMB === 'number' ? body.ramUsedMB : prevHb?.ramUsedMB,
-    diskUsedMB:
-      typeof body.diskUsedMB === 'number' ? body.diskUsedMB : prevHb?.diskUsedMB,
-    diskBudgetMB:
-      typeof body.diskBudgetMB === 'number'
-        ? body.diskBudgetMB
-        : prevHb?.diskBudgetMB,
-    queueLight:
-      typeof body.queueLight === 'number' ? body.queueLight : prevHb?.queueLight,
-    queueHeavy:
-      typeof body.queueHeavy === 'number' ? body.queueHeavy : prevHb?.queueHeavy,
+    commandsTotal: typeof body.commandsTotal === 'number' ? body.commandsTotal : undefined,
+    downloadsSuccess: typeof body.downloadsSuccess === 'number' ? body.downloadsSuccess : undefined,
+    failedTotal: typeof body.failedTotal === 'number' ? body.failedTotal : undefined,
+    ramUsedMB: typeof body.ramUsedMB === 'number' ? body.ramUsedMB : undefined,
+    diskUsedMB: typeof body.diskUsedMB === 'number' ? body.diskUsedMB : undefined,
+    diskBudgetMB: typeof body.diskBudgetMB === 'number' ? body.diskBudgetMB : undefined,
+    queueLight: typeof body.queueLight === 'number' ? body.queueLight : undefined,
+    queueHeavy: typeof body.queueHeavy === 'number' ? body.queueHeavy : undefined,
+    whitelistVersion:
+      typeof body.whitelistVersion === 'string' && /^[a-f0-9]{16}$/i.test(body.whitelistVersion)
+        ? body.whitelistVersion.toLowerCase()
+        : undefined,
   });
 
   // 4. Compute versioned whitelist delta + claim queued commands + poll interval

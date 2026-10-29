@@ -6,6 +6,8 @@ import {
 } from '@/lib/auth-engine';
 import { fetchLiveBotStatus, getResolvedBotTarget } from '@/lib/bot-proxy';
 import { JwtConfigError } from '@/lib/jwt';
+import { whitelistSyncState } from '@/lib/sync-status';
+import { scribdPanelConfig } from '@/lib/scribd-panel';
 import {
   getPanelConnectionConfig,
   isUsingCloudflareD1,
@@ -39,7 +41,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const [target, panelCfg, d1Active, users, members, liveStatus] =
+  const [target, panelCfg, d1Active, users, members, liveStatus, scribdConfig] =
     await Promise.all([
       getResolvedBotTarget(),
       getPanelConnectionConfig(),
@@ -47,6 +49,7 @@ export async function GET(req: NextRequest) {
       listStoredWhatsAppUsers(),
       listAllMembers(isAdminEmail),
       fetchLiveBotStatus(),
+      scribdPanelConfig(),
     ]);
 
   const botLinked =
@@ -63,11 +66,7 @@ export async function GET(req: NextRequest) {
     hasBotSyncToken: Boolean(target.syncToken),
     isInsecureHttp: target.isInsecureHttp,
     botEnabledForMembers: target.botEnabledForMembers,
-    storageEngine: liveStatus.reachable
-      ? 'bot-live'
-      : d1Active
-        ? 'cloudflare-d1'
-        : 'persistent-db',
+    storageEngine: d1Active ? 'cloudflare-d1' : 'persistent-db',
     upstreamHost: target.hostLabel,
     botReachable: liveStatus.reachable,
     botError: liveStatus.error || null,
@@ -75,11 +74,12 @@ export async function GET(req: NextRequest) {
     botNumber: liveStatus.botNumber,
     lastSeenAt: liveStatus.lastSeenAt ?? null,
     lastSeenSecondsAgo: liveStatus.lastSeenSecondsAgo ?? null,
+    whitelistSync: whitelistSyncState(liveStatus, users, target.botEnabledForMembers),
     botVersion: liveStatus.version ?? null,
     uptimeSeconds: liveStatus.uptimeSeconds ?? null,
-    commandsTotal: liveStatus.commandsTotal ?? 0,
-    downloadsSuccess: liveStatus.downloadsSuccess ?? 0,
-    failedTotal: liveStatus.failedTotal ?? 0,
+    commandsTotal: liveStatus.commandsTotal ?? null,
+    downloadsSuccess: liveStatus.downloadsSuccess ?? null,
+    failedTotal: liveStatus.failedTotal ?? null,
     ramUsedMB: liveStatus.ramUsedMB ?? null,
     diskUsedMB: liveStatus.diskUsedMB ?? null,
     diskBudgetMB: liveStatus.diskBudgetMB ?? null,
@@ -89,6 +89,8 @@ export async function GET(req: NextRequest) {
     panelUrl: panelCfg.panelUrl,
     panelServerId: panelCfg.panelServerId,
     hasPanelApiKey: Boolean(panelCfg.panelApiKey),
+    scribdTokenConfigured: Boolean(scribdConfig.key),
+    scribdSecureTransport: scribdConfig.baseUrl.startsWith('https://'),
     latencyMs: liveStatus.latencyMs,
     users,
     members,

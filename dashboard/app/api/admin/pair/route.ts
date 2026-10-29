@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
 import {
   checkQueuedPairCommand,
@@ -38,7 +39,7 @@ export async function GET(req: NextRequest) {
     ok: true,
     code: res.code,
     expiresInSeconds: res.expiresInSeconds || 60,
-    issuedAt: Date.now(),
+    issuedAt: res.issuedAt || Date.now(),
   });
 }
 
@@ -56,8 +57,15 @@ export async function POST(req: NextRequest) {
 
   const payload = await req.json().catch(() => null);
   const number = normalizePhoneNumber(payload?.number);
+  if (number.length < 8 || number.length > 15) {
+    return NextResponse.json({ error: 'Enter a valid international WhatsApp number.' }, { status: 400 });
+  }
   const stored = await getStoredWhatsAppUser(number);
+  if (!stored?.enabled) {
+    return NextResponse.json({ error: 'Approve and enable this number before requesting a pairing code.' }, { status: 403 });
+  }
 
+  const requestedAt = Date.now();
   const result = await requestLiveBotPairingCode(
     number,
     stored?.label || 'Admin Linked Number',
@@ -66,6 +74,8 @@ export async function POST(req: NextRequest) {
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: result.status });
   }
+
+  await recordActivity({ category: 'numbers', action: 'Pairing code requested', actor: session.user.email, outcome: 'requested', detail: maskedNumber(number) });
 
   if (result.pending && result.requestId) {
     return NextResponse.json(
@@ -84,6 +94,6 @@ export async function POST(req: NextRequest) {
     code: result.code,
     expiresInSeconds: result.expiresInSeconds || 60,
     number,
-    issuedAt: Date.now(),
+    issuedAt: result.issuedAt ?? requestedAt,
   });
 }
