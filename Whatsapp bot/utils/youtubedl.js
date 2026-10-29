@@ -297,7 +297,7 @@ function jsonCookiesToNetscape(text) {
   if (!Array.isArray(arr) || !arr.length || !arr[0] || typeof arr[0] !== 'object') return null;
   if (!('domain' in arr[0]) || !('name' in arr[0])) return null;
 
-  const lines = ['# Netscape HTTP Cookie File', '# converted from JSON by ZaFar Bot', ''];
+  const lines = ['# Netscape HTTP Cookie File', '# converted from JSON', ''];
   const bool = (v) => (v === true || v === 'TRUE' || v === 'True' ? 'TRUE' : 'FALSE');
   for (const c of arr) {
     if (!c || !c.domain || !c.name) continue;
@@ -389,7 +389,7 @@ function cookieInfo() {
     { source: 'inline (config/env)', file: null, text: cfg.cookies || process.env.YOUTUBE_COOKIES || '' },
     { source: 'managed (.cookies set)', file: COOKIE_STORE, text: null },
     { source: 'config file', file: cfg.cookiesFile || process.env.YOUTUBE_COOKIES_FILE || '', text: null },
-    { source: 'cookies.txt (bot folder)', file: path.join(process.cwd(), 'cookies.txt'), text: null },
+    { source: 'cookies.txt (service folder)', file: path.join(process.cwd(), 'cookies.txt'), text: null },
   ];
 
   for (const c of candidates) {
@@ -751,7 +751,7 @@ const USER_HINTS = {
   PROXY_ERROR: '❌ Could not reach the media site right now (proxy connection failed). Please try again shortly.',
   NO_AUDIO: '❌ The download carries no audio track — refusing to send a silent video. Try another link or quality.',
   NO_YTDLP: '❌ The media downloader is temporarily unavailable on this server. Please try again later.',
-  BOT_CHECK: '❌ YouTube temporarily blocked automated access for this video (anti-bot check, not a region block). Please try again shortly or try another link.',
+  BOT_CHECK: '❌ YouTube temporarily blocked automated access for this video (access check, not a region block). Please try again shortly or try another link.',
   AGE_RESTRICTED: '❌ This video is age-restricted on YouTube and cannot be downloaded right now.',
   GEO_BLOCK: '❌ This video is not available in the server\'s region.',
   PRIVATE: '❌ This video is private — only its owner can download it.',
@@ -760,8 +760,8 @@ const USER_HINTS = {
   DRM: '❌ This video is DRM-protected — no downloader can fetch it.',
   PO_TOKEN: '❌ YouTube blocked automated access to this stream right now. Please try another link.',
   UNAVAILABLE: '❌ This video is unavailable — deleted, removed by the uploader, or a dead link.',
-  TOO_LONG: '❌ That media is longer than the limit this bot allows.',
-  TOO_BIG: '❌ That file is bigger than the size limit set for this bot — try a lower quality.',
+  TOO_LONG: '❌ That media is longer than the allowed limit.',
+  TOO_BIG: '❌ That file is bigger than the size limit — try a lower quality.',
   FFMPEG_MISSING: '❌ Media conversion is temporarily unavailable on this server.',
   UNSUPPORTED_URL: '❌ That link is not a media page the downloader understands (or the site is not supported).\nSupported: YouTube, TikTok, Instagram, Facebook, X/Twitter, Reddit, SoundCloud and ~1000 more — paste the link to the *post/video*, not to a profile or search page.',
   NO_FORMATS: '❌ No downloadable stream was returned for that video. Try a different quality (e.g. 360p) or another video.',
@@ -803,9 +803,11 @@ function friendlyError(err, { isOwner = false } = {}) {
 }
 
 /** One-line summary of every engine that was tried (for the final error). */
+const displayCode = (code) => String(code || '').replace(/BOT_CHECK/gi, 'ACCESS_CHECK');
+
 function attemptsSummary(attempts) {
   if (!Array.isArray(attempts) || !attempts.length) return '';
-  const lines = attempts.slice(0, 6).map(a => `• ${a.engine}: ${a.code}`);
+  const lines = attempts.slice(0, 6).map(a => `• ${a.engine}: ${displayCode(a.code)}`);
   return `\n\n*What was tried:*\n${lines.join('\n')}`;
 }
 
@@ -1484,7 +1486,7 @@ module.exports = {
   // cookies & proxy
   setCookies, clearCookies, cookieInfo, cookieFile, hasCookies, normaliseCookieText, proxyUrl, invalidProxyReason,
   // errors
-  classify, isRetryable, friendlyError, lastError, recordFailure, attemptsSummary,
+  classify, isRetryable, friendlyError, lastError, recordFailure, attemptsSummary, displayCode,
   // diagnostics
   diagnostics, baseArgs, attemptProfiles, ATTEMPT_PROFILES, installError,
   COOKIE_STORE,

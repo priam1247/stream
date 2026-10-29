@@ -27,17 +27,17 @@ export function getRoomAlerts(
   if (panel?.state === 'suspended') {
     alerts.push({ id: 'panel-suspended', title: 'Hosting server suspended', detail: 'The hosting panel reports this server is suspended. Review the panel for details.', target: 'server', level: 'danger' });
   } else if (panel?.state === 'offline') {
-    alerts.push({ id: 'panel-offline', title: 'Hosting server is offline', detail: 'The hosting panel reports the configured bot server is offline.', target: 'server', level: 'warning' });
+    alerts.push({ id: 'panel-offline', title: 'Hosting server is offline', detail: 'The hosting panel reports the configured WhatsApp server is offline.', target: 'server', level: 'warning' });
   }
   if (overviewError) {
-    alerts.push({ id: 'status', title: 'Bot status unavailable', detail: 'The dashboard could not refresh the bot status. Check the bot connection.', target: 'server', level: 'danger' });
+    alerts.push({ id: 'status', title: 'Service status unavailable', detail: 'The dashboard could not refresh the service status. Check the service connection.', target: 'server', level: 'danger' });
   } else if (overviewCheckedAt != null) {
     if (!data.botServerLinked) {
-      alerts.push({ id: 'bot-link', title: 'Bot connection not configured', detail: 'Connect the bot or wait for its first heartbeat.', target: 'server', level: 'warning' });
+      alerts.push({ id: 'bot-link', title: 'Service connection not configured', detail: 'Connect the service or wait for its first heartbeat.', target: 'server', level: 'warning' });
     } else if (data.botReachable === false) {
-      alerts.push({ id: 'bot-unreachable', title: 'Bot is not reporting', detail: 'The last check could not reach the bot. Review its connection and heartbeat.', target: 'server', level: 'danger' });
+      alerts.push({ id: 'bot-unreachable', title: 'Service is not reporting', detail: 'The last check could not reach the service. Review its connection and heartbeat.', target: 'server', level: 'danger' });
     } else if (data.botReachable && data.connected === false) {
-      alerts.push({ id: 'whatsapp', title: 'WhatsApp is disconnected', detail: 'The bot is reachable, but its WhatsApp connection is not active.', target: 'server', level: 'warning' });
+      alerts.push({ id: 'whatsapp', title: 'WhatsApp is disconnected', detail: 'The service is reachable, but its WhatsApp connection is not active.', target: 'server', level: 'warning' });
     }
     if (data.scribdTokenConfigured === false) {
       alerts.push({ id: 'scribd-token', title: 'Scribd direct access may be open', detail: 'Dashboard permissions do not protect the service port. Configure a server token or restrict its network access.', target: 'scribd', level: 'warning' });
@@ -46,10 +46,10 @@ export function getRoomAlerts(
       alerts.push({ id: 'scribd-transport', title: 'Scribd connection is unencrypted', detail: 'Use HTTPS or a trusted private network to protect library traffic and any token.', target: 'scribd', level: 'warning' });
     }
     if (data.whitelistSync === 'pending') {
-      alerts.push({ id: 'number-sync', title: 'Number list awaiting sync', detail: 'The bot has not yet reported the latest dashboard list.', target: 'server', level: 'warning' });
+      alerts.push({ id: 'number-sync', title: 'Number list awaiting sync', detail: 'The service has not yet reported the latest dashboard list.', target: 'server', level: 'warning' });
     }
     if (data.botReachable && data.diskUsedMB != null && data.diskBudgetMB != null && data.diskBudgetMB > 0 && data.diskUsedMB / data.diskBudgetMB >= 0.85) {
-      alerts.push({ id: 'disk', title: 'Storage is running low', detail: 'The bot reports at least 85% of its disk budget in use.', target: 'server', level: 'warning' });
+      alerts.push({ id: 'disk', title: 'Storage is running low', detail: 'The service reports at least 85% of its disk budget in use.', target: 'server', level: 'warning' });
     }
   }
   if (scribd.error) {

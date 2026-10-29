@@ -11,6 +11,18 @@ data/
 # WhatsApp session credentials and private bot state
 session/
 *.session/
+# Protect Baileys files even if SESSION_NAME uses a custom directory.
+**/creds.json
+**/pre-key-*.json
+**/session-*.json
+**/sender-key-*.json
+**/sender-key-memory-*.json
+**/app-state-sync-key-*.json
+**/app-state-sync-version-*.json
+**/lid-mapping-*.json
+**/device-list-*.json
+**/tctoken-*.json
+**/linked/
 database/*.json
 database/*.bak
 database/*.corrupt*

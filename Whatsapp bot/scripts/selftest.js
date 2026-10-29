@@ -1153,7 +1153,9 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     assert.ok(!src.includes('heapPlan'), 'heapPlan still referenced in index.js');
     assert.ok(!src.includes('startAdminServer'), 'startAdminServer crash still in index.js');
     assert.ok(!/\bmodule\.exports\s*=\s*\{[^}]*\bstore\b/.test(src), 'undefined store still exported in index.js');
-    assert.ok(/Session files .* were NOT deleted/i.test(src), 'logout notice missing');
+    const sessionSrc = fs.readFileSync(path.join(REPO, 'utils/sessionManager.js'), 'utf8');
+    assert.ok(/credentials were preserved/i.test(sessionSrc), 'logout notice missing');
+    assert.ok(!/rmSync\([^\n]*session/i.test(sessionSrc), 'session credentials must not be deleted');
   });
 
   await test('converter.ensureExecutable heals 0644 ffmpeg when npm allowScripts blocks postinstall', () => {
@@ -2273,13 +2275,15 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       assert.ok(browseOut.length > 0 && browseOut.length < 4500, `.paper browse b too huge (${browseOut.length} chars)`);
       assert.match(browseOut, /page 1\/3/i);
 
-      // 4. .menu hides admin + .health from non-owners, fixes .on/.off description, honours prefix & botName
-      const userCard = menu._buildCard(menu._buildGroups('!', { isOwner: false }), 'alice', { prefix: '!', botName: 'CustomBot' });
-      assert.ok(userCard.includes('CustomBot') && userCard.includes('!movie') && userCard.includes('prefix !'));
+      // 4. Menu keeps permissions and prefix without exposing identity or legacy branding.
+      const userCard = menu._buildCard(menu._buildGroups('!', { isOwner: false }), '265991234567', { prefix: '!', botName: 'ZaFar Bot' });
+      assert.ok(userCard.includes('!movie') && userCard.includes('prefix !'));
+      assert.ok(!/zafar|bot|265991234567/i.test(userCard));
       assert.ok(!userCard.includes('ADMIN') && !userCard.includes('.health') && !userCard.includes('!health') && !userCard.includes('refreshpapers'));
 
-      const ownerCard = menu._buildCard(menu._buildGroups('!', { isOwner: true }), 'boss', { prefix: '!', botName: 'CustomBot' });
-      assert.ok(ownerCard.includes('ADMIN') && ownerCard.includes('!status') && ownerCard.includes('enable/disable the bot globally'));
+      const ownerCard = menu._buildCard(menu._buildGroups('!', { isOwner: true }), '265991234567', { prefix: '!', botName: 'ZaFar Bot' });
+      assert.ok(ownerCard.includes('ADMIN') && ownerCard.includes('!status') && ownerCard.includes('enable/disable the service globally'));
+      assert.ok(!/zafar|bot|265991234567/i.test(ownerCard));
       assert.ok(!ownerCard.includes('!health') && !ownerCard.includes('.health'));
 
       // 5. .status is primary with .update alias; .instagram & .fb come from shortcuts; .viewonce is open to allowed users
@@ -2563,6 +2567,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
               whitelistChanged: true,
               users: [
                 { number: '265991112233', label: 'Portal Member', addedBy: 'm@example.com', enabled: true },
+                { number: '265998887766', label: 'Pair Me', addedBy: 'm@example.com', enabled: true },
               ],
               commands: [
                 { id: 'cmd_pair_1', type: 'pair', payload: { number: '265998887766', label: 'Pair Me' } },
@@ -2595,6 +2600,8 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       });
 
       await sync.syncNow();
+      // Pair execution is asynchronous and must not block the heartbeat.
+      await new Promise((resolve) => setImmediate(resolve));
       // Second tick delivers completedResults for cmd_pair_1
       await sync.syncNow();
       sync.stop();

@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
 
   await setFastPollWindow(30_000).catch(() => {});
   await recordActivity({ category: 'bot', action: typeof body.botEnabledForMembers === 'boolean'
-    ? (body.botEnabledForMembers ? 'Member linking enabled' : 'Member linking paused') : 'Bot connection updated',
+    ? (body.botEnabledForMembers ? 'Member linking enabled' : 'Member linking paused') : 'Service connection updated',
     actor: session.user.email, outcome: 'success', detail: '' });
 
   const parsed = parseAndValidateBotUrl(saved.botApiUrl);

@@ -24,7 +24,10 @@ export default function Icon() {
           letterSpacing: '-0.04em',
         }}
       >
-        Z
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="6" y="2" width="12" height="20" rx="2" />
+          <path d="M11 18h2" />
+        </svg>
       </div>
     ),
     { ...size },

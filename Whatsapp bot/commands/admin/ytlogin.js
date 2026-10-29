@@ -53,7 +53,8 @@ module.exports = {
           await extra.reply('✅ YouTube account linked.');
         }
       } catch (err) {
-        const line = `❌ ${err?.message || 'YouTube login failed.'}`;
+        console.error('[ytlogin] login failed:', err?.message);
+        const line = '❌ YouTube login failed. Please try again.';
         if (promptHandle) await promptHandle.update(line);
         else await extra.reply(line);
       } finally {

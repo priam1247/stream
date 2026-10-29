@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { maskedNumber, recordActivity } from '@/lib/activity';
-import { getAdminEmail, getAuthenticatedSession } from '@/lib/auth-engine';
+import { getAuthenticatedSession } from '@/lib/auth-engine';
 import {
   getResolvedBotTarget,
   normalizePhoneNumber,
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   if (!session.user.memberAllowed) {
     return NextResponse.json(
       {
-        error: `Your account access has been disallowed by the administrator (${getAdminEmail()}).`,
+        error: 'Your account access has been restricted.',
       },
       { status: 403 },
     );

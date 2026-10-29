@@ -45,6 +45,7 @@ import {
   setSavedSessionToken,
 } from '@/lib/client-session';
 import { PairingCodeBanner } from './pairing-code-banner';
+import { accountStatusLabel, serviceText } from '@/lib/whatsapp-accounts';
 import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
 import { ScribdDesk } from './scribd-desk';
@@ -78,7 +79,7 @@ export function AdminConsole() {
 
   const [data, setData] = useState<AdminOverviewPayload>({
     ok: true,
-    adminEmail: 'troykunsauka@gmail.com',
+    adminEmail: '',
     botServerLinked: false,
     botApiUrl: '',
     hasBotToken: false,
@@ -445,6 +446,7 @@ export function AdminConsole() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || 'Update failed');
+      if (!enabled && activePair?.number === number) setActivePair(null);
       await loadOverview(true, false);
       setNotice({
         text: enabled ? `Allowed +${number}` : `Disallowed +${number}`,
@@ -529,7 +531,7 @@ export function AdminConsole() {
   };
 
   const handlePanelPower = async (signal: 'restart' | 'start' | 'stop') => {
-    if (!window.confirm(`${signal[0].toUpperCase()}${signal.slice(1)} the bot server? This affects the bot, not the Scribd service.`)) return;
+    if (!window.confirm(`${signal[0].toUpperCase()}${signal.slice(1)} the WhatsApp server? This affects the WhatsApp service, not Scribd.`)) return;
     setSendingPower(signal);
     try {
       const res = await fetch('/api/admin/panel', {
@@ -538,8 +540,8 @@ export function AdminConsole() {
         body: JSON.stringify({ action: 'power', signal }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || `Could not ${signal} bot`);
-      setNotice({ text: `${json.message || `Signal accepted: ${signal}.`} Check the bot status to confirm the result.` });
+      if (!res.ok) throw new Error(json?.error || `Could not ${signal} the service`);
+      setNotice({ text: `${json.message || `Signal accepted: ${signal}.`} Check the service status to confirm the result.` });
       void loadActivity();
       window.setTimeout(() => { void loadOverview(true, false); void loadPanelStatus(); }, 3000);
     } catch (err) {
@@ -565,7 +567,7 @@ export function AdminConsole() {
 
       if (json.pending && json.requestId) {
         setNotice({ text: `Requesting code for +${number}…` });
-        const deadline = Date.now() + 26_000;
+        const deadline = Date.now() + 75_000;
         while (Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 1500));
           const pollRes = await fetch(
@@ -588,9 +590,10 @@ export function AdminConsole() {
             return;
           }
         }
-        throw new Error('Timed out waiting for bot.');
+        throw new Error('Timed out waiting for the service. Please try again.');
       }
 
+      if (!json.code) throw new Error('The service did not return a linking code. Please try again.');
       setActivePair({
         ok: true,
         code: json.code,
@@ -639,6 +642,7 @@ export function AdminConsole() {
     );
   }
 
+  const lastRestartEvent = events.find((event) => event.action === 'Service restart requested' || event.action === 'Bot restart requested');
   const allowedMembersCount = data.members.filter((m) => m.allowed).length;
   const enabledNumbersCount = data.users.filter((u) => u.enabled).length;
   const alerts = getRoomAlerts(data, overviewCheckedAt, overviewError, scribd, panelStatus);
@@ -651,19 +655,19 @@ export function AdminConsole() {
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2.5">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-teal-600 font-mono text-xs font-extrabold text-white shadow-sm">
-                ZF
+                <Smartphone className="h-4 w-4" />
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className="truncate text-sm font-bold text-slate-900">
-                    ZaFar Control Room
+                    Control Room
                   </span>
                   <span className="shrink-0 rounded bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-teal-700 ring-1 ring-teal-200">
-                    OWNER
+                    ADMIN
                   </span>
                 </div>
                 <div className="truncate font-mono text-[10px] text-slate-500">
-                  Owner workspace{data.botVersion ? ` · v${data.botVersion}` : ''}
+                  Administrator workspace{data.botVersion ? ` · v${data.botVersion}` : ''}
                 </div>
               </div>
             </div>
@@ -723,7 +727,7 @@ export function AdminConsole() {
       <nav aria-label="Owner sections" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur-md sm:static sm:mx-auto sm:mt-3 sm:max-w-[1140px] sm:gap-1 sm:rounded-2xl sm:border sm:bg-slate-100 sm:p-1 sm:shadow-none">
         {([
           { key: 'overview', label: 'Home', icon: Home },
-          { key: 'server', label: 'Bot', icon: Smartphone },
+          { key: 'server', label: 'WhatsApp', icon: Smartphone },
           { key: 'scribd', label: 'Scribd', icon: Library },
           { key: 'members', label: 'Members', icon: Users },
           { key: 'activity', label: 'Activity', icon: Bell },
@@ -740,14 +744,14 @@ export function AdminConsole() {
         {tab === 'server' && (<>
         <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
           <p className="text-[11px] font-bold uppercase tracking-[0.13em] text-teal-700">Manage connections</p>
-          <h1 className="mt-1 text-xl font-bold tracking-tight text-slate-950">Bot &amp; WhatsApp</h1>
+          <h1 className="mt-1 text-xl font-bold tracking-tight text-slate-950">WhatsApp connections</h1>
           <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
             <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Hosting server</p><p className="mt-1 text-sm font-semibold capitalize text-slate-800">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p><p className="mt-1 text-[11px] text-slate-500">{panelStatus?.error || (panelStatus?.configured ? 'Reported by the hosting panel' : 'Set panel key and server ID')}</p></div>
-            <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Bot bridge</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-slate-500">{data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
-            <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">WhatsApp</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p><p className="mt-1 text-[11px] text-slate-500">{data.botReachable ? 'Status reported by bot' : 'Waiting for bot status'}</p></div>
+            <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Service bridge</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-slate-500">{data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
+            <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">WhatsApp</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p><p className="mt-1 text-[11px] text-slate-500">{data.botReachable ? 'Status reported by the service' : 'Waiting for service status'}</p></div>
           </div>
-          {overviewError && <p role="alert" className="mt-3 text-xs text-rose-700">Status could not be refreshed. Check the bot connection below.</p>}
-          {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-amber-700">{data.botError} Check the bot process, sync token and connection settings below.</p>}
+          {overviewError && <p role="alert" className="mt-3 text-xs text-rose-700">Status could not be refreshed. Check the service connection below.</p>}
+          {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-amber-700">{serviceText(data.botError)} Check the service process, sync token and connection settings below.</p>}
         </section>
         {/* Live Server Analytics: Commands, Successful Downloads, Failed, Uptime + RAM/Disk/Queues */}
         <LiveAnalytics
@@ -779,7 +783,7 @@ export function AdminConsole() {
               <RefreshCw
                 className={`h-3.5 w-3.5 ${sendingPower === 'restart' ? 'animate-spin' : ''}`}
               />
-              {sendingPower === 'restart' ? 'Restarting…' : 'Restart bot'}
+              {sendingPower === 'restart' ? 'Restarting…' : 'Restart service'}
             </button>
 
             <button
@@ -788,7 +792,7 @@ export function AdminConsole() {
               onClick={() => handlePanelPower('start')}
               className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-50"
             >
-              {sendingPower === 'start' ? 'Starting…' : 'Start bot'}
+              {sendingPower === 'start' ? 'Starting…' : 'Start service'}
             </button>
 
             <button
@@ -797,7 +801,7 @@ export function AdminConsole() {
               onClick={() => handlePanelPower('stop')}
               className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
             >
-              {sendingPower === 'stop' ? 'Stopping…' : 'Stop bot'}
+              {sendingPower === 'stop' ? 'Stopping…' : 'Stop service'}
             </button>
           </div>
 
@@ -815,8 +819,8 @@ export function AdminConsole() {
               Member linking: {data.botEnabledForMembers ? 'OPEN' : 'PAUSED'}
             </span>
           </button>
-          <p className="w-full text-[11px] leading-5 text-slate-500">Pausing member linking prevents new linking requests; it does not disable numbers already approved. Power targets the configured server; restart may instead be queued to the bot.</p>
-          {events.find((event) => event.action === 'Bot restart requested') && <p className="w-full text-[11px] text-slate-500">Last restart request: {new Date(events.find((event) => event.action === 'Bot restart requested')!.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
+          <p className="w-full text-[11px] leading-5 text-slate-500">Pausing member linking prevents new linking requests; it does not disable numbers already approved. Power targets the configured server; restart may instead be queued to the service.</p>
+          {lastRestartEvent && <p className="w-full text-[11px] text-slate-500">Last restart request: {new Date(lastRestartEvent.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
         </section>
 
         </>)}
@@ -867,10 +871,10 @@ export function AdminConsole() {
               </div>
 
               <div className={`mt-3 rounded-xl border px-3 py-2.5 text-xs leading-5 ${data.whitelistSync === 'synced' && !overviewError ? 'border-teal-100 bg-teal-50/60 text-teal-800' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
-                <span className="font-semibold">{overviewError ? 'Sync status unavailable' : data.whitelistSync === 'synced' ? 'Bot reports the latest number list' : data.whitelistSync === 'pending' ? 'Number list waiting for bot sync' : 'Number sync not confirmed'}</span>
+                <span className="font-semibold">{overviewError ? 'Sync status unavailable' : data.whitelistSync === 'synced' ? 'Service reports the latest number list' : data.whitelistSync === 'pending' ? 'Number list waiting for service sync' : 'Number sync not confirmed'}</span>
                 <span className="block">{data.whitelistSync === 'synced' && !overviewError ? 'The latest heartbeat reported the current list version.' : 'Saved numbers can be retried; direct connections may not report a list version.'}</span>
               </div>
-              <p className="mt-3 text-xs leading-5 text-slate-500">Approval lets a number use the bot. A pairing code links a WhatsApp account to a device; only the account owner should enter it.</p>
+              <p className="mt-3 text-xs leading-5 text-slate-500">Approve the number first, then request a code to link that WhatsApp account. Existing linked accounts stay connected. A code does not confirm a completed link; check the status below.</p>
 
               <form
                 onSubmit={handleAddNumber}
@@ -940,6 +944,7 @@ export function AdminConsole() {
                   filteredNumbers.map((u) => {
                     const busy = busyNumber === u.number;
                     const confirming = confirmDeleteNum === u.number;
+                    const accountState = data.accounts?.find((account) => account.number === u.number)?.state;
                     return (
                       <div
                         key={u.number}
@@ -960,6 +965,7 @@ export function AdminConsole() {
                               {u.enabled ? 'Allowed' : 'Blocked'}
                             </span>
                           </div>
+                          <p className="mt-1 text-xs font-medium text-teal-700">{accountStatusLabel(overviewError || !data.botReachable ? null : data.accounts, u.number)}</p>
                           <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
                             <span className="truncate">{u.label || 'Approved'}</span>
                             {u.addedBy && (
@@ -977,12 +983,12 @@ export function AdminConsole() {
                           <button type="button" disabled={busy} onClick={() => handleSyncNumber(u.number)} aria-label={`Retry sync for +${u.number}`} className="inline-flex min-h-9 items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 disabled:opacity-40"><RefreshCw className="h-3.5 w-3.5 text-teal-600" /> Sync</button>
                           <button
                             type="button"
-                            disabled={!u.enabled || busy}
+                            disabled={!u.enabled || busy || accountState === 'connected' || accountState === 'connecting'}
                             onClick={() => handlePairNumber(u.number)}
                             className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 disabled:opacity-40"
                           >
                             <Link2 className="h-3.5 w-3.5 text-teal-600" />
-                            Code
+                            Get code
                           </button>
 
                           <button
@@ -1039,7 +1045,7 @@ export function AdminConsole() {
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="flex items-center gap-2 text-sm font-bold text-slate-900">
                     <Server className="h-4 w-4 text-teal-600" />
-                    Bot Sync Bridge
+                    Service Sync Bridge
                   </h2>
                   <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-slate-600">
                     {data.connectionMode || 'sync'}

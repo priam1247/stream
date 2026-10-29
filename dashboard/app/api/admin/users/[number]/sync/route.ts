@@ -19,6 +19,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ num
   await recordActivity({ category: 'numbers', action: 'Number sync requested', actor: session.user.email,
     outcome: 'requested', detail: maskedNumber(item.number) });
   return NextResponse.json({ ok: true, result, message: result === 'accepted'
-    ? 'The bot accepted the sync request. Check the latest status for confirmation.'
-    : 'Saved list is waiting for the bot to check in. Sync is not yet confirmed.' });
+    ? 'The service accepted the sync request. Check the latest status for confirmation.'
+    : 'Saved list is waiting for the service to check in. Sync is not yet confirmed.' });
 }

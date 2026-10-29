@@ -32,7 +32,7 @@ const list = (v, d) => (v ? String(v).split(',').map(s => s.trim()).filter(Boole
 
 const cfg = {
   // identity
-  botName: process.env.BOT_NAME || 'ZaFar Bot',
+  botName: /zafar|\bbot\b/i.test(process.env.BOT_NAME || '') ? 'WhatsApp' : (process.env.BOT_NAME || 'WhatsApp'),
   region: process.env.REGION || 'US',
   userAgent: process.env.USER_AGENT ||
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',

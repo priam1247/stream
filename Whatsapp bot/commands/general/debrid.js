@@ -21,7 +21,7 @@ const debridCommand = {
       if (!rows.length) return extra.reply('⚪ No active debrid.');
 
       const lines = rows.map((r) => {
-        if (!r.ok) return `🔴 *${r.provider}* — ${r.error}`;
+        if (!r.ok) return `🔴 *${r.provider}* — unavailable`;
         return `🟢 *${r.provider}* — ${r.username || 'active'} (${r.premium ? 'premium' : 'free'})`;
       });
 

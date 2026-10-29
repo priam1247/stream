@@ -35,7 +35,7 @@ module.exports = [
       const t = telemetry.snapshot();
 
       const text = [
-        `🟢 *${config.botName}*`,
+        '🟢 *SERVICE STATUS*',
         `⏱ Uptime: ${uptime(Date.now() - BOT_START)}`,
         `⚡ Commands: ${t.commandsTotal}`,
         `📥 Downloads: ${t.downloadsSuccess} ok · ${t.failedTotal} failed`,
@@ -52,7 +52,7 @@ module.exports = [
     name: 'restart',
     aliases: ['reboot'],
     category: 'admin',
-    description: 'Restart bot',
+    description: 'Restart service',
     usage: '.restart',
     ownerOnly: true,
     async execute(sock, msg, args, extra) {
@@ -95,7 +95,7 @@ module.exports = [
 
       const ids = Object.keys(chats);
       let sent = 0, failed = 0;
-      const text = `📢 *${config.botName}*\n${message}`;
+      const text = `📢 ${message}`;
 
       for (const jid of ids) {
         try {

@@ -4,8 +4,8 @@ import { GeistMono } from 'geist/font/mono';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'ZaFar Server Console',
-  description: 'Live WhatsApp bot telemetry, access control, and server operations.',
+  title: 'Control Room',
+  description: 'Live WhatsApp telemetry, access control, and server operations.',
 };
 
 export const viewport: Viewport = {

@@ -45,7 +45,6 @@ function formatUptime(totalSec: number | null | undefined, reachable?: boolean):
 export function LiveAnalytics({
   reachable = false,
   connected = null,
-  botNumber = null,
   lastSeenSecondsAgo = null,
   uptimeSeconds = null,
   commandsTotal = null,
@@ -124,7 +123,6 @@ export function LiveAnalytics({
         </div>
 
         <div className="flex min-w-0 items-center gap-2.5 font-mono text-[11px] text-slate-600 tabular-nums">
-          {botNumber && <span className="truncate">+{botNumber}</span>}
           {lastSeenSecondsAgo != null && (
             <span className="text-slate-400">
               sync {Math.max(0, lastSeenSecondsAgo)}s

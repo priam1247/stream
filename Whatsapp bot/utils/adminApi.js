@@ -221,7 +221,7 @@ function startAdminApi({ port, token, allowedOrigins = [], hooks = {} } = {}) {
         const s = await status();
         return reply(200, {
           ok: true,
-          service: 'zafar-bot',
+          service: 'whatsapp-service',
           uptimeSeconds: Math.round(process.uptime()),
           users: listUsers().length,
           ...s,
@@ -236,7 +236,8 @@ function startAdminApi({ port, token, allowedOrigins = [], hooks = {} } = {}) {
         const body = await readBody(req);
         const result = upsertUser(body.number, body.label, { enabled: body.enabled !== false });
         if (!result) return reply(400, { error: 'A valid phone number (with country code) is required.' });
-        log.info(`user ${result.user.number} ${result.created ? 'added' : 'updated'}`);
+        hooks.whitelistChanged?.();
+        log.info(`A user was ${result.created ? 'added' : 'updated'}.`);
         return reply(result.created ? 201 : 200, { ok: true, ...result });
       }
 
@@ -247,15 +248,17 @@ function startAdminApi({ port, token, allowedOrigins = [], hooks = {} } = {}) {
         if (req.method === 'PATCH') {
           const body = await readBody(req);
           const updated = setUserEnabled(number, body.enabled !== false);
-          if (!updated) return reply(404, { error: 'That number is not registered on this bot.' });
-          log.info(`user ${updated.number} ${updated.enabled ? 'enabled' : 'disabled'}`);
+          if (!updated) return reply(404, { error: 'That number is not registered on this service.' });
+          hooks.whitelistChanged?.();
+          log.info(`A user was ${updated.enabled ? 'enabled' : 'disabled'}.`);
           return reply(200, { ok: true, user: updated });
         }
 
         if (req.method === 'DELETE') {
           const gone = removeUser(number);
-          if (!gone) return reply(404, { error: 'That number is not registered on this bot.' });
-          log.info(`user ${toNumber(number)} removed`);
+          if (!gone) return reply(404, { error: 'That number is not registered on this service.' });
+          hooks.whitelistChanged?.();
+          log.info('A user was removed.');
           return reply(200, { ok: true });
         }
       }
@@ -265,7 +268,7 @@ function startAdminApi({ port, token, allowedOrigins = [], hooks = {} } = {}) {
         const number = toNumber(body.number);
         if (!number) return reply(400, { error: 'A valid phone number (with country code) is required.' });
         if (typeof hooks.requestPair !== 'function') {
-          return reply(501, { error: 'Pairing is not available on this bot build.' });
+          return reply(501, { error: 'Linking is not available on this service.' });
         }
         const result = await hooks.requestPair(number);
         return reply(200, {
@@ -273,7 +276,7 @@ function startAdminApi({ port, token, allowedOrigins = [], hooks = {} } = {}) {
           code: String(result.code || ''),
           expiresInSeconds: Number(result.expiresInSeconds) || 60,
           number,
-          issuedAt: Date.now(),
+          issuedAt: Number(result.issuedAt) || Date.now(),
         });
       }
 
@@ -281,7 +284,7 @@ function startAdminApi({ port, token, allowedOrigins = [], hooks = {} } = {}) {
     } catch (e) {
       const code = e.statusCode || (e.code === 'PAIR_BUSY' ? 409 : e.code === 'WHITELIST_CORRUPT' ? 503 : 500);
       log.warn(`${req.method} ${pathname} → ${code} · ${e.message}`);
-      return reply(code, { error: e.message || 'Bot error' });
+      return reply(code, { error: e.message || 'Service error' });
     } finally {
       log.debug(`${req.method} ${pathname} · ${Date.now() - startedAt}ms`);
     }

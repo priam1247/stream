@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const disk = vi.hoisted(() => ({ text: null as string | null, fail: false }));
 vi.mock('node:fs', () => ({
@@ -10,7 +10,7 @@ vi.mock('node:fs', () => ({
     writeFileSync: (_path: string, value: string) => { if (disk.fail) throw new Error('read-only'); disk.text = value; },
   },
 }));
-import { appendActivity, isMemberScribdAllowed, listRecentActivity, setMemberScribdAllowed } from '../lib/storage';
+import { appendActivity, completeBotCommand, enqueueBotCommand, getBotCommandById, isMemberScribdAllowed, listRecentActivity, setMemberScribdAllowed } from '../lib/storage';
 import { maskedNumber } from '../lib/activity';
 
 beforeEach(() => {
@@ -20,6 +20,8 @@ beforeEach(() => {
   delete process.env.D1_DATABASE_ID;
   delete process.env.CLOUDFLARE_API_TOKEN;
 });
+
+afterEach(() => vi.useRealTimers());
 
 describe('local control-room persistence', () => {
   it('defaults Scribd access to private and stores individual grants and revocations', async () => {
@@ -41,6 +43,20 @@ describe('local control-room persistence', () => {
     const saved = JSON.parse(disk.text!);
     expect(saved.activity[1]).toMatchObject({ actor: 'owner@example.com', detail: 'Number ending 4567' });
     expect(disk.text).not.toContain('265991234567');
+  });
+
+  it('records the first result receipt once, ignoring repeated reports', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-29T12:00:00Z'));
+    const cmd = await enqueueBotCommand({ type: 'pair', payload: { number: '15550001111' } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const receivedAt = Date.now();
+    await completeBotCommand({ id: cmd.id, ok: true, result: { code: 'FIRST', _dashboardReceivedAt: 1 } });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await completeBotCommand({ id: cmd.id, ok: true, result: { code: 'SECOND' } });
+    expect(await getBotCommandById(cmd.id)).toMatchObject({
+      status: 'completed', result: { code: 'FIRST', _dashboardReceivedAt: receivedAt },
+    });
   });
 
   it('does not report successful permission changes when local storage is read-only', async () => {

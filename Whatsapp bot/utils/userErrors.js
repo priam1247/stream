@@ -38,9 +38,7 @@ function safeErrorMessage(err, { fallback = null, isOwner = false } = {}) {
   const raw = String(err.message || '').split('\n')[0].trim();
 
   if (code === 'NOT_ENOUGH_DISK' || /not enough disk/i.test(raw)) {
-    return isOwner && raw
-      ? `❌ Server storage is currently busy (${raw}). Try again shortly.`
-      : '❌ Server storage is temporarily full while other downloads finish. Please try again in a few minutes.';
+    return '❌ Server storage is temporarily full while other downloads finish. Please try again in a few minutes.';
   }
 
   if (code === 'QUEUE_TIMEOUT' || /timed out|deadline/i.test(raw)) {
@@ -48,7 +46,7 @@ function safeErrorMessage(err, { fallback = null, isOwner = false } = {}) {
   }
 
   if (code === 'TOO_BIG' || /larger than|exceeds.*limit|over the .* cap/i.test(raw)) {
-    return '❌ That file is larger than the maximum size this bot can send.';
+    return '❌ That file is larger than the maximum send size.';
   }
 
   if (code === 'NO_FFMPEG' || /ffmpeg/i.test(raw)) {

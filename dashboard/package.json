@@ -2,7 +2,7 @@
   "name": "zafar-control-room",
   "version": "1.0.0",
   "private": true,
-  "description": "ZaFar Control Room — standalone Vercel Next.js frontend and server-side API proxy for managing ZaFar Bot.",
+  "description": "Control Room — standalone Next.js dashboard for WhatsApp and server operations.",
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0 --port 3000",
     "build": "next build",

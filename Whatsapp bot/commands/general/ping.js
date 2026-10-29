@@ -7,7 +7,7 @@ module.exports = {
   name: 'ping',
   aliases: ['p'],
   category: 'general',
-  description: 'Check bot response time',
+  description: 'Check response time',
   usage: '.ping',
 
   async execute(sock, msg, args, extra) {

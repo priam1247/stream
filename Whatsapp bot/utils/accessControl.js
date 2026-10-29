@@ -118,8 +118,8 @@ const cleanNumber = (raw) => {
 };
 
 // Index of the allowed entry that matches any known form (PN or LID) of these JIDs
-const findUserIndex = (users, ids) => {
-  const v = jidVariants(ids);
+const findUserIndex = (users, ids, sessionDir = null) => {
+  const v = jidVariants(ids, sessionDir);
   if (!v.size) return -1;
   return users.findIndex(u => v.has(u.number) || (u.alt || []).some(a => v.has(a)));
 };
@@ -131,8 +131,8 @@ const findUserIndex = (users, ids) => {
  * deleting the number, so the gate has to skip it — while `.disallow` (which
  * removes the entry) keeps using findUserIndex.
  */
-const findAllowedUserIndex = (users, ids) => {
-  const idx = findUserIndex(users, ids);
+const findAllowedUserIndex = (users, ids, sessionDir = null) => {
+  const idx = findUserIndex(users, ids, sessionDir);
   if (idx === -1) return -1;
   return users[idx].enabled === false ? -1 : idx;
 };

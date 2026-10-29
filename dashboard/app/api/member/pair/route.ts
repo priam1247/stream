@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { maskedNumber, recordActivity } from '@/lib/activity';
-import { getAdminEmail, getAuthenticatedSession } from '@/lib/auth-engine';
+import { getAuthenticatedSession } from '@/lib/auth-engine';
 import {
   checkQueuedPairCommand,
   getResolvedBotTarget,
@@ -10,6 +10,7 @@ import {
 import { getStoredWhatsAppUser } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
+const privateHeaders = { 'Cache-Control': 'private, no-store' };
 
 export async function GET(req: NextRequest) {
   const session = await getAuthenticatedSession(req);
@@ -31,7 +32,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: res.error }, { status: res.status });
   }
   if (res.pending) {
-    return NextResponse.json({ ok: true, pending: true, requestId }, { status: 202 });
+    return NextResponse.json({ ok: true, pending: true, requestId }, { status: 202, headers: privateHeaders });
   }
 
   return NextResponse.json({
@@ -39,7 +40,7 @@ export async function GET(req: NextRequest) {
     code: res.code,
     expiresInSeconds: res.expiresInSeconds || 60,
     issuedAt: res.issuedAt || Date.now(),
-  });
+  }, { headers: privateHeaders });
 }
 
 export async function POST(req: NextRequest) {
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
   if (!session.user.memberAllowed) {
     return NextResponse.json(
       {
-        error: `Your account access has been disallowed by the administrator (${getAdminEmail()}).`,
+        error: 'Your account access has been restricted.',
       },
       { status: 403 },
     );
@@ -60,7 +61,7 @@ export async function POST(req: NextRequest) {
   const target = await getResolvedBotTarget();
   if (!target.botEnabledForMembers && !session.user.isAdmin) {
     return NextResponse.json(
-      { error: 'Bot linking is temporarily paused by the administrator.' },
+      { error: 'WhatsApp linking is temporarily paused by the administrator.' },
       { status: 403 },
     );
   }
@@ -91,6 +92,7 @@ export async function POST(req: NextRequest) {
     number,
     `${existing.label || session.user.name} (${session.user.email})`,
     session.user.email,
+    true,
   );
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: result.status });
@@ -106,7 +108,7 @@ export async function POST(req: NextRequest) {
         requestId: result.requestId,
         number,
       },
-      { status: 202 },
+      { status: 202, headers: privateHeaders },
     );
   }
 
@@ -116,5 +118,5 @@ export async function POST(req: NextRequest) {
     expiresInSeconds: result.expiresInSeconds || 60,
     number,
     issuedAt: result.issuedAt ?? requestedAt,
-  });
+  }, { headers: privateHeaders });
 }

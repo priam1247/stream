@@ -1209,14 +1209,17 @@ export async function completeBotCommand(params: {
   error?: string;
 }): Promise<void> {
   const status: BotCommandRecord['status'] = params.ok ? 'completed' : 'failed';
-  const resultJson = params.result ? JSON.stringify(params.result) : null;
+  // Record receipt on the dashboard clock once. It is a fixed upper bound for
+  // checking a service-provided issuance timestamp on subsequent polls.
+  const result = params.result ? { ...params.result, _dashboardReceivedAt: Date.now() } : null;
+  const resultJson = result ? JSON.stringify(result) : null;
   const errorText = params.error ? String(params.error).slice(0, 400) : null;
 
   if (await ensureD1Tables()) {
     await queryD1(
       `UPDATE portal_bot_commands
        SET status = ?, result_json = ?, error_text = ?
-       WHERE id = ?`,
+       WHERE id = ? AND status IN ('pending', 'claimed')`,
       [status, resultJson, errorText, params.id],
     );
     return;
@@ -1224,9 +1227,9 @@ export async function completeBotCommand(params: {
 
   const store = readDiskStore();
   const found = store.botCommands.find((c) => c.id === params.id);
-  if (found) {
+  if (found && (found.status === 'pending' || found.status === 'claimed')) {
     found.status = status;
-    found.result = params.result || null;
+    found.result = result;
     found.error = errorText;
     writeDiskStore(store);
   }

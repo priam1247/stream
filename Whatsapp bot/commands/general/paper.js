@@ -662,9 +662,12 @@ module.exports = {
         );
       }
 
+      // Preserve the old primary-session keys while keeping other accounts' histories separate.
+      const paperChatKey = extra.sessionId && extra.sessionId !== 'primary'
+        ? `${extra.sessionId}|${extra.from}` : extra.from;
       const recentlySent = [], toSend = [];
       for (const file of sorted) {
-        if (!extra.isOwner && database.wasPaperSentRecently(extra.from, file.id)) {
+        if (!extra.isOwner && database.wasPaperSentRecently(paperChatKey, file.id)) {
           recentlySent.push(file);
         } else {
           toSend.push(file);
@@ -721,7 +724,7 @@ module.exports = {
               ...(caption ? { caption } : {}),
             }, { quoted: msg });
 
-            database.logPaperSent(extra.from, job.file.id);
+            database.logPaperSent(paperChatKey, job.file.id);
             telemetry.recordDownloadSuccess('paper');
           } catch (fileErr) {
             telemetry.recordFailure('paper');

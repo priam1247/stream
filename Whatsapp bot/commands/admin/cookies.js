@@ -80,7 +80,7 @@ module.exports = {
         } catch (e) {
           const info = YT.classify(e);
           await react('❌');
-          return status.update(`❌ ${info.code}: ${YT.friendlyError(e, { isOwner: true })}`);
+          return status.update(`❌ ${YT.displayCode(info.code)}: ${YT.friendlyError(e, { isOwner: true })}`);
         }
       }
 
@@ -88,7 +88,7 @@ module.exports = {
     } catch (e) {
       console.error('[cookies] error:', e.message);
       await react('❌');
-      return extra.reply(`❌ ${e.message}`);
+      return extra.reply('❌ Could not update cookies. Check the file and try again.');
     }
   },
 };
