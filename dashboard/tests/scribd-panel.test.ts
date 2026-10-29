@@ -17,7 +17,7 @@ vi.mock('../lib/auth-engine', () => ({
 }));
 
 import {
-  cleanPanelUrl, clearScribdQueue, findScribdDocuments, getScribdHealth,
+  DEFAULT_SCRIBD_WEB_URL, cleanPanelUrl, clearScribdQueue, findScribdDocuments, getScribdHealth,
   getScribdStatus, readScribdFile, readScribdThumbnail, resetScribdJob,
   safeDrimeShareUrl, safeScribdName, scribdPanelConfig, startScribdJob,
   testScribdConnection,
@@ -34,27 +34,38 @@ function req(path: string, body?: unknown): NextRequest {
 }
 
 beforeEach(() => {
-  vi.stubEnv('SCRIBD_WEB_URL', undefined);
-  vi.stubEnv('SCRIBD_WEB_TOKEN', undefined);
-  mocks.getConfig.mockResolvedValue({ panelUrl: 'https://saved.example/service?old=1#fragment', panelKey: 'old-secret', updatedAt: 123 });
-  mocks.saveConfig.mockResolvedValue({ updatedAt: 456 });
+  vi.stubEnv('SCRIBD_WEB_URL', 'https://saved.example/service?old=1#fragment');
+  vi.stubEnv('SCRIBD_WEB_TOKEN', 'old-secret');
+  mocks.getConfig.mockReset().mockResolvedValue({ panelUrl: 'https://saved.example/service?old=1#fragment', panelKey: 'old-secret', updatedAt: 123 });
+  mocks.saveConfig.mockReset().mockResolvedValue({ updatedAt: 456 });
   mocks.isAdmin = true;
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 describe('Scribd service configuration', () => {
-  it('uses saved settings only when no dedicated URL overrides them', async () => {
-    expect(await scribdPanelConfig()).toEqual({ baseUrl: 'https://saved.example/service', key: 'old-secret' });
-    vi.stubEnv('SCRIBD_WEB_URL', ' https://new.example/base/?t=leak#fragment ');
-    mocks.getConfig.mockClear().mockRejectedValueOnce(new Error('D1 unavailable'));
-    expect(await scribdPanelConfig()).toEqual({ baseUrl: 'https://new.example/base', key: '' });
+  it('uses the documented address and no token without consulting old settings', async () => {
+    vi.stubEnv('SCRIBD_WEB_URL', undefined);
+    vi.stubEnv('SCRIBD_WEB_TOKEN', undefined);
+    mocks.getConfig.mockRejectedValueOnce(new Error('D1 unavailable'));
+    expect(DEFAULT_SCRIBD_WEB_URL).toBe('http://195.123.189.187:25811');
+    expect(await scribdPanelConfig()).toEqual({ baseUrl: DEFAULT_SCRIBD_WEB_URL, key: '' });
     expect(mocks.getConfig).not.toHaveBeenCalled();
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    await getScribdStatus();
+    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(url.origin).toBe(DEFAULT_SCRIBD_WEB_URL);
+    expect(url.pathname).toBe('/api/job');
+    expect(url.searchParams.has('t')).toBe(false);
+  });
+
+  it('accepts optional environment overrides without consulting old settings', async () => {
+    vi.stubEnv('SCRIBD_WEB_URL', ' https://new.example/base/?t=leak#fragment ');
+    vi.stubEnv('SCRIBD_WEB_TOKEN', undefined);
+    expect(await scribdPanelConfig()).toEqual({ baseUrl: 'https://new.example/base', key: '' });
     vi.stubEnv('SCRIBD_WEB_TOKEN', ' new-secret ');
     expect(await scribdPanelConfig()).toEqual({ baseUrl: 'https://new.example/base', key: 'new-secret' });
-    mocks.getConfig.mockReset().mockResolvedValue({ panelUrl: 'https://saved.example/service?old=1#fragment', panelKey: 'old-secret' });
-    vi.stubEnv('SCRIBD_WEB_URL', undefined);
-    vi.stubEnv('SCRIBD_WEB_TOKEN', '');
-    expect(await scribdPanelConfig()).toEqual({ baseUrl: 'https://saved.example/service', key: '' });
+    expect(mocks.getConfig).not.toHaveBeenCalled();
   });
 
   it('rejects credentials and unsafe URL schemes', () => {
@@ -84,7 +95,7 @@ describe('Scribd service configuration', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('gates config routes, rejects credentialed URLs, and never returns the key', async () => {
+  it('gates the config route, reports the effective address, and does not save unused settings', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
       new URL(String(input)).pathname.endsWith('/health') ? new Response('ok') : jsonResponse({ items: [] }));
     vi.stubGlobal('fetch', fetchMock);
@@ -93,14 +104,15 @@ describe('Scribd service configuration', () => {
     expect((await patchConfig(req('/api/scribd/config', { panelKey: 'new' }))).status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
     mocks.isAdmin = true;
-    expect((await patchConfig(req('/api/scribd/config', { panelUrl: 'https://user:pass@example.com' }))).status).toBe(400);
-    expect(mocks.saveConfig).not.toHaveBeenCalled();
-    const saved = await patchConfig(req('/api/scribd/config', { panelUrl: 'https://example.com/base/?t=secret', panelKey: ' new-key ' }));
-    expect(mocks.saveConfig).toHaveBeenCalledWith({ panelUrl: 'https://example.com/base', panelKey: 'new-key' });
-    const body = await saved.json();
+    const response = await getConfig(req('/api/scribd/config'));
+    const body = await response.json();
     expect(body).toMatchObject({ ok: true, panelUrl: 'https://saved.example/service', hasPanelKey: true });
     expect(JSON.stringify(body)).not.toContain('old-secret');
-    expect(JSON.stringify(body)).not.toContain('new-key');
+    const refused = await patchConfig(req('/api/scribd/config', { panelUrl: 'https://example.com', panelKey: 'new-key' }));
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: expect.stringContaining('saved panel settings are no longer used') });
+    expect(mocks.getConfig).not.toHaveBeenCalled();
+    expect(mocks.saveConfig).not.toHaveBeenCalled();
   });
 });
 

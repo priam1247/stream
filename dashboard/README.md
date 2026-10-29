@@ -74,30 +74,38 @@ The browser talks to the dashboard's `/api/scribd/*` routes, and the dashboard
 calls the web service server-to-server. The web service token is not sent to the
 browser.
 
-### Configure the dashboard
+### Server address and optional token
 
-Set these **server-side** environment variables in the dashboard deployment
-(e.g. Vercel), then redeploy:
+The dashboard defaults to `http://195.123.189.187:25811`, the allocation documented
+in `../working scribd/README.md`. If the web service is running there **without a
+token**, neither `SCRIBD_WEB_URL` nor `SCRIBD_WEB_TOKEN` needs to be set. The
+address is only a destination: deploying the dashboard does not start the Python
+service. Its host must run `scribd_web.py` and accept connections from the dashboard.
+The live service's availability has not been verified by this repository.
 
-```text
-SCRIBD_WEB_URL=http://195.123.189.187:25811
-SCRIBD_WEB_TOKEN=<the web server's WEB_TOKEN, if enabled>
-```
+If the service moves, set the optional server-side `SCRIBD_WEB_URL` in the dashboard
+deployment (for example, Vercel's environment settings) and redeploy. Use the
+host's public IP or HTTPS domain and allocated port, not the `0.0.0.0` bind address
+printed by the server. The public `/health` endpoint should return `ok`; `/api/job`
+should return a job list, or HTTP 401 if a token is required.
 
-Use the actual reachable server address if it differs. If the web server is
-currently open, leave the token empty, but restrict access and enable its token
-before exposing it publicly. Use HTTPS or a trusted private network: the existing
-web service uses `?t=` authentication, so a token sent over plain HTTP is not
-confidential and may appear in upstream access logs. Never put the token in a
-`NEXT_PUBLIC_` variable or commit it. The server's `/health` is public; the
-adapter checks `/api/job` to verify the protected service.
+`SCRIBD_WEB_TOKEN` is needed only when the running service has a token. It is the
+value configured for that server as `--token` or `WEB_TOKEN`, not a new dashboard
+credential. With `--token auto`, the server keeps it in its private `.webtoken`
+file and prints it in the startup URL after `?t=`. Copy that value yourself into
+the dashboard deployment's secret environment settings; do not put it in source
+code, a `NEXT_PUBLIC_` variable, or a message. When starting `scribd_web.py`
+directly, pass `--token` or export `WEB_TOKEN` before launching it: the existing
+script reads those options before loading its `.env` file.
 
-`SCRIBD_WEB_URL` overrides any legacy saved Scribd panel address. When it is not
-set, the previous saved address / `SCRIBD_PANEL_URL` / built-in address remain a
-fallback. `SCRIBD_WEB_TOKEN` overrides the previous saved panel key. If a new
-`SCRIBD_WEB_URL` is set, an old saved key is **not** sent to that new host; set
-`SCRIBD_WEB_TOKEN` explicitly when the new server is locked. The old Scribd-tab
-settings card stays removed.
+If the server has no token, anyone who can reach its port can use it directly.
+Protect it before public exposure, and use HTTPS or a trusted private network:
+the service sends tokens in a query string, which plain HTTP does not encrypt and
+which upstream access logs may record.
+
+Legacy saved panel addresses/keys and `SCRIBD_PANEL_URL` / `SCRIBD_PANEL_KEY` no
+longer change this connection. The old admin configuration endpoint reports the
+effective connection, but rejects attempts to save legacy settings.
 
 ### Behaviour and limitations
 
