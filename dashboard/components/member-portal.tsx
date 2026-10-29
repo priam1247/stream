@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -42,7 +42,7 @@ import { ScribdDesk } from './scribd-desk';
 import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
 
-type MemberTab = 'numbers' | 'commands' | 'vault' | 'scribd';
+type MemberTab = 'numbers' | 'commands' | 'vault' | 'scribd' | 'status';
 
 export function MemberPortal() {
   const router = useRouter();
@@ -52,8 +52,10 @@ export function MemberPortal() {
   const [accountOpen, setAccountOpen] = useState(false);
 
   const [tab, setTab] = useState<MemberTab>('numbers');
+  const [visitedTabs, setVisitedTabs] = useState<MemberTab[]>(['numbers']);
   const [refreshing, setRefreshing] = useState(false);
-  const [notice, setNotice] = useState<{ text: string; bad?: boolean } | null>(null);
+  const [statusUnavailable, setStatusUnavailable] = useState(false);
+  const [notice, setNotice] = useState<{ text: string; bad?: boolean; pair?: boolean } | null>(null);
 
   const [overview, setOverview] = useState<MemberOverviewPayload>({
     ok: true,
@@ -72,6 +74,7 @@ export function MemberPortal() {
   const [busyNumber, setBusyNumber] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [activePair, setActivePair] = useState<PairCodePayload | null>(null);
+  const pairBannerRef = useRef<HTMLDivElement | null>(null);
   const [numberSearch, setNumberSearch] = useState('');
 
   const loadMemberStatus = useCallback(
@@ -91,7 +94,9 @@ export function MemberPortal() {
         };
         if (!res.ok) throw new Error(json.error || 'Could not load portal');
         setOverview(json);
+        setStatusUnavailable(false);
       } catch (err) {
+        setStatusUnavailable(true);
         setNotice({
           text: err instanceof Error ? err.message : 'Unable to refresh',
           bad: true,
@@ -231,9 +236,9 @@ export function MemberPortal() {
               code: pollJson.code,
               expiresInSeconds: Number(pollJson.expiresInSeconds) || 60,
               number: num,
-              issuedAt: Number(pollJson.issuedAt) || Date.now(),
+              issuedAt: Math.min(Number(pollJson.issuedAt) || Date.now(), Date.now()),
             });
-            setNotice({ text: `Code issued for +${num}` });
+            setNotice({ text: `Code issued for +${num}`, pair: true });
             return;
           }
         }
@@ -246,9 +251,9 @@ export function MemberPortal() {
         code: json.code,
         expiresInSeconds: Number(json.expiresInSeconds) || 60,
         number: num,
-        issuedAt: Number(json.issuedAt) || Date.now(),
+        issuedAt: Math.min(Number(json.issuedAt) || Date.now(), Date.now()),
       });
-      setNotice({ text: `Code issued for +${num}` });
+      setNotice({ text: `Code issued for +${num}`, pair: true });
     } catch (err) {
       setNotice({
         text: err instanceof Error ? err.message : 'Failed to get code',
@@ -276,6 +281,16 @@ export function MemberPortal() {
   const handleSignOut = async () => {
     await performSignOut();
     router.replace('/login');
+  };
+
+  useEffect(() => {
+    if (activePair && tab === 'numbers') pairBannerRef.current?.scrollIntoView?.({ block: 'center', behavior: 'auto' });
+  }, [activePair, tab]);
+
+  const navigate = (next: MemberTab) => {
+    setVisitedTabs((current) => current.includes(next) ? current : [...current, next]);
+    setTab(next);
+    window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
   if (checking || !user) {
@@ -377,38 +392,20 @@ export function MemberPortal() {
         </div>
       </header>
 
-      <nav aria-label="Console sections" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur-md sm:static sm:mx-auto sm:mt-3 sm:max-w-[1080px] sm:gap-1 sm:rounded-2xl sm:border sm:bg-slate-100 sm:p-1 sm:shadow-none">
+      <nav aria-label="Console sections" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur-md sm:static sm:mx-auto sm:mt-3 sm:max-w-[1080px] sm:gap-1 sm:rounded-2xl sm:border sm:bg-slate-100 sm:p-1 sm:shadow-none">
         {([
           { key: 'numbers', label: 'Numbers', icon: Smartphone },
           { key: 'commands', label: 'Commands', icon: Command },
           { key: 'vault', label: 'Vault', icon: BookOpen },
           { key: 'scribd', label: 'Scribd', icon: Library },
-        ] as const).map(({ key, label, icon: Icon }) => <button key={key} type="button" aria-label={key === 'numbers' ? `Numbers (${overview.numbers.length})` : label} aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); window.scrollTo({ top: 0, behavior: 'auto' }); }} className={`flex min-h-[60px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-1.5 text-[10px] font-semibold transition sm:min-h-11 sm:flex-row sm:gap-2 sm:text-xs ${tab === key ? 'text-teal-700 sm:bg-white sm:shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}><Icon className="h-[19px] w-[19px]" /><span className="truncate">{label}</span></button>)}
+          { key: 'status', label: 'Status', icon: Activity },
+        ] as const).map(({ key, label, icon: Icon }) => <button key={key} type="button" aria-label={key === 'numbers' ? `Numbers (${overview.numbers.length})` : label} aria-current={tab === key ? 'page' : undefined} onClick={() => navigate(key)} className={`flex min-h-[60px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-1.5 text-[10px] font-semibold transition sm:min-h-11 sm:flex-row sm:gap-2 sm:text-xs ${tab === key ? 'text-teal-700 sm:bg-white sm:shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}><Icon className="h-[19px] w-[19px]" /><span className="truncate">{label}</span></button>)}
       </nav>
 
       <main className="mx-auto max-w-[1080px] px-3.5 pb-28 pt-4 sm:px-5 sm:pb-12 sm:pt-6">
-        {tab !== 'scribd' && (
-          <LiveAnalytics
-            reachable={overview.botReachable}
-            connected={overview.botConnected}
-            botNumber={overview.botNumber}
-            lastSeenSecondsAgo={overview.lastSeenSecondsAgo}
-            uptimeSeconds={overview.uptimeSeconds}
-            commandsTotal={overview.commandsTotal}
-            downloadsSuccess={overview.downloadsSuccess}
-            failedTotal={overview.failedTotal}
-          />
-        )}
-
-        {!overview.memberAllowed && (
-          <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-semibold text-rose-800">
-            Account restricted
-          </div>
-        )}
-
         {notice && (
           <div
-            role="status"
+            role={notice.bad ? 'alert' : 'status'}
             className={`mb-4 flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-medium ${
               notice.bad
                 ? 'border-rose-200 bg-rose-50 text-rose-800'
@@ -423,29 +420,62 @@ export function MemberPortal() {
               )}
               <span className="min-w-0 break-words">{notice.text}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => setNotice(null)}
-              className="shrink-0 text-[11px] font-semibold underline"
-            >
-              Close
-            </button>
+            <div className="flex shrink-0 items-center gap-3">
+              {notice.pair && activePair && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigate('numbers');
+                    pairBannerRef.current?.scrollIntoView?.({ block: 'center', behavior: 'auto' });
+                  }}
+                  className="min-h-9 text-[11px] font-semibold underline"
+                >
+                  View code
+                </button>
+              )}
+              <button type="button" onClick={() => setNotice(null)} className="min-h-9 text-[11px] font-semibold underline">
+                Close
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!overview.memberAllowed && (
+          <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-semibold text-rose-800">
+            Account restricted
+          </div>
+        )}
+
+        {tab === 'status' && (
+          <div className="space-y-4">
+            <h1 className="px-0.5 text-2xl font-bold tracking-tight text-slate-950">Service status</h1>
+            {statusUnavailable && <p role="alert" className="text-xs text-rose-700">Status could not be refreshed.</p>}
+            <LiveAnalytics
+              reachable={statusUnavailable ? false : overview.botReachable}
+              connected={statusUnavailable ? null : overview.botConnected}
+              botNumber={overview.botNumber}
+              lastSeenSecondsAgo={statusUnavailable ? null : overview.lastSeenSecondsAgo}
+              uptimeSeconds={statusUnavailable ? null : overview.uptimeSeconds}
+              commandsTotal={statusUnavailable ? null : overview.commandsTotal}
+              downloadsSuccess={statusUnavailable ? null : overview.downloadsSuccess}
+              failedTotal={statusUnavailable ? null : overview.failedTotal}
+            />
           </div>
         )}
 
         {tab === 'numbers' && (
           <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
             <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-bold text-slate-900 sm:text-base">
-                WhatsApp Access
-              </h2>
+              <h1 className="text-sm font-bold text-slate-900 sm:text-base">
+                WhatsApp numbers
+              </h1>
               <span className="font-mono text-xs text-slate-500 tabular-nums">
                 {overview.numbers.length} approved
               </span>
             </div>
 
-            <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600"><span className="font-semibold">{overview.whitelistSync === 'synced' ? 'Service reports the latest number list' : overview.whitelistSync === 'pending' ? 'Waiting for service sync' : 'Number sync not confirmed'}</span><span className="block">Approve your number, then request a code to link that WhatsApp account. Existing linked accounts stay connected. Check the status below after entering the code.</span></div>
-            {!overview.botEnabledForMembers && !user.isAdmin && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800">New number approvals and pairing are paused by the owner. Existing approvals are not automatically disabled.</p>}
+            <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600"><span className="font-semibold">{overview.whitelistSync === 'synced' ? 'Service reports the latest number list' : overview.whitelistSync === 'pending' ? 'Waiting for service sync' : 'Number sync not confirmed'}</span><span className="block">Approve your number, then request a code. Other linked accounts stay connected.</span></div>
+            {!overview.botEnabledForMembers && !user.isAdmin && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800">New number approvals and pairing are paused. Existing approvals remain enabled.</p>}
             <form
               onSubmit={handleAllowNumber}
               className="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-[1.15fr_0.95fr_auto] sm:items-end"
@@ -499,10 +529,13 @@ export function MemberPortal() {
               </button>
             </form>
 
-            <div className="mt-4">
+            <div ref={pairBannerRef} className="mt-4">
               <PairingCodeBanner
                 activePair={activePair}
-                onDismiss={() => setActivePair(null)}
+                onDismiss={() => {
+                  setActivePair(null);
+                  setNotice((current) => current?.pair ? null : current);
+                }}
               />
             </div>
 
@@ -537,7 +570,7 @@ export function MemberPortal() {
                             {item.enabled ? 'Allowed' : 'Paused'}
                           </span>
                         </div>
-                        <p className="mt-1 text-xs font-medium text-teal-700">{accountStatusLabel(overview.botReachable === false ? null : overview.accounts, item.number)}</p>
+                        <p className="mt-1 text-xs font-medium text-teal-700">{accountStatusLabel(statusUnavailable || overview.botReachable === false ? null : overview.accounts, item.number)}</p>
                         {item.label && (
                           <p className="mt-0.5 truncate text-xs text-slate-500">
                             {item.label}
@@ -556,7 +589,7 @@ export function MemberPortal() {
                             accountState === 'connected' || accountState === 'connecting'
                           }
                           onClick={() => handleRequestCode(item.number)}
-                          className="inline-flex items-center gap-1 rounded-xl bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-40"
+                          className="inline-flex min-h-11 items-center gap-1 rounded-xl bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-40"
                         >
                           <Link2 className="h-3.5 w-3.5" />
                           {overview.botReachable === false ? 'Offline' : 'Get Code'}
@@ -568,7 +601,7 @@ export function MemberPortal() {
                           onClick={() =>
                             handleToggleOwnNumber(item.number, !item.enabled)
                           }
-                          className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
+                          className="min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
                         >
                           {item.enabled ? 'Pause' : 'Enable'}
                         </button>
@@ -578,14 +611,14 @@ export function MemberPortal() {
                             <button
                               type="button"
                               onClick={() => handleDeleteOwnNumber(item.number)}
-                              className="rounded-xl bg-rose-600 px-2.5 py-1.5 text-xs font-semibold text-white"
+                              className="min-h-11 rounded-xl bg-rose-600 px-2.5 py-1.5 text-xs font-semibold text-white"
                             >
                               Confirm
                             </button>
                             <button
                               type="button"
                               onClick={() => setConfirmDelete(null)}
-                              className="rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600"
+                              className="min-h-11 rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600"
                             >
                               Cancel
                             </button>
@@ -595,7 +628,7 @@ export function MemberPortal() {
                             type="button"
                             onClick={() => setConfirmDelete(item.number)}
                             aria-label="Remove number"
-                            className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-600 hover:border-rose-200 hover:bg-rose-50"
+                            className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-600 hover:border-rose-200 hover:bg-rose-50"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                             Remove
@@ -610,9 +643,10 @@ export function MemberPortal() {
           </section>
         )}
 
-        {tab === 'commands' && <CommandDirectory hideOwnerCommands />}
-        {tab === 'vault' && <MediaVaultDesk />}
-        {tab === 'scribd' && (canAccessScribd ? <ScribdDesk bottomNav /> : <section className="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm"><span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-50 text-teal-700"><LockKeyhole className="h-6 w-6" /></span><h2 className="mt-4 text-base font-bold text-slate-900">Scribd is private</h2><p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">The owner can grant your account access to the shared library. Contact the owner if you need access.</p></section>)}
+        {visitedTabs.includes('commands') && <div hidden={tab !== 'commands'} className="space-y-4"><h1 className="px-0.5 text-2xl font-bold tracking-tight text-slate-950">Commands</h1><CommandDirectory hideOwnerCommands /></div>}
+        {visitedTabs.includes('vault') && <div hidden={tab !== 'vault'}><MediaVaultDesk /></div>}
+        {visitedTabs.includes('scribd') && canAccessScribd && <div hidden={tab !== 'scribd'}><ScribdDesk bottomNav active={tab === 'scribd'} /></div>}
+        {tab === 'scribd' && !canAccessScribd && <section className="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm"><span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-50 text-teal-700"><LockKeyhole className="h-6 w-6" /></span><h1 className="mt-4 text-base font-bold text-slate-900">Scribd is private</h1><p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">Ask the owner for access to the shared library.</p></section>}
       </main>
 
       <AccountModal

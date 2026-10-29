@@ -51,11 +51,19 @@ import { LiveAnalytics } from './live-analytics';
 import { ScribdDesk } from './scribd-desk';
 import { ControlRoomHome } from './control-room-home';
 import { ControlRoomActivity } from './control-room-activity';
-import { getRoomAlerts, type OwnerTab, type ScribdSnapshot } from '@/lib/control-room';
+import { SectionNav } from './section-nav';
+import { getRoomAlerts, type ActivityPage, type OwnerTab, type RoomTarget, type ScribdPage, type ScribdSnapshot, type WhatsAppPage } from '@/lib/control-room';
 import type { ScribdStatusPayload } from '@/lib/scribd-types';
 
 type AdminTab = OwnerTab;
 type MemberFilter = 'all' | 'allowed' | 'disallowed';
+const WHATSAPP_PAGES: { id: WhatsAppPage; label: string }[] = [
+  { id: 'numbers', label: 'Numbers' },
+  { id: 'service', label: 'Status' },
+  { id: 'power', label: 'Power' },
+  { id: 'sync', label: 'Sync' },
+  { id: 'hosting', label: 'Hosting' },
+];
 
 export function AdminConsole() {
   const router = useRouter();
@@ -65,8 +73,13 @@ export function AdminConsole() {
   const [accountOpen, setAccountOpen] = useState(false);
 
   const [tab, setTab] = useState<AdminTab>('overview');
+  const [whatsAppPage, setWhatsAppPage] = useState<WhatsAppPage>('numbers');
+  const [scribdPage, setScribdPage] = useState<ScribdPage>('search');
+  const [activityPage, setActivityPage] = useState<ActivityPage>('alerts');
+  const [scribdVisited, setScribdVisited] = useState(false);
+  const [activityVisited, setActivityVisited] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [notice, setNotice] = useState<{ text: string; bad?: boolean } | null>(null);
+  const [notice, setNotice] = useState<{ text: string; bad?: boolean; pair?: boolean } | null>(null);
   const [overviewCheckedAt, setOverviewCheckedAt] = useState<number | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [scribd, setScribd] = useState<ScribdSnapshot>({ status: null, error: null, checkedAt: null });
@@ -123,6 +136,7 @@ export function AdminConsole() {
   const [numberSearch, setNumberSearch] = useState('');
   const [numberFilter, setNumberFilter] = useState<'all' | 'allowed' | 'blocked'>('all');
   const [activePair, setActivePair] = useState<PairCodePayload | null>(null);
+  const pairBannerRef = useRef<HTMLDivElement | null>(null);
 
   const loadOverview = useCallback(
     async (silent = false, hydrateInputs = false) => {
@@ -584,9 +598,9 @@ export function AdminConsole() {
               code: pollJson.code,
               expiresInSeconds: Number(pollJson.expiresInSeconds) || 60,
               number,
-              issuedAt: Number(pollJson.issuedAt) || Date.now(),
+              issuedAt: Math.min(Number(pollJson.issuedAt) || Date.now(), Date.now()),
             });
-            setNotice({ text: `Code issued for +${number}` });
+            setNotice({ text: `Code issued for +${number}`, pair: true });
             return;
           }
         }
@@ -599,9 +613,9 @@ export function AdminConsole() {
         code: json.code,
         expiresInSeconds: Number(json.expiresInSeconds) || 60,
         number,
-        issuedAt: Number(json.issuedAt) || Date.now(),
+        issuedAt: Math.min(Number(json.issuedAt) || Date.now(), Date.now()),
       });
-      setNotice({ text: `Code issued for +${number}` });
+      setNotice({ text: `Code issued for +${number}`, pair: true });
     } catch (err) {
       setNotice({
         text: err instanceof Error ? err.message : 'Failed to request code',
@@ -629,6 +643,24 @@ export function AdminConsole() {
   const handleSignOut = async () => {
     await performSignOut();
     router.replace('/login');
+  };
+
+  useEffect(() => {
+    if (activePair && tab === 'server' && whatsAppPage === 'numbers') pairBannerRef.current?.scrollIntoView?.({ block: 'center', behavior: 'auto' });
+  }, [activePair, tab, whatsAppPage]);
+
+  const navigate = (target: RoomTarget) => {
+    if (target.tab === 'server' && target.page) setWhatsAppPage(target.page);
+    if (target.tab === 'scribd') {
+      setScribdVisited(true);
+      if (target.page) setScribdPage(target.page);
+    }
+    if (target.tab === 'activity') {
+      setActivityVisited(true);
+      if (target.page) setActivityPage(target.page);
+    }
+    setTab(target.tab);
+    window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
   if (checking || !user) {
@@ -662,12 +694,12 @@ export function AdminConsole() {
                   <span className="truncate text-sm font-bold text-slate-900">
                     Control Room
                   </span>
-                  <span className="shrink-0 rounded bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-teal-700 ring-1 ring-teal-200">
+                  <span className="hidden shrink-0 rounded bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-teal-700 ring-1 ring-teal-200 min-[360px]:inline">
                     ADMIN
                   </span>
                 </div>
                 <div className="truncate font-mono text-[10px] text-slate-500">
-                  Administrator workspace{data.botVersion ? ` · v${data.botVersion}` : ''}
+                  Admin workspace{data.botVersion ? ` · v${data.botVersion}` : ''}
                 </div>
               </div>
             </div>
@@ -675,6 +707,7 @@ export function AdminConsole() {
             <div className="flex shrink-0 items-center gap-1.5">
               <Link
                 href="/dashboard"
+                aria-label="Open member portal"
                 title="Member View"
                 className="inline-flex h-8 items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-700 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800"
               >
@@ -713,7 +746,7 @@ export function AdminConsole() {
                 type="button"
                 onClick={handleSignOut}
                 title="Sign out"
-                className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
+                className="hidden h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 min-[400px]:flex"
               >
                 <LogOut className="h-3.5 w-3.5" />
               </button>
@@ -732,7 +765,7 @@ export function AdminConsole() {
           { key: 'members', label: 'Members', icon: Users },
           { key: 'activity', label: 'Activity', icon: Bell },
         ] as const).map(({ key, label, icon: Icon }) => (
-          <button key={key} type="button" aria-current={tab === key ? 'page' : undefined} onClick={() => { setTab(key); window.scrollTo({ top: 0, behavior: 'auto' }); }}
+          <button key={key} type="button" aria-current={tab === key ? 'page' : undefined} onClick={() => navigate({ tab: key } as RoomTarget)}
             className={`relative flex min-h-[60px] min-w-0 touch-manipulation flex-col items-center justify-center gap-1 rounded-xl px-1 py-1.5 text-[10px] font-semibold transition sm:min-h-11 sm:flex-row sm:gap-2 sm:px-3 sm:text-xs ${tab === key ? 'text-teal-700 sm:bg-white sm:shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>
             <span className="relative"><Icon className={`h-[19px] w-[19px] ${tab === key ? 'text-teal-600' : ''}`} />{key === 'activity' && alerts.length > 0 && <span className="absolute -right-1.5 -top-1 h-2.5 w-2.5 rounded-full border-2 border-white bg-rose-500" />}</span>
             <span className="truncate">{label}</span>
@@ -741,93 +774,9 @@ export function AdminConsole() {
       </nav>
 
       <main className="mx-auto max-w-[1140px] px-3.5 pb-28 pt-4 sm:px-5 sm:pb-14 sm:pt-6">
-        {tab === 'server' && (<>
-        <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <p className="text-[11px] font-bold uppercase tracking-[0.13em] text-teal-700">Manage connections</p>
-          <h1 className="mt-1 text-xl font-bold tracking-tight text-slate-950">WhatsApp connections</h1>
-          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-            <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Hosting server</p><p className="mt-1 text-sm font-semibold capitalize text-slate-800">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p><p className="mt-1 text-[11px] text-slate-500">{panelStatus?.error || (panelStatus?.configured ? 'Reported by the hosting panel' : 'Set panel key and server ID')}</p></div>
-            <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Service bridge</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-slate-500">{data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
-            <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">WhatsApp</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p><p className="mt-1 text-[11px] text-slate-500">{data.botReachable ? 'Status reported by the service' : 'Waiting for service status'}</p></div>
-          </div>
-          {overviewError && <p role="alert" className="mt-3 text-xs text-rose-700">Status could not be refreshed. Check the service connection below.</p>}
-          {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-amber-700">{serviceText(data.botError)} Check the service process, sync token and connection settings below.</p>}
-        </section>
-        {/* Live Server Analytics: Commands, Successful Downloads, Failed, Uptime + RAM/Disk/Queues */}
-        <LiveAnalytics
-          reachable={overviewError ? false : data.botReachable}
-          connected={overviewError ? null : data.connected}
-          botNumber={data.botNumber}
-          lastSeenSecondsAgo={data.lastSeenSecondsAgo}
-          uptimeSeconds={overviewError ? null : data.uptimeSeconds}
-          commandsTotal={overviewError ? null : data.commandsTotal}
-          downloadsSuccess={overviewError ? null : data.downloadsSuccess}
-          failedTotal={overviewError ? null : data.failedTotal}
-          ramUsedMB={overviewError ? null : data.ramUsedMB}
-          diskUsedMB={overviewError ? null : data.diskUsedMB}
-          diskBudgetMB={overviewError ? null : data.diskBudgetMB}
-          queueLight={overviewError ? null : data.queueLight}
-          queueHeavy={overviewError ? null : data.queueHeavy}
-          showResources
-        />
-
-        {/* Quick Server Operations Bar (Power + Member Gate) */}
-        <section className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:px-4">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              disabled={sendingPower !== null}
-              onClick={() => handlePanelPower('restart')}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50"
-            >
-              <RefreshCw
-                className={`h-3.5 w-3.5 ${sendingPower === 'restart' ? 'animate-spin' : ''}`}
-              />
-              {sendingPower === 'restart' ? 'Restarting…' : 'Restart service'}
-            </button>
-
-            <button
-              type="button"
-              disabled={sendingPower !== null}
-              onClick={() => handlePanelPower('start')}
-              className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-50"
-            >
-              {sendingPower === 'start' ? 'Starting…' : 'Start service'}
-            </button>
-
-            <button
-              type="button"
-              disabled={sendingPower !== null}
-              onClick={() => handlePanelPower('stop')}
-              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
-            >
-              {sendingPower === 'stop' ? 'Stopping…' : 'Stop service'}
-            </button>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleToggleGlobalBot}
-            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
-              data.botEnabledForMembers
-                ? 'border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100'
-                : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
-            }`}
-          >
-            <Power className="h-3.5 w-3.5 shrink-0" />
-            <span>
-              Member linking: {data.botEnabledForMembers ? 'OPEN' : 'PAUSED'}
-            </span>
-          </button>
-          <p className="w-full text-[11px] leading-5 text-slate-500">Pausing member linking prevents new linking requests; it does not disable numbers already approved. Power targets the configured server; restart may instead be queued to the service.</p>
-          {lastRestartEvent && <p className="w-full text-[11px] text-slate-500">Last restart request: {new Date(lastRestartEvent.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
-        </section>
-
-        </>)}
-
         {notice && (
           <div
-            role="status"
+            role={notice.bad ? 'alert' : 'status'}
             className={`mb-4 flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-medium ${
               notice.bad
                 ? 'border-rose-200 bg-rose-50 text-rose-800'
@@ -842,39 +791,138 @@ export function AdminConsole() {
               )}
               <span className="min-w-0 break-words">{notice.text}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => setNotice(null)}
-              className="shrink-0 text-[11px] font-semibold underline"
-            >
-              Close
-            </button>
+            <div className="flex shrink-0 items-center gap-3">
+              {notice.pair && activePair && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigate({ tab: 'server', page: 'numbers' });
+                    pairBannerRef.current?.scrollIntoView?.({ block: 'center', behavior: 'auto' });
+                  }}
+                  className="min-h-9 text-[11px] font-semibold underline"
+                >
+                  View code
+                </button>
+              )}
+              <button type="button" onClick={() => setNotice(null)} className="min-h-9 text-[11px] font-semibold underline">
+                Close
+              </button>
+            </div>
           </div>
         )}
 
-        {tab === 'overview' && <ControlRoomHome name={user.name} data={data} overviewCheckedAt={overviewCheckedAt} overviewError={overviewError} scribd={scribd} panel={panelStatus} alerts={alerts} events={events} eventsLoading={eventsLoading} onNavigate={setTab} />}
-        {tab === 'scribd' && <ScribdDesk bottomNav />}
-        {tab === 'activity' && <ControlRoomActivity alerts={alerts} events={events} storage={eventsStorage} loading={eventsLoading} error={eventsError} onRefresh={() => { void loadActivity(false); void loadOverview(true, false); void loadScribdStatus(); void loadPanelStatus(); }} onNavigate={setTab} />}
+        {tab === 'overview' && <ControlRoomHome data={data} overviewCheckedAt={overviewCheckedAt} overviewError={overviewError} scribd={scribd} alerts={alerts} onNavigate={navigate} />}
+        {scribdVisited && <div hidden={tab !== 'scribd'}><ScribdDesk bottomNav active={tab === 'scribd'} page={scribdPage} onPageChange={setScribdPage} /></div>}
+        {activityVisited && <div hidden={tab !== 'activity'}><ControlRoomActivity alerts={alerts} events={events} storage={eventsStorage} loading={eventsLoading} error={eventsError} page={activityPage} onPageChange={setActivityPage} onRefresh={() => { void loadActivity(false); void loadOverview(true, false); void loadScribdStatus(); void loadPanelStatus(); }} onNavigate={navigate} /></div>}
 
-        {/* TAB 1: SERVER & WHATSAPP NUMBERS */}
         {tab === 'server' && (
           <div className="space-y-4">
-            {/* Approved WhatsApp Numbers */}
-            <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+            <h1 className="px-0.5 text-2xl font-bold tracking-tight text-slate-950">WhatsApp</h1>
+            <SectionNav label="WhatsApp pages" items={WHATSAPP_PAGES} value={whatsAppPage} onChange={setWhatsAppPage} />
+            {whatsAppPage === 'service' && (
+              <>
+                <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+                  <h2 className="text-sm font-bold text-slate-900 sm:text-base">Service status</h2>
+                  <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Hosting server</p><p className="mt-1 text-sm font-semibold capitalize text-slate-800">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p>{panelStatus?.error && <p className="mt-1 break-words text-[11px] text-slate-500">{panelStatus.error}</p>}</div>
+                    <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Service bridge</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-slate-500">{overviewError ? 'Last check failed' : overviewCheckedAt == null ? 'Awaiting first check' : data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
+                    <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">WhatsApp</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p></div>
+                  </div>
+                  {overviewError && <p role="alert" className="mt-3 text-xs text-rose-700">Status could not be refreshed. Check Sync settings.</p>}
+                  {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-amber-700">{serviceText(data.botError)} Check the service process and Sync settings.</p>}
+                </section>
+                {/* Live Server Analytics: Commands, Successful Downloads, Failed, Uptime + RAM/Disk/Queues */}
+                <LiveAnalytics
+                  reachable={overviewError ? false : data.botReachable}
+                  connected={overviewError ? null : data.connected}
+                  botNumber={data.botNumber}
+                  lastSeenSecondsAgo={overviewError ? null : data.lastSeenSecondsAgo}
+                  uptimeSeconds={overviewError ? null : data.uptimeSeconds}
+                  commandsTotal={overviewError ? null : data.commandsTotal}
+                  downloadsSuccess={overviewError ? null : data.downloadsSuccess}
+                  failedTotal={overviewError ? null : data.failedTotal}
+                  ramUsedMB={overviewError ? null : data.ramUsedMB}
+                  diskUsedMB={overviewError ? null : data.diskUsedMB}
+                  diskBudgetMB={overviewError ? null : data.diskBudgetMB}
+                  queueLight={overviewError ? null : data.queueLight}
+                  queueHeavy={overviewError ? null : data.queueHeavy}
+                  showResources
+                />
+              </>
+            )}
+
+            {whatsAppPage === 'power' && (
+              <section className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:px-4">
+                <div className="flex w-full items-center justify-between gap-2"><h2 className="text-sm font-bold text-slate-900">Server power</h2><span className="text-xs font-semibold capitalize text-slate-600">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</span></div>
+                {panelStatus?.error && <p className="w-full break-words text-xs text-amber-700">{panelStatus.error}</p>}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={sendingPower !== null}
+                    onClick={() => handlePanelPower('restart')}
+                    className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-teal-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50"
+                  >
+                    <RefreshCw
+                      className={`h-3.5 w-3.5 ${sendingPower === 'restart' ? 'animate-spin' : ''}`}
+                    />
+                    {sendingPower === 'restart' ? 'Restarting…' : 'Restart service'}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={sendingPower !== null}
+                    onClick={() => handlePanelPower('start')}
+                    className="min-h-11 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-50"
+                  >
+                    {sendingPower === 'start' ? 'Starting…' : 'Start service'}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={sendingPower !== null}
+                    onClick={() => handlePanelPower('stop')}
+                    className="min-h-11 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
+                  >
+                    {sendingPower === 'stop' ? 'Stopping…' : 'Stop service'}
+                  </button>
+                </div>
+
+                <p className="w-full text-[11px] leading-5 text-slate-500">Power targets the configured server; restart may be queued to the service.</p>
+                {lastRestartEvent && <p className="w-full text-[11px] text-slate-500">Last restart request: {new Date(lastRestartEvent.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
+              </section>
+            )}
+
+            {whatsAppPage === 'numbers' && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-sm font-bold text-slate-900 sm:text-base">
-                  WhatsApp Numbers
+                  Approved numbers
                 </h2>
-                <span className="font-mono text-xs text-slate-500 tabular-nums">
-                  {enabledNumbersCount} allowed / {data.users.length} total
+                <span className="whitespace-nowrap font-mono text-xs text-slate-500 tabular-nums">
+                  {enabledNumbersCount}/{data.users.length} allowed
                 </span>
               </div>
 
               <div className={`mt-3 rounded-xl border px-3 py-2.5 text-xs leading-5 ${data.whitelistSync === 'synced' && !overviewError ? 'border-teal-100 bg-teal-50/60 text-teal-800' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
                 <span className="font-semibold">{overviewError ? 'Sync status unavailable' : data.whitelistSync === 'synced' ? 'Service reports the latest number list' : data.whitelistSync === 'pending' ? 'Number list waiting for service sync' : 'Number sync not confirmed'}</span>
-                <span className="block">{data.whitelistSync === 'synced' && !overviewError ? 'The latest heartbeat reported the current list version.' : 'Saved numbers can be retried; direct connections may not report a list version.'}</span>
               </div>
-              <p className="mt-3 text-xs leading-5 text-slate-500">Approve the number first, then request a code to link that WhatsApp account. Existing linked accounts stay connected. A code does not confirm a completed link; check the status below.</p>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="min-w-0"><p className="text-xs font-semibold text-slate-800">Member linking: {data.botEnabledForMembers ? 'Open' : 'Paused'}</p><p className="mt-1 text-[11px] leading-4 text-slate-500">Pausing stops new requests, not approved numbers.</p></div>
+                <button
+                  type="button"
+                  onClick={handleToggleGlobalBot}
+                  className={`inline-flex min-h-11 items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                    data.botEnabledForMembers
+                      ? 'border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100'
+                      : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                  }`}
+                >
+                  <Power className="h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    {data.botEnabledForMembers ? 'Pause linking' : 'Resume linking'}
+                  </span>
+                </button>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-slate-500">Approve a number, then request a code. A code alone does not confirm linking.</p>
 
               <form
                 onSubmit={handleAddNumber}
@@ -924,10 +972,13 @@ export function AdminConsole() {
                 </button>
               </form>
 
-              <div className="mt-4">
+              <div ref={pairBannerRef} className="mt-4">
                 <PairingCodeBanner
                   activePair={activePair}
-                  onDismiss={() => setActivePair(null)}
+                  onDismiss={() => {
+                    setActivePair(null);
+                    setNotice((current) => current?.pair ? null : current);
+                  }}
                 />
               </div>
 
@@ -980,12 +1031,12 @@ export function AdminConsole() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <button type="button" disabled={busy} onClick={() => handleSyncNumber(u.number)} aria-label={`Retry sync for +${u.number}`} className="inline-flex min-h-9 items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 disabled:opacity-40"><RefreshCw className="h-3.5 w-3.5 text-teal-600" /> Sync</button>
+                          <button type="button" disabled={busy} onClick={() => handleSyncNumber(u.number)} aria-label={`Retry sync for +${u.number}`} className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 disabled:opacity-40"><RefreshCw className="h-3.5 w-3.5 text-teal-600" /> Sync</button>
                           <button
                             type="button"
                             disabled={!u.enabled || busy || accountState === 'connected' || accountState === 'connecting'}
                             onClick={() => handlePairNumber(u.number)}
-                            className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 disabled:opacity-40"
+                            className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800 disabled:opacity-40"
                           >
                             <Link2 className="h-3.5 w-3.5 text-teal-600" />
                             Get code
@@ -995,7 +1046,7 @@ export function AdminConsole() {
                             type="button"
                             disabled={busy}
                             onClick={() => handleToggleNumber(u.number, !u.enabled)}
-                            className={`rounded-xl px-2.5 py-1.5 text-xs font-semibold transition ${
+                            className={`min-h-11 rounded-xl px-2.5 py-1.5 text-xs font-semibold transition ${
                               u.enabled
                                 ? 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
                                 : 'bg-teal-600 text-white hover:bg-teal-700'
@@ -1009,14 +1060,14 @@ export function AdminConsole() {
                               <button
                                 type="button"
                                 onClick={() => handleDeleteNumber(u.number)}
-                                className="rounded-xl bg-rose-600 px-2.5 py-1.5 text-xs font-semibold text-white"
+                                className="min-h-11 rounded-xl bg-rose-600 px-2.5 py-1.5 text-xs font-semibold text-white"
                               >
                                 Confirm
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setConfirmDeleteNum(null)}
-                                className="rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600"
+                                className="min-h-11 rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600"
                               >
                                 Cancel
                               </button>
@@ -1025,7 +1076,7 @@ export function AdminConsole() {
                             <button
                               type="button"
                               onClick={() => setConfirmDeleteNum(u.number)}
-                              className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-600 hover:border-rose-200 hover:bg-rose-50"
+                              className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-600 hover:border-rose-200 hover:bg-rose-50"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                               Remove
@@ -1037,11 +1088,9 @@ export function AdminConsole() {
                   })
                 )}
               </div>
-            </section>
+            </section>}
 
-            {/* Bot Sync & Hydrodactyl Credentials Rack */}
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+            {whatsAppPage === 'sync' && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="flex items-center gap-2 text-sm font-bold text-slate-900">
                     <Server className="h-4 w-4 text-teal-600" />
@@ -1128,9 +1177,9 @@ export function AdminConsole() {
                     {savingBot ? 'Saving…' : 'Save Sync'}
                   </button>
                 </form>
-              </section>
+              </section>}
 
-              <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+              {whatsAppPage === 'hosting' && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="flex items-center gap-2 text-sm font-bold text-slate-900">
                     <Power className="h-4 w-4 text-teal-600" />
@@ -1223,12 +1272,11 @@ export function AdminConsole() {
                     {savingPanel ? 'Verifying…' : 'Verify & Save Panel'}
                   </button>
                 </form>
-              </section>
-            </div>
+              </section>}
           </div>
         )}
 
-        {/* TAB 2: MEMBERS ACCESS CONTROL */}
+        {/* Members access control */}
         {tab === 'members' && (
           <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1255,7 +1303,7 @@ export function AdminConsole() {
               </div>
             </div>
 
-            <p className="mt-2 text-xs leading-5 text-slate-500">{allowedMembersCount} allowed of {data.members.length} accounts. Scribd is private unless you grant access; members with access can view the shared queue and files but cannot control downloads.</p>
+            <p className="mt-2 text-xs leading-5 text-slate-500">{allowedMembersCount} of {data.members.length} allowed. Scribd is private until granted; members cannot control downloads.</p>
             <form
               onSubmit={handleAddMember}
               className="mt-3.5 grid grid-cols-1 gap-2.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-[1.2fr_1fr_auto] sm:items-end"

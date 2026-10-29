@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ScribdDesk } from '../components/scribd-desk';
 import type { ScribdHit } from '../lib/scribd-types';
@@ -200,9 +200,13 @@ describe('Scribd desk', () => {
       ],
     }));
     render(<ScribdDesk />);
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Scribd pages' })).getByRole('button', { name: 'Queue' }));
     expect((await screen.findByRole('progressbar', { name: 'Progress for Working book' })).getAttribute('aria-valuenow')).toBe('50');
     expect(screen.getByText('5 / 10 pages reported')).toBeTruthy();
     expect(screen.getByText('The browser stopped.')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'local.pdf' })).toBeNull();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Scribd pages' })).getByRole('button', { name: 'Files' }));
+    expect(screen.queryByRole('progressbar', { name: 'Progress for Working book' })).toBeNull();
     expect(screen.getByRole('link', { name: 'local.pdf' }).getAttribute('href')).toBe('/api/scribd/file?name=local.pdf');
     const drimeLinks = screen.getAllByRole('link', { name: 'Open Drime' });
     expect(drimeLinks[0].getAttribute('href')).toBe('https://dri.me/shared');
@@ -217,6 +221,7 @@ describe('Scribd desk', () => {
       items: [{ id: '1', title: 'Working book', status: 'running', done: 1, total: 10, detail: '', error: '', pdf: '', size: 0, started: 0, offloaded: false, recovered: false, drime: null }],
     }));
     render(<ScribdDesk />);
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Scribd pages' })).getByRole('button', { name: 'Queue' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel downloads' }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/scribd/reset')).toBe(true));
     fireEvent.click(screen.getByRole('button', { name: 'Clear queue' }));
@@ -291,6 +296,70 @@ describe('Scribd desk', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Sort loaded results' }), { target: { value: 'title' } });
     const boxes = screen.getAllByRole('checkbox');
     expect(boxes[0].getAttribute('aria-label')).toBe('Select Book 1');
+  });
+
+
+  it('keeps search results, collapsed state and selection when switching between Scribd pages', async () => {
+    mockApi(() => ({ hits: [book(1), book(2)], page: 1, max_page: 1, total: 2 }));
+    render(<ScribdDesk />);
+    submitSearch('algebra');
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Book 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide results' }));
+    const pages = screen.getByRole('navigation', { name: 'Scribd pages' });
+    fireEvent.click(within(pages).getByRole('button', { name: 'Queue' }));
+    expect(screen.getByRole('heading', { name: 'Download queue' })).toBeTruthy();
+    expect(screen.queryByRole('searchbox', { name: 'Search Scribd' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Submit selected books' })).toBeNull();
+    fireEvent.click(within(pages).getByRole('button', { name: 'Files' }));
+    expect(screen.getByRole('heading', { name: /Finished PDFs/ })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Download queue' })).toBeNull();
+    fireEvent.click(within(pages).getByRole('button', { name: 'Search' }));
+    expect((screen.getByRole('searchbox', { name: 'Search Scribd' }) as HTMLInputElement).value).toBe('algebra');
+    expect(screen.getByRole('button', { name: 'Download selected (1)' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Show results' }));
+    expect((screen.getByRole('checkbox', { name: 'Select Book 1' }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('stops status polling while the desk is hidden and refreshes on return', async () => {
+    const fetchMock = mockApi(() => ({ hits: [] }));
+    const clear = vi.spyOn(window, 'clearInterval');
+    const { rerender } = render(<ScribdDesk active={false} />);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/auth/me')).toBe(true));
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/scribd/status')).toHaveLength(0);
+    rerender(<ScribdDesk active />);
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/scribd/status')).toHaveLength(1));
+    rerender(<ScribdDesk active={false} />);
+    expect(clear).toHaveBeenCalled();
+    rerender(<ScribdDesk active />);
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/scribd/status')).toHaveLength(2));
+  });
+
+  it('never exposes queue controls to an authorized member', async () => {
+    mockApi(() => ({ hits: [book(1)] }), undefined, () => ({
+      panelOnline: true, state: 'running', active: 1, finished: 0, failed: 0, cancelled: false,
+      items: [{ id: '1', title: 'Working book', status: 'running', done: 1, total: 10, detail: '', error: '', pdf: '', size: 0, started: 0, offloaded: false, recovered: false, drime: null }],
+    }), false);
+    render(<ScribdDesk />);
+    await screen.findByText('Only administrators can start or cancel downloads.');
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Scribd pages' })).getByRole('button', { name: 'Queue' }));
+    expect(await screen.findByText('Working book')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cancel downloads' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Clear queue' })).toBeNull();
+  });
+
+
+  it('does not cancel or clear the queue when confirmation is declined', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const fetchMock = mockApi(() => ({ hits: [] }), undefined, () => ({
+      panelOnline: true, state: 'running', active: 1, finished: 0, failed: 0, cancelled: false,
+      items: [{ id: '1', title: 'Working book', status: 'running', done: 1, total: 10, detail: '', error: '', pdf: '', size: 0, started: 0, offloaded: false, recovered: false, drime: null }],
+    }));
+    render(<ScribdDesk />);
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Scribd pages' })).getByRole('button', { name: 'Queue' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel downloads' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear queue' }));
+    expect(window.confirm).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.some(([url]) => ['/api/scribd/reset', '/api/scribd/clear'].includes(String(url)))).toBe(false);
   });
 
 });

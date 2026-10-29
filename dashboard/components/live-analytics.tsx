@@ -97,28 +97,28 @@ export function LiveAnalytics({
             )}
             <span
               className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
-                connected
+                reachable && connected === true
                   ? 'bg-emerald-400'
-                  : reachable
+                  : reachable && connected === false
                     ? 'bg-amber-400'
-                    : 'bg-rose-500'
+                    : 'bg-slate-400'
               }`}
             />
           </span>
           <Activity className="h-3.5 w-3.5 shrink-0 text-teal-600" />
-          <span className="truncate font-mono text-[11px] font-bold uppercase tracking-wider">
-            Live Analytics
+          <span className="text-xs font-bold">
+            Analytics
           </span>
           <span
-            className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${
-              connected
+            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+              reachable && connected === true
                 ? 'bg-emerald-100 text-emerald-800'
-                : reachable
+                : reachable && connected === false
                   ? 'bg-amber-100 text-amber-800'
                   : 'bg-slate-200 text-slate-600'
             }`}
           >
-            {reachable && connected === true ? 'WHATSAPP CONNECTED' : reachable && connected === false ? 'WHATSAPP DISCONNECTED' : 'NO CURRENT STATUS'}
+            {reachable && connected === true ? 'WhatsApp connected' : reachable && connected === false ? 'WhatsApp disconnected' : 'No current status'}
           </span>
         </div>
 
@@ -145,7 +145,7 @@ export function LiveAnalytics({
 
         <div className="min-w-0 p-3.5 sm:p-4">
           <div className="flex items-center justify-between gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            <span className="truncate">Successful Downloads</span>
+            <span className="truncate" title="Successful downloads">Downloads OK</span>
             <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
           </div>
           <div className="mt-1 flex items-baseline gap-1.5">
