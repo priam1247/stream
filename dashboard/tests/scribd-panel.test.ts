@@ -36,7 +36,6 @@ function req(path: string, body?: unknown): NextRequest {
 beforeEach(() => {
   vi.stubEnv('SCRIBD_WEB_URL', 'https://saved.example/service?old=1#fragment');
   vi.stubEnv('SCRIBD_WEB_TOKEN', 'old-secret');
-  vi.stubEnv('SCRIBD_ALLOW_INSECURE_HTTP', undefined);
   mocks.getConfig.mockReset().mockResolvedValue({ panelUrl: 'https://saved.example/service?old=1#fragment', panelKey: 'old-secret', updatedAt: 123 });
   mocks.saveConfig.mockReset().mockResolvedValue({ updatedAt: 456 });
   mocks.isAdmin = true;
@@ -88,35 +87,24 @@ describe('Scribd service configuration', () => {
     expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get('t')).toBe('old-secret');
   });
 
-  it('never sends a token to the public HTTP server, while allowing a token-free health check', async () => {
+  it('connects to the selected HTTP server without an extra switch', async () => {
     vi.stubEnv('SCRIBD_WEB_URL', undefined);
     vi.stubEnv('SCRIBD_WEB_TOKEN', 'private-test-token');
-    const fetchMock = vi.fn().mockResolvedValue(new Response('ok'));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
+      new URL(String(input)).pathname === '/health' ? new Response('ok') : jsonResponse({ items: [] }));
     vi.stubGlobal('fetch', fetchMock);
 
     expect(await getScribdHealth()).toEqual({ ok: true, data: { ok: true } });
     expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('t')).toBe(false);
-    expect(await getScribdStatus()).toEqual({ ok: false, status: 503, error: expect.stringContaining('needs HTTPS') });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('allows the selected HTTP origin only after an explicit opt-in', async () => {
-    vi.stubEnv('SCRIBD_WEB_URL', undefined);
-    vi.stubEnv('SCRIBD_WEB_TOKEN', 'private-test-token');
-    vi.stubEnv('SCRIBD_ALLOW_INSECURE_HTTP', 'true');
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
-    vi.stubGlobal('fetch', fetchMock);
-
     expect(await getScribdStatus()).toMatchObject({ ok: true, data: { state: 'idle' } });
-    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    const url = new URL(String(fetchMock.mock.calls[1][0]));
     expect(url.origin).toBe(DEFAULT_SCRIBD_WEB_URL);
     expect(url.pathname).toBe('/api/job');
     expect(url.searchParams.get('t')).toBe('private-test-token');
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: 'error' });
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ redirect: 'error' });
   });
 
-  it('does not send the token to other HTTP origins even when opt-in is enabled', async () => {
-    vi.stubEnv('SCRIBD_ALLOW_INSECURE_HTTP', 'true');
+  it('does not send the token to any other public HTTP origin', async () => {
     vi.stubEnv('SCRIBD_WEB_TOKEN', 'private-test-token');
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -126,18 +114,6 @@ describe('Scribd service configuration', () => {
       'http://toby.hidencloud.com.evil.example:24702',
     ]) {
       vi.stubEnv('SCRIBD_WEB_URL', other);
-      expect(await getScribdStatus()).toMatchObject({ ok: false, status: 503 });
-    }
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('requires the exact opt-in value before sending a token over HTTP', async () => {
-    vi.stubEnv('SCRIBD_WEB_URL', undefined);
-    vi.stubEnv('SCRIBD_WEB_TOKEN', 'private-test-token');
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-    for (const value of ['false', '1', 'yes', 'TRUE', '']) {
-      vi.stubEnv('SCRIBD_ALLOW_INSECURE_HTTP', value);
       expect(await getScribdStatus()).toMatchObject({ ok: false, status: 503 });
     }
     expect(fetchMock).not.toHaveBeenCalled();

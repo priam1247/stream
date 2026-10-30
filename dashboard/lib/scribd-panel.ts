@@ -81,14 +81,13 @@ async function panelRequest(path: string, options: RequestOptions = {}): Promise
   }
 
   const url = new URL(`${config.baseUrl}${path}`);
-  // The service uses a bearer token in its query string. Public HTTP exposes it
-  // and the document traffic. Allow the owner's explicit temporary opt-in only
-  // for the selected origin; an old URL override must never receive the token.
+  // The selected server uses public HTTP, which exposes its token and traffic.
+  // Keep this exception restricted to that origin; never forward the token to
+  // a different HTTP host due to a stale configuration override.
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  const explicitlyAllowed = process.env.SCRIBD_ALLOW_INSECURE_HTTP === 'true' &&
-    url.origin === TEMPORARY_INSECURE_SCRIBD_ORIGIN;
-  if (options.authenticated !== false && config.key && url.protocol !== 'https:' && !loopback && !explicitlyAllowed) {
-    return { ok: false, status: 503, error: 'Scribd needs HTTPS or an explicit HTTP setting for the selected server. Check SCRIBD_WEB_URL.' };
+  const selectedServer = url.origin === TEMPORARY_INSECURE_SCRIBD_ORIGIN;
+  if (options.authenticated !== false && config.key && url.protocol !== 'https:' && !loopback && !selectedServer) {
+    return { ok: false, status: 503, error: 'Scribd needs HTTPS for this server. Check SCRIBD_WEB_URL.' };
   }
   for (const [name, value] of Object.entries(options.query || {})) url.searchParams.set(name, value);
   if (options.authenticated !== false && config.key) url.searchParams.set('t', config.key);
