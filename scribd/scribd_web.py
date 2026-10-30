@@ -535,6 +535,8 @@ def _run_item(item: dict, engine: str, tabs: int, scale: float) -> None:
         str(scale),
         "--progress",
     ]
+    if engine == "live":
+        cmd.append("--allow-live")
     if item["range"]:
         cmd += ["--pages", item["range"]]
     if CACHE_DIR is not None:
@@ -764,8 +766,8 @@ PAGE = r"""<!doctype html>
 
   <div class="opts">
     <select id="engine" title="capture engine">
-      <option value="fragment" selected>fragment (fast, no paywall overlay)</option>
-      <option value="auto">auto (live first, falls back)</option>
+      <option value="fragment">fragment (fast, no paywall overlay)</option>
+      <option value="auto" selected>auto (live reader only, no fallback)</option>
       <option value="live">live (drive the reader)</option>
     </select>
     <select id="tabs" title="parallel browsers">
@@ -1168,9 +1170,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/download":
             docs = body.get("docs") or []
             pages = str(body.get("pages") or "").strip()
-            # one rendering path only: the fragment rebuild. Anything the browser
-            # sends that is not "live" (which now needs --allow-live) is fragment.
-            engine = body.get("engine") or "fragment"
+            # Auto uses only the live reader; fragments are never selected
+            # implicitly. Explicit live is passed with --allow-live.
+            engine = body.get("engine") or "auto"
             if engine not in ("fragment", "live", "auto"):
                 engine = "fragment"
             tabs = max(1, min(int(body.get("tabs") or 1), 4))

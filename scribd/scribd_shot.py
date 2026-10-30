@@ -70,7 +70,7 @@ DEFAULT_UA = (
 )
 # Bump this whenever the capture logic changes. It is printed in the banner, so
 # a panel running an older scribd_all.py is obvious at a glance.
-BUILD = "2026-10-30c"  # fragment-only rendering
+BUILD = "2026-10-30e"  # live-reader auto rendering; no renderer fallback
 SCRIBD = "https://www.scribd.com"
 
 # Elements that Scribd (or its ad/consent vendors) paint on top of the page box.
@@ -2003,18 +2003,6 @@ def convert(
         if not manifest.get("pages"):
             log.warn("could not read the page manifest - caching disabled for this run")
             cache = None
-    elif engine == "auto":
-        manifest = quick_manifest(target)
-
-    total = len(manifest.get("pages", {}))
-    if engine == "auto" and total > 800:
-        log(
-            f"document has {total} pages - Scribd's own reader runs out of memory on "
-            "documents this large, so the pages are rebuilt and screenshotted "
-            "directly (--engine fragment)"
-        )
-        engine = "fragment"
-
     # finished-PDF cache: a re-run of the same job costs one manifest request
     pdf_key = None
     if cache is not None and manifest.get("pages"):
@@ -2027,7 +2015,9 @@ def convert(
             )
             for n in numbers
         ]
-        pdf_key = cache.pdf_key(keys, pdf_engine)
+        # Include the build and selected capture route so an older clipped PDF
+        # from the cache cannot mask the updated renderer policy.
+        pdf_key = cache.pdf_key(keys, f"{pdf_engine}|{BUILD}|{engine}")
         hit = cache.get_pdf(pdf_key)
         if hit:
             title = manifest.get("title") or f"scribd-{manifest['doc_id']}"
@@ -2037,69 +2027,41 @@ def convert(
             log(f"  cache hit - PDF reused ({dest.name}, {size_kb:,.0f} KB)")
             return dest
 
-    # ONE engine does the rendering: the fragment rebuild. It fetches each page's
-    # own markup and the document's CSS, re-assembles the pages itself and
-    # screenshots those boxes. That is why it is clean on documents where the
-    # reader is not: if the reader's stylesheet does not arrive, its JS still
-    # paints the text at native size and every page comes out huge and clipped.
-    # Measured on 435440888: fragment 5 s, perfect; live 120-245 s, then no page
-    # containers at all.
-    #
-    # "live" is kept only for the case where a document's fragments are gated but
-    # its reader is not - it must be asked for explicitly, twice.
+    # Auto uses the live reader only. Never switch renderers implicitly: doing
+    # so can change page geometry and reintroduce clipped or incorrectly sized
+    # PDF pages. Fragment reconstruction remains an explicit user selection.
     if engine == "live" and not allow_live:
-        log.warn(
-            "--engine live renders Scribd's reader directly; when its stylesheet "
-            "fails to load, pages come out unscaled and clipped. The fragment "
-            "engine is the reliable path - add --allow-live if you really want it."
-        )
-        engine = "fragment"
+        raise ValueError("--engine live requires --allow-live")
 
     cap: Capture | None = None
-    if engine in ("auto", "fragment"):
-        try:
-            cap = capture_fragments(
-                target,
-                outdir,
-                log,
-                cookies_path=cookies_path,
-                cache=cache,
-                manifest=manifest,
-                tabs=tabs,
-                **{k: common[k] for k in ("scale", "fmt", "quality", "pages")},
-            )
-        except (RendererWedged, RuntimeError, *_browser_errors()) as exc:
-            if engine == "fragment":
-                raise
-            log.warn(
-                f"rebuilding the pages failed ({exc}) - falling back to Scribd's "
-                "reader view, which is slower and less reliable"
-            )
-            cap = None
+    if engine in ("auto", "live"):
+        cap = capture_document(
+            target,
+            outdir,
+            log,
+            cookies=cookies,
+            timeout_ms=timeout_ms,
+            settle_ms=settle_ms,
+            net_log_dir=net_log_dir,
+            **common,
+        )
 
     if cap is None:
-        try:
-            cap = capture_document(
-                target,
-                outdir,
-                log,
-                cookies=cookies,
-                timeout_ms=timeout_ms,
-                settle_ms=settle_ms,
-                net_log_dir=net_log_dir,
-                **common,
-            )
-        except (RendererWedged, RuntimeError, *_browser_errors()) as exc:
-            raise RuntimeError(
-                f"Scribd's reader could not render this document either: {exc}\n"
-                "  the fragment engine ran first and failed too - read the "
-                "warnings above"
-            ) from None
+        cap = capture_fragments(
+            target,
+            outdir,
+            log,
+            cookies_path=cookies_path,
+            cache=cache,
+            manifest=manifest,
+            tabs=tabs,
+            **{k: common[k] for k in ("scale", "fmt", "quality", "pages")},
+        )
 
-    if cap.paywall and engine in ("auto", "live"):
+    if cap.paywall:
         log.warn(
-            "some pages may be blurred - rerun with --engine fragment (or auto) to "
-            "take the page content directly instead of the reader's overlay"
+            "the live reader shows a paywall; no alternate renderer was tried. "
+            "Use Scribd login cookies or select --engine fragment explicitly."
         )
 
     pdf = build_pdf(cap, outdir, log, pdf_engine=pdf_engine)
@@ -2216,9 +2178,9 @@ def main(argv: list[str] | None = None) -> int:
         "--engine",
         choices=("auto", "live", "fragment"),
         default="auto",
-        help="fragment = rebuild the pages from their markup and screenshot "
-        "those (deterministic, fast); live = screenshot the real reader page; "
-        "auto = fragment first, reader as fallback (default)",
+        help="auto = use the live reader only, with no renderer fallback (default); "
+        "fragment = rebuild and screenshot page markup; live = force the reader "
+        "(requires --allow-live)",
     )
     ap.add_argument(
         "--cache",
@@ -2334,7 +2296,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    logfmt.info("build", f"{BUILD} (fragment rendering)")
+    logfmt.info("build", f"{BUILD} (live-reader auto, no renderer fallback)")
     logfmt.info("output", str(outdir.resolve()))
     _browser_line = chromium_launch.describe().replace("chromium: ", "")
     logfmt.info("browser", _browser_line.splitlines()[0])

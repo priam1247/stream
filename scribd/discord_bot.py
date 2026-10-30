@@ -235,9 +235,9 @@ class ScribdBot:
         @discord.app_commands.describe(
             doc="document id or scribd url",
             pages="optional range, e.g. 1-20",
-            engine="fragment (default) or live",
+            engine="auto (live reader only) or fragment",
         )
-        async def pdf(interaction, doc: str, pages: str = "", engine: str = "fragment"):
+        async def pdf(interaction, doc: str, pages: str = "", engine: str = "auto"):
             await self._cmd_pdf(interaction, doc, pages, engine)
 
         @tree.command(name="status", description="is the converter healthy?")
