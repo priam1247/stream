@@ -1,5 +1,5 @@
 /**
- * Server-only adapter for the existing `working scribd/scribd_web.py` service.
+ * Server-only adapter for the existing `scribd/scribd_web.py` service.
  * The browser calls dashboard routes; the web-service token stays server-side.
  */
 import { normalizeScribdHit, safeScribdThumbnail, scribdDocumentId } from './scribd-search';
@@ -81,6 +81,13 @@ async function panelRequest(path: string, options: RequestOptions = {}): Promise
   }
 
   const url = new URL(`${config.baseUrl}${path}`);
+  // The service uses a bearer token in its query string. Never expose that
+  // credential over public plaintext HTTP; loopback remains useful for local
+  // development and contract tests. Unauthenticated health checks stay safe.
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (options.authenticated !== false && config.key && url.protocol !== 'https:' && !loopback) {
+    return { ok: false, status: 503, error: 'Scribd needs HTTPS before its token can be sent. Configure SCRIBD_WEB_URL.' };
+  }
   for (const [name, value] of Object.entries(options.query || {})) url.searchParams.set(name, value);
   if (options.authenticated !== false && config.key) url.searchParams.set('t', config.key);
   const headers: Record<string, string> = { Accept: options.accept || 'application/json' };

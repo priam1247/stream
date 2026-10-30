@@ -116,14 +116,14 @@ npm test
 npm run build
 ```
 
-The Scribd contract test requires Python 3 and the `working scribd` directory
+The Scribd contract test requires Python 3 and the `scribd` directory
 from this repository. It runs the unmodified web handler against temporary
 state, with search, covers, and conversion stubbed; it does not contact Scribd
 or Drime.
 
 ## Scribd Library tab
 
-The dashboard integrates with the **existing** `../working scribd/scribd_web.py`
+The dashboard integrates with the **existing** `../scribd/scribd_web.py`
 service. Only the dashboard adapter changes; no server modification is required.
 The browser talks to the dashboard's `/api/scribd/*` routes, and the dashboard
 calls the web service server-to-server. The web service token is not sent to the
@@ -131,13 +131,15 @@ browser.
 
 ### Server address and optional token
 
-The dashboard defaults to the current panel at `http://195.123.189.181:25803`.
-Older Scribd server documentation may still refer to the retired panel address.
-If the web service is running at the current address **without a token**, neither
-`SCRIBD_WEB_URL` nor `SCRIBD_WEB_TOKEN` needs to be set. The
-address is only a destination: deploying the dashboard does not start the Python
-service. Its host must run `scribd_web.py` and accept connections from the dashboard.
-The live service's availability has not been verified by this repository.
+The dashboard defaults to the Scribd server at `http://toby.hidencloud.com:24702`.
+That address is plain HTTP: it can be used for a token-free health check, but the
+dashboard refuses to send a configured token over public HTTP. Set up an HTTPS
+reverse proxy for the service, then configure `SCRIBD_WEB_URL` to the resulting
+HTTPS address and `SCRIBD_WEB_TOKEN` to the server's private token. An existing
+`SCRIBD_WEB_URL` overrides the built-in address. The address is only a destination:
+deploying the dashboard does not start `scribd_web.py`. Its host must run the
+service and accept connections from the dashboard. The live service's availability
+has not been verified by this repository.
 
 If the service moves, set the optional server-side `SCRIBD_WEB_URL` in the dashboard
 deployment (for example, Vercel's environment settings) and redeploy. An existing
@@ -148,19 +150,19 @@ the `0.0.0.0` bind address printed by the server. The public `/health` endpoint
 should return `ok`; `/api/job` should return a job list, or HTTP 401 if a token is
 required.
 
-`SCRIBD_WEB_TOKEN` is needed only when the running service has a token. It is the
-value configured for that server as `--token` or `WEB_TOKEN`, not a new dashboard
-credential. With `--token auto`, the server keeps it in its private `.webtoken`
-file and prints it in the startup URL after `?t=`. Copy that value yourself into
-the dashboard deployment's secret environment settings; do not put it in source
-code, a `NEXT_PUBLIC_` variable, or a message. When starting `scribd_web.py`
-directly, pass `--token` or export `WEB_TOKEN` before launching it: the existing
-script reads those options before loading its `.env` file.
+`SCRIBD_WEB_TOKEN` is the same token configured on the running service via
+`--token` or `WEB_TOKEN`. With the default `auto` setting, the service keeps it
+in its private `.webtoken` file and prints it in the startup URL after `?t=`.
+Copy that value yourself into the dashboard deployment's secret environment
+settings; do not put it in source code, a `NEXT_PUBLIC_` variable, or a message.
+The command-line `--token` takes priority over `WEB_TOKEN` from the process
+environment or the service's `.env`.
 
 If the server has no token, anyone who can reach its port can use it directly.
-Protect it before public exposure, and use HTTPS or a trusted private network:
-the service sends tokens in a query string, which plain HTTP does not encrypt and
-which upstream access logs may record.
+Protect it before public exposure. The service sends tokens in a query string,
+which upstream access logs may record; configure the HTTPS proxy not to log them.
+The dashboard permits token-bearing HTTP only for loopback development addresses
+(`localhost`, `127.0.0.1`, or `::1`).
 
 Legacy saved panel addresses/keys and `SCRIBD_PANEL_URL` / `SCRIBD_PANEL_KEY` no
 longer change this connection. The old admin configuration endpoint reports the
