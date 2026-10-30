@@ -4,7 +4,7 @@ This repository contains three separate projects:
 
 - **[WhatsApp bot](./Whatsapp%20bot/README.md)** — commands, media engine, configuration, and bot startup files are all in `Whatsapp bot/`.
 - **[Control Room dashboard](./dashboard/README.md)** — the standalone Next.js website.
-- **[Scribd service](./working%20scribd/README.md)** — the separate Python search and download service.
+- **[Scribd service](./scribd/README.md)** — the separate Python search and download service.
 
 ## Starting the WhatsApp bot
 
