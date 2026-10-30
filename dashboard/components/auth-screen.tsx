@@ -11,10 +11,10 @@ import {
   Lock,
   Mail,
   RefreshCw,
-  Server,
   User as UserIcon,
 } from 'lucide-react';
 import { AuthUser } from '@/lib/types';
+import { ZafarRobot } from './zafar-robot';
 
 type AuthStep = 'login' | 'register' | 'verify' | 'forgot' | 'reset';
 
@@ -30,6 +30,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const [newPassword, setNewPassword] = useState('');
   const [code, setCode] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [resending, setResending] = useState(false);
@@ -37,6 +38,22 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [devCodeHint, setDevCodeHint] = useState<string | null>(null);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    let fullHeight = viewport.height;
+    const update = () => {
+      const focus = document.activeElement;
+      const editing = focus instanceof HTMLInputElement || focus instanceof HTMLTextAreaElement;
+      if (!editing) fullHeight = Math.max(fullHeight, viewport.height);
+      setKeyboardOpen(editing && viewport.height < fullHeight * 0.78);
+    };
+    viewport.addEventListener('resize', update);
+    document.addEventListener('focusin', update);
+    document.addEventListener('focusout', update);
+    return () => { viewport.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); };
+  }, []);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -98,6 +115,11 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Registration failed.');
+      if (data.requiresVerification === false) {
+        setStep('login');
+        setInfo(data.message || 'Account created. Please sign in.');
+        return;
+      }
       setStep('verify');
       setCooldown(45);
       setInfo(data.message || `Code sent to ${email.trim()}.`);
@@ -216,25 +238,20 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   return (
     <div className="bg-portal-canvas flex min-h-screen w-full flex-col justify-center overflow-x-hidden px-3.5 py-6 sm:px-6">
       <div className="mx-auto w-full max-w-[400px]">
-        <div className="mb-4 flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-600 font-mono text-sm font-extrabold text-white shadow-sm">
-              <Server className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="truncate text-sm font-bold text-slate-900">
-                Control Room
-              </div>
-              <div className="font-mono text-[11px] text-slate-500">
-                Console Access
-              </div>
-            </div>
+        <div className="mb-4 flex items-center gap-2.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-700 text-sm font-black text-white">z</div>
+          <div>
+            <div className="text-[15px] font-extrabold tracking-tight text-slate-900">zAfAr</div>
+            <div className="text-[11px] text-slate-500">Your WhatsApp companion</div>
           </div>
-
-          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 font-mono text-[11px] font-semibold text-slate-600 shadow-sm">
-            <Server className="h-3 w-3 text-teal-600" />
-            v2.2
-          </span>
+        </div>
+        <div className="mb-4 flex items-center gap-2.5">
+          <ZafarRobot compact={keyboardOpen} />
+          <div aria-live="polite" className="relative rounded-2xl rounded-bl-md border border-teal-100 bg-white px-4 py-3 text-xs leading-relaxed text-slate-700 shadow-sm">
+            {step === 'register'
+              ? 'Let’s get started! Create your account to link your number with the zAfAr WhatsApp bot.'
+              : 'Hi, welcome to zAfAr! Sign in or create an account to link your number with the zAfAr WhatsApp bot.'}
+          </div>
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-lg sm:p-6">
@@ -243,7 +260,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               <button
                 type="button"
                 onClick={() => switchStep('login')}
-                className={`rounded-lg py-2 text-xs font-semibold transition ${
+                className={`min-h-[44px] rounded-lg py-2 text-xs font-semibold transition ${
                   step === 'login'
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900'
@@ -254,7 +271,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               <button
                 type="button"
                 onClick={() => switchStep('register')}
-                className={`rounded-lg py-2 text-xs font-semibold transition ${
+                className={`min-h-[44px] rounded-lg py-2 text-xs font-semibold transition ${
                   step === 'register'
                     ? 'bg-white text-slate-900 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900'
@@ -269,7 +286,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
             <button
               type="button"
               onClick={() => switchStep('login')}
-              className="mb-4 inline-flex items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-900"
+              className="mb-4 inline-flex min-h-[44px] items-center gap-1.5 text-xs font-medium text-slate-500 transition hover:text-slate-900"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
               Back
@@ -329,7 +346,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="you@gmail.com"
-                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3 text-base text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
                   />
                 </div>
               </div>
@@ -345,7 +362,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                   <button
                     type="button"
                     onClick={() => switchStep('forgot')}
-                    className="text-xs font-semibold text-teal-700 hover:underline"
+                    className="min-h-[44px] text-xs font-semibold text-teal-700 hover:underline"
                   >
                     Forgot?
                   </button>
@@ -360,13 +377,13 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-9 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-11 text-base text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword((s) => !s)}
                     aria-label={showPassword ? 'Hide password' : 'Show password'}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                    className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center text-slate-400 hover:text-slate-700"
                   >
                     {showPassword ? (
                       <EyeOff className="h-4 w-4" />
@@ -380,7 +397,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               <button
                 type="submit"
                 disabled={submitting}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-60"
+                className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-60"
               >
                 {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                 {submitting ? 'Signing in…' : 'Sign in'}
@@ -408,7 +425,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Name"
-                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3 text-base text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
                   />
                 </div>
               </div>
@@ -430,7 +447,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="you@gmail.com"
-                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3 text-base text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
                   />
                 </div>
               </div>
@@ -453,13 +470,13 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Min 6 characters"
-                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-9 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-11 text-base text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword((s) => !s)}
                     aria-label={showPassword ? 'Hide password' : 'Show password'}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                    className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center text-slate-400 hover:text-slate-700"
                   >
                     {showPassword ? (
                       <EyeOff className="h-4 w-4" />
@@ -473,7 +490,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               <button
                 type="submit"
                 disabled={submitting}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-60"
+                className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-60"
               >
                 {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                 {submitting ? 'Sending…' : 'Create account'}
@@ -513,7 +530,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               <button
                 type="submit"
                 disabled={submitting || code.length !== 6}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50"
+                className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50"
               >
                 {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                 {submitting ? 'Verifying…' : 'Verify'}
@@ -525,7 +542,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                   type="button"
                   disabled={cooldown > 0 || resending}
                   onClick={handleResend}
-                  className="inline-flex items-center gap-1 font-semibold text-teal-700 hover:underline disabled:opacity-50"
+                  className="inline-flex min-h-[44px] items-center gap-1 font-semibold text-teal-700 hover:underline disabled:opacity-50"
                 >
                   <RefreshCw
                     className={`h-3 w-3 ${resending ? 'animate-spin' : ''}`}
@@ -550,11 +567,12 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                   <input
                     id="forgot-email"
                     type="email"
+                    autoComplete="email"
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="you@gmail.com"
-                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
+                    className="w-full rounded-xl border border-slate-300 bg-white py-2.5 pl-9 pr-3 text-base text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
                   />
                 </div>
               </div>
@@ -562,7 +580,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
               <button
                 type="submit"
                 disabled={submitting}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-60"
+                className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-60"
               >
                 {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                 {submitting ? 'Sending…' : 'Send code'}
@@ -604,20 +622,21 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 </label>
                 <input
                   id="reset-new-pw"
+                  autoComplete="new-password"
                   type={showPassword ? 'text' : 'password'}
                   required
                   minLength={6}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   placeholder="Min 6 characters"
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-base text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={submitting || code.length !== 6}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50"
+                className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50"
               >
                 {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                 {submitting ? 'Updating…' : 'Update password'}

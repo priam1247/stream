@@ -50,6 +50,7 @@ interface DiskStoreSchema {
   memberFeatures: StoredMemberFeatures[];
   activity: ActivityEvent[];
   botCommands: BotCommandRecord[];
+  pairCooldowns: Record<string, number>;
   settings: Record<string, string>;
 }
 
@@ -58,9 +59,9 @@ const DATA_FILE = path.join(DATA_DIR, 'zafar-db.json');
 
 declare global {
   // eslint-disable-next-line no-var
-  var __zafarD1SchemaV4Ready: boolean | undefined;
+  var __zafarD1SchemaV5Ready: boolean | undefined;
   // eslint-disable-next-line no-var
-  var __zafarD1SchemaV4Promise: Promise<boolean> | undefined;
+  var __zafarD1SchemaV5Promise: Promise<boolean> | undefined;
   // eslint-disable-next-line no-var
   var __zafarD1UnreachableInDev: boolean | undefined;
 }
@@ -111,14 +112,14 @@ async function queryD1<T = Record<string, unknown>>(
 async function ensureD1Tables(): Promise<boolean> {
   const cfg = getD1Config();
   if (!cfg || globalThis.__zafarD1UnreachableInDev) return false;
-  if (globalThis.__zafarD1SchemaV4Ready) return true;
-  if (globalThis.__zafarD1SchemaV4Promise) return globalThis.__zafarD1SchemaV4Promise;
+  if (globalThis.__zafarD1SchemaV5Ready) return true;
+  if (globalThis.__zafarD1SchemaV5Promise) return globalThis.__zafarD1SchemaV5Promise;
   const pending = initializeD1Tables();
-  globalThis.__zafarD1SchemaV4Promise = pending;
+  globalThis.__zafarD1SchemaV5Promise = pending;
   try {
     return await pending;
   } finally {
-    if (globalThis.__zafarD1SchemaV4Promise === pending) globalThis.__zafarD1SchemaV4Promise = undefined;
+    if (globalThis.__zafarD1SchemaV5Promise === pending) globalThis.__zafarD1SchemaV5Promise = undefined;
   }
 }
 
@@ -204,8 +205,15 @@ async function initializeD1Tables(): Promise<boolean> {
     )
   `);
 
+  await queryD1(`
+    CREATE TABLE IF NOT EXISTS portal_pair_cooldowns (
+      number TEXT PRIMARY KEY,
+      retry_at INTEGER NOT NULL
+    )
+  `);
+
   if (globalThis.__zafarD1UnreachableInDev) return false;
-  globalThis.__zafarD1SchemaV4Ready = true;
+  globalThis.__zafarD1SchemaV5Ready = true;
   return true;
 }
 
@@ -223,6 +231,7 @@ function readDiskStore(): DiskStoreSchema {
         memberFeatures: Array.isArray(parsed.memberFeatures) ? parsed.memberFeatures : [],
         activity: Array.isArray(parsed.activity) ? parsed.activity : [],
         botCommands: Array.isArray(parsed.botCommands) ? parsed.botCommands : [],
+        pairCooldowns: parsed.pairCooldowns && typeof parsed.pairCooldowns === 'object' ? parsed.pairCooldowns : {},
         settings:
           parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {},
       };
@@ -240,6 +249,7 @@ function readDiskStore(): DiskStoreSchema {
     memberFeatures: [],
     activity: [],
     botCommands: [],
+    pairCooldowns: {},
     settings: {},
   };
 }
@@ -854,6 +864,30 @@ export async function saveStoredWhatsAppUser(
   return store.whatsappUsers;
 }
 
+/** Claim a member number without transferring one concurrently claimed by someone else. */
+export async function saveMemberWhatsAppUser(number: string, label: string, addedBy: string): Promise<boolean> {
+  const owner = addedBy.trim().toLowerCase();
+  const now = new Date().toISOString();
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(
+      `INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at)
+       VALUES (?, ?, 1, ?, ?)
+       ON CONFLICT(number) DO UPDATE SET enabled = 1, label = excluded.label, added_by = excluded.added_by
+       WHERE COALESCE(portal_whatsapp_access.added_by, '') = '' OR lower(portal_whatsapp_access.added_by) = ?
+       RETURNING number`,
+      [number, label, owner, now, owner],
+    );
+    return Boolean(rows?.length);
+  }
+  const store = readDiskStore();
+  const current = store.whatsappUsers.find((user) => user.number === number);
+  if (current?.addedBy && current.addedBy.toLowerCase() !== owner) return false;
+  if (current) Object.assign(current, { enabled: true, label, addedBy: owner });
+  else store.whatsappUsers.unshift({ number, label, enabled: true, addedBy: owner, addedAt: now });
+  writeDiskStore(store);
+  return true;
+}
+
 export async function updateStoredWhatsAppUser(
   number: string,
   patch: { enabled?: boolean; label?: string },
@@ -902,6 +936,72 @@ export async function deleteStoredWhatsAppUser(
   store.whatsappUsers = store.whatsappUsers.filter((u) => u.number !== number);
   writeDiskStore(store);
   return store.whatsappUsers;
+}
+
+/** Three-minute resend protection, keyed by phone and atomic across D1 workers. */
+export async function claimPairCooldown(number: string, now = Date.now()): Promise<{ ok: boolean; retryAt: number }> {
+  const retryAt = now + 180_000;
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(
+      `INSERT INTO portal_pair_cooldowns (number, retry_at) VALUES (?, ?)
+       ON CONFLICT(number) DO UPDATE SET retry_at = excluded.retry_at
+       WHERE portal_pair_cooldowns.retry_at <= ? RETURNING retry_at`,
+      [number, retryAt, now],
+    );
+    if (rows?.length) return { ok: true, retryAt };
+    return { ok: false, retryAt: await getPairCooldown(number) };
+  }
+  const store = readDiskStore();
+  const previous = Number(store.pairCooldowns[number]) || 0;
+  if (previous > now) return { ok: false, retryAt: previous };
+  store.pairCooldowns[number] = retryAt;
+  // Keep the local development store bounded; a new accepted attempt replaces
+  // expired entries without touching a still-active cooldown.
+  for (const [key, value] of Object.entries(store.pairCooldowns)) {
+    if (Number(value) <= now) delete store.pairCooldowns[key];
+  }
+  writeDiskStore(store);
+  return { ok: true, retryAt };
+}
+
+export async function getPairCooldown(number: string): Promise<number> {
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(`SELECT retry_at FROM portal_pair_cooldowns WHERE number = ?`, [number]);
+    return Number(rows?.[0]?.retry_at) || 0;
+  }
+  return Number(readDiskStore().pairCooldowns[number]) || 0;
+}
+
+/** Release only our own attempt when no pairing request was accepted. */
+export async function releasePairCooldown(number: string, retryAt: number): Promise<void> {
+  if (await ensureD1Tables()) {
+    await queryD1(`DELETE FROM portal_pair_cooldowns WHERE number = ? AND retry_at = ?`, [number, retryAt]);
+    return;
+  }
+  const store = readDiskStore();
+  if (Number(store.pairCooldowns[number]) === retryAt) {
+    delete store.pairCooldowns[number];
+    writeDiskStore(store);
+  }
+}
+
+/** Remove only a number still owned by the caller, even after a queued unlink. */
+export async function deleteWhatsAppUserIfOwned(number: string, ownerEmail: string): Promise<boolean> {
+  const owner = ownerEmail.trim().toLowerCase();
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(
+      `DELETE FROM portal_whatsapp_access WHERE number = ? AND lower(added_by) = ? RETURNING number`,
+      [number, owner],
+    );
+    return Boolean(rows?.length);
+  }
+  const store = readDiskStore();
+  const before = store.whatsappUsers.length;
+  store.whatsappUsers = store.whatsappUsers.filter((user) =>
+    !(user.number === number && (user.addedBy || '').toLowerCase() === owner));
+  if (store.whatsappUsers.length === before) return false;
+  writeDiskStore(store);
+  return true;
 }
 
 // ============================================================================
@@ -1062,7 +1162,7 @@ export async function getNextBotPollMs(): Promise<number> {
 
 function canonicalWhitelist(users: ApprovedUser[]) {
   return users
-    .map((u) => ({ number: u.number, label: u.label || '', enabled: Boolean(u.enabled) }))
+    .map((u) => ({ number: u.number, label: u.label || '', enabled: Boolean(u.enabled), addedBy: (u.addedBy || '').toLowerCase() }))
     .sort((a, b) => a.number.localeCompare(b.number));
 }
 
@@ -1165,6 +1265,46 @@ export async function enqueueBotCommand(params: {
 
   await setFastPollWindow(60_000);
   return cmd;
+}
+
+/** Recover an accepted request after a refresh without exposing another member's code. */
+export async function getLatestPairCommand(number: string, requestedBy: string, since: number): Promise<BotCommandRecord | null> {
+  const owner = requestedBy.toLowerCase();
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(
+      `SELECT * FROM portal_bot_commands WHERE type = 'pair' AND lower(requested_by) = ?
+       AND json_extract(payload_json, '$.number') = ? AND created_at >= ?
+       ORDER BY created_at DESC LIMIT 1`, [owner, number, since],
+    );
+    return rows?.length ? mapD1BotCommand(rows[0]) : null;
+  }
+  return readDiskStore().botCommands.filter((cmd) => cmd.type === 'pair' && cmd.payload.number === number &&
+    (cmd.requestedBy || '').toLowerCase() === owner && cmd.createdAt >= since)
+    .sort((a, b) => b.createdAt - a.createdAt)[0] || null;
+}
+
+/** Direct responses also get a short-lived recovery record, never a queue entry. */
+export async function saveCompletedPairResult(params: {
+  number: string; requestedBy: string; createdAt: number; code: string; issuedAt: number; expiresInSeconds: number;
+}): Promise<void> {
+  const result = JSON.stringify({ code: params.code, issuedAt: params.issuedAt,
+    expiresInSeconds: params.expiresInSeconds, _dashboardReceivedAt: Date.now() });
+  const id = `pair_${params.createdAt.toString(36)}_${crypto.randomBytes(6).toString('hex')}`;
+  const expiresAt = params.createdAt + 90_000;
+  if (await ensureD1Tables()) {
+    await queryD1(`DELETE FROM portal_bot_commands WHERE expires_at < ?`, [Date.now() - 300_000]);
+    await queryD1(
+      `INSERT INTO portal_bot_commands (id, type, payload_json, status, result_json, error_text, requested_by, created_at, expires_at)
+       VALUES (?, 'pair', ?, 'completed', ?, NULL, ?, ?, ?)`,
+      [id, JSON.stringify({ number: params.number }), result, params.requestedBy.toLowerCase(), params.createdAt, expiresAt],
+    );
+    return;
+  }
+  const store = readDiskStore();
+  store.botCommands = store.botCommands.filter((c) => c.expiresAt >= Date.now() - 300_000);
+  store.botCommands.push({ id, type: 'pair', payload: { number: params.number }, status: 'completed', result: JSON.parse(result),
+    requestedBy: params.requestedBy.toLowerCase(), createdAt: params.createdAt, expiresAt });
+  writeDiskStore(store);
 }
 
 export async function claimPendingBotCommands(): Promise<BotCommandRecord[]> {

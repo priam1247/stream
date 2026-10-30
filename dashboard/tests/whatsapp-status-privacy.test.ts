@@ -17,7 +17,7 @@ vi.mock('../lib/bot-proxy', () => ({
   getResolvedBotTarget: vi.fn(async () => ({ baseUrl: null, token: '', botEnabledForMembers: true })),
   fetchLiveBotStatus: vi.fn(async () => ({
     connectionMode: 'heartbeat', reachable: state.reachable, connected: state.reachable ? true : null,
-    botNumber: '15550009999', accounts: state.accounts,
+    botNumber: '15550009999', accounts: state.accounts, commandsTotal: 999, downloadsSuccess: 888,
   })),
 }));
 vi.mock('../lib/storage', () => ({
@@ -47,6 +47,8 @@ describe('member WhatsApp status privacy', () => {
     const body = await (await GET(request())).json();
     expect(body.botNumber).toBeNull();
     expect(body.adminEmail).toBe('');
+    expect(body.commandsTotal).toBeNull();
+    expect(body.downloadsSuccess).toBeNull();
     expect(body.numbers.map((n: { number: string }) => n.number)).toEqual(['15550001111']);
     expect(body.accounts).toEqual([{ number: '15550001111', state: 'awaiting_link' }]);
     expect(JSON.stringify(body)).not.toContain('15550009999');

@@ -7,7 +7,7 @@ import {
   syncNumberToLiveBot,
 } from '@/lib/bot-proxy';
 import {
-  deleteStoredWhatsAppUser,
+  deleteWhatsAppUserIfOwned,
   getStoredWhatsAppUser,
   listStoredWhatsAppUsers,
   updateStoredWhatsAppUser,
@@ -82,7 +82,9 @@ export async function DELETE(
     return NextResponse.json({ error: 'Number not found on your account.' }, { status: 404 });
   }
 
-  await deleteStoredWhatsAppUser(cleanNumber);
+  if (!(await deleteWhatsAppUserIfOwned(cleanNumber, session.user.email))) {
+    return NextResponse.json({ error: 'Number no longer belongs to your account.' }, { status: 409 });
+  }
   await removeNumberFromLiveBot(cleanNumber);
   await recordActivity({ category: 'numbers', action: 'Number removed', actor: session.user.email, outcome: 'success', detail: maskedNumber(cleanNumber) });
 

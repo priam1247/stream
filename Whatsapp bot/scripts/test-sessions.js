@@ -44,6 +44,7 @@ function fixture(root, options = {}) {
         ended: false,
         requestPairingCode: async (number) => `CODE-${number.slice(-4)}`,
         end: async () => { sock.ended = true; sock.ev.emit('connection.update', { connection: 'close' }); },
+        logout: async () => { sock.loggedOut = true; sock.ev.emit('connection.update', { connection: 'close', lastDisconnect: { error: { output: { statusCode: 401 } } } }); },
         sendMessage: async () => ({}),
       };
       created.push(sock);
@@ -265,4 +266,48 @@ test('a retry cannot replace a socket whose registration just completed', async 
   assert.equal(sock.ended, false);
   open(sock, '265991111111');
   await waitFor(() => fx.manager.status().accounts.some((a) => a.number === '265991111111' && a.state === 'connected'));
+});
+
+test('unlink logs out only the requested linked generation and preserves the primary credentials', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-unlink-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'creds.json'), JSON.stringify({ registered: true, me: { id: '265990000000:1@s.whatsapp.net' }, marker: 'primary-safe' }));
+  const fx = fixture(root);
+  t.after(() => fx.manager.stop());
+  await fx.manager.start();
+  const primary = fx.created[0];
+  open(primary, '265990000000');
+  const { sock } = await request(fx, '265991111111');
+  open(sock, '265991111111');
+  await waitFor(() => fx.manager.status().accounts.some((a) => a.number === '265991111111' && a.state === 'connected'));
+  const account = fx.manager.status().accounts.find((a) => a.number === '265991111111');
+  assert.match(account.sessionId, /^[a-f0-9]{24}$/);
+  assert.ok(account.linkedAt > 0, 'actual linking date is reported');
+  await assert.rejects(fx.manager.unlinkAccount('265991111111', 'f'.repeat(24)), /session has changed/i);
+  await assert.rejects(fx.manager.unlinkAccount('265990000000', account.sessionId), /session has changed/i);
+  assert.equal(sock.loggedOut, undefined);
+  assert.deepEqual(await fx.manager.unlinkAccount('265991111111', account.sessionId), { number: '265991111111', sessionId: account.sessionId, unlinked: true });
+  assert.equal(sock.loggedOut, true);
+  assert.equal(primary.ended, false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'creds.json'))).marker, 'primary-safe');
+  assert.equal(fx.manager.status().accounts.find((a) => a.number === '265991111111').state, 'logged_out');
+  const replacement = await request(fx, '265991111111');
+  open(replacement.sock, '265991111111');
+  await assert.rejects(fx.manager.unlinkAccount('265991111111', account.sessionId), /session has changed/i);
+  assert.equal(replacement.sock.loggedOut, undefined);
+});
+
+test('a failed WhatsApp logout does not claim unlink success or discard the session', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-unlink-fail-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const fx = fixture(root);
+  t.after(() => fx.manager.stop());
+  await fx.manager.start();
+  const { sock } = await request(fx, '265991111111');
+  open(sock, '265991111111');
+  const account = fx.manager.status().accounts.find((a) => a.number === '265991111111');
+  sock.logout = async () => { throw new Error('socket unavailable'); };
+  await assert.rejects(fx.manager.unlinkAccount(account.number, account.sessionId), /socket unavailable/);
+  assert.equal(fx.manager.status().accounts.find((a) => a.number === '265991111111').state, 'connected');
+  assert.equal(sock.ended, false);
 });

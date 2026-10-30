@@ -9,7 +9,7 @@ const { startDashboardSync } = require('../utils/dashboardSync');
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function fixture(t, firstResponse, requestPairing) {
+function fixture(t, firstResponse, requestPairing, unlinkAccount) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-bridge-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const wlFile = path.join(root, 'whitelist.json');
@@ -21,6 +21,7 @@ function fixture(t, firstResponse, requestPairing) {
     getStatus: () => ({ connected: true, accounts: [{ number: '15550000001', state: 'connected' }] }),
     onWhitelistChanged: () => { notifications++; },
     requestPairing,
+    unlinkAccount,
     fetchImpl: async (_url, init) => {
       bodies.push(JSON.parse(init.body));
       const value = first ? firstResponse : { whitelistChanged: false, commands: [] };
@@ -95,4 +96,27 @@ test('a corrupted local allowlist fails closed without permanently wedging heart
   fs.writeFileSync(fx.wlFile, JSON.stringify({ users: [] }));
   assert.equal((await fx.sync.syncNow()).ok, true);
   assert.equal(fx.bodies.length, 1);
+});
+
+test('queued unlink checks the current member owner and exact session generation', async (t) => {
+  const calls = [];
+  const sessionId = 'a'.repeat(24);
+  const fx = fixture(t, {
+    whitelistChanged: true, whitelistVersion: '1234567890abcdef',
+    users: [{ number: '15550001111', enabled: true, addedBy: 'member@example.com' },
+      { number: '15550002222', enabled: true, addedBy: 'new-owner@example.com' }],
+    commands: [
+      { id: 'ok', type: 'unlink', payload: { number: '15550001111', sessionId, owner: 'member@example.com' }, expiresAt: Date.now() + 60_000 },
+      { id: 'transferred', type: 'unlink', payload: { number: '15550002222', sessionId, owner: 'member@example.com' }, expiresAt: Date.now() + 60_000 },
+      { id: 'invalid', type: 'unlink', payload: { number: '15550001111', sessionId: 'bad', owner: 'member@example.com' } },
+    ],
+  }, async () => ({}), async (number, id) => { calls.push([number, id]); return { number, sessionId: id, unlinked: true }; });
+  await fx.sync.syncNow();
+  await flush();
+  await fx.sync.syncNow();
+  assert.deepEqual(calls, [['15550001111', sessionId]]);
+  const results = fx.bodies[1].completedResults;
+  assert.equal(results.find((r) => r.id === 'ok').ok, true);
+  assert.equal(results.find((r) => r.id === 'transferred').ok, false);
+  assert.equal(results.find((r) => r.id === 'invalid').ok, false);
 });

@@ -10,7 +10,11 @@ export function readAccountStatuses(value: unknown): WhatsAppAccountStatus[] | u
     if (!raw || typeof raw !== 'object') continue;
     const number = String(raw.number || '');
     const state = String(raw.state || '') as WhatsAppAccountState;
-    if (/^\d{7,15}$/.test(number) && STATES.has(state)) accounts.set(number, { number, state });
+    if (/^\d{7,15}$/.test(number) && STATES.has(state)) {
+      const sessionId = typeof raw.sessionId === 'string' && /^[a-f0-9]{24}$/.test(raw.sessionId) ? raw.sessionId : undefined;
+      const linkedAt = typeof raw.linkedAt === 'number' && Number.isSafeInteger(raw.linkedAt) && raw.linkedAt > 0 && raw.linkedAt <= Date.now() + 60_000 ? raw.linkedAt : undefined;
+      accounts.set(number, { number, state, ...(sessionId ? { sessionId } : {}), ...(linkedAt ? { linkedAt } : {}) });
+    }
   }
   return [...accounts.values()];
 }

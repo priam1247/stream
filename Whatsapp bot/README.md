@@ -1,11 +1,11 @@
 # WhatsApp Service
 
-A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper Vault, streaming media & movie/series downloader, 9 GB folder-quota disk guard, and a standalone Next.js 16 Control Room in the sibling `dashboard/` folder. **The bot responds to prefixed commands only — natural-language/AI routing and edited-message re-execution are disabled.**
+A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper Vault, streaming media & movie/series downloader, 9 GB folder-quota disk guard, and a standalone Next.js 16 Control Room in the sibling `dashboard/` folder. **Each linked session responds only to prefixed commands sent by that same WhatsApp account (`fromMe`). Incoming messages, bare links and edited-message re-execution are ignored; there is no command cooldown.**
 
 ## Commands
 
 ```text
-.movie <title> [year] [quality]        Download a movie (480/720/1080/2160) with poll picker
+.movie <title> [year] [quality]        Download a movie (480/720/1080/2160) with title and quality selection
 .series <title> s01e03 [quality]       Download one episode (supports titles like "9-1-1", "Full House")
 .series <title> s01 1-6 [quality]      Download an episode range
 .series <title> s01 full               Season pack (Drime link when oversized)
@@ -20,25 +20,24 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .tiktok <URL>  .x <URL>  .pinterest <URL>  .instagram <URL>  .fb <URL>
 .spotify <Spotify URL or artist - title>
 .sticker (reply to media)              512x512 WebP sticker
-.viewonce (reply to view-once media)   Unwrap view-once photo/video/audio (open to allowed users)
+.viewonce (reply to view-once media)   Unwrap view-once photo/video/audio (from the session owner)
 .menu / .ping
 ```
 
-Interactive title and quality choices use **WhatsApp Polls** (with automatic numbered-reply fallback `1`, `2`, … or `cancel`), scoped strictly to the sender and quoted prompt.
+Interactive title and quality choices use a tap selector or a prefixed numbered reply, such as `.1`, `.2` or `.cancel`. Poll votes and replies without the prefix are ignored.
 
 ## Background link jobs
 
-A bare link (nothing else in the message) from an allowed user in a direct chat is queued and answered with `⚙️ Queued #<id>`. Results up to `INLINE_LIMIT` return as normal WhatsApp media; larger files are uploaded with `rclone` and returned as a share link. Jobs are stored in `database/jobs.sqlite` (built-in `node:sqlite`) and resume after a restart — two run at once, one per provider.
+Bare links are ignored; use a prefixed command such as `.dl <URL>`. Previously queued bare-link jobs in `database/jobs.sqlite` are preserved but no longer run or send replies automatically.
 
 ```text
-URL_JOBS=1                 set 0 to disable
 INLINE_LIMIT=104857600     bytes that still go inline (100 MB)
 MEDIA_DIR=temp             staging folder for downloads
 RCLONE_REMOTE=gdrive       remote name from secrets/rclone.conf
 RCLONE_PATH=bot/uploads    folder inside that remote
 ```
 
-DRM-protected services (Netflix, Disney+, Apple TV+, Apple Music, Deezer) are refused with a short reason instead of being queued.
+DRM-protected services are not supported.
 
 Owner/admin commands (hidden from non-owners in `.menu` and error hints):
 `.status` (alias `.update`), `.restart`, `.broadcast`, `.on`, `.off`, `.allow`, `.disallow`, `.listusers`, `.cookies`, `.ytdl` (`status` | `update` | `repair` | `proxy` | `test`), and `.refreshpapers`.
@@ -100,8 +99,8 @@ Each additional account has independent credentials under
 private storage and back it up securely before moving servers. Never commit,
 share, or delete credential files just to request another code. Revoking a
 number pauses its ability to respond; re-enabling it resumes access without
-granting administrator privileges. Existing sender allowlist and administrator
-rules still apply separately to every message. `OWNER_NUMBER` and
+granting administrator privileges. Each session accepts commands only from its own WhatsApp account; owner/admin
+commands still require the configured owner or administrator identity. `OWNER_NUMBER` and
 `ADMIN_NUMBERS` should be set privately for your installation; their existing
 fallbacks are retained for compatibility when these variables are empty.
 

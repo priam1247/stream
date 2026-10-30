@@ -10,7 +10,7 @@ vi.mock('node:fs', () => ({
     writeFileSync: (_path: string, value: string) => { if (disk.fail) throw new Error('read-only'); disk.text = value; },
   },
 }));
-import { appendActivity, completeBotCommand, enqueueBotCommand, getBotCommandById, isMemberScribdAllowed, listRecentActivity, setMemberScribdAllowed } from '../lib/storage';
+import { appendActivity, claimPairCooldown, completeBotCommand, deleteWhatsAppUserIfOwned, enqueueBotCommand, getBotCommandById, getLatestPairCommand, getPairCooldown, isMemberScribdAllowed, listRecentActivity, releasePairCooldown, saveCompletedPairResult, saveMemberWhatsAppUser, saveStoredWhatsAppUser, setMemberScribdAllowed } from '../lib/storage';
 import { maskedNumber } from '../lib/activity';
 
 beforeEach(() => {
@@ -57,6 +57,35 @@ describe('local control-room persistence', () => {
     expect(await getBotCommandById(cmd.id)).toMatchObject({
       status: 'completed', result: { code: 'FIRST', _dashboardReceivedAt: receivedAt },
     });
+  });
+
+  it('persists a three-minute phone cooldown and releases only the matching attempt', async () => {
+    const now = Date.now();
+    const first = await claimPairCooldown('265991234567', now);
+    expect(first).toEqual({ ok: true, retryAt: now + 180_000 });
+    expect(await claimPairCooldown('265991234567', now + 1_000)).toEqual({ ok: false, retryAt: first.retryAt });
+    await releasePairCooldown('265991234567', first.retryAt + 1);
+    expect(await getPairCooldown('265991234567')).toBe(first.retryAt);
+    expect(await claimPairCooldown('265991234567', first.retryAt)).toEqual({ ok: true, retryAt: first.retryAt + 180_000 });
+  });
+
+  it('recovers a direct result only by phone and requester, and removes only the current owner', async () => {
+    const now = Date.now();
+    await saveCompletedPairResult({ number: '265991234567', requestedBy: 'MEMBER@example.com', createdAt: now,
+      code: 'TESTCODE', issuedAt: now, expiresInSeconds: 60 });
+    expect(await getLatestPairCommand('265991234567', 'member@example.com', now)).toMatchObject({ status: 'completed', result: { code: 'TESTCODE' } });
+    expect(await getLatestPairCommand('265991234567', 'other@example.com', now)).toBeNull();
+    await saveStoredWhatsAppUser('265991234567', 'Member', 'member@example.com');
+    expect(await deleteWhatsAppUserIfOwned('265991234567', 'other@example.com')).toBe(false);
+    expect(await deleteWhatsAppUserIfOwned('265991234567', 'MEMBER@example.com')).toBe(true);
+  });
+
+  it('cannot transfer a number between member accounts during a claim', async () => {
+    expect(await saveMemberWhatsAppUser('265991234567', 'Maya', 'MAYA@example.com')).toBe(true);
+    expect(await saveMemberWhatsAppUser('265991234567', 'Other', 'other@example.com')).toBe(false);
+    expect(await saveMemberWhatsAppUser('265991234567', 'Maya again', 'maya@example.com')).toBe(true);
+    expect(await deleteWhatsAppUserIfOwned('265991234567', 'other@example.com')).toBe(false);
+    expect(await deleteWhatsAppUserIfOwned('265991234567', 'maya@example.com')).toBe(true);
   });
 
   it('does not report successful permission changes when local storage is read-only', async () => {

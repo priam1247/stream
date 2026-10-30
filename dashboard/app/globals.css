@@ -27,3 +27,24 @@
     linear-gradient(to bottom, rgba(226, 232, 240, 0.5) 1px, transparent 1px);
   background-size: 100% 100%, 100% 100%, 36px 36px, 36px 36px;
 }
+
+/* One friendly wave, then a quiet idle. No external illustration assets. */
+.zafar-robot {
+  width: 96px;
+  height: 96px;
+  flex: none;
+  transition: width .2s ease, height .2s ease;
+}
+.zafar-robot--compact { width: 58px; height: 58px; }
+.zafar-robot__hand {
+  transform-origin: 88px 75px;
+  animation: zafar-wave 1.15s ease-in-out .25s 1;
+}
+@keyframes zafar-wave {
+  0%, 100% { transform: rotate(0); }
+  25%, 65% { transform: rotate(-15deg); }
+  45%, 85% { transform: rotate(9deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .zafar-robot, .zafar-robot__hand { animation: none !important; transition: none !important; }
+}

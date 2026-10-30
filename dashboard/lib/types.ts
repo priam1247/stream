@@ -92,6 +92,9 @@ export type WhatsAppAccountState = 'connected' | 'connecting' | 'awaiting_link' 
 export interface WhatsAppAccountStatus {
   number: string;
   state: WhatsAppAccountState;
+  /** Opaque per-link generation; never identifies the legacy primary session. */
+  sessionId?: string;
+  linkedAt?: number;
 }
 
 export interface BotHeartbeatRecord {
@@ -116,7 +119,7 @@ export interface BotHeartbeatRecord {
 
 export interface BotCommandRecord {
   id: string;
-  type: 'pair' | 'restart';
+  type: 'pair' | 'restart' | 'unlink';
   payload: Record<string, unknown>;
   status: 'pending' | 'claimed' | 'completed' | 'failed';
   result?: Record<string, unknown> | null;

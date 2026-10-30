@@ -98,7 +98,7 @@ const execute = async (sock, msg, args, extra) => {
       void YT.getInfo(results[0].url).catch(() => {});
       const listText = youtubeSearch.formatResults(results, {
         header: `🔎 *${query}*`,
-        note: `Reply *1–${results.length}* (${height}p) or *cancel*.`,
+        note: `Reply *${config.prefix}1*–*${config.prefix}${results.length}* (${height}p) or *${config.prefix}cancel*.`,
       });
       await selections.sendTextPrompt(sock, msg, extra, {
         text: listText,

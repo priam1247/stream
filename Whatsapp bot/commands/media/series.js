@@ -210,7 +210,7 @@ async function resolveTargetAndQuality(sock, msg, extra, meta, job) {
   return selections.sendPollOrText(sock, msg, extra, {
     pollName: header,
     optionLabels,
-    fallbackText: `${header}\n\n${lines.join('\n')}\n\n_Reply 1–${choices.length}_`,
+    fallbackText: `${header}\n\n${lines.join('\n')}\n\n_Reply ${config.prefix}1–${config.prefix}${choices.length}_`,
     selector: {
       headerTitle: `📺 ${showTitle}`,
       bodyText: 'Select episodes to download:',
@@ -238,7 +238,7 @@ async function offerChoices(sock, msg, extra, matches, job) {
   });
   const lines = optionLabels.map((lbl, i) => `*${i + 1}.* ${lbl}`);
   const header = `📺 *${matches.length} series* for *${job.title}*`;
-  const fallbackText = `${header}\n\n${lines.join('\n')}\n\n_Reply 1–${matches.length}_`;
+  const fallbackText = `${header}\n\n${lines.join('\n')}\n\n_Reply ${config.prefix}1–${config.prefix}${matches.length}_`;
 
   await selections.sendPollOrText(sock, msg, extra, {
     pollName: `${header}\nTap a series:`,
@@ -297,7 +297,7 @@ async function askQuality(sock, msg, extra, meta, job) {
   await selections.sendPollOrText(sock, msg, extra, {
     pollName: header,
     optionLabels,
-    fallbackText: `${header}\n\n${lines.join('\n')}\n\n_Reply 1–${options.length}_`,
+    fallbackText: `${header}\n\n${lines.join('\n')}\n\n_Reply ${config.prefix}1–${config.prefix}${options.length}_`,
     selector: {
       headerTitle: `📺 ${title}`,
       bodyText: 'Select download quality:',
