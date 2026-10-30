@@ -1,10 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
-  Activity,
   Bell,
   BookOpen,
   Home,
@@ -12,12 +10,10 @@ import {
   Smartphone,
   AlertCircle,
   CheckCircle2,
-  ExternalLink,
   Eye,
   EyeOff,
   Link2,
   Loader2,
-  LogOut,
   Plus,
   Power,
   RefreshCw,
@@ -52,6 +48,7 @@ import { ScribdDesk } from './scribd-desk';
 import { ControlRoomHome } from './control-room-home';
 import { ControlRoomActivity } from './control-room-activity';
 import { SectionNav } from './section-nav';
+import { WorkspaceShell, type WorkspaceNavGroup } from './workspace-shell';
 import { getRoomAlerts, type ActivityPage, type OwnerTab, type RoomTarget, type ScribdPage, type ScribdSnapshot, type WhatsAppPage } from '@/lib/control-room';
 import type { ScribdStatusPayload } from '@/lib/scribd-types';
 
@@ -678,102 +675,32 @@ export function AdminConsole() {
   const allowedMembersCount = data.members.filter((m) => m.allowed).length;
   const enabledNumbersCount = data.users.filter((u) => u.enabled).length;
   const alerts = getRoomAlerts(data, overviewCheckedAt, overviewError, scribd, panelStatus);
+  const navGroups: WorkspaceNavGroup<AdminTab>[] = [
+    { label: 'Workspace', items: [
+      { id: 'overview', label: 'Home', icon: Home },
+      { id: 'server', label: 'WhatsApp', icon: Smartphone },
+      { id: 'scribd', label: 'Scribd', icon: Library },
+    ] },
+    { label: 'Management', items: [
+      { id: 'members', label: 'Members', icon: Users },
+      { id: 'activity', label: 'Activity', icon: Bell, ...(alerts.length ? { badge: alerts.length, alert: true } : {}) },
+    ] },
+  ];
 
   return (
-    <div className="bg-portal-canvas min-h-screen w-full overflow-x-hidden">
-      {/* Top Server Console Bar */}
-      <header className="sticky top-0 z-30 border-b border-slate-200/90 bg-white/95 backdrop-blur-md">
-        <div className="mx-auto max-w-[1140px] px-3.5 py-2.5 sm:px-5 sm:py-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-teal-600 font-mono text-xs font-extrabold text-white shadow-sm">
-                <Smartphone className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="truncate text-sm font-bold text-slate-900">
-                    Control Room
-                  </span>
-                  <span className="hidden shrink-0 rounded bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-teal-700 ring-1 ring-teal-200 min-[360px]:inline">
-                    ADMIN
-                  </span>
-                </div>
-                <div className="truncate font-mono text-[10px] text-slate-500">
-                  Admin workspace{data.botVersion ? ` · v${data.botVersion}` : ''}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-1.5">
-              <Link
-                href="/dashboard"
-                aria-label="Open member portal"
-                title="Member View"
-                className="inline-flex h-8 items-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-700 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800"
-              >
-                <span className="hidden sm:inline">Portal</span>
-                <ExternalLink className="h-3.5 w-3.5" />
-              </Link>
-
-              <button
-                type="button"
-                onClick={() => { void loadOverview(false, false); void loadScribdStatus(); void loadPanelStatus(); void loadActivity(false); }}
-                disabled={refreshing}
-                title="Refresh"
-                className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:border-slate-300 hover:text-slate-900"
-              >
-                {refreshing ? (
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin text-teal-600" />
-                ) : (
-                  <Activity className="h-3.5 w-3.5" />
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setAccountOpen(true)}
-                className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-800 shadow-sm transition hover:border-teal-300"
-              >
-                <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-teal-600 font-mono text-[10px] font-bold uppercase text-white">
-                  {(user.name || user.email).slice(0, 2)}
-                </span>
-                <span className="hidden max-w-[96px] truncate sm:inline">
-                  {user.name}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSignOut}
-                title="Sign out"
-                className="hidden h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 min-[400px]:flex"
-              >
-                <LogOut className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-
-
-        </div>
-      </header>
-
-      <nav aria-label="Owner sections" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur-md sm:static sm:mx-auto sm:mt-3 sm:max-w-[1140px] sm:gap-1 sm:rounded-2xl sm:border sm:bg-slate-100 sm:p-1 sm:shadow-none">
-        {([
-          { key: 'overview', label: 'Home', icon: Home },
-          { key: 'server', label: 'WhatsApp', icon: Smartphone },
-          { key: 'scribd', label: 'Scribd', icon: Library },
-          { key: 'members', label: 'Members', icon: Users },
-          { key: 'activity', label: 'Activity', icon: Bell },
-        ] as const).map(({ key, label, icon: Icon }) => (
-          <button key={key} type="button" aria-current={tab === key ? 'page' : undefined} onClick={() => navigate({ tab: key } as RoomTarget)}
-            className={`relative flex min-h-[60px] min-w-0 touch-manipulation flex-col items-center justify-center gap-1 rounded-xl px-1 py-1.5 text-[10px] font-semibold transition sm:min-h-11 sm:flex-row sm:gap-2 sm:px-3 sm:text-xs ${tab === key ? 'text-teal-700 sm:bg-white sm:shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}>
-            <span className="relative"><Icon className={`h-[19px] w-[19px] ${tab === key ? 'text-teal-600' : ''}`} />{key === 'activity' && alerts.length > 0 && <span className="absolute -right-1.5 -top-1 h-2.5 w-2.5 rounded-full border-2 border-white bg-rose-500" />}</span>
-            <span className="truncate">{label}</span>
-          </button>
-        ))}
-      </nav>
-
-      <main className="mx-auto max-w-[1140px] px-3.5 pb-28 pt-4 sm:px-5 sm:pb-14 sm:pt-6">
+    <WorkspaceShell
+      kind="owner"
+      user={user}
+      groups={navGroups}
+      current={tab}
+      onNavigate={(next) => navigate({ tab: next } as RoomTarget)}
+      mobileItems={['overview', 'server', 'scribd', 'members', 'activity']}
+      refreshing={refreshing}
+      onRefresh={() => { void loadOverview(false, false); void loadScribdStatus(); void loadPanelStatus(); void loadActivity(false); }}
+      onAccount={() => setAccountOpen(true)}
+      onSignOut={handleSignOut}
+      alternate={{ href: '/dashboard', label: 'Member view', ariaLabel: 'Open member portal' }}
+    >
         {notice && (
           <div
             role={notice.bad ? 'alert' : 'status'}
@@ -829,6 +756,7 @@ export function AdminConsole() {
                     <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">WhatsApp</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p></div>
                   </div>
                   {overviewError && <p role="alert" className="mt-3 text-xs text-rose-700">Status could not be refreshed. Check Sync settings.</p>}
+                  {!overviewError && data.botVersion && <p className="mt-3 break-all text-xs text-slate-500">Reported version {data.botVersion}</p>}
                   {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-amber-700">{serviceText(data.botError)} Check the service process and Sync settings.</p>}
                 </section>
                 {/* Live Server Analytics: Commands, Successful Downloads, Failed, Uptime + RAM/Disk/Queues */}
@@ -1426,8 +1354,6 @@ export function AdminConsole() {
             </div>
           </section>
         )}
-      </main>
-
       <AccountModal
         open={accountOpen}
         onClose={() => setAccountOpen(false)}
@@ -1436,6 +1362,6 @@ export function AdminConsole() {
         onUpdateName={handleUpdateName}
         onSignOut={handleSignOut}
       />
-    </div>
+    </WorkspaceShell>
   );
 }

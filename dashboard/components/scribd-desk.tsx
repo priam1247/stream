@@ -781,7 +781,7 @@ export function ScribdDesk({ bottomNav = false, active = true, page: controlledP
           </ul>
         )}
       </section>}
-      {page === 'search' && ticked.size > 0 && <div role="status" className={`fixed inset-x-3 z-[35] mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl border border-teal-200 bg-white/95 p-2.5 shadow-[0_8px_35px_rgba(15,23,42,0.18)] backdrop-blur-md ${bottomNav ? 'bottom-[calc(4.5rem+env(safe-area-inset-bottom))] sm:bottom-4' : 'bottom-4'}`}>
+      {page === 'search' && ticked.size > 0 && <div role="status" className={`fixed inset-x-3 z-[35] mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl border border-teal-200 bg-white/95 p-2.5 shadow-[0_8px_35px_rgba(15,23,42,0.18)] backdrop-blur-md ${bottomNav ? 'bottom-[calc(4.5rem+env(safe-area-inset-bottom))] lg:bottom-4' : 'bottom-4'}`}>
         <div className="min-w-0 pl-1"><p className="text-sm font-bold text-slate-900">{ticked.size} selected</p><p className="text-[11px] text-slate-500">Ready in your selection</p></div>
         <button type="button" aria-label="Submit selected books" onClick={() => void start()} disabled={starting || isAdmin !== true} className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl bg-teal-600 px-3.5 text-xs font-bold text-white disabled:opacity-40"><Download className="h-4 w-4" /> {starting ? 'Submitting…' : 'Queue'}</button>
       </div>}

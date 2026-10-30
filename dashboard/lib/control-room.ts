@@ -36,6 +36,11 @@ export function getRoomAlerts(
     alerts.push({ id: 'panel-suspended', title: 'Hosting server suspended', detail: 'The hosting panel reports this server is suspended. Review the panel for details.', target: { tab: 'server', page: 'service' }, level: 'danger' });
   } else if (panel?.state === 'offline') {
     alerts.push({ id: 'panel-offline', title: 'Hosting server is offline', detail: 'The hosting panel reports the configured WhatsApp server is offline.', target: { tab: 'server', page: 'service' }, level: 'warning' });
+  } else if (panel?.error) {
+    const rejected = /credentials were rejected/i.test(panel.error);
+    alerts.push(rejected
+      ? { id: 'panel-credentials', title: 'Hosting credentials rejected', detail: 'Check the saved panel credentials. This does not mean WhatsApp is offline.', target: { tab: 'server', page: 'hosting' }, level: 'warning' }
+      : { id: 'panel-status', title: 'Hosting status unavailable', detail: 'The dashboard could not confirm the hosting server status.', target: { tab: 'server', page: 'service' }, level: 'warning' });
   }
   if (overviewError) {
     alerts.push({ id: 'status', title: 'Service status unavailable', detail: 'The dashboard could not refresh the service status. Check the service connection.', target: { tab: 'server', page: 'service' }, level: 'danger' });
