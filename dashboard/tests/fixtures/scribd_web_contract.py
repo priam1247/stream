@@ -14,7 +14,7 @@ import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "working scribd"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scribd"))
 import scribd_web as web  # noqa: E402
 
 scratch = tempfile.TemporaryDirectory(prefix="dashboard-scribd-contract-")

@@ -47,7 +47,7 @@ describe('Scribd service configuration', () => {
     vi.stubEnv('SCRIBD_WEB_URL', undefined);
     vi.stubEnv('SCRIBD_WEB_TOKEN', undefined);
     mocks.getConfig.mockRejectedValueOnce(new Error('D1 unavailable'));
-    expect(DEFAULT_SCRIBD_WEB_URL).toBe('http://195.123.189.181:25803');
+    expect(DEFAULT_SCRIBD_WEB_URL).toBe('http://toby.hidencloud.com:24702');
     expect(await scribdPanelConfig()).toEqual({ baseUrl: DEFAULT_SCRIBD_WEB_URL, key: '' });
     expect(mocks.getConfig).not.toHaveBeenCalled();
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
@@ -85,6 +85,18 @@ describe('Scribd service configuration', () => {
     expect(await testScribdConnection()).toEqual({ reachable: true, locked: null, keyAccepted: true, version: null, error: null });
     expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('t')).toBe(false);
     expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get('t')).toBe('old-secret');
+  });
+
+  it('never sends a token to the public HTTP server, while allowing a token-free health check', async () => {
+    vi.stubEnv('SCRIBD_WEB_URL', undefined);
+    vi.stubEnv('SCRIBD_WEB_TOKEN', 'private-test-token');
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(await getScribdHealth()).toEqual({ ok: true, data: { ok: true } });
+    expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('t')).toBe(false);
+    expect(await getScribdStatus()).toEqual({ ok: false, status: 503, error: expect.stringContaining('needs HTTPS') });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects invalid configuration without making a request', async () => {
