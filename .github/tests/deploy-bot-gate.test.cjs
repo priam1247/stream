@@ -254,6 +254,7 @@ test('the workflow wires the safeguards before the existing upload and keeps the
   assert.match(workflow, /fetch-depth:\s*0/);
   assert.match(workflow, /run:\s*bash \.github\/scripts\/should-deploy-bot\.sh/);
   assert.match(workflow, /needs:\s*bot_changes/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch' && inputs\.confirm_legacy_sftp == true/);
   assert.match(workflow, /if:\s*needs\.bot_changes\.outputs\.deploy == 'true'/);
   assert.match(workflow, /group:\s*panel-bot-production/);
   assert.match(workflow, /cancel-in-progress:\s*false/);

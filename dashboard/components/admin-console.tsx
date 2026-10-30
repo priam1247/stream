@@ -7,6 +7,7 @@ import {
   BookOpen,
   Home,
   Library,
+  MessageSquare,
   Smartphone,
   AlertCircle,
   CheckCircle2,
@@ -44,6 +45,8 @@ import { PairingCodeBanner } from './pairing-code-banner';
 import { accountStatusLabel, serviceText } from '@/lib/whatsapp-accounts';
 import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
+import { MemberCommandControls } from './member-command-controls';
+import { SupportDesk } from './support-desk';
 import { ScribdDesk } from './scribd-desk';
 import { ControlRoomHome } from './control-room-home';
 import { ControlRoomActivity } from './control-room-activity';
@@ -58,6 +61,7 @@ type AdminTab = OwnerTab;
 type MemberFilter = 'all' | 'allowed' | 'disallowed';
 const WHATSAPP_PAGES: { id: WhatsAppPage; label: string }[] = [
   { id: 'numbers', label: 'Numbers' },
+  { id: 'commands', label: 'Commands' },
   { id: 'service', label: 'Status' },
   { id: 'power', label: 'Power' },
   { id: 'sync', label: 'Sync' },
@@ -111,6 +115,12 @@ export function AdminConsole() {
   const [newMemberName, setNewMemberName] = useState('');
   const [addingMember, setAddingMember] = useState(false);
   const [busyEmail, setBusyEmail] = useState<string | null>(null);
+  const [supportUnread, setSupportUnread] = useState(0);
+  useEffect(() => {
+    if (!user?.isAdmin) return;
+    const check = async () => { try { const res = await fetch('/api/support?summary=1', { headers: authHeaders(), cache: 'no-store' }); if (res.ok) { const json = await res.json(); setSupportUnread(Number(json.unread) || 0); } } catch { /* keep last known count */ } };
+    void check(); const timer = window.setInterval(() => void check(), 10000); return () => window.clearInterval(timer);
+  }, [user?.isAdmin]);
 
   // Bot & numbers state
   const [botUrlInput, setBotUrlInput] = useState('');
@@ -287,6 +297,20 @@ export function AdminConsole() {
     } catch (error) {
       setNotice({ text: error instanceof Error ? error.message : 'Could not update Scribd access.', bad: true });
     } finally { setBusyEmail(null); }
+  };
+
+  const handleApproval = async (number: string, action: 'approve' | 'reject') => {
+    setBusyNumber(number);
+    try {
+      const res = await fetch('/api/admin/approvals', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ number, action }) });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || 'Could not update this request.');
+      setNotice({ text: action === 'approve' ? 'Approved. The service will apply access on its next sync.' : 'Request rejected. The member can unlink their session.' });
+      await loadOverview(true, false);
+      void loadActivity();
+    } catch (error) {
+      setNotice({ text: error instanceof Error ? error.message : 'Could not update this request.', bad: true });
+    } finally { setBusyNumber(null); }
   };
 
   const handleSyncNumber = async (number: string) => {
@@ -695,6 +719,7 @@ export function AdminConsole() {
     ] },
     { label: 'Management', items: [
       { id: 'members', label: 'Members', icon: Users },
+      { id: 'support', label: 'Reports', icon: MessageSquare, ...(supportUnread ? { badge: supportUnread, alert: true } : {}) },
       { id: 'activity', label: 'Activity', icon: Bell, ...(unreadAlertIds.size ? { badge: unreadAlertIds.size, alert: true } : {}) },
     ] },
   ];
@@ -831,6 +856,15 @@ export function AdminConsole() {
                 {lastRestartEvent && <p className="w-full text-[11px] text-slate-500">Last restart request: {new Date(lastRestartEvent.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
               </section>
             )}
+
+            {whatsAppPage === 'commands' && <MemberCommandControls />}
+
+            {whatsAppPage === 'sync' && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="Session recovery status">
+              <h2 className="text-sm font-bold text-slate-900">Encrypted session recovery</h2>
+              <p className="mt-1 text-xs leading-5 text-slate-600">{!data.botReachable ? 'Service offline; backup status cannot be confirmed.' : !data.sessionBackup ? 'The service has not reported recovery status. Update the service to enable it.' : data.sessionBackup.state === 'disabled' ? 'Not configured. Set a private SESSION_BACKUP_KEY on the service and configure durable D1 storage.' : data.sessionBackup.state === 'error' ? 'Backup or revocation failed. Check the service logs and dashboard storage.' : data.sessionBackup.state === 'conflict' ? 'Local sessions were preserved; a backup conflict needs review.' : data.sessionBackup.state === 'starting' ? 'Connecting to encrypted recovery.' : data.sessionBackup.lastBackupAt ? `Recovery connected. Last encrypted snapshot: ${new Date(data.sessionBackup.lastBackupAt).toLocaleString()}.` : 'Recovery connected. No session snapshot has been saved yet.'}</p>
+              {data.botReachable && data.sessionBackup?.state === 'ready' && data.sessionBackup.sessions !== undefined && data.sessionBackup.backedUp !== undefined && <p className="mt-2 text-xs font-semibold text-slate-700">{data.sessionBackup.backedUp} of {data.sessionBackup.sessions} registered sessions have a current snapshot.</p>}
+              {data.storageEngine !== 'cloudflare-d1' && <p className="mt-2 text-xs font-semibold text-amber-800">Durable D1 storage has not been confirmed.</p>}
+            </section>}
 
             {whatsAppPage === 'numbers' && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
               <div className="flex items-center justify-between gap-2">
@@ -1216,6 +1250,8 @@ export function AdminConsole() {
           </div>
         )}
 
+        {tab === 'support' && <SupportDesk admin onUnreadChange={setSupportUnread} />}
+
         {/* Members access control */}
         {tab === 'members' && (
           <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
@@ -1242,6 +1278,18 @@ export function AdminConsole() {
                 ))}
               </div>
             </div>
+
+            {data.users.some((item) => item.approval === 'pending') && <div role="region" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3" aria-label="Pending link approvals">
+              <h3 className="text-xs font-bold text-amber-950">Link requests</h3>
+              <p className="mt-1 text-[11px] text-amber-800">Members link first. Approve only after their connection is ready.</p>
+              <div className="mt-2 space-y-2">{data.users.filter((item) => item.approval === 'pending').map((item) => {
+                const linked = data.botReachable && data.accounts?.some((account) => account.number === item.number && account.sessionId && account.claimCurrent === true && ['connected', 'connecting', 'paused'].includes(account.state));
+                return <div key={item.number} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white p-2.5">
+                  <div className="min-w-0"><p className="truncate text-xs font-semibold text-slate-800">{item.label || 'Member'} · {item.number}</p><p className="truncate text-[11px] text-slate-500">{item.addedBy || 'Member'} · {linked ? 'Linked, awaiting approval' : 'Waiting for link or service'}</p></div>
+                  <div className="flex gap-2"><button type="button" disabled={!linked || busyNumber === item.number} onClick={() => void handleApproval(item.number, 'approve')} className="min-h-[40px] rounded-lg bg-teal-700 px-3 text-xs font-semibold text-white disabled:opacity-40">Approve</button><button type="button" disabled={busyNumber === item.number} onClick={() => void handleApproval(item.number, 'reject')} className="min-h-[40px] rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-600 disabled:opacity-40">Reject</button></div>
+                </div>;
+              })}</div>
+            </div>}
 
             <p className="mt-2 text-xs leading-5 text-slate-500">{allowedMembersCount} of {data.members.length} allowed. Scribd is private until granted; members cannot control downloads.</p>
             <form

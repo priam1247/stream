@@ -180,6 +180,28 @@ export const BOT_COMMANDS: CommandEntry[] = [
   },
 ];
 
+// The admin catalog groups some distinct commands into one row. Each member
+// entry must instead copy the actual command the user searched for.
+export const MEMBER_COMMANDS = BOT_COMMANDS.filter((command) => !command.ownerOnly).flatMap((command) => {
+  if (command.name === 'ping') return [
+    { ...command, name: 'ping', aliases: ['p'], category: 'general', summary: 'Check response time' },
+    { ...command, name: 'menu', aliases: ['help', 'commands'], category: 'general', summary: 'Show the command menu' },
+    { ...command, name: 'info', aliases: ['meta', 'ids', 'lookup'], category: 'general', summary: 'Look up movie or series details' },
+    { ...command, name: 'debrid', aliases: ['rd', 'debridstatus'], category: 'general', summary: 'Check debrid status' },
+  ];
+  if (command.name === 'providers') return [
+    { ...command, aliases: ['sources'], category: 'general' },
+    { ...command, name: 'moviestatus', aliases: ['moviestats', 'enginestats'], category: 'general', summary: 'Check download engine status' },
+  ];
+  const extraAliases: Record<string, string[]> = {
+    paper: ['pastpaper'], countpapers: ['listpapers', 'papercount', 'vaultcount'],
+    sticker: ['stiker', 'stc'], viewonce: ['readvo', 'read', 'readviewonce'], dl: ['getvid'],
+    spotify: ['spotdl'], ytv: ['playvid'], x: ['xtwitter'], instagram: ['insta', 'igdl'], fb: ['fbdl', 'facebookdl'],
+  };
+  return [{ ...command, aliases: [...command.aliases, ...(extraAliases[command.name] || [])], category: ['sticker', 'viewonce'].includes(command.name) ? 'general' : command.category }];
+});
+
+
 export const METADATA_SOURCES: MetadataSourceEntry[] = [
   { id: 'moviebox', label: '#1 moviebox', scope: 'Fast CDN', keyless: true, note: 'MP4/SRT' },
   { id: 'vixsrc', label: '#2 vixsrc', scope: 'Stream', keyless: true, note: 'HLS' },

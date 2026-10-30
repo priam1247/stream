@@ -38,7 +38,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Approved number not found.' }, { status: 404 });
   }
 
-  await syncNumberToLiveBot(user.number, user.label || 'Approved number', user.enabled);
+  await syncNumberToLiveBot(user.number, user.label || 'Approved number', user.enabled, user.pairAllowed === true);
   await recordActivity({ category: 'numbers', action: user.enabled ? 'Number allowed' : 'Number blocked', actor: session.user.email, outcome: 'success', detail: maskedNumber(user.number) });
   return NextResponse.json({ ok: true, user });
 }

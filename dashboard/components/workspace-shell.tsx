@@ -130,6 +130,9 @@ export function WorkspaceShell<T extends string>({
   const desktopLabel = kind === 'owner' ? 'Owner sections' : 'Console sections';
   const mobileLabel = kind === 'owner' ? 'Owner shortcuts' : 'Member shortcuts';
   const moreIsCurrent = mobileMore && !mobileItems.includes(current);
+  // Reports live in the drawer on mobile. Keep their unread state visible
+  // without adding a sixth button (and a second row) to the bottom bar.
+  const hiddenUnread = items.reduce((total, item) => total + (item.alert && !mobileItems.includes(item.id) && typeof item.badge === 'number' ? item.badge : 0), 0);
   const drawerId = `${kind}-workspace-menu`;
 
   useEffect(() => {
@@ -213,7 +216,7 @@ export function WorkspaceShell<T extends string>({
         <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur-md">
           <div className="mx-auto flex min-h-[68px] max-w-[1440px] items-center justify-between gap-2 px-3.5 sm:px-6 lg:px-8">
             <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
-              <button type="button" aria-label="Open workspace menu" aria-expanded={menuOpen} aria-controls={drawerId} onClick={openMenu} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 lg:hidden"><Menu aria-hidden="true" className="h-[19px] w-[19px]" /></button>
+              <button type="button" aria-label="Open workspace menu" aria-description={hiddenUnread ? `${hiddenUnread} unread ${hiddenUnread === 1 ? 'item' : 'items'} in menu` : undefined} aria-expanded={menuOpen} aria-controls={drawerId} onClick={openMenu} className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 lg:hidden"><Menu aria-hidden="true" className="h-[19px] w-[19px]" />{hiddenUnread > 0 && <span aria-hidden="true" className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full border border-white bg-rose-600 px-0.5 text-[9px] font-bold leading-none text-white tabular-nums">{hiddenUnread}</span>}</button>
               <div className="min-w-0">
                 <p className="truncate text-[10px] font-bold uppercase tracking-[0.13em] text-slate-400">{kind === 'owner' ? 'Owner workspace' : 'My workspace'}</p>
                 <p className="mt-0.5 truncate text-sm font-bold text-slate-900">{active?.label || 'Home'}</p>

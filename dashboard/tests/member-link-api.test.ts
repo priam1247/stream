@@ -7,8 +7,9 @@ const state = vi.hoisted(() => ({
   signedIn: true,
   owner: 'member@example.com',
   storedOwner: 'member@example.com',
+  claimKey: 'claim-one',
   reachable: true,
-  account: { number: '265991234567', state: 'connected', sessionId: 'a'.repeat(24) } as WhatsAppAccountStatus | null,
+  account: { number: '265991234567', state: 'connected', sessionId: 'a'.repeat(24), claimToken: 'claim-token' } as WhatsAppAccountStatus | null,
   command: null as BotCommandRecord | null,
   cooldown: 0,
   pairFailure: false,
@@ -37,7 +38,8 @@ vi.mock('../lib/bot-proxy', () => ({
   checkQueuedPairCommand: vi.fn(),
 }));
 vi.mock('../lib/storage', () => ({
-  getStoredWhatsAppUser: vi.fn(async () => ({ number: '265991234567', enabled: true, label: 'Member', addedBy: state.storedOwner })),
+  getStoredWhatsAppUser: vi.fn(async () => ({ number: '265991234567', enabled: true, label: 'Member', addedBy: state.storedOwner, claimId: state.claimKey })),
+  sessionBackupClaim: (user: { claimId: string }) => ({ token: user.claimId === 'claim-one' ? 'claim-token' : 'different-token', identity: { key: user.claimId } }),
   listStoredWhatsAppUsers: vi.fn(async () => []),
   getBotCommandById: vi.fn(async () => state.command),
   deleteWhatsAppUserIfOwned: mocks.deleted,
@@ -59,10 +61,10 @@ const post = (path: string) => new NextRequest(`http://localhost${path}`, {
 const get = (path: string) => new NextRequest(`http://localhost${path}`);
 
 beforeEach(() => {
-  state.signedIn = true; state.owner = 'member@example.com'; state.storedOwner = state.owner;
-  state.reachable = true; state.account = { number: '265991234567', state: 'connected', sessionId: 'a'.repeat(24) };
+  state.signedIn = true; state.owner = 'member@example.com'; state.storedOwner = state.owner; state.claimKey = 'claim-one';
+  state.reachable = true; state.account = { number: '265991234567', state: 'connected', sessionId: 'a'.repeat(24), claimToken: 'claim-token' };
   state.cooldown = 0; state.pairFailure = false; state.unlinkPending = true;
-  state.command = { id: 'unlink-1', type: 'unlink', payload: { number: '265991234567', sessionId: 'a'.repeat(24) },
+  state.command = { id: 'unlink-1', type: 'unlink', payload: { number: '265991234567', sessionId: 'a'.repeat(24), claimKey: 'claim-one' },
     requestedBy: state.owner, status: 'pending', createdAt: Date.now(), expiresAt: Date.now() + 90_000 };
   for (const mock of Object.values(mocks)) mock.mockClear();
 });
@@ -85,7 +87,7 @@ describe('real unlink authorization and completion', () => {
   it('keeps approval until the matching bot generation confirms logout', async () => {
     const started = await startUnlink(post('/api/member/unlink'));
     expect(started.status).toBe(202);
-    expect(mocks.unlink).toHaveBeenCalledWith('265991234567', 'a'.repeat(24), 'member@example.com');
+    expect(mocks.unlink).toHaveBeenCalledWith('265991234567', 'a'.repeat(24), 'member@example.com', 'claim-one');
     expect((await checkUnlink(get('/api/member/unlink?requestId=unlink-1'))).status).toBe(202);
     expect(mocks.deleted).not.toHaveBeenCalled();
     state.command!.status = 'completed';
@@ -93,7 +95,19 @@ describe('real unlink authorization and completion', () => {
     expect((await checkUnlink(get('/api/member/unlink?requestId=unlink-1'))).status).toBe(502);
     state.command!.result = { number: '265991234567', sessionId: 'a'.repeat(24), unlinked: true };
     expect((await checkUnlink(get('/api/member/unlink?requestId=unlink-1'))).status).toBe(200);
-    expect(mocks.deleted).toHaveBeenCalledWith('265991234567', 'member@example.com');
+    expect(mocks.deleted).toHaveBeenCalledWith('265991234567', 'member@example.com', 'claim-one');
+  });
+  it('does not unlink a socket belonging to an older claim', async () => {
+    state.claimKey = 'claim-two';
+    expect((await startUnlink(post('/api/member/unlink'))).status).toBe(409);
+    expect(mocks.unlink).not.toHaveBeenCalled();
+  });
+  it('does not delete a newer claim of the same number and owner', async () => {
+    state.claimKey = 'claim-two';
+    state.command!.status = 'completed';
+    state.command!.result = { number: '265991234567', sessionId: 'a'.repeat(24), unlinked: true };
+    expect((await checkUnlink(get('/api/member/unlink?requestId=unlink-1'))).status).toBe(409);
+    expect(mocks.deleted).not.toHaveBeenCalled();
   });
   it('rejects another requester and never removes a transferred number', async () => {
     state.command!.requestedBy = 'other@example.com';

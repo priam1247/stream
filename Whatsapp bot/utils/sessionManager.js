@@ -35,7 +35,16 @@ function createSessionManager(opts) {
   const pendingLifetimeMs = Math.max(codeLifetimeMs, Number(opts.pendingLifetimeMs) || 120_000);
   const log = opts.log || console;
   const allowed = (number) => {
-    try { return Boolean(opts.isAllowed?.(number)); } catch { return false; }
+    try {
+      if (!opts.isAllowed?.(number)) return false;
+      if (!opts.enforceClaims) return true;
+      const expected = manifest.accounts[number]?.claim || '';
+      const current = String(opts.getClaim?.(number) || '');
+      return /^[a-f0-9]{64}$/.test(expected) && expected === current;
+    } catch { return false; }
+  };
+  const canPair = (number) => {
+    try { return opts.canPair ? Boolean(opts.canPair(number)) : allowed(number); } catch { return false; }
   };
   const notify = () => { try { opts.onStatusChange?.(); } catch { /* non-fatal */ } };
   const validManifest = (data) => Boolean(
@@ -153,11 +162,11 @@ function createSessionManager(opts) {
     if (!entry.pairNumber || entry.requestStarted || entry.stopped || entry.sock !== sock || entry.auth?.creds?.registered) return;
     entry.requestStarted = true;
     try {
-      if (entry.number && !allowed(entry.number)) {
+      if (entry.number && !canPair(entry.number)) {
         throw Object.assign(new Error('Number is no longer enabled'), { statusCode: 403 });
       }
       const code = await sock.requestPairingCode(entry.pairNumber);
-      if (entry.number && !allowed(entry.number)) {
+      if (entry.number && !canPair(entry.number)) {
         throw Object.assign(new Error('Number is no longer enabled'), { statusCode: 403 });
       }
       if (entry.stopped || entry.sock !== sock) return;
@@ -254,6 +263,7 @@ function createSessionManager(opts) {
             entry.reconnector.stop();
             if (entry.number) mark(entry, 'logged_out');
             else entry.status = 'logged_out';
+            try { opts.onRevoked?.(entry.number ? `linked:${entry.number}` : 'primary', entry.attempt || 'primary'); } catch { /* recovery retry is independent */ }
             settlePair(entry, Object.assign(new Error('WhatsApp logged out. Request a new linking code.'), { statusCode: 409 }));
             log.warn('A WhatsApp session was logged out. Its credentials were preserved.');
           } else {
@@ -322,7 +332,7 @@ function createSessionManager(opts) {
   async function doRequestPair(number) {
     if (stopped) throw Object.assign(new Error('WhatsApp service is stopping.'), { statusCode: 503 });
     if (manifestError) throw Object.assign(new Error('Linked-account index is unavailable. Restore its backup first.'), { statusCode: 503 });
-    if (!allowed(number)) throw Object.assign(new Error('Approve and enable this number before linking it.'), { statusCode: 403 });
+    if (!canPair(number)) throw Object.assign(new Error('Approve and enable this number for linking.'), { statusCode: 403 });
     const primaryNumber = primary.connected ? numberFromCreds({ me: primary.sock?.user }) : numberFromCreds(primary.auth?.creds || credentialsOnDisk(primaryDir));
     if (primary.status !== 'logged_out' && primaryNumber === number) {
       throw Object.assign(new Error('This WhatsApp account is already linked. Wait for it to reconnect if necessary.'), { statusCode: 409 });
@@ -344,7 +354,9 @@ function createSessionManager(opts) {
     // Baileys writes individual keys using the process umask. Restrict the
     // enclosing new directories even on hosts with a permissive default umask.
     fs.mkdirSync(path.join(linkedRoot, number, attempt), { recursive: true, mode: 0o700 });
-    writeRecord(number, { attempt, state: 'pending' });
+    let claim = '';
+    try { claim = String(opts.getClaim?.(number) || ''); } catch { /* no recoverable claim yet */ }
+    writeRecord(number, { attempt, state: 'pending', ...(/^[a-f0-9]{64}$/.test(claim) ? { claim } : {}) });
     const entry = newEntry({ id: `linked:${number}`, number, attempt, state: 'pending', pairNumber: number });
     entries.set(entry.id, entry);
     const pending = waitForCode(entry);
@@ -379,6 +391,7 @@ function createSessionManager(opts) {
       if (entry.number && entry.status === 'active' && !allowed(entry.number)) state = 'paused';
       const record = entry.number ? manifest.accounts[entry.number] : null;
       accounts.push({ number, state, ...(entry.attempt ? { sessionId: entry.attempt } : {}),
+        ...(/^[a-f0-9]{64}$/.test(record?.claim || '') ? { claimToken: record.claim } : {}),
         ...(record?.linkedAt ? { linkedAt: record.linkedAt } : {}) });
     }
     const online = accounts.filter((a) => a.state === 'connected');
@@ -408,12 +421,32 @@ function createSessionManager(opts) {
     // success, remove approval, or delete credentials when that request fails.
     await entry.sock.logout('Unlinked from the dashboard');
     mark(entry, 'logged_out');
+    try { opts.onRevoked?.(`linked:${number}`, attempt); } catch { /* recovery retry is independent */ }
     await retire(entry, 'Session unlinked');
     return { number, sessionId: attempt, unlinked: true };
   }
 
   function refreshPermissions() {
     for (const entry of entries.values()) {
+      // Legacy manifests did not record an ownership generation. Bind them once
+      // to the current authoritative snapshot; future ownership changes never rebind.
+      if (entry.number && manifest.accounts[entry.number] && !manifest.accounts[entry.number].claim && canPair(entry.number)) {
+        let claim = ''; try { claim = String(opts.getClaim?.(entry.number) || ''); } catch { /* retry on next sync */ }
+        if (/^[a-f0-9]{64}$/.test(claim)) {
+          try { writeRecord(entry.number, { ...manifest.accounts[entry.number], claim }); opts.onClaimBound?.(entry.dir); } catch { /* preserve the old manifest */ }
+        }
+      }
+      const existingClaim = entry.number && manifest.accounts[entry.number]?.claim;
+      let currentClaim = '';
+      try { if (entry.number) currentClaim = String(opts.getClaim?.(entry.number) || ''); } catch { /* keep session paused */ }
+      if (opts.enforceClaims && existingClaim && /^[a-f0-9]{64}$/.test(currentClaim) && existingClaim !== currentClaim) {
+        // A transferred/re-created portal claim must not inherit the prior
+        // owner's WhatsApp socket. Preserve its files but allow a fresh link.
+        mark(entry, 'expired');
+        try { opts.onRevoked?.(`linked:${entry.number}`, entry.attempt); } catch { /* recovery retry is independent */ }
+        void retire(entry, 'Number ownership changed');
+        continue;
+      }
       if (entry.connected && entry.sock && (!entry.number || allowed(entry.number))) sockets.setOnline(entry.id, entry.sock);
     }
     notify();

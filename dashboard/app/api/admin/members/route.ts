@@ -75,7 +75,7 @@ export async function PATCH(req: NextRequest) {
   const memberNumbers = await listStoredWhatsAppUsers(email);
   await Promise.all(
     memberNumbers.map((item) =>
-      syncNumberToLiveBot(item.number, item.label || email, allowed),
+      syncNumberToLiveBot(item.number, item.label || email, item.enabled, item.pairAllowed === true),
     ),
   );
 

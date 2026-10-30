@@ -71,6 +71,18 @@ describe('responsive workspace navigation', () => {
     expect(document.activeElement).toBe(more);
   });
 
+  it('exposes unread items hidden in the mobile drawer without adding a bottom-bar row', () => {
+    const withUnread: WorkspaceNavGroup<Page>[] = [{ label: 'My space', items: [
+      { id: 'home', label: 'Home', icon: Home },
+      { id: 'library', label: 'Library', icon: Library, alert: true, badge: 2 },
+    ] }];
+    render(<WorkspaceShell kind="member" user={user} groups={withUnread} current="home" onNavigate={() => {}} mobileItems={['home']} refreshing={false} onRefresh={() => {}} onAccount={() => {}} onSignOut={() => {}}>Home</WorkspaceShell>);
+    const menu = screen.getByRole('button', { name: 'Open workspace menu' });
+    expect(menu.getAttribute('aria-description')).toBe('2 unread items in menu');
+    expect(within(menu).getByText('2')).toBeTruthy();
+    expect(within(screen.getByRole('navigation', { name: 'Member shortcuts' })).queryByRole('button', { name: 'Library' })).toBeNull();
+  });
+
   it('does not pull focus back to the menu trigger when opening account settings', () => {
     const onAccount = vi.fn();
     render(<Harness onAccount={onAccount} />);

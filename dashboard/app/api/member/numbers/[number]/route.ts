@@ -11,6 +11,7 @@ import {
   getStoredWhatsAppUser,
   listStoredWhatsAppUsers,
   updateStoredWhatsAppUser,
+  sessionBackupClaim,
 } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -54,6 +55,7 @@ export async function PATCH(
       updated.number,
       `${updated.label || 'Member'} (${session.user.email})`,
       updated.enabled,
+      updated.pairAllowed === true,
     );
   }
 
@@ -82,7 +84,7 @@ export async function DELETE(
     return NextResponse.json({ error: 'Number not found on your account.' }, { status: 404 });
   }
 
-  if (!(await deleteWhatsAppUserIfOwned(cleanNumber, session.user.email))) {
+  if (!(await deleteWhatsAppUserIfOwned(cleanNumber, session.user.email, sessionBackupClaim(existing).identity.key))) {
     return NextResponse.json({ error: 'Number no longer belongs to your account.' }, { status: 409 });
   }
   await removeNumberFromLiveBot(cleanNumber);

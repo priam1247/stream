@@ -103,11 +103,12 @@ test('queued unlink checks the current member owner and exact session generation
   const sessionId = 'a'.repeat(24);
   const fx = fixture(t, {
     whitelistChanged: true, whitelistVersion: '1234567890abcdef',
-    users: [{ number: '15550001111', enabled: true, addedBy: 'member@example.com' },
-      { number: '15550002222', enabled: true, addedBy: 'new-owner@example.com' }],
+    users: [{ number: '15550001111', enabled: true, addedBy: 'member@example.com', claimId: 'claim-one' },
+      { number: '15550002222', enabled: true, addedBy: 'new-owner@example.com', claimId: 'claim-two' }],
     commands: [
-      { id: 'ok', type: 'unlink', payload: { number: '15550001111', sessionId, owner: 'member@example.com' }, expiresAt: Date.now() + 60_000 },
-      { id: 'transferred', type: 'unlink', payload: { number: '15550002222', sessionId, owner: 'member@example.com' }, expiresAt: Date.now() + 60_000 },
+      { id: 'ok', type: 'unlink', payload: { number: '15550001111', sessionId, owner: 'member@example.com', claimKey: 'claim-one' }, expiresAt: Date.now() + 60_000 },
+      { id: 'transferred', type: 'unlink', payload: { number: '15550002222', sessionId, owner: 'member@example.com', claimKey: 'claim-two' }, expiresAt: Date.now() + 60_000 },
+      { id: 'old-claim', type: 'unlink', payload: { number: '15550001111', sessionId, owner: 'member@example.com', claimKey: 'old-claim' } },
       { id: 'invalid', type: 'unlink', payload: { number: '15550001111', sessionId: 'bad', owner: 'member@example.com' } },
     ],
   }, async () => ({}), async (number, id) => { calls.push([number, id]); return { number, sessionId: id, unlinked: true }; });
@@ -118,5 +119,23 @@ test('queued unlink checks the current member owner and exact session generation
   const results = fx.bodies[1].completedResults;
   assert.equal(results.find((r) => r.id === 'ok').ok, true);
   assert.equal(results.find((r) => r.id === 'transferred').ok, false);
+  assert.equal(results.find((r) => r.id === 'old-claim').ok, false);
   assert.equal(results.find((r) => r.id === 'invalid').ok, false);
+});
+
+test('member access waits until this process has both current portal snapshots', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-policy-ready-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let ready = 0; let calls = 0;
+  const sync = startDashboardSync({
+    dashboardUrl: 'https://dashboard.example', token: 'test-token', manualOnly: true, wlFile: path.join(root, 'whitelist.json'),
+    commandPolicy: { version: () => '', apply: () => {} },
+    onPermissionsReady: () => { ready++; },
+    fetchImpl: async () => ({ ok: true, json: async () => ++calls === 1
+      ? { whitelistChanged: true, whitelistVersion: '1234567890abcdef', users: [], commands: [] }
+      : { whitelistChanged: false, whitelistVersion: '1234567890abcdef', disabledMemberCommands: [], commandPolicyVersion: '0123456789abcdef', commands: [] } }),
+  });
+  t.after(() => sync.stop());
+  await sync.syncNow(); assert.equal(ready, 0);
+  await sync.syncNow(); assert.equal(ready, 1);
 });

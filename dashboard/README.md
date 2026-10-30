@@ -19,7 +19,7 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 | `JWT_SECRET_KEY` | **Required in production** | Signs HS256 session tokens (min 16 chars; generate via `openssl rand -hex 32`). Production startup refuses to run without it. |
 | `ADMIN_EMAIL` | Recommended | Comma-separated administrator email(s) allowed into `/admin` (default: `troykunsauka@gmail.com`). |
 | `ADMIN_INITIAL_PASSWORD` | Optional | Bootstraps the verified `ADMIN_EMAIL` account in D1 on first sign-in before email delivery is configured. |
-| `CLOUDFLARE_ACCOUNT_ID` / `D1_DATABASE_ID` / `CLOUDFLARE_API_TOKEN` | Required for durable serverless state | Cloudflare D1 stores accounts, permissions, numbers, bot settings and activity. Without D1 the portal uses `.data/zafar-db.json` on local disk, which must be writable and may be ephemeral or inconsistent across serverless instances. |
+| `CLOUDFLARE_ACCOUNT_ID` / `D1_DATABASE_ID` / `CLOUDFLARE_API_TOKEN` | Required for durable serverless state | Cloudflare D1 stores accounts, permissions, numbers, bot settings, activity, support messages, and encrypted session backups. Without D1 the portal uses `.data/zafar-db.json` on local disk, which must be writable and may be ephemeral or inconsistent across serverless instances. |
 | `RESEND_API_KEY` + `EMAIL_FROM` | Pick Resend **or** SMTP | Sends 6-digit verification & password-reset codes over HTTPS (works cleanly on serverless/edge hosts). |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Pick Resend **or** SMTP | Direct SMTP mail delivery (e.g. Gmail App Password on port `587` or `465`). |
 | `ZAFAR_AUTH_API_URL` | Optional (legacy migration only) | Leave empty. If set during migration from an older external auth service, existing accounts are verified once (6 s cap) and migrated permanently into local D1. |
@@ -79,6 +79,31 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
   email verification (even if `EMAIL_VERIFICATION_REQUIRED=false` was previously
   set); configure an email provider. Retrying a pending registration requires its
   original password so another registration cannot replace it.
+
+## Member approval, reports, and recovery
+
+- New member numbers can link first, then appear for owner approval under
+  **Members**. Pending numbers may pair but cannot execute commands; existing
+  approved numbers keep their access. One pending claim per member and the bot's
+  linked-account cap limit resource use. Blocking a member does not approve a
+  pending request.
+- **WhatsApp → Commands** switches individual member commands on or off. Aliases
+  and pending selections use the same canonical policy; the owner can still test.
+  Changes show **awaiting service sync** until the bot reports the matching
+  policy version. Work already running is not forcibly cancelled.
+- **Report a problem** is a private member/administrator conversation. The
+  server derives the member from the signed-in account and checks the admin role.
+  Production reports require D1 rather than silently using ephemeral Vercel disk;
+  local disk is for development only. Reports are website-only and are not email
+  notifications. Members should not send passwords or pairing codes.
+- Optional encrypted WhatsApp recovery requires D1, HTTPS bot sync, the updated
+  bot, a private stable `SESSION_BACKUP_KEY` on that bot, and a successfully saved
+  snapshot. The dashboard never receives the key or plaintext session credentials.
+  Check **WhatsApp → Sync** and follow the recovery instructions in the bot README
+  before moving hosts. A lost key, unsynchronized revocation, stale snapshot, or
+  WhatsApp revocation can require a fresh link. Run only one bot instance per
+  session. The former XS SFTP workflow now requires a deliberate manual
+  confirmation and never uploads merely because code was merged to main.
 
 ## Local Development
 

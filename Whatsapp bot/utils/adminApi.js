@@ -119,13 +119,13 @@ function listUsers() {
  * Register (or re-enable) a number.
  * @returns {{user:object, created:boolean}|null}
  */
-function upsertUser(number, label = '', { enabled = true, source = 'dashboard' } = {}) {
+function upsertUser(number, label = '', { enabled = true, pairAllowed = false, source = 'dashboard' } = {}) {
   const n = toNumber(number);
   if (!n) return null;
   const wl = readWL();
   const idx = findUserIndex(wl.users, `${n}@s.whatsapp.net`);
   if (idx === -1) {
-    const entry = { number: n, addedAt: Date.now(), enabled, source };
+    const entry = { number: n, addedAt: Date.now(), enabled, pairAllowed: pairAllowed === true, source };
     if (label) entry.label = String(label).slice(0, 60);
     wl.users.push(entry);
     writeWL(wl);
@@ -133,6 +133,7 @@ function upsertUser(number, label = '', { enabled = true, source = 'dashboard' }
   }
   const entry = wl.users[idx];
   entry.enabled = enabled !== false;
+  entry.pairAllowed = pairAllowed === true;
   entry.source = source;
   if (label) entry.label = String(label).slice(0, 60);
   writeWL(wl);
@@ -234,7 +235,7 @@ function startAdminApi({ port, token, allowedOrigins = [], hooks = {} } = {}) {
 
       if (req.method === 'POST' && route === '/api/users') {
         const body = await readBody(req);
-        const result = upsertUser(body.number, body.label, { enabled: body.enabled !== false });
+        const result = upsertUser(body.number, body.label, { enabled: body.enabled !== false, pairAllowed: body.pairAllowed === true });
         if (!result) return reply(400, { error: 'A valid phone number (with country code) is required.' });
         hooks.whitelistChanged?.();
         log.info(`A user was ${result.created ? 'added' : 'updated'}.`);
