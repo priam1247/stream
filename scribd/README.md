@@ -127,19 +127,19 @@ Scribd document  ──►  #outer_page_1 … #outer_page_N   (live reader DOM)
 
 ### Two engines, same output
 
-| | `--engine live` (default for normal docs) | `--engine fragment` |
+| | `--engine auto` (default) / `--engine live` | `--engine fragment` |
 |---|---|---|
-| what it does | screenshots the real Scribd reader page — maximum fidelity | fetches the page fragments, rebuilds the pages, screenshots those |
+| what it does | screenshots the real Scribd reader page — maximum fidelity; auto never changes renderers | fetches the page fragments, rebuilds the pages, screenshots those |
 | speed | ~1 page/s | ~4 pages/s |
-| works for | any normal document | any document, including ones whose reader crashes |
-| needs | the reader to start | `scribd_pdf.py` next to it |
+| works for | documents the live reader can load | any document, including ones whose reader crashes |
+| needs | the reader to start; explicit `live` also needs `--allow-live` | `scribd_pdf.py` next to it |
 
-`--engine auto` (the default) picks for you: documents over 800 pages go straight
-to `fragment` because **Scribd's own reader runs out of memory** on them (it
-allocates one page object per page — on a 6,154-page document the renderer
-crashes, which is what produced a 10-minute hang before this guard existed). If
-`live` wedges or crashes mid-run, the tool says so and automatically finishes the
-job with `fragment`.
+`--engine auto` (the default) uses the live reader only. It never retries with a
+different renderer, including after capture errors, incomplete pages, paywalls,
+or on very large documents. This avoids silently changing page geometry and
+reintroducing clipping or incorrect PDF dimensions. If you want the fragment
+renderer, select `--engine fragment` explicitly; if the live reader fails, the
+job reports that failure rather than switching renderers.
 
 ### Use
 
@@ -254,8 +254,8 @@ On top of that, any element painted over the page box is hidden before each shot
 After the live reader loads, its visible text is checked against `PAYWALL_MARKERS`
 ("Unlock the next…", "subscribe to read", …). If the gate is up:
 
-* `--engine auto` (default) → the run is **redone with the fragment engine**, which
-  reads the page content directly and never renders the overlay;
+* `--engine auto` (default) → the reader reports the paywall; it does not switch
+  renderers automatically. Add Scribd cookies or explicitly select `fragment`;
 * `--engine live` → you get an explicit warning instead of silently blurred pages.
 
 For document 272351848 all 36 pages are served as complete fragments with
@@ -419,7 +419,7 @@ python scribd_all.py 272351848 -o output --engine fragment
 ./scribd_job.sh --stop
 ```
 
-`scribd_job.sh` defaults to `--engine fragment --tabs 1` and writes to `output/`,
+`scribd_job.sh` defaults to `--engine auto --tabs 1` and writes to `output/`,
 logging to `scribd-job.log`. Download the PDFs from the Files tab afterwards.
 
 ### RAM budget (you have ~4.5 GB, shared with the bot)
@@ -1250,28 +1250,20 @@ always produced clean PDFs:
 Because step 3 is ours, the page geometry can never be wrong: every page comes
 out at the same size, fully inside its box.
 
-**The reader view is gone from the normal path.** Rendering Scribd's own reader
-(screenshots of the live JS page) is the thing that produced the broken output:
-when the reader's stylesheet fails to arrive, its JS still paints the text at
-native size, so pages come out enormous and clipped — the "NEPS, GPG, 2015"
-half-title and body text spilling off the right edge. Measured on document
-435440888 in the same session:
-
-| path | result |
-| --- | --- |
-| fragment rebuild | 26/26 pages, one size (1804x2548), 10 s, correct |
-| reader view | 120 s page-load timeout, then no page containers at all |
-
-`--engine live` still exists for the rare document whose fragments are gated but
-whose reader is not, and it now needs **both** `--engine live` and
-`--allow-live`. The web UI and the Discord bot cannot select it at all.
+**Auto uses the live reader only and never falls back to fragments.** It does
+not change renderer after an error, incomplete capture, paywall, or for a large
+document. This avoids silently switching page geometry. If the live reader
+fails, the job reports the error; choose `fragment` explicitly only when you
+want that renderer. Directly forcing `--engine live` remains guarded by
+`--allow-live`; the default `auto` route uses the live reader without that extra
+flag.
 
 ### Is the panel running this version?
 
 The banner prints a build stamp:
 
 ```
-INFO  build   2026-10-30c (fragment rendering)
+INFO  build   2026-10-30e (live-reader auto, no renderer fallback)
 ```
 
 If that line is missing, or says something older, the panel is still running a

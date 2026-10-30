@@ -58,17 +58,27 @@ case "${1:-}" in
   "")       echo "usage: $0 <URL_OR_ID | --from-file LIST> [tool options]"; exit 1 ;;
 esac
 
-# sensible defaults for a small box: the fragment engine is far cheaper than
-# driving Scribd's reader, and one browser keeps RAM flat
-DEFAULTS="--engine fragment --tabs 1"
+# Auto uses only the live reader and never switches renderers implicitly.
+# One tab keeps the memory footprint bounded on a small box. Explicit caller
+# options win over these defaults.
+DEFAULT_ARGS=()
+has_engine=0
+has_tabs=0
+for arg in "$@"; do
+  case "$arg" in
+    --engine|--engine=*) has_engine=1 ;;
+    --tabs|--tabs=*) has_tabs=1 ;;
+  esac
+done
+[ "$has_engine" = 1 ] || DEFAULT_ARGS+=(--engine auto)
+[ "$has_tabs" = 1 ] || DEFAULT_ARGS+=(--tabs 1)
 
 mkdir -p "${HERE}/output"
 {
   echo "=== $(date -u '+%Y-%m-%d %H:%M:%SZ') starting: $* ==="
 } >>"$LOG"
 
-# shellcheck disable=SC2086
-nohup "$PY" -u "$TOOL" "$@" $DEFAULTS -o "${HERE}/output" >>"$LOG" 2>&1 &
+nohup "$PY" -u "$TOOL" "$@" "${DEFAULT_ARGS[@]}" -o "${HERE}/output" >>"$LOG" 2>&1 &
 echo $! >"$PIDFILE"
 
 sleep 1

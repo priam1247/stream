@@ -608,27 +608,52 @@ ss.audit_pages([], _jl)
 check("no pages, no crash", _jl.lines == [])
 
 # --------------------------------------------------------------------------- #
-print("-- one reliable rendering path --")
+print("-- live-reader PDF policy with no renderer fallback --")
 _src = Path("scribd_shot.py").read_text()
+_convert = _src[_src.index("def convert("): _src.index("def _offload_pdf(")]
 check(
-    "live rendering needs an explicit --allow-live",
-    "allow_live" in _src and "--allow-live" in _src,
+    "auto uses the live reader before the explicit fragment route",
+    _convert.index('if engine in ("auto", "live")')
+    < _convert.index("if cap is None:")
+    < _convert.index("cap = capture_fragments("),
 )
 check(
-    "without it, live falls back to the fragment engine",
-    'if engine == "live" and not allow_live:' in _src,
+    "auto never reassigns itself to fragments",
+    'engine = "fragment"' not in _convert,
 )
-check("the build is stamped so an old panel file is visible", "BUILD =" in _src)
+check(
+    "live mode requires the explicit allow flag",
+    'if engine == "live" and not allow_live:' in _convert,
+)
+check(
+    "the build is stamped so an old panel file is visible",
+    'BUILD = "2026-10-30e"' in _src,
+)
+check(
+    "CloakBrowser context preserves its browser identity",
+    'if chromium_launch.browser_choice() == "cloak":' in _src
+    and 'kw.pop("user_agent", None)' in _src,
+)
 
 _web = Path("scribd_web.py").read_text()
+check(
+    "the web UI defaults to auto",
+    '<option value="auto" selected>' in _web
+    and 'body.get("engine") or "auto"' in _web,
+)
+check(
+    "explicit live selection enables the guarded reader",
+    'if engine == "live":\n        cmd.append("--allow-live")' in _web,
+)
 check(
     "the web ui never sends an unknown engine",
     'engine not in ("fragment", "live", "auto")' in _web,
 )
 _bot = Path("discord_bot.py").read_text()
 check(
-    "the bot cannot ask for the reader",
-    'engine in ("fragment", "auto")' in _bot,
+    "the bot defaults to auto and keeps the supported engine allowlist",
+    'engine: str = "auto"' in _bot
+    and 'engine in ("fragment", "auto")' in _bot,
 )
 
 print()
