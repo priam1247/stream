@@ -81,7 +81,8 @@ it('filters the member’s own numbers and distinguishes approval from pairing',
     ? reply({ user: { id: 1, name: 'Member', email: 'member@example.com', isAdmin: false } })
     : reply({ ok: true, adminEmail: 'owner@example.com', memberAllowed: true, scribdAllowed: false, botEnabledForMembers: true, botServerLinked: true, botConnected: true, botNumber: null, whitelistSync: 'pending', numbers: [{ number: '265991234567', label: 'Mobile', enabled: true }] })));
   render(<MemberPortal />);
-  await screen.findByRole('navigation', { name: 'Console sections' });
+  const nav = await screen.findByRole('navigation', { name: 'Console sections' });
+  fireEvent.click(within(nav).getByRole('button', { name: 'Numbers (1)' }));
   expect(screen.getByText(/Approve your number, then request a code/)).toBeTruthy();
   fireEvent.change(screen.getByRole('searchbox', { name: 'Search my numbers' }), { target: { value: 'no match' } });
   expect(screen.getByText('No matching numbers')).toBeTruthy();
@@ -94,7 +95,8 @@ it('explains a linking pause while still allowing a member to pause their existi
     ? reply({ user: { id: 1, name: 'Member', email: 'member@example.com', isAdmin: false } })
     : reply({ ok: true, adminEmail: 'owner@example.com', memberAllowed: true, scribdAllowed: false, botEnabledForMembers: false, botServerLinked: true, botReachable: true, botConnected: true, botNumber: null, numbers: [{ number: '265991234567', label: 'Mobile', enabled: true }] })));
   render(<MemberPortal />);
-  await screen.findByRole('navigation', { name: 'Console sections' });
+  const nav = await screen.findByRole('navigation', { name: 'Console sections' });
+  fireEvent.click(within(nav).getByRole('button', { name: 'Numbers (1)' }));
   expect(screen.getByText(/New number approvals and pairing are paused/)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Get Code' }).hasAttribute('disabled')).toBe(true);
   expect(screen.getByRole('button', { name: 'Pause' }).hasAttribute('disabled')).toBe(false);
@@ -119,6 +121,8 @@ it('requests a second account code without treating issuance as a completed link
   });
   vi.stubGlobal('fetch', fetchMock);
   render(<MemberPortal />);
+  const nav = await screen.findByRole('navigation', { name: 'Console sections' });
+  fireEvent.click(within(nav).getByRole('button', { name: 'Numbers (2)' }));
   await screen.findByText('Linked and connected');
   expect(screen.getByText('Waiting for linking')).toBeTruthy();
   const buttons = screen.getAllByRole('button', { name: 'Get Code' });
@@ -128,7 +132,6 @@ it('requests a second account code without treating issuance as a completed link
   expect(await screen.findByText('TEST-CODE')).toBeTruthy();
   expect(screen.getByText(/status updates only after linking succeeds/)).toBeTruthy();
   expect(screen.getByText('Waiting for linking')).toBeTruthy();
-  const nav = screen.getByRole('navigation', { name: 'Console sections' });
   fireEvent.click(within(nav).getByRole('button', { name: 'Status' }));
   expect(screen.queryByText('TEST-CODE')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'View code' }));
@@ -175,6 +178,7 @@ it('marks member status unknown if a refresh fails, then recovers', async () => 
   }));
   render(<MemberPortal />);
   const nav = await screen.findByRole('navigation', { name: 'Console sections' });
+  fireEvent.click(within(nav).getByRole('button', { name: 'Numbers (1)' }));
   expect(await screen.findByText('Linked and connected')).toBeTruthy();
   fireEvent.click(within(nav).getByRole('button', { name: 'Status' }));
   expect(screen.getByText('WhatsApp connected')).toBeTruthy();
@@ -185,10 +189,30 @@ it('marks member status unknown if a refresh fails, then recovers', async () => 
   expect(screen.getByText('No current status')).toBeTruthy();
   expect(screen.queryByText('WhatsApp connected')).toBeNull();
   expect(screen.queryByText('12')).toBeNull();
-  fireEvent.click(within(nav).getByRole('button', { name: 'Numbers (1)' }));
+  expect(within(nav).queryByRole('button', { name: 'Numbers (1)' })).toBeNull();
+  fireEvent.click(within(nav).getByRole('button', { name: 'Numbers' }));
   expect(screen.getByText('Link status unknown')).toBeTruthy();
 
   unavailable = false;
   fireEvent.click(screen.getByTitle('Refresh'));
   expect(await screen.findByText('Linked and connected')).toBeTruthy();
+});
+
+it('starts in a personal workspace without owner controls or other members’ tools', async () => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/auth/me'
+    ? reply({ user: { id: 2, name: 'Maya Member', email: 'maya@example.com', isAdmin: false } })
+    : reply({ ok: true, memberAllowed: true, scribdAllowed: false, botEnabledForMembers: true, botServerLinked: true, botReachable: true, botConnected: true, numbers: [{ number: '15550001111', label: 'My phone', enabled: true }] }));
+  vi.stubGlobal('fetch', fetchMock);
+  render(<MemberPortal />);
+  expect(await screen.findByRole('heading', { name: 'Welcome, Maya' })).toBeTruthy();
+  const nav = screen.getByRole('navigation', { name: 'Console sections' });
+  for (const ownerOnly of ['Members', 'Power', 'Hosting', 'Sync']) {
+    expect(within(nav).queryByRole('button', { name: ownerOnly })).toBeNull();
+  }
+  expect(screen.queryByRole('link', { name: /owner workspace/i })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Live Server Analytics' })).toBeNull();
+  expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/api/admin/'))).toBe(false);
+  fireEvent.click(within(screen.getByRole('region', { name: 'Your tools' })).getByRole('button', { name: /My numbers/ }));
+  expect(screen.getByRole('heading', { name: 'WhatsApp numbers' })).toBeTruthy();
+  expect(screen.getByText('+15550001111')).toBeTruthy();
 });

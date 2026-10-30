@@ -12,7 +12,7 @@ const overview = {
   ok: true, adminEmail: 'owner@example.com', botServerLinked: true, botReachable: true, connected: true,
   botNumber: '265991234567', botApiUrl: '', hasBotToken: false, hasBotSyncToken: true,
   botEnabledForMembers: true, storageEngine: 'cloudflare-d1', connectionMode: 'heartbeat', whitelistSync: 'pending',
-  lastSeenSecondsAgo: 3, ramUsedMB: 32, diskUsedMB: 10, diskBudgetMB: 100, queueLight: 0, queueHeavy: 0,
+  lastSeenSecondsAgo: 3, botVersion: '1.2.3', ramUsedMB: 32, diskUsedMB: 10, diskBudgetMB: 100, queueLight: 0, queueHeavy: 0,
   panelConfigured: true, panelUrl: 'https://panel.example.com', panelServerId: 'server-1', hasPanelApiKey: true,
   scribdTokenConfigured: false, scribdSecureTransport: false,
   users: [{ number: '265991234567', label: 'Mobile', enabled: true, addedBy: 'member@example.com' }], members: [member],
@@ -40,6 +40,30 @@ beforeEach(() => { window.scrollTo = vi.fn(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('owner control room', () => {
+  it('redirects members before fetching or showing owner controls', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input) === '/api/auth/me'
+      ? reply({ user: { id: 2, name: 'Member', email: 'member@example.com', isAdmin: false } })
+      : reply({ error: 'Unexpected request' }, 500));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<AdminConsole />);
+    await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/dashboard'));
+    expect(screen.queryByRole('navigation', { name: 'Owner sections' })).toBeNull();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith('/api/admin/'))).toBe(false);
+  });
+
+  it('opens focused owner pages from workspace shortcuts', async () => {
+    mockApi();
+    render(<AdminConsole />);
+    await screen.findByRole('heading', { name: 'Overview' });
+    const shortcuts = screen.getByRole('region', { name: 'Workspace shortcuts' });
+    expect(within(shortcuts).getByText('1 enabled number')).toBeTruthy();
+    fireEvent.click(within(shortcuts).getByRole('button', { name: /WhatsApp/ }));
+    expect(screen.getByRole('navigation', { name: 'WhatsApp pages' })).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Owner sections' })).getByRole('button', { name: 'Home' }));
+    fireEvent.click(within(screen.getByRole('region', { name: 'Workspace shortcuts' })).getByRole('button', { name: /Members/ }));
+    expect(screen.getByRole('heading', { name: 'Members' })).toBeTruthy();
+  });
+
   it('shows separate observed service states, warnings and website-only activity', async () => {
     mockApi();
     render(<AdminConsole />);
@@ -102,6 +126,7 @@ describe('owner control room', () => {
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' }), { target: { value: 'Mobile' } });
 
     fireEvent.click(within(pages).getByRole('button', { name: 'Status' }));
+    expect(screen.getByText('Reported version 1.2.3')).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Live Server Analytics' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Stop service' })).toBeNull();
     expect(screen.queryByRole('searchbox', { name: 'Search WhatsApp numbers' })).toBeNull();

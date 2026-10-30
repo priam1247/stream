@@ -1,24 +1,20 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   Activity,
   AlertCircle,
   BookOpen,
   CheckCircle2,
+  Home,
   Command,
   Library,
   Link2,
   Loader2,
   LockKeyhole,
   Search,
-  LogOut,
   Plus,
-  RefreshCw,
-  ShieldAlert,
-  ShieldCheck,
   Smartphone,
   Trash2,
 } from 'lucide-react';
@@ -41,8 +37,10 @@ import { MediaVaultDesk } from './media-vault-desk';
 import { ScribdDesk } from './scribd-desk';
 import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
+import { MemberHome, type MemberDestination } from './member-home';
+import { WorkspaceShell, type WorkspaceNavGroup } from './workspace-shell';
 
-type MemberTab = 'numbers' | 'commands' | 'vault' | 'scribd' | 'status';
+type MemberTab = 'home' | MemberDestination;
 
 export function MemberPortal() {
   const router = useRouter();
@@ -51,8 +49,8 @@ export function MemberPortal() {
   const [quota, setQuota] = useState<UserQuota | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
 
-  const [tab, setTab] = useState<MemberTab>('numbers');
-  const [visitedTabs, setVisitedTabs] = useState<MemberTab[]>(['numbers']);
+  const [tab, setTab] = useState<MemberTab>('home');
+  const [visitedTabs, setVisitedTabs] = useState<MemberTab[]>(['home']);
   const [refreshing, setRefreshing] = useState(false);
   const [statusUnavailable, setStatusUnavailable] = useState(false);
   const [notice, setNotice] = useState<{ text: string; bad?: boolean; pair?: boolean } | null>(null);
@@ -308,101 +306,36 @@ export function MemberPortal() {
     overview.memberAllowed && (overview.botEnabledForMembers || user.isAdmin);
   const canAccessScribd = user.isAdmin || (overview.memberAllowed && overview.scribdAllowed === true);
   const filteredNumbers = overview.numbers.filter((item) => `${item.number} ${item.label || ''}`.toLowerCase().includes(numberSearch.trim().toLowerCase()));
+  const navGroups: WorkspaceNavGroup<MemberTab>[] = [
+    { label: 'My space', items: [
+      { id: 'home', label: 'Home', icon: Home },
+      { id: 'numbers', label: 'Numbers', icon: Smartphone, ...(!statusUnavailable ? { ariaLabel: `Numbers (${overview.numbers.length})`, badge: overview.numbers.length } : {}) },
+    ] },
+    { label: 'Tools', items: [
+      { id: 'commands', label: 'Commands', icon: Command },
+      { id: 'vault', label: 'Vault', icon: BookOpen },
+      { id: 'scribd', label: 'Scribd', icon: Library, ...(!statusUnavailable && !canAccessScribd ? { badge: 'Private' } : {}) },
+    ] },
+    { label: 'Service', items: [
+      { id: 'status', label: 'Status', icon: Activity },
+    ] },
+  ];
 
   return (
-    <div className="bg-portal-canvas min-h-screen w-full overflow-x-hidden">
-      {/* Top Server Bar */}
-      <header className="sticky top-0 z-30 border-b border-slate-200/90 bg-white/95 backdrop-blur-md">
-        <div className="mx-auto max-w-[1080px] px-3.5 py-2.5 sm:px-5 sm:py-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-teal-600 font-mono text-xs font-extrabold text-white shadow-sm">
-                <Smartphone className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <div className="truncate text-sm font-bold text-slate-900">
-                  Control Room
-                </div>
-                <div className="flex items-center gap-1.5 font-mono text-[10px] text-slate-500">
-                  {overview.memberAllowed ? (
-                    <span className="inline-flex items-center gap-1 text-emerald-700">
-                      <ShieldCheck className="h-3 w-3" />
-                      Allowed
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-rose-600">
-                      <ShieldAlert className="h-3 w-3" />
-                      Restricted
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-1.5">
-              {user.isAdmin && (
-                <Link
-                  href="/admin"
-                  className="inline-flex items-center gap-1 rounded-xl bg-teal-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-teal-700"
-                >
-                  <ShieldCheck className="h-3.5 w-3.5" />
-                  <span>Admin</span>
-                </Link>
-              )}
-
-              <button
-                type="button"
-                onClick={() => loadMemberStatus(false)}
-                disabled={refreshing}
-                title="Refresh"
-                className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:text-slate-900"
-              >
-                {refreshing ? (
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin text-teal-600" />
-                ) : (
-                  <Activity className="h-3.5 w-3.5" />
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setAccountOpen(true)}
-                className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-800 shadow-sm hover:border-teal-300"
-              >
-                <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-teal-50 font-mono text-[10px] font-bold uppercase text-teal-700 ring-1 ring-teal-200">
-                  {(user.name || user.email).slice(0, 2)}
-                </span>
-                <span className="hidden max-w-[96px] truncate sm:inline">
-                  {user.name}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSignOut}
-                title="Sign out"
-                className="flex h-8 w-8 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600"
-              >
-                <LogOut className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-
-
-        </div>
-      </header>
-
-      <nav aria-label="Console sections" className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur-md sm:static sm:mx-auto sm:mt-3 sm:max-w-[1080px] sm:gap-1 sm:rounded-2xl sm:border sm:bg-slate-100 sm:p-1 sm:shadow-none">
-        {([
-          { key: 'numbers', label: 'Numbers', icon: Smartphone },
-          { key: 'commands', label: 'Commands', icon: Command },
-          { key: 'vault', label: 'Vault', icon: BookOpen },
-          { key: 'scribd', label: 'Scribd', icon: Library },
-          { key: 'status', label: 'Status', icon: Activity },
-        ] as const).map(({ key, label, icon: Icon }) => <button key={key} type="button" aria-label={key === 'numbers' ? `Numbers (${overview.numbers.length})` : label} aria-current={tab === key ? 'page' : undefined} onClick={() => navigate(key)} className={`flex min-h-[60px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 py-1.5 text-[10px] font-semibold transition sm:min-h-11 sm:flex-row sm:gap-2 sm:text-xs ${tab === key ? 'text-teal-700 sm:bg-white sm:shadow-sm' : 'text-slate-500 hover:text-slate-900'}`}><Icon className="h-[19px] w-[19px]" /><span className="truncate">{label}</span></button>)}
-      </nav>
-
-      <main className="mx-auto max-w-[1080px] px-3.5 pb-28 pt-4 sm:px-5 sm:pb-12 sm:pt-6">
+    <WorkspaceShell
+      kind="member"
+      user={user}
+      groups={navGroups}
+      current={tab}
+      onNavigate={navigate}
+      mobileItems={['home', 'numbers', 'vault', 'scribd']}
+      mobileMore
+      refreshing={refreshing}
+      onRefresh={() => { void loadMemberStatus(false); }}
+      onAccount={() => setAccountOpen(true)}
+      onSignOut={handleSignOut}
+      alternate={user.isAdmin ? { href: '/admin', label: 'Owner view', ariaLabel: 'Open owner workspace' } : undefined}
+    >
         {notice && (
           <div
             role={notice.bad ? 'alert' : 'status'}
@@ -445,6 +378,8 @@ export function MemberPortal() {
             Account restricted
           </div>
         )}
+
+        {tab === 'home' && <MemberHome user={user} overview={overview} statusUnavailable={statusUnavailable} canAccessScribd={canAccessScribd} onNavigate={navigate} />}
 
         {tab === 'status' && (
           <div className="space-y-4">
@@ -647,8 +582,6 @@ export function MemberPortal() {
         {visitedTabs.includes('vault') && <div hidden={tab !== 'vault'}><MediaVaultDesk /></div>}
         {visitedTabs.includes('scribd') && canAccessScribd && <div hidden={tab !== 'scribd'}><ScribdDesk bottomNav active={tab === 'scribd'} /></div>}
         {tab === 'scribd' && !canAccessScribd && <section className="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm"><span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-50 text-teal-700"><LockKeyhole className="h-6 w-6" /></span><h1 className="mt-4 text-base font-bold text-slate-900">Scribd is private</h1><p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">Ask the owner for access to the shared library.</p></section>}
-      </main>
-
       <AccountModal
         open={accountOpen}
         onClose={() => setAccountOpen(false)}
@@ -657,6 +590,6 @@ export function MemberPortal() {
         onUpdateName={handleUpdateName}
         onSignOut={handleSignOut}
       />
-    </div>
+    </WorkspaceShell>
   );
 }
