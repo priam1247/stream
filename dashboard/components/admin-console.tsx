@@ -49,7 +49,9 @@ import { ControlRoomHome } from './control-room-home';
 import { ControlRoomActivity } from './control-room-activity';
 import { SectionNav } from './section-nav';
 import { WorkspaceShell, type WorkspaceNavGroup } from './workspace-shell';
-import { getRoomAlerts, type ActivityPage, type OwnerTab, type RoomTarget, type ScribdPage, type ScribdSnapshot, type WhatsAppPage } from '@/lib/control-room';
+import { getRoomAlerts, type ActivityPage, type OwnerTab, type RoomAlert, type RoomTarget, type ScribdPage, type ScribdSnapshot, type WhatsAppPage } from '@/lib/control-room';
+import { isRoomAlertRead, resolvedRoomAlertIds } from '@/lib/room-alert-reads';
+import { useRoomAlertReads } from './use-room-alert-reads';
 import type { ScribdStatusPayload } from '@/lib/scribd-types';
 
 type AdminTab = OwnerTab;
@@ -660,6 +662,17 @@ export function AdminConsole() {
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
+  const alerts = useMemo(() => getRoomAlerts(data, overviewCheckedAt, overviewError, scribd, panelStatus),
+    [data, overviewCheckedAt, overviewError, scribd, panelStatus]);
+  const resolvedIds = useMemo(() => resolvedRoomAlertIds(data, overviewCheckedAt, overviewError, scribd, panelStatus),
+    [data, overviewCheckedAt, overviewError, scribd, panelStatus]);
+  const { reads, markRead } = useRoomAlertReads(user?.email || '', resolvedIds);
+  const unreadAlertIds = new Set(alerts.filter((alert) => !isRoomAlertRead(alert, reads)).map((alert) => alert.id));
+  const openAlert = (alert: RoomAlert) => {
+    markRead(alert);
+    navigate(alert.target);
+  };
+
   if (checking || !user) {
     return (
       <div className="bg-portal-canvas flex min-h-screen items-center justify-center px-4">
@@ -674,7 +687,6 @@ export function AdminConsole() {
   const lastRestartEvent = events.find((event) => event.action === 'Service restart requested' || event.action === 'Bot restart requested');
   const allowedMembersCount = data.members.filter((m) => m.allowed).length;
   const enabledNumbersCount = data.users.filter((u) => u.enabled).length;
-  const alerts = getRoomAlerts(data, overviewCheckedAt, overviewError, scribd, panelStatus);
   const navGroups: WorkspaceNavGroup<AdminTab>[] = [
     { label: 'Workspace', items: [
       { id: 'overview', label: 'Home', icon: Home },
@@ -683,7 +695,7 @@ export function AdminConsole() {
     ] },
     { label: 'Management', items: [
       { id: 'members', label: 'Members', icon: Users },
-      { id: 'activity', label: 'Activity', icon: Bell, ...(alerts.length ? { badge: alerts.length, alert: true } : {}) },
+      { id: 'activity', label: 'Activity', icon: Bell, ...(unreadAlertIds.size ? { badge: unreadAlertIds.size, alert: true } : {}) },
     ] },
   ];
 
@@ -738,9 +750,9 @@ export function AdminConsole() {
           </div>
         )}
 
-        {tab === 'overview' && <ControlRoomHome data={data} overviewCheckedAt={overviewCheckedAt} overviewError={overviewError} scribd={scribd} alerts={alerts} onNavigate={navigate} />}
+        {tab === 'overview' && <ControlRoomHome data={data} overviewCheckedAt={overviewCheckedAt} overviewError={overviewError} scribd={scribd} alerts={alerts} onNavigate={navigate} onOpenAlert={openAlert} />}
         {scribdVisited && <div hidden={tab !== 'scribd'}><ScribdDesk bottomNav active={tab === 'scribd'} page={scribdPage} onPageChange={setScribdPage} /></div>}
-        {activityVisited && <div hidden={tab !== 'activity'}><ControlRoomActivity alerts={alerts} events={events} storage={eventsStorage} loading={eventsLoading} error={eventsError} page={activityPage} onPageChange={setActivityPage} onRefresh={() => { void loadActivity(false); void loadOverview(true, false); void loadScribdStatus(); void loadPanelStatus(); }} onNavigate={navigate} /></div>}
+        {activityVisited && <div hidden={tab !== 'activity'}><ControlRoomActivity alerts={alerts} unreadAlertIds={unreadAlertIds} events={events} storage={eventsStorage} loading={eventsLoading} error={eventsError} page={activityPage} onPageChange={setActivityPage} onRefresh={() => { void loadActivity(false); void loadOverview(true, false); void loadScribdStatus(); void loadPanelStatus(); }} onOpenAlert={openAlert} /></div>}
 
         {tab === 'server' && (
           <div className="space-y-4">

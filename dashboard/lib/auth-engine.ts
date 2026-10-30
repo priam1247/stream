@@ -576,15 +576,18 @@ export async function getAuthenticatedSession(req: NextRequest): Promise<{
     if (err instanceof JwtConfigError) throw err;
     return null;
   }
-  if (!claims) return null;
+  // Scoped download tickets must never authenticate general dashboard APIs.
+  if (!claims || claims.purpose) return null;
 
-  const account = await findAccountByEmailOrUsername(claims.email || claims.sub);
+  const user = await getVerifiedAuthUser(claims.email || claims.sub);
+  return user ? { user, quota: null } : null;
+}
+
+/** Re-read account and grants for a previously verified, scoped ticket. */
+export async function getVerifiedAuthUser(identifier: string): Promise<AuthUser | null> {
+  const account = await findAccountByEmailOrUsername(identifier);
   if (!account || !account.isVerified) return null;
-
-  return {
-    user: await buildAuthUser(account),
-    quota: null,
-  };
+  return buildAuthUser(account);
 }
 
 export async function updateUserDisplayName(

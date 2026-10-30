@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { recordActivity } from '@/lib/activity';
 import { AuthServiceError, verifyUserEmailCode } from '@/lib/auth-engine';
-import { attachSessionCookie } from '@/lib/jwt';
+import { clearSessionCookie } from '@/lib/jwt';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,10 +27,8 @@ export async function POST(req: NextRequest) {
       user: result.user || null,
     });
 
-    if (result.sessionToken) {
-      attachSessionCookie(res, result.sessionToken);
-    }
-    return res;
+    // Expire any cookie left over from the old persistent-session design.
+    return result.sessionToken ? clearSessionCookie(res) : res;
   } catch (err) {
     if (err instanceof AuthServiceError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

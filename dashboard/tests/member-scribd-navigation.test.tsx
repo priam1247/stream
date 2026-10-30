@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MemberPortal } from '../components/member-portal';
+import { clearSavedSessionToken, setSavedSessionToken } from '../lib/client-session';
 
 const navigation = vi.hoisted(() => ({ replace: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
@@ -8,8 +9,8 @@ vi.mock('next/link', () => ({ default: ({ href, children }: { href: string; chil
 
 const reply = (body: unknown): Response => ({ ok: true, status: 200, json: async () => body } as Response);
 
-beforeEach(() => { window.scrollTo = vi.fn(); });
-afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); });
+beforeEach(() => { localStorage.clear(); setSavedSessionToken('test-session'); window.scrollTo = vi.fn(); });
+afterEach(() => { cleanup(); clearSavedSessionToken(); localStorage.clear(); vi.unstubAllGlobals(); });
 
 it('retains the owner’s real Scribd search across main tabs regardless of a member grant', async () => {
   let granted = true;

@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearSavedSessionToken, setSavedSessionToken } from '../lib/client-session';
 import { ScribdDesk } from '../components/scribd-desk';
 import type { ScribdHit } from '../lib/scribd-types';
 
@@ -30,6 +31,8 @@ function mockApi(search: SearchReply, run?: () => Promise<Response>, status?: ()
       return reply(status ? status() : { panelOnline: true, state: 'idle', active: 0, finished: 0, failed: 0, cancelled: false, items: [] });
     }
     if (url === '/api/scribd/files') return reply({ files: [] });
+    if (url.startsWith('/api/scribd/thumb?')) return { ok: true, blob: async () => new Blob(['image'], { type: 'image/jpeg' }) } as Response;
+    if (url === '/api/scribd/file-ticket') return reply({ ok: true });
     if (url === '/api/scribd/find') {
       const body = JSON.parse(String(init?.body || '{}')) as { page?: number; query?: string };
       return reply(search(body.page || 1, body.query || ''));
@@ -50,8 +53,13 @@ function submitSearch(term = 'mathematics') {
   fireEvent.click(screen.getByRole('button', { name: 'Find' }));
 }
 
+beforeEach(() => {
+  setSavedSessionToken('test-session');
+  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:test-cover'), revokeObjectURL: vi.fn() }));
+});
 afterEach(() => {
   cleanup();
+  clearSavedSessionToken();
   localStorage.clear();
   vi.unstubAllGlobals();
 });
@@ -59,8 +67,8 @@ afterEach(() => {
 describe('Scribd desk', () => {
   it('shows small covers in batches and keeps selections when results are hidden', async () => {
     const hits = Array.from({ length: 18 }, (_, i) => book(i + 1));
-    mockApi(() => ({ hits, page: 1, max_page: 1, total: hits.length }));
-    const { container } = render(<ScribdDesk />);
+    const fetchMock = mockApi(() => ({ hits, page: 1, max_page: 1, total: hits.length }));
+    const { container, unmount } = render(<ScribdDesk />);
 
     expect(screen.queryByText('Panel settings')).toBeNull();
     expect(screen.queryByText('How it downloads')).toBeNull();
@@ -70,7 +78,9 @@ describe('Scribd desk', () => {
     const first = await screen.findByRole('checkbox', { name: 'Select Book 1' }) as HTMLInputElement;
     expect(screen.getByText('Showing 12 of 18')).toBeTruthy();
     expect(screen.queryByRole('checkbox', { name: 'Select Book 13' })).toBeNull();
-    expect(container.querySelector('img')?.getAttribute('src')).toBe(`/api/scribd/thumb?url=${encodeURIComponent('https://img.scribdassets.com/cover.jpg')}`);
+    await waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBe('blob:test-cover'));
+    const coverCall = fetchMock.mock.calls.find(([url]) => String(url).startsWith('/api/scribd/thumb?'));
+    expect(coverCall?.[1]?.headers).toMatchObject({ Authorization: 'Bearer test-session' });
     expect(screen.getAllByText('Cover unavailable').length).toBeGreaterThan(0);
 
     fireEvent.click(first);
@@ -91,6 +101,8 @@ describe('Scribd desk', () => {
     expect(screen.getByRole('button', { name: 'Download selected (18)' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Clear selection' }));
     expect(screen.getByRole('button', { name: 'Download selected (0)' }).hasAttribute('disabled')).toBe(true);
+    unmount();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-cover');
   });
 
   it('falls back gracefully if a returned cover fails to load', async () => {
@@ -98,8 +110,8 @@ describe('Scribd desk', () => {
     const { container } = render(<ScribdDesk />);
     submitSearch();
     await screen.findByRole('checkbox', { name: 'Select Book 1' });
+    await waitFor(() => expect(container.querySelector('img')).toBeTruthy());
     const image = container.querySelector('img');
-    expect(image).toBeTruthy();
     fireEvent.error(image!);
     expect(container.querySelector('img')).toBeNull();
     expect(screen.getByText('Cover unavailable')).toBeTruthy();
@@ -189,7 +201,7 @@ describe('Scribd desk', () => {
       detail: '', error: '', pdf: '', size: 0, started: 0, offloaded: false, recovered: false, drime: null,
       ...overrides,
     });
-    mockApi(() => ({ hits: [], page: 1, max_page: 1 }), undefined, () => ({
+    const fetchMock = mockApi(() => ({ hits: [], page: 1, max_page: 1 }), undefined, () => ({
       panelOnline: true, state: 'running', active: 1, finished: 3, failed: 1, cancelled: false,
       items: [
         item('1', { title: 'Working book', status: 'running', done: 5, total: 10 }),
@@ -207,11 +219,40 @@ describe('Scribd desk', () => {
     expect(screen.queryByRole('link', { name: 'local.pdf' })).toBeNull();
     fireEvent.click(within(screen.getByRole('navigation', { name: 'Scribd pages' })).getByRole('button', { name: 'Files' }));
     expect(screen.queryByRole('progressbar', { name: 'Progress for Working book' })).toBeNull();
-    expect(screen.getByRole('link', { name: 'local.pdf' }).getAttribute('href')).toBe('/api/scribd/file?name=local.pdf');
+    const localFile = screen.getByRole('link', { name: 'local.pdf' });
+    expect(localFile.getAttribute('href')).toBe('/api/scribd/file?name=local.pdf');
+    const downloadClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    fireEvent.click(localFile);
+    await waitFor(() => expect(downloadClick).toHaveBeenCalledOnce());
+    const ticket = fetchMock.mock.calls.find(([url]) => String(url) === '/api/scribd/file-ticket');
+    expect(ticket?.[1]).toMatchObject({ method: 'POST', headers: { Authorization: 'Bearer test-session' } });
+    expect(JSON.parse(String(ticket?.[1]?.body))).toEqual({ name: 'local.pdf' });
+    fireEvent.click(screen.getByRole('link', { name: 'Save' }));
+    await waitFor(() => expect(downloadClick).toHaveBeenCalledTimes(2));
+    expect(fetchMock.mock.calls.filter(([url]) => String(url) === '/api/scribd/file-ticket')).toHaveLength(2);
+    downloadClick.mockRestore();
     const drimeLinks = screen.getAllByRole('link', { name: 'Open Drime' });
     expect(drimeLinks[0].getAttribute('href')).toBe('https://dri.me/shared');
     expect(drimeLinks[1].getAttribute('href')).toBe('https://app.drime.cloud/');
     expect(screen.getByText(/No share link was supplied/)).toBeTruthy();
+  });
+
+  it('shows the authorization error instead of downloading when PDF access is revoked', async () => {
+    const fetchMock = mockApi(() => ({ hits: [] }), undefined, () => ({
+      panelOnline: true, state: 'done', active: 0, finished: 1, failed: 0, cancelled: false,
+      items: [{ id: '1', title: 'Book', status: 'done', pdf: 'local.pdf', size: 10 }],
+    }));
+    const original = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => String(input) === '/api/scribd/file-ticket'
+      ? reply({ error: 'Scribd access has been revoked.' }, 403)
+      : original(input, init));
+    render(<ScribdDesk />);
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Scribd pages' })).getByRole('button', { name: 'Files' }));
+    const downloadClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    fireEvent.click(await screen.findByRole('link', { name: 'Save' }));
+    expect(await screen.findByText('Scribd access has been revoked.')).toBeTruthy();
+    expect(downloadClick).not.toHaveBeenCalled();
+    downloadClick.mockRestore();
   });
 
   it('sends cancellation and clear commands only after confirmation', async () => {

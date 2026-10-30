@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemberPortal } from '../components/member-portal';
+import { clearSavedSessionToken, setSavedSessionToken } from '../lib/client-session';
 import { normalizeMalawiNumber } from '../lib/member-link';
 
 const navigation = vi.hoisted(() => ({ replace: vi.fn() }));
@@ -42,8 +43,8 @@ function setup(options: { state?: string; reachable?: boolean; existing?: boolea
   return { state, fetchMock };
 }
 
-beforeEach(() => { localStorage.clear(); window.scrollTo = vi.fn(); });
-afterEach(() => { cleanup(); localStorage.clear(); vi.unstubAllGlobals(); vi.useRealTimers(); });
+beforeEach(() => { localStorage.clear(); setSavedSessionToken('test-session'); window.scrollTo = vi.fn(); });
+afterEach(() => { cleanup(); clearSavedSessionToken(); localStorage.clear(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('member linking experience', () => {
   it('normalizes Malawi formats and rejects invalid input', () => {
@@ -60,6 +61,8 @@ describe('member linking experience', () => {
     expect(await screen.findByRole('heading', { name: 'Welcome, Maya' })).toBeTruthy();
     expect(screen.getByLabelText('Name')).toBeTruthy();
     expect(screen.getByLabelText('Phone number').getAttribute('inputmode')).toBe('tel');
+    expect(screen.getByLabelText('Phone number').getAttribute('placeholder')).toBe('265991234567');
+    expect(screen.getByText('Enter 265 followed by your WhatsApp number.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Get code' })).toBeTruthy();
     expect(screen.queryByRole('navigation', { name: 'Console sections' })).toBeNull();
     expect(screen.queryByText(/No numbers approved|0 approved|Label/)).toBeNull();

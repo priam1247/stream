@@ -3,12 +3,13 @@
 import { useMemo, useState } from 'react';
 import { Activity, AlertCircle, Bell, CheckCircle2, ChevronRight, Clock3, RefreshCw, Search } from 'lucide-react';
 import type { ActivityCategory, ActivityEvent } from '@/lib/types';
-import type { ActivityPage, RoomAlert, RoomTarget } from '@/lib/control-room';
+import type { ActivityPage, RoomAlert } from '@/lib/control-room';
 import { serviceText } from '@/lib/whatsapp-accounts';
 import { SectionNav } from './section-nav';
 
 interface Props {
   alerts: RoomAlert[];
+  unreadAlertIds: ReadonlySet<string>;
   events: ActivityEvent[];
   storage: 'cloudflare-d1' | 'local' | null;
   loading: boolean;
@@ -16,7 +17,7 @@ interface Props {
   page: ActivityPage;
   onPageChange: (page: ActivityPage) => void;
   onRefresh: () => void;
-  onNavigate: (target: RoomTarget) => void;
+  onOpenAlert: (alert: RoomAlert) => void;
 }
 
 type Filter = 'all' | ActivityCategory;
@@ -34,7 +35,7 @@ function dateText(value: string) {
   return Number.isFinite(date.getTime()) ? date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : 'Time unavailable';
 }
 
-export function ControlRoomActivity({ alerts, events, storage, loading, error, page, onPageChange, onRefresh, onNavigate }: Props) {
+export function ControlRoomActivity({ alerts, unreadAlertIds, events, storage, loading, error, page, onPageChange, onRefresh, onOpenAlert }: Props) {
   const [filter, setFilter] = useState<Filter>('all');
   const [search, setSearch] = useState('');
   const visible = useMemo(() => {
@@ -52,13 +53,13 @@ export function ControlRoomActivity({ alerts, events, storage, loading, error, p
 
       {page === 'alerts' && (
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5" aria-label="Current alerts">
-          <div className="flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-bold text-slate-900"><Bell className="h-4 w-4 text-teal-600" /> Current alerts</h2><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">{alerts.length}</span></div>
+          <div className="flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-bold text-slate-900"><Bell className="h-4 w-4 text-teal-600" /> Current alerts</h2><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">{alerts.length} active · {unreadAlertIds.size} unread</span></div>
           {alerts.length ? (
             <div className="mt-2 divide-y divide-slate-100">
               {alerts.map((alert) => (
-                <button type="button" key={alert.id} onClick={() => onNavigate(alert.target)} className="flex min-h-14 w-full items-start gap-2.5 py-3 text-left">
+                <button type="button" key={alert.id} onClick={() => onOpenAlert(alert)} className="flex min-h-14 w-full items-start gap-2.5 py-3 text-left">
                   <AlertCircle className={`mt-0.5 h-4 w-4 shrink-0 ${alert.level === 'danger' ? 'text-rose-600' : 'text-amber-600'}`} />
-                  <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-slate-800">{alert.title}</span><span className="mt-0.5 block text-xs leading-5 text-slate-500">{alert.detail}</span></span>
+                  <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-slate-800">{alert.title} {unreadAlertIds.has(alert.id) && <span className="ml-1 rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-700">New</span>}</span><span className="mt-0.5 block text-xs leading-5 text-slate-500">{alert.detail}</span></span>
                   <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-slate-400" />
                 </button>
               ))}

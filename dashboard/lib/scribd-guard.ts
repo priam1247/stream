@@ -14,23 +14,9 @@ import type { AuthUser } from '@/lib/types';
 
 export type ScribdGate = { response: NextResponse } | { user: AuthUser };
 
-export async function guardScribdRequest(
-  req: NextRequest,
-  options: { adminOnly?: boolean } = {},
-): Promise<ScribdGate> {
-  let session: Awaited<ReturnType<typeof getAuthenticatedSession>>;
-  try {
-    session = await getAuthenticatedSession(req);
-  } catch (err) {
-    if (err instanceof JwtConfigError) {
-      return {
-        response: NextResponse.json({ error: err.message }, { status: 503 }),
-      };
-    }
-    throw err;
-  }
-
-  if (!session) {
+/** Apply the same current-account and grant checks to sessions and file tickets. */
+export function gateScribdUser(user: AuthUser | null, options: { adminOnly?: boolean } = {}): ScribdGate {
+  if (!user) {
     return {
       response: NextResponse.json(
         { error: 'Please sign in before using the Scribd panel.' },
@@ -39,7 +25,7 @@ export async function guardScribdRequest(
     };
   }
 
-  if (options.adminOnly && !session.user.isAdmin) {
+  if (options.adminOnly && !user.isAdmin) {
     return {
       response: NextResponse.json(
         { error: 'This Scribd action is restricted to administrators.' },
@@ -48,7 +34,7 @@ export async function guardScribdRequest(
     };
   }
 
-  if (!session.user.isAdmin && (!session.user.memberAllowed || !session.user.scribdAllowed)) {
+  if (!user.isAdmin && (!user.memberAllowed || !user.scribdAllowed)) {
     return {
       response: NextResponse.json(
         { error: 'Scribd access has not been granted for this account.' },
@@ -57,5 +43,20 @@ export async function guardScribdRequest(
     };
   }
 
-  return { user: session.user };
+  return { user };
+}
+
+export async function guardScribdRequest(
+  req: NextRequest,
+  options: { adminOnly?: boolean } = {},
+): Promise<ScribdGate> {
+  try {
+    const session = await getAuthenticatedSession(req);
+    return gateScribdUser(session?.user || null, options);
+  } catch (err) {
+    if (err instanceof JwtConfigError) {
+      return { response: NextResponse.json({ error: err.message }, { status: 503 }) };
+    }
+    throw err;
+  }
 }

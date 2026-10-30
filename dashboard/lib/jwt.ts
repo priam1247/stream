@@ -2,9 +2,9 @@ import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 
 export const SESSION_COOKIE_NAME = 'zafar_session';
-export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
-// Reject pre-fix sessions, which may have been issued by the old verification bypass.
-export const SESSION_VERSION = 2;
+export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // absolute JWT lifetime
+// Reject older, persistent sessions after switching to in-memory sign-in.
+export const SESSION_VERSION = 3;
 const MIN_SECRET_LENGTH = 16;
 
 export class JwtConfigError extends Error {
@@ -24,6 +24,9 @@ export interface SessionClaims {
   exp: number;
   iat?: number;
   ver?: number;
+  /** Reserved for a short-lived, file-specific download ticket. */
+  purpose?: string;
+  file?: string;
 }
 
 function isProductionRuntime(): boolean {
@@ -168,21 +171,9 @@ export function extractSessionToken(req: NextRequest): string | null {
       ?.replace(/^Bearer\s+/i, '')
       .trim();
 
-  if (bearer) return bearer;
-
-  const cookie = req.cookies.get(SESSION_COOKIE_NAME)?.value?.trim();
-  return cookie || null;
-}
-
-export function attachSessionCookie(res: NextResponse, token: string): NextResponse {
-  res.cookies.set(SESSION_COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: SESSION_MAX_AGE_SECONDS,
-  });
-  return res;
+  // Browser cookies can be restored after Chrome is closed; only an explicit
+  // in-memory bearer token may authenticate a dashboard session.
+  return bearer || null;
 }
 
 export function clearSessionCookie(res: NextResponse): NextResponse {

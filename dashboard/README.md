@@ -16,7 +16,7 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 
 | Variable | Required? | Purpose |
 |---|---|---|
-| `JWT_SECRET_KEY` | **Required in production** | Signs HS256 session cookies (min 16 chars; generate via `openssl rand -hex 32`). Production startup refuses to run without it. |
+| `JWT_SECRET_KEY` | **Required in production** | Signs HS256 session tokens (min 16 chars; generate via `openssl rand -hex 32`). Production startup refuses to run without it. |
 | `ADMIN_EMAIL` | Recommended | Comma-separated administrator email(s) allowed into `/admin` (default: `troykunsauka@gmail.com`). |
 | `ADMIN_INITIAL_PASSWORD` | Optional | Bootstraps the verified `ADMIN_EMAIL` account in D1 on first sign-in before email delivery is configured. |
 | `CLOUDFLARE_ACCOUNT_ID` / `D1_DATABASE_ID` / `CLOUDFLARE_API_TOKEN` | Required for durable serverless state | Cloudflare D1 stores accounts, permissions, numbers, bot settings and activity. Without D1 the portal uses `.data/zafar-db.json` on local disk, which must be writable and may be ephemeral or inconsistent across serverless instances. |
@@ -52,6 +52,9 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 
 ## Owner control room and security
 
+- Sign-in is kept only in the current page's memory. A full refresh or a closed,
+  reopened or restored tab requires sign-in again; pending member pairing progress
+  and its resend cooldown remain recoverable after signing in.
 - The owner home combines bot bridge, WhatsApp, Scribd, number-list and optional
   hosting-panel checks. Hosting status is requested only when a panel API key and
   explicit server ID are configured, at most once per minute during routine polling
@@ -66,7 +69,9 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
   pairing codes, tokens or full phone numbers. D1 retains entries for approximately
   90 days (cleanup occurs when writing); local fallback keeps the latest 1,000.
   Alerts are derived from checks while a page is open; there is no background or
-  email notification when the website is closed.
+  email notification when the website is closed. Opening an alert marks it read
+  in that owner's browser, but the active warning stays visible until resolved.
+  A checked condition that clears and later returns is shown as new again.
 - This version closes a verified-account verification bypass and rejects older
   session tokens. All existing users must sign in again after deployment. Deploy
   the fix promptly and remove or restrict any older publicly accessible deployment
@@ -152,9 +157,11 @@ effective connection, but rejects attempts to save legacy settings.
   `/api/job`, `/api/cancel`, and `/api/clear`. Clearing also removes waiting jobs
   and history but does not stop the currently running job. The current server's
   clear operation does not itself save the changed history to disk.
-- Finished local PDFs are streamed through `/api/scribd/file`. When the server
-  says a PDF was offloaded to Drime, the dashboard uses its share link if one was
-  provided; otherwise the user must open the Drime folder. The dashboard cannot
+- Finished local PDFs are streamed through `/api/scribd/file`. A short-lived,
+  file-specific HttpOnly ticket lets the browser download without putting a session
+  token in the URL or buffering the entire PDF. When the server says a PDF was
+  offloaded to Drime, the dashboard uses its share link if one was provided;
+  otherwise the user must open the Drime folder. The dashboard cannot
   retrieve a deleted local file without a share link or a separate Drime integration.
 - The web service does not support the old HMAC direct-file links. The legacy
   `SCRIBD_PUBLIC_URL` direct-download setting is not used. Very large streamed
