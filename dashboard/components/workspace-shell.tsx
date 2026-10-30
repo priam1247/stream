@@ -52,6 +52,7 @@ function Navigation<T extends string>({ groups, current, label, onChoose }: {
                 key={id}
                 type="button"
                 aria-label={ariaLabel || itemLabel}
+                aria-description={alert && typeof badge === 'number' ? `${badge} unread ${badge === 1 ? 'alert' : 'alerts'}` : undefined}
                 aria-current={current === id ? 'page' : undefined}
                 onClick={() => onChoose(id)}
                 className={`group flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
@@ -233,8 +234,8 @@ export function WorkspaceShell<T extends string>({
 
       <nav aria-label={mobileLabel} className={`fixed inset-x-0 bottom-0 z-40 grid border-t border-slate-200 bg-white/95 px-1 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(15,23,42,0.06)] backdrop-blur-md lg:hidden ${shortcuts.length + (mobileMore ? 1 : 0) === 5 ? 'grid-cols-5' : 'grid-cols-4'}`}>
         {shortcuts.map(({ id, label, icon: Icon, ariaLabel, alert, badge }) => (
-          <button key={id} type="button" aria-label={ariaLabel || label} aria-current={current === id ? 'page' : undefined} onClick={() => onNavigate(id)} className={`flex min-h-[60px] min-w-0 touch-manipulation flex-col items-center justify-center gap-1 rounded-xl px-1 py-1.5 text-[11px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-600 ${current === id ? 'text-teal-700' : 'text-slate-500'}`}>
-            <span className="relative"><Icon aria-hidden="true" className="h-[19px] w-[19px]" strokeWidth={1.8} />{alert && badge !== undefined && <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full border-2 border-white bg-rose-500" />}</span>
+          <button key={id} type="button" aria-label={ariaLabel || label} aria-description={alert && typeof badge === 'number' ? `${badge} unread ${badge === 1 ? 'alert' : 'alerts'}` : undefined} aria-current={current === id ? 'page' : undefined} onClick={() => onNavigate(id)} className={`flex min-h-[60px] min-w-0 touch-manipulation flex-col items-center justify-center gap-1 rounded-xl px-1 py-1.5 text-[11px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-600 ${current === id ? 'text-teal-700' : 'text-slate-500'}`}>
+            <span className="relative"><Icon aria-hidden="true" className="h-[19px] w-[19px]" strokeWidth={1.8} />{alert && badge !== undefined && <span aria-hidden="true" className="absolute -right-3 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full border border-white bg-rose-600 px-0.5 text-[9px] font-bold leading-none text-white tabular-nums">{badge}</span>}</span>
             <span className="truncate">{label}</span>
           </button>
         ))}

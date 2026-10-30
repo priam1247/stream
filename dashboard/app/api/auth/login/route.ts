@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { recordActivity } from '@/lib/activity';
 import { AuthServiceError, signInWithEmailPassword } from '@/lib/auth-engine';
-import { attachSessionCookie, JwtConfigError } from '@/lib/jwt';
+import { clearSessionCookie, JwtConfigError } from '@/lib/jwt';
 import {
   checkRateLimit,
   clearRateLimit,
@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
       token: sessionToken,
       user,
     });
-    return attachSessionCookie(res, sessionToken);
+    return clearSessionCookie(res);
   } catch (err) {
     if (err instanceof JwtConfigError) {
       return NextResponse.json({ error: err.message }, { status: 503 });

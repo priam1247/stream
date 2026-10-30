@@ -6,7 +6,7 @@ export function normalizeMalawiNumber(input: string): { number?: string; error?:
   let national = compact.replace(/^0+/, '');
   if (national.startsWith('265')) national = national.slice(3).replace(/^0+/, '');
   if (!/^\d{9}$/.test(national)) {
-    return { error: 'Enter a Malawi number with 9 digits after +265, for example 0991234567.' };
+    return { error: 'Enter a Malawi number in the format 265991234567.' };
   }
   return { number: `265${national}` };
 }

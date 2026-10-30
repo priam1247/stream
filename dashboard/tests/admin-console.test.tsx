@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminConsole } from '../components/admin-console';
+import { clearSavedSessionToken, setSavedSessionToken } from '../lib/client-session';
 
 const router = { replace: vi.fn() };
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
@@ -36,8 +37,8 @@ function mockApi(scribdFailed = 0) {
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 }
-beforeEach(() => { window.scrollTo = vi.fn(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+beforeEach(() => { localStorage.clear(); setSavedSessionToken('test-session'); window.scrollTo = vi.fn(); });
+afterEach(() => { cleanup(); clearSavedSessionToken(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('owner control room', () => {
   it('redirects members before fetching or showing owner controls', async () => {
@@ -69,7 +70,7 @@ describe('owner control room', () => {
     render(<AdminConsole />);
     const status = await screen.findByRole('region', { name: 'Service status' });
     expect(within(status).getByText('Service bridge')).toBeTruthy();
-    expect(within(status).getByText('Reachable')).toBeTruthy();
+    expect(within(status).getByRole('button', { name: /Service bridge/ }).textContent).toContain('Reachable');
     expect(within(status).getByText('Connected')).toBeTruthy();
     expect(within(status).getByText('Pending')).toBeTruthy();
     expect(await screen.findByText('Scribd direct access may be open')).toBeTruthy();
@@ -82,6 +83,67 @@ describe('owner control room', () => {
     expect(screen.queryByRole('region', { name: 'Current alerts' })).toBeNull();
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search activity' }), { target: { value: 'member@example.com' } });
     expect(screen.getByText('Scribd access granted')).toBeTruthy();
+  });
+
+  it('reduces the unread badge for each opened alert without hiding unresolved warnings', async () => {
+    mockApi();
+    const view = render(<AdminConsole />);
+    const nav = await screen.findByRole('navigation', { name: 'Owner sections' });
+    const activity = within(nav).getByRole('button', { name: 'Activity' });
+    const mobileActivity = within(screen.getByRole('navigation', { name: 'Owner shortcuts' })).getByRole('button', { name: 'Activity' });
+    await waitFor(() => expect(activity.getAttribute('aria-description')).toBe('3 unread alerts'));
+    expect(within(mobileActivity).getByText('3')).toBeTruthy();
+    fireEvent.click(activity);
+    expect(screen.getByText('3 active · 3 unread')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Number list awaiting sync/ }));
+    expect(activity.getAttribute('aria-description')).toBe('2 unread alerts');
+    expect(within(mobileActivity).getByText('2')).toBeTruthy();
+    fireEvent.click(activity);
+    expect(screen.getByText('3 active · 2 unread')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Number list awaiting sync/ })).toBeTruthy();
+
+    view.unmount();
+    render(<AdminConsole />);
+    const restoredNav = await screen.findByRole('navigation', { name: 'Owner sections' });
+    const restoredActivity = within(restoredNav).getByRole('button', { name: 'Activity' });
+    await waitFor(() => expect(restoredActivity.getAttribute('aria-description')).toBe('2 unread alerts'));
+    fireEvent.click(restoredActivity);
+    fireEvent.click(screen.getByRole('button', { name: /Scribd direct access may be open/ }));
+    expect(restoredActivity.getAttribute('aria-description')).toBe('1 unread alert');
+    fireEvent.click(restoredActivity);
+    fireEvent.click(screen.getByRole('button', { name: /Scribd connection is unencrypted/ }));
+    expect(restoredActivity.hasAttribute('aria-description')).toBe(false);
+    fireEvent.click(restoredActivity);
+    expect(screen.getByText('3 active · 0 unread')).toBeTruthy();
+  });
+
+  it('marks a warning new again only after its condition is known to have cleared', async () => {
+    const fetchMock = mockApi();
+    const original = fetchMock.getMockImplementation()!;
+    let syncState = 'pending';
+    fetchMock.mockImplementation(async (input, init) => String(input) === '/api/admin/status'
+      ? reply({ ...overview, whitelistSync: syncState }) : original(input, init));
+    render(<AdminConsole />);
+    const nav = await screen.findByRole('navigation', { name: 'Owner sections' });
+    const activity = within(nav).getByRole('button', { name: 'Activity' });
+    await waitFor(() => expect(activity.getAttribute('aria-description')).toBe('3 unread alerts'));
+    fireEvent.click(activity);
+    fireEvent.click(screen.getByRole('button', { name: /Number list awaiting sync/ }));
+    expect(activity.getAttribute('aria-description')).toBe('2 unread alerts');
+    fireEvent.click(within(nav).getByRole('button', { name: 'Home' }));
+    syncState = 'unknown';
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByText('Unconfirmed')).toBeTruthy());
+    syncState = 'pending';
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByText('Pending')).toBeTruthy());
+    expect(activity.getAttribute('aria-description')).toBe('2 unread alerts');
+    syncState = 'synced';
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(screen.getByText('Up to date')).toBeTruthy());
+    syncState = 'pending';
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(activity.getAttribute('aria-description')).toBe('3 unread alerts'));
   });
 
   it('grants a member Scribd access individually', async () => {

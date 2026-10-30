@@ -24,8 +24,9 @@ vi.mock('../lib/email-service', () => ({
 }));
 
 import { POST as verifyRoute } from '../app/api/auth/verify/route';
-import { completePasswordReset, registerUserAccount } from '../lib/auth-engine';
+import { completePasswordReset, getAuthenticatedSession, registerUserAccount } from '../lib/auth-engine';
 import { SESSION_VERSION, signSessionJwt, verifySessionJwt } from '../lib/jwt';
+import { signScribdDownloadTicket } from '../lib/scribd-download-ticket';
 
 function account(overrides: Partial<StoredPortalAccount> = {}): StoredPortalAccount {
   return {
@@ -82,6 +83,8 @@ describe('verification and session security', () => {
     expect(body.token).toBeTruthy();
     expect(verifySessionJwt(body.token)).toMatchObject({ sub: 'owner@example.com', ver: SESSION_VERSION });
     expect(response.headers.get('set-cookie')).toContain('zafar_session=');
+    expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
+    expect(response.headers.get('set-cookie')).not.toContain(body.token);
     expect(db.account).toMatchObject({ isVerified: true, verificationCode: null, codeExpiresAt: null });
     const replay = await verifyRoute(request());
     expect(replay.status).toBe(400);
@@ -121,12 +124,27 @@ describe('verification and session security', () => {
     }
   });
 
+  it('requires an explicit full-session header and rejects restored cookies or file tickets', async () => {
+    db.account = account({ isVerified: true });
+    const token = signSessionJwt({ sub: 'owner@example.com' });
+    const cookieRequest = new NextRequest('http://dashboard.test/api/auth/me', { headers: { cookie: `zafar_session=${token}` } });
+    const headerRequest = new NextRequest('http://dashboard.test/api/auth/me', { headers: { authorization: `Bearer ${token}` } });
+    const fileTicket = signScribdDownloadTicket('owner@example.com', 'book.pdf');
+    const ticketRequest = new NextRequest('http://dashboard.test/api/auth/me', { headers: { authorization: `Bearer ${fileTicket}` } });
+    expect(await getAuthenticatedSession(cookieRequest)).toBeNull();
+    expect(await getAuthenticatedSession(ticketRequest)).toBeNull();
+    expect(await getAuthenticatedSession(headerRequest)).toMatchObject({ user: { email: 'owner@example.com' } });
+  });
+
   it('rejects all legacy sessions while accepting newly issued sessions', () => {
     const secret = process.env.JWT_SECRET_KEY!;
     const enc = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
     const input = `${enc({ alg: 'HS256', typ: 'JWT' })}.${enc({ sub: 'owner@example.com', exp: Math.floor(Date.now() / 1000) + 3600 })}`;
     const legacy = `${input}.${crypto.createHmac('sha256', secret).update(input).digest('base64url')}`;
+    const v2Input = `${enc({ alg: 'HS256', typ: 'JWT' })}.${enc({ sub: 'owner@example.com', ver: 2, exp: Math.floor(Date.now() / 1000) + 3600 })}`;
+    const oldPersistent = `${v2Input}.${crypto.createHmac('sha256', secret).update(v2Input).digest('base64url')}`;
     expect(verifySessionJwt(legacy)).toBeNull();
+    expect(verifySessionJwt(oldPersistent)).toBeNull();
     expect(verifySessionJwt(signSessionJwt({ sub: 'owner@example.com' }))).toMatchObject({ ver: SESSION_VERSION });
   });
 });

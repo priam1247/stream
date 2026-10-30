@@ -40,9 +40,32 @@ const PAGES: { id: ScribdPage; label: string }[] = [
 ];
 
 function ResultCover({ thumbnail }: { thumbnail?: string }) {
-  const [failedSrc, setFailedSrc] = useState('');
   const cover = safeScribdThumbnail(thumbnail);
-  const src = cover ? `/api/scribd/thumb?url=${encodeURIComponent(cover)}` : undefined;
+  const [image, setImage] = useState<{ cover: string; url: string } | null>(null);
+
+  useEffect(() => {
+    if (!cover) return;
+    const controller = new AbortController();
+    let objectUrl = '';
+    let active = true;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/scribd/thumb?url=${encodeURIComponent(cover)}`, {
+          headers: authHeaders(), signal: controller.signal, cache: 'force-cache',
+        });
+        if (!response.ok) return;
+        const blob = await response.blob();
+        if (!active || !blob.type.startsWith('image/')) return;
+        objectUrl = URL.createObjectURL(blob);
+        setImage({ cover, url: objectUrl });
+      } catch { /* Keep the cover placeholder when a thumbnail cannot be loaded. */ }
+    })();
+    return () => {
+      active = false;
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [cover]);
 
   return (
     <span aria-hidden="true" className="relative block aspect-[3/4] overflow-hidden bg-slate-100">
@@ -50,14 +73,14 @@ function ResultCover({ thumbnail }: { thumbnail?: string }) {
         <BookOpen className="h-6 w-6 text-teal-600/50 sm:h-7 sm:w-7" />
         <span className="text-[9px] font-semibold leading-tight">Cover unavailable</span>
       </span>
-      {src && src !== failedSrc && (
+      {image && image.cover === cover && (
         <img
-          src={src}
+          src={image.url}
           alt=""
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
-          onError={() => setFailedSrc(src)}
+          onError={() => setImage(null)}
           className="absolute inset-0 h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
         />
       )}
@@ -383,6 +406,31 @@ export function ScribdDesk({ bottomNav = false, active = true, page: controlledP
   }, [say, loadStatus]);
 
   const fileUrl = useCallback((name: string) => `/api/scribd/file?name=${encodeURIComponent(name)}`, []);
+  const saveFile = useCallback(async (event: React.MouseEvent<HTMLAnchorElement>, name: string) => {
+    event.preventDefault();
+    try {
+      const response = await fetch('/api/scribd/file-ticket', {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ name }), cache: 'no-store',
+      });
+      if (!response.ok) {
+        const json = await readJson(response);
+        say(String(json.error || 'The PDF could not be authorized.'), true);
+        return;
+      }
+      // A temporary, file-specific HttpOnly cookie allows the browser to stream
+      // the PDF directly, without a session token in the URL or a large Blob.
+      const link = document.createElement('a');
+      link.href = fileUrl(name);
+      link.download = name;
+      link.rel = 'noreferrer';
+      link.hidden = true;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch {
+      say('Could not start the PDF download.', true);
+    }
+  }, [fileUrl, say]);
   const files = useMemo(() => filesFromJob(status?.items || []), [status]);
   const shownFiles = files.filter((file) => (fileFilter === 'all' || file.source === fileFilter) && `${file.name} ${file.title}`.toLowerCase().includes(fileQuery.trim().toLowerCase()));
   const displayHits = useMemo(() => {
@@ -755,7 +803,7 @@ export function ScribdDesk({ bottomNav = false, active = true, page: controlledP
                 <li key={`${file.id}:${file.name}`} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
                   <div className="min-w-0 flex-1">
                     {file.source === 'server' ? (
-                      <a href={fileUrl(file.name)} download={file.name} className="block truncate text-xs font-semibold text-slate-900 underline-offset-2 hover:text-teal-700 hover:underline">
+                      <a href={fileUrl(file.name)} download={file.name} onClick={(event) => void saveFile(event, file.name)} className="block truncate text-xs font-semibold text-slate-900 underline-offset-2 hover:text-teal-700 hover:underline">
                         {file.name}
                       </a>
                     ) : (
@@ -767,7 +815,7 @@ export function ScribdDesk({ bottomNav = false, active = true, page: controlledP
                     )}
                   </div>
                   {file.source === 'server' ? (
-                    <a href={fileUrl(file.name)} download={file.name} className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
+                    <a href={fileUrl(file.name)} download={file.name} onClick={(event) => void saveFile(event, file.name)} className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700">
                       <Download className="h-3.5 w-3.5" /> Save
                     </a>
                   ) : (
