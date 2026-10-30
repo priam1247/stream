@@ -263,6 +263,20 @@ function startAdminApi({ port, token, allowedOrigins = [], hooks = {} } = {}) {
         }
       }
 
+      if (req.method === 'POST' && route === '/api/unlink') {
+        const body = await readBody(req);
+        const number = toNumber(body.number);
+        const sessionId = String(body.sessionId || '');
+        if (!/^\d{7,15}$/.test(number) || !/^[a-f0-9]{24}$/.test(sessionId)) {
+          return reply(400, { error: 'A valid linked session is required.' });
+        }
+        if (typeof hooks.unlinkAccount !== 'function') {
+          return reply(501, { error: 'Unlinking is not available on this service.' });
+        }
+        const result = await hooks.unlinkAccount(number, sessionId);
+        return reply(200, { ok: true, ...result });
+      }
+
       if (req.method === 'POST' && route === '/api/pair') {
         const body = await readBody(req);
         const number = toNumber(body.number);

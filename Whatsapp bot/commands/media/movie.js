@@ -162,7 +162,7 @@ async function offerChoices(sock, msg, extra, matches, job, kind) {
   const lines = optionLabels.map((lbl, i) => `*${i + 1}.* ${lbl}`);
   const isSeries = kind === 'series';
   const header = `🎬 *${matches.length} ${isSeries ? 'series' : 'movies'}* for *${job.title}*`;
-  const fallbackText = `${header}\n\n${lines.join('\n')}\n\n_Reply 1–${matches.length}_`;
+  const fallbackText = `${header}\n\n${lines.join('\n')}\n\n_Reply ${config.prefix}1–${config.prefix}${matches.length}_`;
 
   await selections.sendPollOrText(sock, msg, extra, {
     pollName: `${header}\nTap a title:`,
@@ -223,7 +223,7 @@ async function askQuality(sock, msg, extra, meta, job) {
   await selections.sendPollOrText(sock, msg, extra, {
     pollName: header,
     optionLabels,
-    fallbackText: `${header}\n\n${lines.join('\n')}\n\n_Reply 1–${options.length}_`,
+    fallbackText: `${header}\n\n${lines.join('\n')}\n\n_Reply ${config.prefix}1–${config.prefix}${options.length}_`,
     selector: {
       headerTitle: `🎬 ${title}`,
       bodyText: 'Select download quality:',

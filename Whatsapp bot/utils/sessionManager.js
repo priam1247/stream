@@ -70,7 +70,9 @@ function createSessionManager(opts) {
     entry.status = state;
     if (!entry.number || manifest.accounts[entry.number]?.attempt !== entry.attempt) return;
     if (manifest.accounts[entry.number].state === state) return;
-    try { writeRecord(entry.number, { attempt: entry.attempt, state }); }
+    const previous = manifest.accounts[entry.number];
+    const linkedAt = previous.linkedAt || (state === 'active' && previous.state === 'pending' ? Date.now() : undefined);
+    try { writeRecord(entry.number, { ...previous, attempt: entry.attempt, state, ...(linkedAt ? { linkedAt } : {}) }); }
     catch (err) { log.error(`Could not save linked-account state: ${err.message}`); }
   }
 
@@ -375,10 +377,39 @@ function createSessionManager(opts) {
       if (!number) continue;
       let state = entry.connected ? 'connected' : entry.status === 'pending' ? 'awaiting_link' : entry.status === 'active' ? 'connecting' : entry.status;
       if (entry.number && entry.status === 'active' && !allowed(entry.number)) state = 'paused';
-      accounts.push({ number, state });
+      const record = entry.number ? manifest.accounts[entry.number] : null;
+      accounts.push({ number, state, ...(entry.attempt ? { sessionId: entry.attempt } : {}),
+        ...(record?.linkedAt ? { linkedAt: record.linkedAt } : {}) });
     }
     const online = accounts.filter((a) => a.state === 'connected');
     return { connected: online.length > 0, botNumber: online[0]?.number || null, accounts };
+  }
+
+  // Revoke only the explicitly identified additional session. An old queued
+  // unlink must never disconnect a newer pairing or the legacy primary socket.
+  async function unlinkAccount(rawNumber, expectedSessionId) {
+    const number = String(rawNumber || '').replace(/\D/g, '');
+    const attempt = String(expectedSessionId || '');
+    if (!NUMBER_RE.test(number) || !ATTEMPT_RE.test(attempt)) {
+      throw Object.assign(new Error('Invalid linked session.'), { statusCode: 400 });
+    }
+    const entry = entries.get(`linked:${number}`);
+    if (!entry || entry.attempt !== attempt || manifest.accounts[number]?.attempt !== attempt) {
+      throw Object.assign(new Error('This linking session has changed. Refresh and try again.'), { statusCode: 409 });
+    }
+    if (entry.status === 'logged_out' || entry.status === 'expired') {
+      await retire(entry, 'Session unlinked');
+      return { number, sessionId: attempt, unlinked: true };
+    }
+    if (!entry.connected || !entry.sock || typeof entry.sock.logout !== 'function') {
+      throw Object.assign(new Error('The linked number is offline. Try again when it reconnects.'), { statusCode: 503 });
+    }
+    // Baileys sends WhatsApp's remove-companion-device request. Do not claim
+    // success, remove approval, or delete credentials when that request fails.
+    await entry.sock.logout('Unlinked from the dashboard');
+    mark(entry, 'logged_out');
+    await retire(entry, 'Session unlinked');
+    return { number, sessionId: attempt, unlinked: true };
   }
 
   function refreshPermissions() {
@@ -400,7 +431,7 @@ function createSessionManager(opts) {
     await Promise.all([...entries.values()].map((entry) => retire(entry, 'Service stopped')));
   }
 
-  return { start, stop, requestPair, status, refreshPermissions, reconnectAll };
+  return { start, stop, requestPair, unlinkAccount, status, refreshPermissions, reconnectAll };
 }
 
 module.exports = { createSessionManager };

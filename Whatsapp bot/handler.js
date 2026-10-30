@@ -7,13 +7,9 @@ const database = require('./database');
 const selections = require('./utils/selections');
 const { loadCommands } = require('./utils/commandLoader');
 const { jidVariants, isSystemJid } = require('./utils/jid');
-const { readWL, findAllowedUserIndex } = require('./utils/accessControl');
 const { safeErrorMessage } = require('./utils/userErrors');
 const telemetry = require('./utils/telemetry');
-const jobs = require('./utils/persistentJobs');
-const router = require('./utils/providerRouter');
 const accountSockets = require('./utils/accountSockets');
-const jobDelivery = require('./utils/jobDelivery');
 
 // Load all commands
 const commands = loadCommands();
@@ -63,48 +59,6 @@ const isOwner = (ids, sessionDir = null) => {
   });
 };
 
-// Owner/admin or whitelisted user — everyone else gets no response at all
-const isAllowedSender = (ids, sessionDir = null) => {
-  if (isOwner(ids, sessionDir)) return true;
-  try {
-    // enabled:false (dashboard "Disallow") = present but blocked
-    return findAllowedUserIndex(readWL().users, ids, sessionDir) !== -1;
-  } catch {
-    return false;
-  }
-};
-
-// Per-user command cooldown (`canonicalUserKey -> lastRunMs`) so a user cannot
-// rapid-fire expensive commands. Owners are exempt.
-const userCooldowns = new Map();
-const cooldownKeyOf = (senderIds, fallback) => {
-  for (const id of senderIds || []) {
-    const clean = String(id || '').split(':')[0].split('@')[0];
-    if (clean) return clean;
-  }
-  return String(fallback || '');
-};
-const checkCooldown = (senderIds, sender, sessionId = accountSockets.PRIMARY_SESSION, sessionDir = null) => {
-  if (isOwner(senderIds, sessionDir)) return { limited: false, waitMs: 0 };
-  const windowMs = Math.max(0, Number(config.cooldownMs ?? 2000));
-  if (!windowMs) return { limited: false, waitMs: 0 };
-
-  const now = Date.now();
-  if (userCooldowns.size > 500) {
-    for (const [k, ts] of userCooldowns) {
-      if (now - ts > windowMs * 2) userCooldowns.delete(k);
-    }
-  }
-  const key = `${sessionId}:${cooldownKeyOf(senderIds, sender)}`;
-  const prev = userCooldowns.get(key) || 0;
-  if (now - prev < windowMs) {
-    return { limited: true, waitMs: windowMs - (now - prev) };
-  }
-  userCooldowns.set(key, now);
-  return { limited: false, waitMs: 0 };
-};
-const resetCooldowns = () => userCooldowns.clear();
-
 // Every command receives this bag of helpers.
 const buildExtra = (sock, msg, { from, sender, senderIds, commandName = '' }) => ({
   from,
@@ -147,12 +101,6 @@ async function runCommand(sock, msg, name, args, { from, sender, senderIds }) {
 
   if (command.ownerOnly && !isOwner(senderIds, sock.__sessionDir)) {
     await sock.sendMessage(from, { text: config.messages.ownerOnly }, { quoted: msg });
-    return true;
-  }
-
-  const cd = checkCooldown(senderIds, sender, accountSockets.sessionKey(sock), sock.__sessionDir);
-  if (cd.limited) {
-    await sock.sendMessage(from, { react: { text: '⏳', key: msg.key } }).catch(() => {});
     return true;
   }
 
@@ -204,7 +152,7 @@ async function handleSelection(sock, msg, body, { from, sender, senderIds, quote
 
   if (selections.isOutOfRange(from, senderIds, body, opts)) {
     await sock.sendMessage(from, {
-      text: `❌ Reply *1–${open.items.length}* or *cancel*.`,
+      text: `Reply *${config.prefix}1*–*${config.prefix}${open.items.length}* or *${config.prefix}cancel*.`,
     }, selections.quoteOpts(msg));
     return true;
   }
@@ -212,51 +160,12 @@ async function handleSelection(sock, msg, body, { from, sender, senderIds, quote
   return false;
 }
 
-// ── Background link jobs ─────────────────────────────────────────────────────
-// A bare link from an allowed user in a direct chat is queued to the persistent
-// worker pool instead of blocking the message handler. Small results come back
-// as normal WhatsApp media, large ones as an rclone share link.
-const URL_ONLY = /^https?:\/\/\S+$/i;
-const urlJobsEnabled = () => String(process.env.URL_JOBS ?? '1') !== '0';
-
-/**
- * Queue a bare link. Returns true when the message was handled here.
- * Groups are left alone so one link cannot start downloads for everybody.
- */
-async function queueLinkJob(sock, msg, body, { from, sender }) {
-  if (!urlJobsEnabled()) return false;
-  if (!URL_ONLY.test(body)) return false;
-  if (!String(from || '').endsWith('@s.whatsapp.net')) return false;
-
-  let target;
-  try {
-    target = router.route(body);
-  } catch {
-    await sock.sendMessage(from, { text: '❌ Not a downloadable link.' }, { quoted: msg });
-    return true;
-  }
-
-  if (target.blocked) {
-    await sock.sendMessage(from, { text: `❌ ${target.reason}` }, { quoted: msg });
-    return true;
-  }
-
-  jobDelivery.start();
-  try {
-    const id = jobs.enqueue({ provider: target.provider, req: { url: body, chatId: from, sender, sessionId: accountSockets.sessionKey(sock) } });
-    await sock.sendMessage(from, { text: `⚙️ Queued #${id}` }, { quoted: msg });
-  } catch (e) {
-    if (e.code === 'QUEUE_FULL') await sock.sendMessage(from, { text: '⚠️ Queue is full, try again later.' }, { quoted: msg });
-    else if (e.code === 'NOT_ENOUGH_DISK') await sock.sendMessage(from, { text: '⚠️ Not enough disk space right now.' }, { quoted: msg });
-    else throw e;
-  }
-  return true;
-}
-
 // Main message handler
 const handleMessage = async (sock, msg) => {
+  let mayReply = false;
   try {
-    if (!msg.message) return;
+    // Each socket serves only commands sent by its own WhatsApp account.
+    if (!msg?.message || msg?.key?.fromMe !== true) return;
     if (isEditedMessage(msg)) return;
     // Linked accounts stop serving requests when their dashboard approval is paused.
     if (typeof sock.__canRespond === 'function' && !sock.__canRespond()) return;
@@ -269,46 +178,6 @@ const handleMessage = async (sock, msg) => {
 
     const protocolMessages = ['protocolMessage', 'senderKeyDistributionMessage', 'messageContextInfo'];
     if (Object.keys(content).filter(k => !protocolMessages.includes(k)).length === 0) return;
-
-    const sender = msg.key.fromMe ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : msg.key.participant || msg.key.remoteJid;
-    // Every JID form WhatsApp gave us for this sender (LID and phone number)
-    const senderIds = [sender, msg.key.participantAlt, msg.key.remoteJidAlt].filter(Boolean);
-
-    // ── Gates ─────────────────────────────────────────────────────────────
-    // Bot on/off, then permission: owner bypasses, everyone else must be
-    // allowed via .allow. Non-allowed users get no response at all.
-    if (!database.getBotState() && !isOwner(senderIds, sock.__sessionDir)) return;
-    if (!isAllowedSender(senderIds, sock.__sessionDir)) return;
-
-    // ── Poll votes (`pollUpdateMessage`) ──────────────────────────────────
-    if (content.pollUpdateMessage) {
-      const voteHit = selections.resolvePollVote(sock, msg);
-      if (voteHit) {
-        const pollKey = content.pollUpdateMessage.pollCreationMessageKey || msg.key;
-        const quoteMsg = voteHit.originMsg || {
-          key: { ...pollKey, remoteJid: voteHit.chatId },
-          message: { conversation: voteHit.entry?.label || 'Selected' },
-        };
-        try {
-          await voteHit.entry.run(
-            sock,
-            quoteMsg,
-            buildExtra(sock, quoteMsg, { from: voteHit.chatId, sender, senderIds }),
-            voteHit.item,
-          );
-        } catch (e) {
-          telemetry.recordFailure('selection');
-          console.error('Error running poll selection:', e.message);
-          try {
-            await sock.sendMessage(
-              voteHit.chatId,
-              { text: safeErrorMessage(e, { isOwner: isOwner(senderIds, sock.__sessionDir) }) },
-            );
-          } catch { /* ignore */ }
-        }
-      }
-      return;
-    }
 
     // Get message body from unwrapped content
     let body = '';
@@ -331,25 +200,29 @@ const handleMessage = async (sock, msg) => {
     }
     body = (body || '').trim();
 
-    const quotedMessageId = getQuotedMessageId(content);
-
-    // "Reply with a number" for a command that offered a list
-    if (await handleSelection(sock, msg, body, { from, sender, senderIds, quotedMessageId })) return;
-
-    // A bare link in a direct chat becomes a background job; ordinary text is
-    // still ignored and every command still needs its prefix.
-    if (!body.startsWith(config.prefix)) {
-      await queueLinkJob(sock, msg, body, { from, sender });
-      return;
-    }
-
+    // No bare links, poll votes, or plain-number replies: a prefix is required
+    // even when continuing a previous selection (for example, .2 or .cancel).
+    if (!body.startsWith(config.prefix)) return;
     const commandText = body.slice(config.prefix.length).trim();
     if (!commandText) return;
+
+    // Never use the chat recipient's alternate JID to grant owner privileges.
+    // Identity belongs to the current socket, not the contact or group.
+    const sender = sock.__accountNumber ? `${sock.__accountNumber}@s.whatsapp.net` : sock.user?.id;
+    if (!sender) return;
+    const senderIds = [sender, sock.user?.id, sock.user?.lid].filter(Boolean);
+    if (!database.getBotState() && !isOwner(senderIds, sock.__sessionDir)) return;
+    mayReply = true;
+    const quotedMessageId = getQuotedMessageId(content);
+    if (await handleSelection(sock, msg, commandText, { from, sender, senderIds, quotedMessageId })) return;
+
     const args = commandText.split(/\s+/);
     await runCommand(sock, msg, args.shift(), args, { from, sender, senderIds });
 
   } catch (error) {
     console.error('Error in message handler:', error);
+    // A malformed or unauthorized message must not produce even an error reply.
+    if (!mayReply) return;
 
     // Don't send error messages for rate limit errors
     if (error.message && error.message.includes('rate-overlimit')) {
@@ -359,10 +232,8 @@ const handleMessage = async (sock, msg) => {
 
     try {
       // Never leak stack traces, paths, or internal error text into the chat.
-      const sender = msg.key.fromMe
-        ? (sock.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : msg.key.remoteJid)
-        : msg.key.participant || msg.key.remoteJid;
-      const senderIds = [sender, msg.key.participantAlt, msg.key.remoteJidAlt].filter(Boolean);
+      const sender = sock.__accountNumber ? `${sock.__accountNumber}@s.whatsapp.net` : sock.user?.id;
+      const senderIds = [sender, sock.user?.id, sock.user?.lid].filter(Boolean);
       await sock.sendMessage(msg.key.remoteJid, {
         text: safeErrorMessage(error, { isOwner: isOwner(senderIds, sock.__sessionDir) }),
       }, { quoted: msg });
@@ -376,11 +247,6 @@ const handleMessage = async (sock, msg) => {
 
 module.exports = {
   handleMessage,
-  onSocketOpen: () => {
-    if (!urlJobsEnabled()) return;
-    try { jobDelivery.start(); } catch (err) { console.error('Could not start background downloads:', err.message); }
-  },
   isEditedMessage,
   isSystemJid,
-  resetCooldowns,
 };

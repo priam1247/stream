@@ -966,7 +966,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
 
   stub.close();
 
-  await test('the handler routes a bare "2" to the pending choice (not to command parsing)', async () => {
+  await test('the handler requires a prefix for pending choices', async () => {
     // The handler is the real dispatcher: load it against the real command map.
     // database/botstate.json must say "on" and the sender must be an owner.
     const fsx = require('fs');
@@ -1008,14 +1008,15 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       });
 
       const sock = mockSock();
-      sock.user = { id: '9999:1@s.whatsapp.net' }; // not the sender
+      sock.user = { id: `${cfg.ownerNumber[0]}:1@s.whatsapp.net` };
       const msg = {
-        key: { remoteJid: 'chat@s.whatsapp.net', id: 'PICK1', fromMe: false, participant: ownerJid },
+        key: { remoteJid: 'chat@s.whatsapp.net', id: 'PICK1', fromMe: true },
         message: { conversation: '2' },
       };
-
       await handler.handleMessage(sock, msg);
-      assert.ok(ran, 'the handler did not route the bare number to the pending choice');
+      assert.strictEqual(ran, null, 'a bare number triggered the pending choice');
+      await handler.handleMessage(sock, { ...msg, key: { ...msg.key, id: 'PICK_PREFIXED' }, message: { conversation: '.2' } });
+      assert.ok(ran, 'the handler did not route the prefixed number to the pending choice');
       assert.strictEqual(ran.title, 'Second Song');
 
       // A stranger sending the same number must NOT trigger the owner's choice.
@@ -1033,7 +1034,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       strangerSock.user = { id: '9999:1@s.whatsapp.net' };
       await handler.handleMessage(strangerSock, {
         key: { remoteJid: 'chat@s.whatsapp.net', id: 'PICK2', fromMe: false, participant: '111222333@s.whatsapp.net' },
-        message: { conversation: '2' },
+        message: { conversation: '.2' },
       });
       assert.strictEqual(ran, null, 'a stranger triggered someone else\'s choice');
       assert.strictEqual(strangerSock.sent.length, 0, 'the bot answered a non-allowed user');
@@ -1099,7 +1100,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       user: { id: '265894016453:1@s.whatsapp.net' },
       async sendMessage(jid, content) { sent.push({ jid, content }); return { key: { id: 'reply' } }; },
     };
-    const base = { key: { remoteJid: '265894016453@s.whatsapp.net', id: 'msg1', fromMe: false } };
+    const base = { key: { remoteJid: '265894016453@s.whatsapp.net', id: 'msg1', fromMe: true } };
     await handler.handleMessage(sock, { ...base, message: { conversation: 'download song wishing well' } });
     assert.strictEqual(sent.length, 0, 'ordinary text triggered behavior');
     await handler.handleMessage(sock, { ...base, key: { ...base.key, id: 'msg2' }, message: { conversation: '.ping' } });
@@ -1533,6 +1534,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       hooks: {
         status: async () => ({ connected: true, botNumber: '265894016453' }),
         requestPair: async () => ({ code: 'ABCD-EFGH', expiresInSeconds: 60 }),
+        unlinkAccount: async (number, sessionId) => ({ number, sessionId, unlinked: true }),
       },
     });
     const call = async (method, pathname, body, auth = true) => {
@@ -1569,6 +1571,13 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       const pair = await call('POST', '/admin/api/pair', { number: '265997778888' });
       assert.strictEqual(pair.json.code, 'ABCD-EFGH');
       assert.strictEqual(pair.json.expiresInSeconds, 60);
+
+      const unauthorizedUnlink = await call('POST', '/admin/api/unlink', { number: '265997778888', sessionId: 'a'.repeat(24) }, false);
+      assert.strictEqual(unauthorizedUnlink.status, 401);
+      const unlinked = await call('POST', '/admin/api/unlink', { number: '265997778888', sessionId: 'a'.repeat(24) });
+      assert.deepStrictEqual(unlinked.json, { ok: true, number: '265997778888', sessionId: 'a'.repeat(24), unlinked: true });
+      const invalidUnlink = await call('POST', '/admin/api/unlink', { number: '265997778888', sessionId: 'bad' });
+      assert.strictEqual(invalidUnlink.status, 400);
 
       const gone = await call('DELETE', '/admin/api/users/265997778888');
       assert.strictEqual(gone.status, 200);
@@ -2049,7 +2058,8 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
         selections.clear('q@s.whatsapp.net', 'u@s.whatsapp.net');
       }
       assert.ok(!sent.some((m) => Array.isArray(m.sections)), 'broken WhatsApp sections list message was sent');
-      assert.ok(sent.some((m) => m.poll && Array.isArray(m.poll.values)), 'quality picker did not send a WhatsApp poll');
+      assert.ok(!sent.some((m) => m.poll), 'unprefixed poll votes must not be offered');
+      assert.ok(sent.some((m) => /Reply \.1/.test(m.text || '')), 'numbered picker must require a prefix');
       const body = sent.map((m) => m.text || [m.poll?.name, ...(m.poll?.values || [])].filter(Boolean).join('\n')).join('\n');
       assert.match(body, /1080p/);
       assert.match(body, /2\.1 GB/);
@@ -2085,87 +2095,21 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       assert.match(text, /480p/);
     });
 
-    await test('Phase 3: encrypted WhatsApp poll votes decrypt & trigger choice, while quoting unrelated messages is ignored', async () => {
-      const crypto = require('crypto');
-      const { proto } = require('@whiskeysockets/baileys');
-      const { hmacSign, aesEncryptGCM } = require('@whiskeysockets/baileys/lib/Utils/crypto');
-
-      let chosen = null;
-      let pollPayload = null;
-      const botJid = '265894016453@s.whatsapp.net';
-      const voterJid = '265997564836@s.whatsapp.net';
-      const sock = {
-        user: { id: '265894016453:12@s.whatsapp.net' },
-        sendMessage: async (_jid, content) => {
-          pollPayload = content.poll;
-          return { key: { id: 'POLL_MSG_1', remoteJid: 'grp@g.us' } };
-        },
-      };
-      const msg = { key: { id: 'REQ_1', remoteJid: 'grp@g.us', participant: voterJid } };
+    await test('prefixed selections reject unrelated quotes and failed sends clear stale choices', async () => {
+      const voterJid = '265894016453@s.whatsapp.net';
+      const msg = { key: { id: 'REQ_1', remoteJid: 'grp@g.us', fromMe: true }, message: { conversation: '.movie dune' } };
       const extra = { from: 'grp@g.us', sender: voterJid };
-
+      const sock = { user: { id: '265894016453:12@s.whatsapp.net' },
+        sendMessage: async () => ({ key: { id: 'PROMPT', remoteJid: 'grp@g.us' } }) };
       await selections.sendPollOrText(sock, msg, extra, {
-        pollName: 'Choose quality',
-        optionLabels: ['1080p · ~2.0 GB', '720p · ~900 MB'],
-        fallbackText: 'fallback',
-        items: [{ quality: 1080 }, { quality: 720 }],
-        run: async (_s, _m, _e, item) => { chosen = item; },
+        pollName: 'Choose quality', optionLabels: ['1080p', '720p'], fallbackText: 'Reply .1 or .2',
+        items: [{ quality: 1080 }, { quality: 720 }], run: () => {},
       });
-
-      // 1. Quoting a DIFFERENT message in the group with "2" must NOT hijack the picker
-      assert.strictEqual(
-        selections.match('grp@g.us', voterJid, '2', { quotedMessageId: 'FRIEND_MSG_999' }),
-        null,
-        'quoting a friend hijacked the pending picker',
-      );
-      // 2. Build a real WhatsApp AES-GCM encrypted pollUpdateMessage vote for option #2
-      const optHash = crypto.createHash('sha256').update(pollPayload.values[1], 'utf8').digest();
-      const votePlain = proto.Message.PollVoteMessage.encode({ selectedOptions: [optHash] }).finish();
-      const sign = Buffer.concat([
-        Buffer.from('POLL_MSG_1'),
-        Buffer.from(botJid),
-        Buffer.from(voterJid),
-        Buffer.from('Poll Vote'),
-        Buffer.from([1]),
-      ]);
-      const key0 = hmacSign(pollPayload.messageSecret, new Uint8Array(32), 'sha256');
-      const decKey = hmacSign(sign, key0, 'sha256');
-      const aad = Buffer.from(`POLL_MSG_1\u0000${voterJid}`);
-      const iv = crypto.randomBytes(12);
-      const encPayload = aesEncryptGCM(votePlain, decKey, iv, aad);
-
-      // Stranger voting on someone else's poll is ignored
-      assert.strictEqual(selections.resolvePollVote(sock, {
-        key: { id: 'V_STRANGER', remoteJid: 'grp@g.us', participant: '265111222333@s.whatsapp.net' },
-        message: {
-          pollUpdateMessage: {
-            pollCreationMessageKey: { id: 'POLL_MSG_1', remoteJid: 'grp@g.us' },
-            vote: { encPayload, encIv: iv },
-          },
-        },
-      }), null, 'stranger was allowed to vote on another user poll');
-
-      // Real requester's vote decrypts & resolves option #2, and clears typed fallback
-      const hit = selections.resolvePollVote(sock, {
-        key: { id: 'V_OWNER', remoteJid: 'grp@g.us', participant: voterJid },
-        message: {
-          pollUpdateMessage: {
-            pollCreationMessageKey: { id: 'POLL_MSG_1', remoteJid: 'grp@g.us' },
-            vote: { encPayload, encIv: iv },
-          },
-        },
-      });
-      assert.ok(hit && hit.item.quality === 720, 'encrypted poll vote did not resolve to 720p');
-      await hit.entry.run(sock, msg, extra, hit.item);
-      assert.deepStrictEqual(chosen, { quality: 720 });
-      assert.strictEqual(selections.peek('grp@g.us', voterJid), null, 'poll vote left typed fallback alive');
-
-      // 3. Send failure clears stale choices instead of leaving ghosts
+      assert.strictEqual(selections.match('grp@g.us', voterJid, '2', { quotedMessageId: 'FRIEND_MSG_999' }), null);
+      assert.strictEqual(selections.match('grp@g.us', voterJid, '2', { quotedMessageId: 'PROMPT' }).item.quality, 720);
       selections.offer({ chatId: 'grp@g.us', sender: voterJid, items: [{ a: 1 }], run: () => {} });
       await assert.rejects(() => selections.sendTextPrompt(
-        { sendMessage: async () => { throw new Error('socket closed'); } },
-        msg,
-        extra,
+        { sendMessage: async () => { throw new Error('socket closed'); } }, msg, extra,
         { text: 'hi', items: [{ a: 2 }], run: () => {} },
       ));
       assert.strictEqual(selections.peek('grp@g.us', voterJid), null, 'stale choice survived send failure');
@@ -2205,7 +2149,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       assert.strictEqual(boys2.hasTarget, true);
     });
 
-    await test('Phase 3: error sanitizer, per-user cooldown, .paper pagination, .menu/.status/.instagram/.fb/.viewonce, Gifted warning', async () => {
+    await test('Phase 3: error sanitizer, unlimited commands, .paper pagination, .menu/.status/.instagram/.fb/.viewonce, Gifted warning', async () => {
       const { safeErrorMessage } = require(path.join(REPO, 'utils', 'userErrors'));
       const handler = require(path.join(REPO, 'handler'));
       const ac = require(path.join(REPO, 'utils', 'accessControl'));
@@ -2218,32 +2162,31 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       const leaked = safeErrorMessage(new Error('ENOENT: no such file /home/user/neww/secret.json'));
       assert.ok(!/ENOENT|\/home\/user|secret\.json/.test(leaked), `leaked path: ${leaked}`);
 
-      // 2. Per-user cooldown throttles rapid commands from regular allowed users
+      // 2. Rapid commands from the linked account are not rate-limited
       const wl = ac.readWL();
       const testUser = '265888111222@s.whatsapp.net';
       ac.writeWL({ users: [...wl.users, { number: '265888111222', enabled: true }] });
-      handler.resetCooldowns();
       const sentMsgs = [];
       const cdSock = {
-        user: { id: '265894016453:1@s.whatsapp.net' },
+        user: { id: '265888111222:1@s.whatsapp.net' },
+        __accountNumber: '265888111222',
         sendMessage: async (_jid, content) => { sentMsgs.push(content); return { key: { id: 'p' } }; },
       };
       try {
         await handler.handleMessage(cdSock, {
-          key: { id: 'cd-1', remoteJid: testUser },
+          key: { id: 'cd-1', remoteJid: testUser, fromMe: true },
           message: { conversation: '.ping' },
         });
         await handler.handleMessage(cdSock, {
-          key: { id: 'cd-2', remoteJid: testUser },
+          key: { id: 'cd-2', remoteJid: testUser, fromMe: true },
           message: { conversation: '.ping' },
         });
       } finally {
         ac.writeWL(wl);
-        handler.resetCooldowns();
-      }
+        }
       const pongs = sentMsgs.filter((m) => /Pinging|Pong/.test(m.text || ''));
       const waitReacts = sentMsgs.filter((m) => m.react?.text === '⏳');
-      assert.ok(pongs.length >= 1 && waitReacts.length === 1, 'second rapid command was not rate-limited by cooldown');
+      assert.ok(pongs.length >= 2 && waitReacts.length === 0, 'rapid commands were rate-limited');
 
       // 3. .paper filters false-positive month codes ("APRIL 2023") and paginates .paper browse
       const parsedApril = paperCmd._parsePaper('APRIL 2023 NURS 2201 END OF SEMESTER.pdf');
@@ -2755,10 +2698,11 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
         const params1 = JSON.parse(btn1.buttonParamsJson);
         assert.strictEqual(params1.title, 'Select Movie');
         const secondRowId = params1.sections[0].rows[1].id;
+        assert.ok(secondRowId.startsWith('.'), 'selector ID must carry the command prefix');
 
         // Simulate user tapping Movie #2 in the native selector sheet
         await handler.handleMessage(sock, {
-          key: { id: 'TAP_1', remoteJid: lidJid, remoteJidAlt: ownerPn, fromMe: false },
+          key: { id: 'TAP_1', remoteJid: lidJid, remoteJidAlt: ownerPn, fromMe: true },
           message: {
             interactiveResponseMessage: {
               body: { text: '2. Avatar: The Way of Water', format: 0 },
@@ -2787,82 +2731,19 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       }
     });
 
-    await test('poll vote without quoted.message never throws reading undefined in Baileys quote builder', async () => {
-      const crypto = require('crypto');
-      const { proto, generateWAMessageFromContent } = require('@whiskeysockets/baileys');
-      const { hmacSign, aesEncryptGCM } = require('@whiskeysockets/baileys/lib/Utils/crypto');
+    await test('unprefixed poll votes cannot trigger a pending selection', async () => {
       const selections = require(path.join(REPO, 'utils', 'selections'));
       const handler = require(path.join(REPO, 'handler'));
-
-      let pollPayload = null;
-      let chainedSent = false;
-      const voterPn = '265894016453@s.whatsapp.net';
-      const lidChat = '244934032494829@lid';
-
-      const sock = {
-        user: { id: '265894016453:1@s.whatsapp.net' },
-        sendMessage: async (jid, content, opts = {}) => {
-          if (opts.quoted) {
-            generateWAMessageFromContent(jid, { extendedTextMessage: { text: 'chained' } }, {
-              userJid: sock.user.id,
-              quoted: opts.quoted,
-            });
-          }
-          if (content.poll) {
-            pollPayload = content.poll;
-            return { key: { id: 'POLL_CHAIN_1', remoteJid: lidChat } }; // note: no .message property!
-          }
-          return { key: { id: 'NEXT_1', remoteJid: lidChat } };
-        },
-      };
-
-      // Note: initial msg intentionally lacks .message to reproduce worst-case quote edge
-      await selections.sendPollOrText(sock, { key: { id: 'M0', remoteJid: lidChat } }, { from: lidChat, sender: voterPn }, {
-        pollName: 'Pick film',
-        optionLabels: ['Dune (2021)', 'Dune: Part Two (2024)'],
-        fallbackText: 'fallback',
-        items: [{ id: 1 }, { id: 2 }],
-        run: async (s2, m2, e2) => {
-          await e2.reply('Chained step ok');
-          await selections.sendPollOrText(s2, m2, e2, {
-            pollName: 'Pick quality',
-            optionLabels: ['1080p', '720p'],
-            fallbackText: 'q fallback',
-            items: [{ q: 1080 }, { q: 720 }],
-            run: async () => {},
-          });
-          chainedSent = true;
-        },
-      });
-
-      const optHash = crypto.createHash('sha256').update(pollPayload.values[0], 'utf8').digest();
-      const votePlain = proto.Message.PollVoteMessage.encode({ selectedOptions: [optHash] }).finish();
-      const creatorJid = '265894016453@s.whatsapp.net';
-      const sign = Buffer.concat([
-        Buffer.from('POLL_CHAIN_1'),
-        Buffer.from(creatorJid),
-        Buffer.from(voterPn),
-        Buffer.from('Poll Vote'),
-        Buffer.from([1]),
-      ]);
-      const key0 = hmacSign(pollPayload.messageSecret, new Uint8Array(32), 'sha256');
-      const decKey = hmacSign(sign, key0, 'sha256');
-      const aad = Buffer.from(`POLL_CHAIN_1\0${voterPn}`);
-      const iv = crypto.randomBytes(12);
-      const encPayload = aesEncryptGCM(votePlain, decKey, iv, aad);
-
-      await handler.handleMessage(sock, {
-        key: { id: 'VOTE_1', remoteJid: lidChat, remoteJidAlt: voterPn, fromMe: false },
-        message: {
-          pollUpdateMessage: {
-            pollCreationMessageKey: { id: 'POLL_CHAIN_1', remoteJid: lidChat, fromMe: true },
-            vote: { encPayload, encIv: iv },
-          },
-        },
-      });
-
-      assert.strictEqual(chainedSent, true, 'poll vote chained step threw or did not complete');
-      selections.clear(lidChat, voterPn);
+      const number = '265894016453@s.whatsapp.net';
+      let chosen = false;
+      const sent = [];
+      const sock = { user: { id: '265894016453:1@s.whatsapp.net' }, sendMessage: async (_jid, content) => { sent.push(content); return { key: { id: 'next' } }; } };
+      selections.offer({ chatId: number, sender: number, items: ['one'], run: async () => { chosen = true; } });
+      await handler.handleMessage(sock, { key: { id: 'VOTE_1', remoteJid: number, fromMe: true }, message: { pollUpdateMessage: { pollCreationMessageKey: { id: 'POLL_1' } } } });
+      assert.strictEqual(chosen, false);
+      assert.strictEqual(sent.length, 0);
+      await handler.handleMessage(sock, { key: { id: 'CHOICE_1', remoteJid: number, fromMe: true }, message: { conversation: '.1' } });
+      assert.strictEqual(chosen, true);
     });
 
     await test('providers are ranked by reliability with MovieBox #1 (including multi-GB files)', async () => {

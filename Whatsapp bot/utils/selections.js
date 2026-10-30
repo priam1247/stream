@@ -1,32 +1,21 @@
 /**
- * ZaFar Bot — Interactive Selector (`single_select`), Polls & Pending Choices
- *
- * Primary UX on live WhatsApp sockets (`sock.relayMessage`):
- *   • Native Flow `single_select` bottom-sheet selector (`interactiveMessage` +
- *     `<biz><interactive type="native_flow">`), so users simply tap a button
- *     and tap the movie / series / quality they want.
- *
- * Automatic fallbacks:
- *   • WhatsApp Poll (`pollCreationMessageV3` → `pollUpdateMessage`) when
- *     `relayMessage` is unavailable (e.g. unit-test sockets) or fails.
- *   • Clean numbered text card when >24 items or polls are unsupported.
- *   • Typed numbers ("1", "2", "#2") always work alongside tap selectors.
+ * Native tap selectors and prefixed numbered choices, scoped to one session.
+ * Selector IDs carry the command prefix; text fallback uses e.g. .1 or .cancel.
+ * Poll votes do not carry a prefix and are intentionally not offered.
  */
 
 const crypto = require('crypto');
+const config = require('../config');
 const {
   proto,
   generateWAMessageFromContent,
   normalizeMessageContent,
   getContentType,
-  jidNormalizedUser,
 } = require('@whiskeysockets/baileys');
-const { decryptPollVote } = require('@whiskeysockets/baileys/lib/Utils/process-message');
 const { jidVariants } = require('./jid');
 const { sessionKey, PRIMARY_SESSION } = require('./accountSockets');
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
-const MAX_POLL_OPTIONS = 12;
 const MAX_SELECTOR_ROWS = 24;
 
 const BIZ_NATIVE_FLOW_NODE = {
@@ -55,10 +44,6 @@ const pending = new Map();
 const pendingByMsgId = new Map();
 // Offer ID -> entry (lets `sel_<id>:<row>` taps resolve directly)
 const pendingByOfferId = new Map();
-// Poll message ID -> poll entry (for `pollUpdateMessage` vote decryption)
-const pendingPolls = new Map();
-
-const sha256Hex = (text) => crypto.createHash('sha256').update(String(text), 'utf8').digest('hex');
 
 /**
  * Guard `{ quoted: msg }` so Baileys' `generateWAMessageFromContent` never
@@ -100,9 +85,6 @@ function removeEntry(entry) {
   if (entry.offerId && pendingByOfferId.get(entry.offerId) === entry) {
     pendingByOfferId.delete(entry.offerId);
   }
-  if (entry.pollMessageId) {
-    pendingPolls.delete(messageKey(entry.scope, entry.pollMessageId));
-  }
 }
 
 function prune() {
@@ -122,12 +104,7 @@ function prune() {
       removeEntry(entry);
     }
   }
-  for (const [id, poll] of pendingPolls) {
-    if (poll.entry?.consumed || now - poll.at > poll.ttlMs) {
-      pendingPolls.delete(id);
-      if (poll.entry) removeEntry(poll.entry);
-    }
-  }
+
 }
 
 function senderMatches(entry, sender) {
@@ -191,7 +168,6 @@ function offer({
     ids: Array.isArray(ids) ? ids.map((x) => String(x)) : null,
     scopedIds,
     promptMessageId: promptMessageId ? String(promptMessageId) : null,
-    pollMessageId: null,
     originMsg: canQuote(originMsg) ? originMsg : null,
     consumed: false,
   };
@@ -224,7 +200,7 @@ function extractInteractiveSelection(content) {
 
 /**
  * Send a Native Flow `single_select` tap selector on live WhatsApp sockets,
- * falling back cleanly to a WhatsApp Poll or numbered text card.
+ * falling back cleanly to a prefixed numbered text card.
  */
 async function sendPollOrText(sock, msg, extra, spec) {
   const chatId = extra?.from || msg?.key?.remoteJid;
@@ -262,9 +238,6 @@ async function sendPollOrText(sock, msg, extra, spec) {
 
   let sent = null;
   let usedSelector = false;
-  let usedPoll = false;
-  let messageSecret = null;
-  let finalValues = null;
 
   // ── 1. Primary: Native Flow `single_select` tap-to-select drawer ─────────
   const canSelector =
@@ -285,7 +258,7 @@ async function sendPollOrText(sock, msg, extra, spec) {
         (rawLines.length > 1 ? rawLines.slice(1).join('\n') : rawLines[0]) ||
         'Tap below to select:',
       ).slice(0, 1024);
-      const footerText = String(selector?.footerText || 'Tap below or reply with a number').slice(0, 60);
+      const footerText = String(selector?.footerText || `Tap below or reply with ${config.prefix}1`).slice(0, 60);
       const buttonText = String(selector?.buttonText || 'Tap to Select').slice(0, 20);
       const sectionTitle = String(selector?.sectionTitle || 'Options').slice(0, 24);
 
@@ -298,7 +271,7 @@ async function sendPollOrText(sock, msg, extra, spec) {
           header: '',
           title,
           description,
-          id: scopedIds[idx],
+          id: `${config.prefix}${scopedIds[idx]}`,
         };
       });
 
@@ -363,45 +336,8 @@ async function sendPollOrText(sock, msg, extra, spec) {
     }
   }
 
-  // ── 2. Fallback: WhatsApp Poll (unit-test mocks or if relayMessage fails) ─
-  const canPoll =
-    !usedSelector &&
-    items.length >= 2 &&
-    items.length <= MAX_POLL_OPTIONS &&
-    optionLabels.length === items.length;
-
-  if (canPoll) {
-    finalValues = optionLabels.map((opt, idx) => {
-      const clean = String(opt || '').replace(/\s+/g, ' ').trim();
-      const numbered = /^\d+[.)]\s/.test(clean) ? clean : `${idx + 1}. ${clean}`;
-      return numbered.length > 100 ? `${numbered.slice(0, 99)}…` : numbered;
-    });
-    messageSecret = crypto.randomBytes(32);
-
-    try {
-      sent = await sock.sendMessage(
-        chatId,
-        {
-          poll: {
-            name: String(pollName || 'Choose an option:').slice(0, 255),
-            values: finalValues,
-            selectableCount: 1,
-            messageSecret,
-          },
-        },
-        quoteOpts(msg),
-      );
-      if (sent?.key?.id) {
-        usedPoll = true;
-      }
-    } catch {
-      sent = null;
-      usedPoll = false;
-    }
-  }
-
-  // ── 3. Fallback: Numbered text card ──────────────────────────────────────
-  if (!usedSelector && !usedPoll) {
+  // ── 2. Fallback: Numbered text card ──────────────────────────────────────
+  if (!usedSelector) {
     if (fallbackImage) {
       sent = await sock.sendMessage(
         chatId,
@@ -429,42 +365,7 @@ async function sendPollOrText(sock, msg, extra, spec) {
     run,
   });
 
-  const entry = pendingByOfferId.get(offerId);
-  if (usedPoll && promptMessageId && entry) {
-    const secret =
-      sent?.message?.messageContextInfo?.messageSecret ||
-      messageSecret;
-    const optionHashes = new Map();
-    finalValues.forEach((val, idx) => {
-      optionHashes.set(sha256Hex(val), idx);
-    });
-    const creatorCandidates = [
-      sock?.user?.id,
-      sock?.user?.lid,
-      sent?.key?.participant,
-      sent?.key?.remoteJid,
-    ]
-      .filter(Boolean)
-      .map((j) => {
-        try { return jidNormalizedUser(j); } catch { return String(j); }
-      });
-
-    entry.pollMessageId = promptMessageId;
-    pendingPolls.set(messageKey(scope, promptMessageId), {
-      pollMsgId: promptMessageId,
-      chatId,
-      messageSecret: Buffer.from(secret),
-      optionHashes,
-      values: finalValues,
-      creatorJids: [...new Set(creatorCandidates)],
-      sentMsg: canQuote(sent) ? sent : null,
-      at: entry.at,
-      ttlMs,
-      entry,
-    });
-  }
-
-  return { offerId, promptMessageId, usedSelector, usedPoll };
+  return { offerId, promptMessageId, usedSelector, usedPoll: false };
 }
 
 /**
@@ -514,111 +415,6 @@ async function sendTextPrompt(sock, msg, extra, {
     run,
   });
   return { offerId, promptMessageId };
-}
-
-/**
- * Resolve an incoming `pollUpdateMessage` against `pendingPolls`.
- */
-function resolvePollVote(sock, msg) {
-  prune();
-  const content = msg?.message?.ephemeralMessage?.message
-    || msg?.message?.viewOnceMessage?.message
-    || msg?.message;
-  const pollUpdate = content?.pollUpdateMessage;
-  if (!pollUpdate?.pollCreationMessageKey?.id || !pollUpdate?.vote) return null;
-
-  const pollMsgId = String(pollUpdate.pollCreationMessageKey.id);
-  const poll = pendingPolls.get(messageKey(sessionKey(sock), pollMsgId));
-  if (!poll || !poll.entry || poll.entry.consumed) return null;
-
-  const voterRawList = [
-    msg.key?.participant,
-    msg.key?.participantAlt,
-    !String(msg.key?.remoteJid || '').endsWith('@g.us') ? msg.key?.remoteJid : null,
-    msg.key?.remoteJidAlt,
-    pollUpdate.pollCreationMessageKey?.participant,
-  ].filter(Boolean);
-
-  if (!senderMatches(poll.entry, voterRawList)) {
-    return null;
-  }
-
-  const creatorJids = [
-    ...poll.creatorJids,
-    sock?.user?.id,
-    sock?.user?.lid,
-    pollUpdate.pollCreationMessageKey?.participant,
-  ]
-    .filter(Boolean)
-    .map((j) => {
-      try { return jidNormalizedUser(j); } catch { return String(j); }
-    });
-
-  const voterJids = [];
-  for (const v of voterRawList) {
-    try { voterJids.push(jidNormalizedUser(v)); } catch { /* ignore */ }
-    for (const variant of jidVariants(v, sock?.__sessionDir)) {
-      try { voterJids.push(jidNormalizedUser(variant)); } catch { voterJids.push(variant); }
-    }
-  }
-  if (msg.key?.fromMe) {
-    if (sock?.user?.id) voterJids.push(jidNormalizedUser(sock.user.id));
-    if (sock?.user?.lid) voterJids.push(jidNormalizedUser(sock.user.lid));
-  }
-
-  const uniqueCreators = [...new Set(creatorJids)];
-  const uniqueVoters = [...new Set(voterJids)];
-
-  let decrypted = null;
-  for (const pollCreatorJid of uniqueCreators) {
-    for (const voterJid of uniqueVoters) {
-      try {
-        decrypted = decryptPollVote(pollUpdate.vote, {
-          pollEncKey: poll.messageSecret,
-          pollCreatorJid,
-          pollMsgId,
-          voterJid,
-        });
-        if (decrypted) break;
-      } catch {
-        // Try next JID representation (PN vs LID)
-      }
-    }
-    if (decrypted) break;
-  }
-
-  if (!decrypted || !Array.isArray(decrypted.selectedOptions) || !decrypted.selectedOptions.length) {
-    return null;
-  }
-
-  for (const optBuf of decrypted.selectedOptions) {
-    const hex = Buffer.from(optBuf).toString('hex');
-    if (poll.optionHashes.has(hex)) {
-      const index = poll.optionHashes.get(hex);
-      const item = poll.entry.items[index];
-      const entry = poll.entry;
-      const originMsg =
-        entry.originMsg ||
-        poll.sentMsg || {
-          key: {
-            ...(pollUpdate.pollCreationMessageKey || msg.key),
-            remoteJid: poll.chatId,
-          },
-          message: { conversation: poll.values?.[index] || entry.label || 'Selected' },
-        };
-      removeEntry(entry);
-      return {
-        entry,
-        item,
-        index,
-        chatId: poll.chatId,
-        voterJid: uniqueVoters[0] || entry.rawSender,
-        originMsg,
-      };
-    }
-  }
-
-  return null;
 }
 
 /** "3" | ".3" | "#3" | "3." | "3)" → 3 */
@@ -735,7 +531,6 @@ module.exports = {
   sendPollOrText,
   sendTextPrompt,
   extractInteractiveSelection,
-  resolvePollVote,
   canQuote,
   quoteOpts,
   match,
@@ -746,6 +541,5 @@ module.exports = {
   isOutOfRange,
   size,
   DEFAULT_TTL_MS,
-  MAX_POLL_OPTIONS,
   MAX_SELECTOR_ROWS,
 };

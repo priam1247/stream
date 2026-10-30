@@ -10,6 +10,7 @@
  */
 
 const YT = require('./youtubedl');
+const config = require('../config');
 const ytInnertube = require('./ytInnertube');
 
 const DEFAULT_LIMIT = 5;
@@ -98,7 +99,7 @@ async function searchYouTube(query, { limit = DEFAULT_LIMIT } = {}) {
 }
 
 /** "1. Title — artist (3:32)" list for the picker message. */
-function formatResults(results, { header = '🔎 *Results*', note = 'Reply with a number, or *cancel*.' } = {}) {
+function formatResults(results, { header = '🔎 *Results*', note = `Reply with ${config.prefix}1, ${config.prefix}2, or ${config.prefix}cancel.` } = {}) {
   const lines = results.map((r, i) => {
     const time = r.duration
       ? ` (${Math.floor(r.duration / 60)}:${String(r.duration % 60).padStart(2, '0')})`

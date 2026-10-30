@@ -462,3 +462,32 @@ export async function requestLiveBotPairingCode(
       'The WhatsApp service is offline. Set DASHBOARD_URL + BOT_SYNC_TOKEN on the server and start it.',
   };
 }
+
+/** Dispatch a version-guarded unlink; never fall back to removing approval alone. */
+export async function requestLiveBotUnlink(number: string, sessionId: string, owner: string): Promise<{
+  ok: boolean; status: number; pending?: boolean; requestId?: string; error?: string;
+}> {
+  const [{ baseUrl, token }, hb] = await Promise.all([getResolvedBotTarget(), getBotHeartbeat()]);
+  const hbFresh = Boolean(hb) && Date.now() - (hb?.lastSeenAt || 0) <= HEARTBEAT_FRESH_SECONDS * 1000;
+  if (hbFresh) {
+    const cmd = await enqueueBotCommand({
+      type: 'unlink', payload: { number, sessionId, owner: owner.toLowerCase() }, requestedBy: owner, ttlMs: 90_000,
+    });
+    return { ok: true, status: 202, pending: true, requestId: cmd.id };
+  }
+  if (!baseUrl || !token) return { ok: false, status: 503, error: 'The WhatsApp service is offline. Try again when it reconnects.' };
+  try {
+    const res = await fetch(`${baseUrl}/admin/api/unlink`, {
+      method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ number, sessionId }), cache: 'no-store', signal: AbortSignal.timeout(12_000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, status: res.status, error: serviceText(String(data?.error || 'Could not unlink this number.')) };
+    if (data?.unlinked !== true || data?.number !== number || data?.sessionId !== sessionId) {
+      return { ok: false, status: 502, error: 'The service did not confirm the unlink.' };
+    }
+    return { ok: true, status: 200 };
+  } catch (err) {
+    return { ok: false, status: 502, error: humanizeBotFetchError(err) };
+  }
+}

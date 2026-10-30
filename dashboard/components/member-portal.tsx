@@ -38,6 +38,7 @@ import { ScribdDesk } from './scribd-desk';
 import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
 import { MemberHome, type MemberDestination } from './member-home';
+import { MemberConnection } from './member-connection';
 import { WorkspaceShell, type WorkspaceNavGroup } from './workspace-shell';
 
 type MemberTab = 'home' | MemberDestination;
@@ -115,13 +116,14 @@ export function MemberPortal() {
       }
       setUser(session.user);
       setQuota(session.quota);
+      if (!session.user.isAdmin) { setChecking(false); return; }
       await loadMemberStatus(true);
       setChecking(false);
     })();
   }, [router, loadMemberStatus]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user?.isAdmin) return;
     const id = setInterval(() => {
       void loadMemberStatus(true);
     }, 15_000);
@@ -301,6 +303,8 @@ export function MemberPortal() {
       </div>
     );
   }
+
+  if (!user.isAdmin) return <MemberConnection key={user.email} user={user} />;
 
   const canLinkNumbers =
     overview.memberAllowed && (overview.botEnabledForMembers || user.isAdmin);

@@ -187,6 +187,26 @@ function startDashboardSync(opts = {}) {
         return;
       }
 
+      if (cmd.type === 'unlink') {
+        const number = cleanDigits(cmd.payload?.number);
+        const sessionId = String(cmd.payload?.sessionId || '');
+        const owner = String(cmd.payload?.owner || '').trim().toLowerCase();
+        if (!/^\d{7,15}$/.test(number) || !/^[a-f0-9]{24}$/.test(sessionId) || !owner) {
+          throw new Error('Invalid unlink request.');
+        }
+        if (Number(cmd.expiresAt) && Date.now() > Number(cmd.expiresAt)) {
+          throw new Error('This unlink request has expired.');
+        }
+        // The latest snapshot must still assign the session to this member.
+        const authorized = readWL({ force: true, filePath: wlFile }).users.some((user) =>
+          String(user.number) === number && String(user.addedBy || '').toLowerCase() === owner);
+        if (!authorized) throw new Error('This number no longer belongs to that account.');
+        if (typeof opts.unlinkAccount !== 'function') throw new Error('Unlinking is not available on this service.');
+        const result = await opts.unlinkAccount(number, sessionId);
+        pendingResults.push({ id: cmd.id, ok: true, result });
+        return;
+      }
+
       if (cmd.type === 'restart') {
         pendingResults.push({
           id: cmd.id,

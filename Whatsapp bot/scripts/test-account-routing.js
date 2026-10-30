@@ -16,7 +16,8 @@ fs.writeFileSync(path.join(first, 'lid-mapping-900000_reverse.json'), JSON.strin
 fs.writeFileSync(path.join(second, 'lid-mapping-900000_reverse.json'), JSON.stringify('15550001111'));
 process.env.OWNER_NUMBER = '15550000001';
 process.env.ADMIN_NUMBERS = '15550000002';
-process.env.COMMAND_COOLDOWN_MS = '0';
+// Even an old cooldown setting must not throttle commands.
+process.env.COMMAND_COOLDOWN_MS = '60000';
 
 const access = require('../utils/accessControl');
 access.readWL = () => ({ users: [{ number: '15550001111', enabled: true }] });
@@ -35,13 +36,14 @@ function socket(dir, id) {
   return {
     __sessionId: id,
     __sessionDir: dir,
-    user: { id: '15550009999:1@s.whatsapp.net' },
+    ...(id === 'primary' ? {} : { __accountNumber: '15550001111' }),
+    user: { id: id === 'primary' ? '15550000001:1@s.whatsapp.net' : '15550001111:1@s.whatsapp.net' },
     sent,
     sendMessage: async (_chat, content) => { sent.push(content); return { key: { id: 'prompt-1' } }; },
   };
 }
 function msg(text, id) {
-  return { key: { remoteJid: 'group@g.us', participant: '900000@lid', id }, message: { conversation: text } };
+  return { key: { remoteJid: 'group@g.us', participant: '900000@lid', remoteJidAlt: '15550000001@s.whatsapp.net', fromMe: true, id }, message: { conversation: text } };
 }
 
 test('linked-account identity resolution is isolated and never grants administrator privileges', async () => {
@@ -58,6 +60,26 @@ test('linked-account identity resolution is isolated and never grants administra
   assert.match(member.sent.map((m) => m.text || '').join(' '), /pong/i, 'the approved member can use ordinary commands');
   await handler.handleMessage(owner, msg('.off', 'owner-off'));
   assert.deepEqual(switches, [false], 'an actual configured administrator keeps existing access');
+});
+
+test('only the session owner may issue prefixed commands, with no cooldown', async () => {
+  const member = socket(second, 'linked:15550009999');
+  await handler.handleMessage(member, { ...msg('.ping', 'other'), key: { ...msg('.ping', 'other').key, fromMe: false } });
+  await handler.handleMessage(member, msg('https://example.com/movie', 'url'));
+  await handler.handleMessage(member, msg('hello', 'plain'));
+  assert.equal(member.sent.length, 0, 'strangers and unprefixed messages must be ignored');
+  for (const id of ['one', 'two', 'three']) await handler.handleMessage(member, msg('.ping', id));
+  assert.equal(member.sent.filter((content) => /pong/i.test(content.text || '')).length, 3);
+});
+
+test('an unprefixed message never produces an error reply when other state is broken', async () => {
+  const member = socket(second, 'linked:15550009999');
+  const original = database.getBotState;
+  database.getBotState = () => { throw new Error('unavailable'); };
+  try {
+    await handler.handleMessage(member, msg('plain text', 'plain-with-broken-state'));
+    assert.equal(member.sent.length, 0);
+  } finally { database.getBotState = original; }
 });
 
 test('choices and quoted replies from the same chat do not cross account boundaries', () => {

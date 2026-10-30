@@ -285,6 +285,7 @@ require('./utils/logger').banner([
     intervalMs: admin.syncIntervalMs,
     getStatus: () => sessions.status(),
     requestPairing: (number) => sessions.requestPair(number),
+    unlinkAccount: (number, sessionId) => sessions.unlinkAccount(number, sessionId),
     onWhitelistChanged: () => sessions.refreshPermissions(),
     requestRestart: async () => {
       console.log('Dashboard requested a reload and reconnection.');
@@ -313,6 +314,7 @@ require('./utils/logger').banner([
           };
         },
         requestPair: (number) => sessions.requestPair(number),
+        unlinkAccount: (number, sessionId) => sessions.unlinkAccount(number, sessionId),
         whitelistChanged: () => sessions.refreshPermissions(),
       },
     });

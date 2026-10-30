@@ -10,6 +10,7 @@ import {
   getStoredWhatsAppUser,
   listStoredWhatsAppUsers,
   saveStoredWhatsAppUser,
+  saveMemberWhatsAppUser,
 } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -71,7 +72,14 @@ export async function POST(req: NextRequest) {
       .trim()
       .slice(0, 80) || 'My WhatsApp';
 
-  await saveStoredWhatsAppUser(number, label, session.user.email);
+  if (session.user.isAdmin) {
+    await saveStoredWhatsAppUser(number, label, session.user.email);
+  } else if (!(await saveMemberWhatsAppUser(number, label, session.user.email))) {
+    return NextResponse.json(
+      { error: 'This WhatsApp number is already linked to another member account.' },
+      { status: 409 },
+    );
+  }
   await syncNumberToLiveBot(number, `${label} (${session.user.email})`, true);
   await recordActivity({ category: 'numbers', action: 'Number added', actor: session.user.email, outcome: 'success', detail: maskedNumber(number) });
 

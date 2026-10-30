@@ -235,7 +235,7 @@ export async function registerUserAccount(params: {
   name: string;
   email: string;
   password: string;
-}): Promise<{ email: string; message: string; devPreviewCode?: string }> {
+}): Promise<{ email: string; message: string; requiresVerification: boolean; devPreviewCode?: string }> {
   const name = params.name.trim();
   const email = params.email.trim().toLowerCase();
   const password = params.password;
@@ -294,6 +294,7 @@ export async function registerUserAccount(params: {
     return {
       email,
       message: 'Account created! You can now sign in.',
+      requiresVerification: false,
     };
   }
 
@@ -302,6 +303,7 @@ export async function registerUserAccount(params: {
     return {
       email,
       message: `We sent a 6-digit verification code to ${email}.`,
+      requiresVerification: true,
       devPreviewCode: mailResult.devPreviewCode,
     };
   } catch (err) {

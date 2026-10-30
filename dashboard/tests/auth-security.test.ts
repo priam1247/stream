@@ -96,6 +96,15 @@ describe('verification and session security', () => {
     expect(await bcrypt.compare('original-password', db.account!.passwordHash)).toBe(true);
   });
 
+  it('creates a verified development account and reports no verification step when disabled', async () => {
+    db.account = null;
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('EMAIL_VERIFICATION_REQUIRED', 'false');
+    await expect(registerUserAccount({ name: 'Member', email: 'member@example.com', password: 'new-password' }))
+      .resolves.toMatchObject({ requiresVerification: false });
+    expect(db.upsert).toHaveBeenCalledWith(expect.objectContaining({ isVerified: true, verificationCode: null }));
+  });
+
   it('requires email verification for registrations in production even if disabled in development', async () => {
     db.account = null;
     vi.stubEnv('NODE_ENV', 'production');
