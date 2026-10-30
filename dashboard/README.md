@@ -133,18 +133,16 @@ browser.
 
 The dashboard defaults to the Scribd server at `http://toby.hidencloud.com:24702`.
 That address is plain HTTP: token, searches and document data are **not encrypted**
-and may be read or altered in transit. Public HTTP is blocked by default. For the
-owner's temporary choice of this particular host, set both `SCRIBD_WEB_TOKEN` and
-`SCRIBD_ALLOW_INSECURE_HTTP=true` in the dashboard deployment's server-side
-environment and redeploy. This opt-in applies only to that exact origin; it will
-not send the token to a different HTTP host or port. Keep the token private and
-rotate it if exposed. An existing `SCRIBD_WEB_URL` overrides the built-in address;
-remove or update a stale override before opting in.
+and may be read or altered in transit. This selected origin is allowed without an
+extra switch; the dashboard will not send its token to a different public HTTP host
+or port. Set `SCRIBD_WEB_TOKEN` in the deployment's server-side environment, keep it
+private and rotate it if exposed. An existing `SCRIBD_WEB_URL` overrides the
+built-in address; remove or update a stale override.
 
-For a secure connection, set up an HTTPS reverse proxy, set `SCRIBD_WEB_URL` to its
-HTTPS address and remove `SCRIBD_ALLOW_INSECURE_HTTP`. The service must be running
-and reachable; deploying the dashboard does not start `scribd_web.py`. A successful
-health check alone does not verify the token, search, or downloads.
+For a secure connection, set up an HTTPS reverse proxy and set `SCRIBD_WEB_URL` to
+its HTTPS address. The service must be running and reachable; deploying the
+dashboard does not start `scribd_web.py`. A successful health check alone does not
+verify the token, search, or downloads.
 
 If the service moves, set the optional server-side `SCRIBD_WEB_URL` in the dashboard
 deployment (for example, Vercel's environment settings) and redeploy. An existing
