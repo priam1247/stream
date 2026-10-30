@@ -22,6 +22,7 @@ const jobQueue = require('./jobQueue');
 const telemetry = require('./telemetry');
 const log = require('./logger')('dashboardSync');
 
+const memberCommandPolicy = require('./memberCommandPolicy');
 const WL_FILE = path.join(__dirname, '..', 'database', 'whitelist.json');
 const BOT_BOOT_AT = Date.now();
 
@@ -98,6 +99,8 @@ function applyWhitelistSnapshot(users, wlFile = WL_FILE) {
       addedBy: String(raw?.addedBy || prev?.addedBy || 'dashboard'),
       addedAt: Number(raw?.addedAt || prev?.addedAt || Date.now()),
       enabled: raw?.enabled !== false,
+      pairAllowed: raw?.pairAllowed === true,
+      backupClaim: crypto.createHash('sha256').update(JSON.stringify([raw?.claimId || raw?.addedAt || '', String(raw?.addedBy || '').toLowerCase()])).digest('hex'),
       syncedToPortal: true,
     });
   }
@@ -117,6 +120,7 @@ function startDashboardSync(opts = {}) {
   const env = opts.env || process.env;
   const fetchImpl = opts.fetchImpl || fetch;
   const wlFile = opts.wlFile || WL_FILE;
+  const commandPolicy = opts.commandPolicy || memberCommandPolicy;
 
   const baseUrl = String(opts.dashboardUrl ?? env.DASHBOARD_URL ?? '')
     .trim()
@@ -143,6 +147,7 @@ function startDashboardSync(opts = {}) {
   let inFlight = false;
   let rerunImmediately = false;
   let lastWhitelistVersion = '';
+  let hasWhitelist = false;
   let consecutiveFailures = 0;
   const pendingResults = [];
 
@@ -168,8 +173,8 @@ function startDashboardSync(opts = {}) {
         }
         // Never re-enable a number from a stale queued request. The latest
         // dashboard snapshot must still explicitly allow it.
-        if (!readWL({ force: true, filePath: wlFile }).users.some((user) => String(user.number) === number && user.enabled !== false)) {
-          throw new Error('This number is no longer approved or enabled.');
+        if (!readWL({ force: true, filePath: wlFile }).users.some((user) => String(user.number) === number && (user.enabled !== false || user.pairAllowed === true))) {
+          throw new Error('This number is no longer allowed to link.');
         }
         if (typeof opts.requestPairing !== 'function') {
           throw new Error('Linking is not available on this service.');
@@ -191,15 +196,17 @@ function startDashboardSync(opts = {}) {
         const number = cleanDigits(cmd.payload?.number);
         const sessionId = String(cmd.payload?.sessionId || '');
         const owner = String(cmd.payload?.owner || '').trim().toLowerCase();
-        if (!/^\d{7,15}$/.test(number) || !/^[a-f0-9]{24}$/.test(sessionId) || !owner) {
+        const claimKey = String(cmd.payload?.claimKey || '');
+        if (!/^\d{7,15}$/.test(number) || !/^[a-f0-9]{24}$/.test(sessionId) || !owner || !claimKey) {
           throw new Error('Invalid unlink request.');
         }
         if (Number(cmd.expiresAt) && Date.now() > Number(cmd.expiresAt)) {
           throw new Error('This unlink request has expired.');
         }
         // The latest snapshot must still assign the session to this member.
+        const expectedClaim = crypto.createHash('sha256').update(JSON.stringify([claimKey, owner])).digest('hex');
         const authorized = readWL({ force: true, filePath: wlFile }).users.some((user) =>
-          String(user.number) === number && String(user.addedBy || '').toLowerCase() === owner);
+          String(user.number) === number && String(user.addedBy || '').toLowerCase() === owner && user.backupClaim === expectedClaim);
         if (!authorized) throw new Error('This number no longer belongs to that account.');
         if (typeof opts.unlinkAccount !== 'function') throw new Error('Unlinking is not available on this service.');
         const result = await opts.unlinkAccount(number, sessionId);
@@ -290,6 +297,8 @@ function startDashboardSync(opts = {}) {
         diskUsedMB,
         diskBudgetMB,
         whitelistVersion: lastWhitelistVersion,
+        commandPolicyVersion: commandPolicy.version(),
+        ...(typeof opts.getBackupStatus === 'function' ? { sessionBackup: opts.getBackupStatus() } : {}),
         ...(localUsers.length ? { localUsers } : {}),
         completedResults: batchResults,
       };
@@ -318,16 +327,28 @@ function startDashboardSync(opts = {}) {
       }
 
       const data = await res.json().catch(() => ({}));
+      if (stopped) return { ok: false, stopped: true };
       consecutiveFailures = 0;
 
+      let policyConfirmed = false;
+      if (Array.isArray(data.disabledMemberCommands) && typeof data.commandPolicyVersion === 'string') {
+        commandPolicy.apply(data.disabledMemberCommands, data.commandPolicyVersion);
+        policyConfirmed = true;
+      }
       if (data.whitelistChanged && Array.isArray(data.users)) {
         applyWhitelistSnapshot(data.users, wlFile);
-        try { opts.onWhitelistChanged?.(); } catch { /* non-fatal */ }
         if (typeof data.whitelistVersion === 'string') {
           lastWhitelistVersion = data.whitelistVersion;
+          hasWhitelist = true;
         }
+        try { opts.onWhitelistChanged?.(); } catch { /* non-fatal */ }
       } else if (typeof data.whitelistVersion === 'string' && !lastWhitelistVersion) {
         lastWhitelistVersion = data.whitelistVersion;
+      }
+      // After restart, do not authorize linked members on an old disk cache
+      // until this process has received both current portal snapshots.
+      if (hasWhitelist && policyConfirmed) {
+        try { opts.onPermissionsReady?.(); } catch { /* non-fatal */ }
       }
 
       const commands = Array.isArray(data.commands) ? data.commands : [];

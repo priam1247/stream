@@ -53,10 +53,17 @@ export interface PanelLiveStatus {
   checkedAt: number;
 }
 
+export type NumberApproval = 'pending' | 'approved' | 'rejected';
 export interface ApprovedUser {
   number: string;
   label?: string;
   enabled: boolean;
+  /** Existing numbers are grandfathered; newly linked numbers need approval. */
+  approval?: NumberApproval;
+  /** Pending numbers may link, but cannot execute commands until approved. */
+  pairAllowed?: boolean;
+  /** Opaque ownership generation, used to scope encrypted backups. */
+  claimId?: string;
   addedAt?: string;
   addedBy?: string;
 }
@@ -94,6 +101,9 @@ export interface WhatsAppAccountStatus {
   state: WhatsAppAccountState;
   /** Opaque per-link generation; never identifies the legacy primary session. */
   sessionId?: string;
+  /** Internal ownership correlation from the service, stripped from member responses. */
+  claimToken?: string;
+  claimCurrent?: boolean;
   linkedAt?: number;
 }
 
@@ -115,6 +125,8 @@ export interface BotHeartbeatRecord {
   queueHeavy?: number;
   /** Version of the last whitelist snapshot the bot reports applying. */
   whitelistVersion?: string;
+  commandPolicyVersion?: string;
+  sessionBackup?: { state: 'disabled' | 'starting' | 'ready' | 'error' | 'conflict'; lastBackupAt: number | null; sessions?: number; backedUp?: number };
 }
 
 export interface BotCommandRecord {
@@ -168,6 +180,7 @@ export interface AdminOverviewPayload {
   users: ApprovedUser[];
   members: MemberRecord[];
   latencyMs?: number;
+  sessionBackup?: { state: 'disabled' | 'starting' | 'ready' | 'error' | 'conflict'; lastBackupAt: number | null; sessions?: number; backedUp?: number } | null;
 }
 
 export interface MemberOverviewPayload {
@@ -194,6 +207,7 @@ export interface MemberOverviewPayload {
   queueLight?: number | null;
   queueHeavy?: number | null;
   numbers: ApprovedUser[];
+  disabledMemberCommands?: string[];
 }
 
 export interface PairCodePayload {

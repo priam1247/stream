@@ -29,6 +29,8 @@ const PRESERVED_UTILS = new Set([
   'jobDelivery.js',
   'accountSockets.js',
   'sessionManager.js',
+  'memberCommandPolicy.js',
+  'sessionBackup.js',
   'accessControl.js',
   'reconnect.js',
   'safeLog.js',

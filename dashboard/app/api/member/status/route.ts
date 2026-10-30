@@ -3,7 +3,7 @@ import { getAuthenticatedSession } from '@/lib/auth-engine';
 import { fetchLiveBotStatus, getResolvedBotTarget } from '@/lib/bot-proxy';
 import { JwtConfigError } from '@/lib/jwt';
 import { whitelistSyncState } from '@/lib/sync-status';
-import { listStoredWhatsAppUsers } from '@/lib/storage';
+import { getMemberCommandPolicy, listStoredWhatsAppUsers, sessionBackupClaim } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,10 +25,11 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const [target, allNumbers, live] = await Promise.all([
+  const [target, allNumbers, live, policy] = await Promise.all([
     getResolvedBotTarget(),
     listStoredWhatsAppUsers(),
     fetchLiveBotStatus(),
+    getMemberCommandPolicy(),
   ]);
   const numbers = allNumbers.filter((item) => (item.addedBy || '').toLowerCase() === session.user.email.toLowerCase());
 
@@ -50,7 +51,10 @@ export async function GET(req: NextRequest) {
     botConnected: live.connected,
     // Never expose the primary account's number to other members.
     botNumber: null,
-    accounts: live.accounts ? live.accounts.filter((account) => numbers.some((item) => item.number === account.number)) : null,
+    accounts: live.accounts ? live.accounts.filter((account) => {
+      const owner = numbers.find((item) => item.number === account.number);
+      return Boolean(owner && (!account.sessionId || (account.claimToken && account.claimToken === sessionBackupClaim(owner).token)));
+    }).map(({ claimToken: _claimToken, claimCurrent: _claimCurrent, ...account }) => account) : null,
     uptimeSeconds: session.user.isAdmin ? (live.uptimeSeconds ?? null) : null,
     commandsTotal: session.user.isAdmin ? (live.commandsTotal ?? null) : null,
     downloadsSuccess: session.user.isAdmin ? (live.downloadsSuccess ?? null) : null,
@@ -61,5 +65,6 @@ export async function GET(req: NextRequest) {
     queueLight: session.user.isAdmin ? (live.queueLight ?? null) : null,
     queueHeavy: session.user.isAdmin ? (live.queueHeavy ?? null) : null,
     numbers,
+    disabledMemberCommands: policy.disabled,
   });
 }

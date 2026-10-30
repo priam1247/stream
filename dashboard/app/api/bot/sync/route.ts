@@ -12,6 +12,7 @@ import {
   completeBotCommand,
   computeWhitelistSnapshot,
   getBotHeartbeat,
+  getMemberCommandPolicy,
   getNextBotPollMs,
   getStoredWhatsAppUser,
   saveBotHeartbeat,
@@ -111,13 +112,27 @@ export async function POST(req: NextRequest) {
       typeof body.whitelistVersion === 'string' && /^[a-f0-9]{16}$/i.test(body.whitelistVersion)
         ? body.whitelistVersion.toLowerCase()
         : undefined,
+    commandPolicyVersion: typeof body.commandPolicyVersion === 'string' && /^[a-f0-9]{16}$/i.test(body.commandPolicyVersion)
+      ? body.commandPolicyVersion.toLowerCase() : undefined,
+    sessionBackup: (() => {
+      const raw = body.sessionBackup;
+      if (!raw || typeof raw !== 'object' || !('state' in raw)) return undefined;
+      const state = String(raw.state);
+      if (!['disabled', 'starting', 'ready', 'error', 'conflict'].includes(state)) return undefined;
+      const last = 'lastBackupAt' in raw ? Number(raw.lastBackupAt) : 0;
+      const sessions = 'sessions' in raw ? Number(raw.sessions) : NaN;
+      const backedUp = 'backedUp' in raw ? Number(raw.backedUp) : NaN;
+      const counts = Number.isSafeInteger(sessions) && sessions >= 0 && sessions <= 101 && Number.isSafeInteger(backedUp) && backedUp >= 0 && backedUp <= sessions ? { sessions, backedUp } : {};
+      return { state: state as 'disabled' | 'starting' | 'ready' | 'error' | 'conflict', lastBackupAt: Number.isSafeInteger(last) && last > 0 && last <= Date.now() + 60000 ? last : null, ...counts };
+    })(),
   });
 
   // 4. Compute versioned whitelist delta + claim queued commands + poll interval
-  const [snapshot, commands, nextPollMs] = await Promise.all([
+  const [snapshot, commands, nextPollMs, policy] = await Promise.all([
     computeWhitelistSnapshot(),
     claimPendingBotCommands(),
     getNextBotPollMs(),
+    getMemberCommandPolicy(),
   ]);
 
   const clientVersion =
@@ -130,6 +145,8 @@ export async function POST(req: NextRequest) {
     nextPollMs: commands.length > 0 ? 2_000 : nextPollMs,
     whitelistVersion: snapshot.version,
     whitelistChanged,
+    commandPolicyVersion: policy.version,
+    disabledMemberCommands: policy.disabled,
     ...(whitelistChanged
       ? {
           botEnabledForMembers: snapshot.botEnabledForMembers,

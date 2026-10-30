@@ -136,6 +136,25 @@ test('additional accounts pair independently, dispatch messages, and restore wit
   await assert.rejects(restarted.manager.requestPair('265991111111'), /already linked/i);
 });
 
+test('pending accounts may link but cannot execute commands before approval', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-pending-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const approved = new Set();
+  const fx = fixture(root, { isAllowed: (number) => approved.has(number), canPair: (number) => number === '265991111111' });
+  t.after(() => fx.manager.stop());
+  await fx.manager.start();
+  const { sock } = await request(fx, '265991111111');
+  open(sock, '265991111111');
+  await waitFor(() => fx.manager.status().accounts.some((a) => a.number === '265991111111' && a.state === 'paused'));
+  sock.ev.emit('messages.upsert', { type: 'notify', messages: [message('pending')] });
+  await delay(5); assert.equal(fx.messages.length, 0);
+  await assert.rejects(sock.sendMessage('chat', { text: 'not permitted' }), /paused/i);
+  approved.add('265991111111'); fx.manager.refreshPermissions();
+  sock.ev.emit('messages.upsert', { type: 'notify', messages: [message('approved')] });
+  await waitFor(() => fx.messages.length === 1);
+  assert.equal(fx.messages[0][1], 'approved');
+});
+
 test('expired codes can be retried without deleting previous session data', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-expiry-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -310,4 +329,31 @@ test('a failed WhatsApp logout does not claim unlink success or discard the sess
   await assert.rejects(fx.manager.unlinkAccount(account.number, account.sessionId), /socket unavailable/);
   assert.equal(fx.manager.status().accounts.find((a) => a.number === '265991111111').state, 'connected');
   assert.equal(sock.ended, false);
+});
+
+test('ownership changes pause and retire the old session before a new claim can pair', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-claim-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const number = '265991111111';
+  let claim = 'a'.repeat(64);
+  const revoked = [];
+  const fx = fixture(root, { enforceClaims: true, canPair: (n) => n === number, getClaim: () => claim, onRevoked: (slot, generation) => revoked.push({ slot, generation }) });
+  t.after(() => fx.manager.stop());
+  await fx.manager.start();
+  const old = await request(fx, number);
+  open(old.sock, number);
+  await waitFor(() => fx.manager.status().accounts.some((item) => item.number === number && item.state === 'connected'));
+  const oldRecord = JSON.parse(fs.readFileSync(path.join(root, 'linked', 'accounts.json'))).accounts[number];
+  assert.equal(fx.manager.status().accounts.find((item) => item.number === number).claimToken, claim);
+  claim = 'b'.repeat(64);
+  await assert.rejects(old.sock.sendMessage('chat', { text: 'old owner' }), /paused/i);
+  fx.manager.refreshPermissions();
+  assert.equal(old.sock.ended, true);
+  assert.deepEqual(revoked, [{ slot: `linked:${number}`, generation: oldRecord.attempt }]);
+  assert.ok(fs.existsSync(path.join(root, 'linked', number, oldRecord.attempt, 'creds.json')));
+  const next = await request(fx, number);
+  const newRecord = JSON.parse(fs.readFileSync(path.join(root, 'linked', 'accounts.json'))).accounts[number];
+  assert.notEqual(newRecord.attempt, oldRecord.attempt);
+  assert.equal(newRecord.claim, claim);
+  assert.notEqual(next.sock, old.sock);
 });

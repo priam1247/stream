@@ -133,6 +133,7 @@ function offer({
   originMsg = null,
   scope = PRIMARY_SESSION,
   sessionDir = null,
+  commandName = '',
 }) {
   if (!Array.isArray(items) || !items.length || typeof run !== 'function') {
     throw new Error('offer() needs items and a run callback');
@@ -157,6 +158,7 @@ function offer({
     chatId,
     scope,
     sessionDir,
+    commandName: String(commandName || '').toLowerCase(),
     rawSender: Array.isArray(sender) ? String(sender[0] || '') : String(sender || ''),
     senderSet,
     keys,
@@ -355,6 +357,7 @@ async function sendPollOrText(sock, msg, extra, spec) {
     chatId,
     scope,
     sessionDir: sock?.__sessionDir,
+    commandName: extra?.commandName || '',
     sender,
     items,
     ids,
@@ -405,6 +408,7 @@ async function sendTextPrompt(sock, msg, extra, {
     chatId,
     scope,
     sessionDir: sock?.__sessionDir,
+    commandName: extra?.commandName || '',
     sender,
     items,
     ids,

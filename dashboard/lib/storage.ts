@@ -42,6 +42,9 @@ interface StoredMemberFeatures {
   updatedAt: string;
 }
 
+export interface SupportMessage { id: number; memberEmail: string; role: 'member' | 'admin'; text: string; createdAt: number }
+export interface SupportThread { email: string; latestAt: number; preview: string; unread: number }
+
 interface DiskStoreSchema {
   nextUserId: number;
   accounts: StoredPortalAccount[];
@@ -51,6 +54,8 @@ interface DiskStoreSchema {
   activity: ActivityEvent[];
   botCommands: BotCommandRecord[];
   pairCooldowns: Record<string, number>;
+  supportMessages: SupportMessage[];
+  supportReads: Record<string, { admin: number; member: number }>;
   settings: Record<string, string>;
 }
 
@@ -59,9 +64,9 @@ const DATA_FILE = path.join(DATA_DIR, 'zafar-db.json');
 
 declare global {
   // eslint-disable-next-line no-var
-  var __zafarD1SchemaV5Ready: boolean | undefined;
+  var __zafarD1SchemaV6Ready: boolean | undefined;
   // eslint-disable-next-line no-var
-  var __zafarD1SchemaV5Promise: Promise<boolean> | undefined;
+  var __zafarD1SchemaV6Promise: Promise<boolean> | undefined;
   // eslint-disable-next-line no-var
   var __zafarD1UnreachableInDev: boolean | undefined;
 }
@@ -112,14 +117,14 @@ async function queryD1<T = Record<string, unknown>>(
 async function ensureD1Tables(): Promise<boolean> {
   const cfg = getD1Config();
   if (!cfg || globalThis.__zafarD1UnreachableInDev) return false;
-  if (globalThis.__zafarD1SchemaV5Ready) return true;
-  if (globalThis.__zafarD1SchemaV5Promise) return globalThis.__zafarD1SchemaV5Promise;
+  if (globalThis.__zafarD1SchemaV6Ready) return true;
+  if (globalThis.__zafarD1SchemaV6Promise) return globalThis.__zafarD1SchemaV6Promise;
   const pending = initializeD1Tables();
-  globalThis.__zafarD1SchemaV5Promise = pending;
+  globalThis.__zafarD1SchemaV6Promise = pending;
   try {
     return await pending;
   } finally {
-    if (globalThis.__zafarD1SchemaV5Promise === pending) globalThis.__zafarD1SchemaV5Promise = undefined;
+    if (globalThis.__zafarD1SchemaV6Promise === pending) globalThis.__zafarD1SchemaV6Promise = undefined;
   }
 }
 
@@ -149,9 +154,32 @@ async function initializeD1Tables(): Promise<boolean> {
       label TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
       added_by TEXT,
-      added_at TEXT NOT NULL
+      added_at TEXT NOT NULL,
+      approval_status TEXT NOT NULL DEFAULT 'approved',
+      claim_id TEXT
     )
   `);
+  // Existing numbers keep access; newly submitted member numbers are pending.
+  // Multiple serverless cold starts can race this migration, so recheck after
+  // a duplicate-column error rather than replacing or resetting any data.
+  const columns = await queryD1<{ name: string }>(`PRAGMA table_info(portal_whatsapp_access)`);
+  if (columns === null) return false;
+  if (!columns.some((column) => column.name === 'approval_status')) {
+    try {
+      await queryD1(`ALTER TABLE portal_whatsapp_access ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'`);
+    } catch (error) {
+      const current = await queryD1<{ name: string }>(`PRAGMA table_info(portal_whatsapp_access)`);
+      if (!current?.some((column) => column.name === 'approval_status')) throw error;
+    }
+  }
+
+  if (!columns.some((column) => column.name === 'claim_id')) {
+    try { await queryD1(`ALTER TABLE portal_whatsapp_access ADD COLUMN claim_id TEXT`); }
+    catch (error) {
+      const current = await queryD1<{ name: string }>(`PRAGMA table_info(portal_whatsapp_access)`);
+      if (!current?.some((column) => column.name === 'claim_id')) throw error;
+    }
+  }
 
   await queryD1(`
     CREATE TABLE IF NOT EXISTS portal_member_permissions (
@@ -212,8 +240,22 @@ async function initializeD1Tables(): Promise<boolean> {
     )
   `);
 
+  await queryD1(`CREATE TABLE IF NOT EXISTS portal_support_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, member_email TEXT NOT NULL,
+    sender_role TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL
+  )`);
+  await queryD1(`CREATE INDEX IF NOT EXISTS portal_support_member_id ON portal_support_messages(member_email, id)`);
+  await queryD1(`CREATE TABLE IF NOT EXISTS portal_support_reads (
+    member_email TEXT PRIMARY KEY, admin_seen_id INTEGER NOT NULL DEFAULT 0, member_seen_id INTEGER NOT NULL DEFAULT 0
+  )`);
+
+  await queryD1(`CREATE TABLE IF NOT EXISTS portal_session_backups (
+    slot TEXT PRIMARY KEY, generation TEXT NOT NULL, claim_token TEXT NOT NULL, revision INTEGER NOT NULL,
+    ciphertext TEXT NOT NULL DEFAULT '', revoked INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
+  )`);
+
   if (globalThis.__zafarD1UnreachableInDev) return false;
-  globalThis.__zafarD1SchemaV5Ready = true;
+  globalThis.__zafarD1SchemaV6Ready = true;
   return true;
 }
 
@@ -232,6 +274,8 @@ function readDiskStore(): DiskStoreSchema {
         activity: Array.isArray(parsed.activity) ? parsed.activity : [],
         botCommands: Array.isArray(parsed.botCommands) ? parsed.botCommands : [],
         pairCooldowns: parsed.pairCooldowns && typeof parsed.pairCooldowns === 'object' ? parsed.pairCooldowns : {},
+        supportMessages: Array.isArray(parsed.supportMessages) ? parsed.supportMessages : [],
+        supportReads: parsed.supportReads && typeof parsed.supportReads === 'object' ? parsed.supportReads : {},
         settings:
           parsed.settings && typeof parsed.settings === 'object' ? parsed.settings : {},
       };
@@ -250,6 +294,8 @@ function readDiskStore(): DiskStoreSchema {
     activity: [],
     botCommands: [],
     pairCooldowns: {},
+    supportMessages: [],
+    supportReads: {},
     settings: {},
   };
 }
@@ -459,7 +505,7 @@ export async function setMemberPermission(
 
     // Sync all WhatsApp numbers belonging to this member automatically
     await queryD1(
-      `UPDATE portal_whatsapp_access SET enabled = ? WHERE lower(added_by) = ?`,
+      `UPDATE portal_whatsapp_access SET enabled = CASE WHEN approval_status = 'approved' THEN ? ELSE 0 END WHERE lower(added_by) = ?`,
       [allowed ? 1 : 0, clean],
     );
     return;
@@ -481,7 +527,7 @@ export async function setMemberPermission(
   }
   for (const num of store.whatsappUsers) {
     if ((num.addedBy || '').toLowerCase() === clean) {
-      num.enabled = allowed;
+      num.enabled = allowed && (!num.approval || num.approval === 'approved');
     }
   }
   writeDiskStore(store);
@@ -769,166 +815,170 @@ export async function saveBotConnectionConfig(patch: {
 // Stored WhatsApp Numbers CRUD (Scoped & Global)
 // ============================================================================
 
+function numberApproval(value: unknown): ApprovedUser['approval'] {
+  if (value === 'pending' || value === 'rejected') return value;
+  // Rows from before this feature had no approval field and retain access.
+  return value == null || value === 'approved' ? 'approved' : 'rejected';
+}
+
+function mapNumberRow(row: Record<string, unknown>): ApprovedUser {
+  const approval = numberApproval(row.approval_status);
+  return {
+    number: String(row.number),
+    label: String(row.label || 'Approved number'),
+    enabled: approval === 'approved' && Boolean(Number(row.enabled)) && Boolean(Number(row.owner_allowed ?? 1)),
+    approval,
+    pairAllowed: approval === 'pending' && Boolean(Number(row.owner_allowed ?? 1)),
+    addedBy: row.added_by ? String(row.added_by) : undefined,
+    claimId: row.claim_id ? String(row.claim_id) : undefined,
+    addedAt: String(row.added_at),
+  };
+}
+
+function localNumber(store: DiskStoreSchema, user: ApprovedUser): ApprovedUser {
+  const approval = numberApproval(user.approval);
+  const owner = (user.addedBy || '').toLowerCase();
+  const permission = store.memberPermissions.find((item) => item.email.toLowerCase() === owner);
+  return { ...user, approval, enabled: approval === 'approved' && user.enabled && permission?.allowed !== false,
+    pairAllowed: approval === 'pending' && permission?.allowed !== false };
+}
+
+const SELECT_WHATSAPP_USERS = `SELECT u.number, u.label, u.enabled, u.added_by, u.added_at, u.approval_status, u.claim_id,
+  COALESCE(p.allowed, 1) AS owner_allowed FROM portal_whatsapp_access u
+  LEFT JOIN portal_member_permissions p ON lower(p.email) = lower(u.added_by)`;
+
 export async function listStoredWhatsAppUsers(ownerEmail?: string): Promise<ApprovedUser[]> {
   const filterOwner = ownerEmail?.trim().toLowerCase();
-
-  if (await ensureD1Tables()) {
-    const rows = filterOwner
-      ? await queryD1(
-          `SELECT number, label, enabled, added_by, added_at
-           FROM portal_whatsapp_access
-           WHERE lower(added_by) = ?
-           ORDER BY added_at DESC`,
-          [filterOwner],
-        )
-      : await queryD1(
-          `SELECT number, label, enabled, added_by, added_at
-           FROM portal_whatsapp_access
-           ORDER BY added_at DESC`,
-        );
-    if (rows) {
-      return rows.map((r) => ({
-        number: String(r.number),
-        label: String(r.label || 'Approved number'),
-        enabled: Boolean(Number(r.enabled)),
-        addedBy: r.added_by ? String(r.added_by) : undefined,
-        addedAt: String(r.added_at),
-      }));
-    }
-  }
-
-  const all = readDiskStore().whatsappUsers;
-  if (!filterOwner) return all;
-  return all.filter((u) => (u.addedBy || '').toLowerCase() === filterOwner);
-}
-
-export async function getStoredWhatsAppUser(
-  number: string,
-): Promise<ApprovedUser | null> {
   if (await ensureD1Tables()) {
     const rows = await queryD1(
-      `SELECT number, label, enabled, added_by, added_at
-       FROM portal_whatsapp_access WHERE number = ? LIMIT 1`,
-      [number],
+      `${SELECT_WHATSAPP_USERS} ${filterOwner ? 'WHERE lower(u.added_by) = ?' : ''} ORDER BY u.added_at DESC`,
+      filterOwner ? [filterOwner] : [],
     );
-    if (!rows || rows.length === 0) return null;
-    const r = rows[0];
-    return {
-      number: String(r.number),
-      label: String(r.label || 'Approved number'),
-      enabled: Boolean(Number(r.enabled)),
-      addedBy: r.added_by ? String(r.added_by) : undefined,
-      addedAt: String(r.added_at),
-    };
+    if (rows) return rows.map(mapNumberRow);
   }
-  return readDiskStore().whatsappUsers.find((u) => u.number === number) || null;
+  const store = readDiskStore();
+  return store.whatsappUsers.filter((user) => !filterOwner || (user.addedBy || '').toLowerCase() === filterOwner)
+    .map((user) => localNumber(store, user));
 }
 
-export async function saveStoredWhatsAppUser(
-  number: string,
-  label: string,
-  addedBy: string,
-): Promise<ApprovedUser[]> {
+export async function getStoredWhatsAppUser(number: string): Promise<ApprovedUser | null> {
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(`${SELECT_WHATSAPP_USERS} WHERE u.number = ? LIMIT 1`, [number]);
+    return rows?.length ? mapNumberRow(rows[0]) : null;
+  }
+  const store = readDiskStore();
+  const user = store.whatsappUsers.find((item) => item.number === number);
+  return user ? localNumber(store, user) : null;
+}
+
+/** Owner-added numbers are explicitly approved. */
+export async function saveStoredWhatsAppUser(number: string, label: string, addedBy: string): Promise<ApprovedUser[]> {
   const now = new Date().toISOString();
   const cleanOwner = addedBy.trim().toLowerCase();
-
   if (await ensureD1Tables()) {
     await queryD1(
-      `INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at)
-       VALUES (?, ?, 1, ?, ?)
-       ON CONFLICT(number) DO UPDATE SET
-         enabled = 1,
-         label = excluded.label,
-         added_by = excluded.added_by`,
-      [number, label, cleanOwner, now],
+      `INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at, approval_status, claim_id)
+       VALUES (?, ?, 1, ?, ?, 'approved', ?)
+       ON CONFLICT(number) DO UPDATE SET enabled = 1, label = excluded.label,
+         claim_id = CASE WHEN lower(portal_whatsapp_access.added_by) = excluded.added_by THEN portal_whatsapp_access.claim_id ELSE excluded.claim_id END,
+         added_by = excluded.added_by, approval_status = 'approved'`,
+      [number, label, cleanOwner, now, crypto.randomUUID()],
     );
     return listStoredWhatsAppUsers();
   }
-
   const store = readDiskStore();
   const existing = store.whatsappUsers.find((u) => u.number === number);
-  if (existing) {
-    existing.enabled = true;
-    existing.label = label;
-    existing.addedBy = cleanOwner;
-  } else {
-    store.whatsappUsers.unshift({
-      number,
-      label,
-      enabled: true,
-      addedBy: cleanOwner,
-      addedAt: now,
-    });
-  }
+  if (existing) { if ((existing.addedBy || '').toLowerCase() !== cleanOwner) existing.claimId = crypto.randomUUID(); Object.assign(existing, { enabled: true, label, addedBy: cleanOwner, approval: 'approved' }); }
+  else store.whatsappUsers.unshift({ number, label, enabled: true, addedBy: cleanOwner, addedAt: now, approval: 'approved', claimId: crypto.randomUUID() });
   writeDiskStore(store);
-  return store.whatsappUsers;
+  return store.whatsappUsers.map((user) => localNumber(store, user));
 }
 
-/** Claim a member number without transferring one concurrently claimed by someone else. */
+/** Claim a new number as pending; a member cannot re-enable or transfer it. */
 export async function saveMemberWhatsAppUser(number: string, label: string, addedBy: string): Promise<boolean> {
   const owner = addedBy.trim().toLowerCase();
   const now = new Date().toISOString();
   if (await ensureD1Tables()) {
     const rows = await queryD1(
-      `INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at)
-       VALUES (?, ?, 1, ?, ?)
-       ON CONFLICT(number) DO UPDATE SET enabled = 1, label = excluded.label, added_by = excluded.added_by
-       WHERE COALESCE(portal_whatsapp_access.added_by, '') = '' OR lower(portal_whatsapp_access.added_by) = ?
+      `INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at, approval_status, claim_id)
+       SELECT ?, ?, 0, ?, ?, 'pending', ?
+       WHERE NOT EXISTS (SELECT 1 FROM portal_whatsapp_access
+         WHERE lower(added_by) = ? AND approval_status = 'pending' AND number != ?)
+       ON CONFLICT(number) DO UPDATE SET label = excluded.label
+       WHERE lower(portal_whatsapp_access.added_by) = ?
        RETURNING number`,
-      [number, label, owner, now, owner],
+      [number, label, owner, now, crypto.randomUUID(), owner, number, owner],
     );
     return Boolean(rows?.length);
   }
   const store = readDiskStore();
   const current = store.whatsappUsers.find((user) => user.number === number);
-  if (current?.addedBy && current.addedBy.toLowerCase() !== owner) return false;
-  if (current) Object.assign(current, { enabled: true, label, addedBy: owner });
-  else store.whatsappUsers.unshift({ number, label, enabled: true, addedBy: owner, addedAt: now });
+  if (current && (current.addedBy || '').toLowerCase() !== owner) return false;
+  if (store.whatsappUsers.some((user) => user.number !== number && (user.addedBy || '').toLowerCase() === owner && user.approval === 'pending')) return false;
+  if (current) current.label = label;
+  else store.whatsappUsers.unshift({ number, label, enabled: false, approval: 'pending', addedBy: owner, addedAt: now, claimId: crypto.randomUUID() });
   writeDiskStore(store);
   return true;
 }
 
 export async function updateStoredWhatsAppUser(
   number: string,
-  patch: { enabled?: boolean; label?: string },
+  patch: { enabled?: boolean; label?: string; approval?: ApprovedUser['approval'] },
 ): Promise<ApprovedUser | null> {
   if (await ensureD1Tables()) {
     const current = await getStoredWhatsAppUser(number);
     if (!current) return null;
-    const nextEnabled =
-      typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled;
-    const nextLabel =
-      typeof patch.label === 'string' && patch.label.trim()
-        ? patch.label.trim().slice(0, 80)
-        : current.label || 'Approved number';
-
+    const approval = patch.approval ?? current.approval ?? 'approved';
+    const enabled = approval === 'approved' && (typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled);
+    const label = typeof patch.label === 'string' && patch.label.trim()
+      ? patch.label.trim().slice(0, 80) : current.label || 'Approved number';
     await queryD1(
-      `UPDATE portal_whatsapp_access SET enabled = ?, label = ? WHERE number = ?`,
-      [nextEnabled ? 1 : 0, nextLabel, number],
+      `UPDATE portal_whatsapp_access SET enabled = ?, label = ?, approval_status = ? WHERE number = ?`,
+      [enabled ? 1 : 0, label, approval, number],
     );
-    return {
-      ...current,
-      enabled: nextEnabled,
-      label: nextLabel,
-    };
+    return getStoredWhatsAppUser(number);
   }
-
   const store = readDiskStore();
-  const target = store.whatsappUsers.find((u) => u.number === number);
+  const target = store.whatsappUsers.find((user) => user.number === number);
   if (!target) return null;
+  if (patch.approval) target.approval = patch.approval;
   if (typeof patch.enabled === 'boolean') target.enabled = patch.enabled;
-  if (typeof patch.label === 'string' && patch.label.trim()) {
-    target.label = patch.label.trim().slice(0, 80);
-  }
+  if (target.approval && target.approval !== 'approved') target.enabled = false;
+  if (typeof patch.label === 'string' && patch.label.trim()) target.label = patch.label.trim().slice(0, 80);
   writeDiskStore(store);
-  return target;
+  return localNumber(store, target);
+}
+
+/** Resolve only the same pending claim, even if it was removed concurrently. */
+export async function resolvePendingWhatsAppUser(number: string, owner: string, approve: boolean, expectedClaim?: string): Promise<ApprovedUser | null> {
+  const email = owner.trim().toLowerCase();
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(
+      `UPDATE portal_whatsapp_access SET approval_status = ?, enabled = ?
+       WHERE number = ? AND lower(added_by) = ? AND approval_status = 'pending'
+         AND (? IS NULL OR COALESCE(NULLIF(claim_id, ''), added_at, '') = ?)
+         AND (? = 0 OR COALESCE((SELECT allowed FROM portal_member_permissions WHERE lower(email) = ?), 1) = 1)
+       RETURNING number`,
+      [approve ? 'approved' : 'rejected', approve ? 1 : 0, number, email, expectedClaim ?? null, expectedClaim ?? null, approve ? 1 : 0, email],
+    );
+    return rows?.length ? getStoredWhatsAppUser(number) : null;
+  }
+  const store = readDiskStore();
+  const target = store.whatsappUsers.find((user) => user.number === number && (user.addedBy || '').toLowerCase() === email && user.approval === 'pending');
+  if (!target || (expectedClaim !== undefined && String(target.claimId || target.addedAt || '') !== expectedClaim) ||
+      (approve && store.memberPermissions.some((permission) => permission.email === email && !permission.allowed))) return null;
+  target.approval = approve ? 'approved' : 'rejected';
+  target.enabled = approve;
+  writeDiskStore(store);
+  return localNumber(store, target);
 }
 
 export async function deleteStoredWhatsAppUser(
   number: string,
 ): Promise<ApprovedUser[]> {
   if (await ensureD1Tables()) {
-    await queryD1(`DELETE FROM portal_whatsapp_access WHERE number = ?`, [number]);
+    const rows = await queryD1(`DELETE FROM portal_whatsapp_access WHERE number = ? RETURNING claim_id, added_at, added_by`, [number]);
+    if (rows?.length) await revokeBackupForClaim(`linked:${number}`, claimFromRow(rows[0]));
     return listStoredWhatsAppUsers();
   }
 
@@ -986,19 +1036,22 @@ export async function releasePairCooldown(number: string, retryAt: number): Prom
 }
 
 /** Remove only a number still owned by the caller, even after a queued unlink. */
-export async function deleteWhatsAppUserIfOwned(number: string, ownerEmail: string): Promise<boolean> {
+export async function deleteWhatsAppUserIfOwned(number: string, ownerEmail: string, expectedClaim?: string): Promise<boolean> {
   const owner = ownerEmail.trim().toLowerCase();
   if (await ensureD1Tables()) {
     const rows = await queryD1(
-      `DELETE FROM portal_whatsapp_access WHERE number = ? AND lower(added_by) = ? RETURNING number`,
-      [number, owner],
+      `DELETE FROM portal_whatsapp_access WHERE number = ? AND lower(added_by) = ?
+       AND (? IS NULL OR COALESCE(NULLIF(claim_id, ''), added_at, '') = ?) RETURNING claim_id, added_at, added_by`,
+      [number, owner, expectedClaim ?? null, expectedClaim ?? null],
     );
+    if (rows?.length) await revokeBackupForClaim(`linked:${number}`, claimFromRow(rows[0]));
     return Boolean(rows?.length);
   }
   const store = readDiskStore();
   const before = store.whatsappUsers.length;
   store.whatsappUsers = store.whatsappUsers.filter((user) =>
-    !(user.number === number && (user.addedBy || '').toLowerCase() === owner));
+    !(user.number === number && (user.addedBy || '').toLowerCase() === owner &&
+      (expectedClaim === undefined || String(user.claimId || user.addedAt || '') === expectedClaim)));
   if (store.whatsappUsers.length === before) return false;
   writeDiskStore(store);
   return true;
@@ -1039,6 +1092,181 @@ async function setSettingValue(key: string, value: string): Promise<void> {
   const store = readDiskStore();
   store.settings[key] = value;
   writeDiskStore(store);
+}
+
+const COMMAND_SETTING_PREFIX = 'member_command_disabled:';
+
+/** Each command is stored separately so concurrent switches cannot overwrite each other. */
+export async function getMemberCommandPolicy(): Promise<{ disabled: string[]; version: string }> {
+  let disabled: string[];
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(`SELECT key FROM portal_settings WHERE substr(key, 1, ?) = ? AND value = '1'`, [COMMAND_SETTING_PREFIX.length, COMMAND_SETTING_PREFIX]);
+    disabled = (rows || []).map((row) => String(row.key).slice(COMMAND_SETTING_PREFIX.length));
+  } else {
+    disabled = Object.entries(readDiskStore().settings).filter(([key, value]) => key.startsWith(COMMAND_SETTING_PREFIX) && value === '1')
+      .map(([key]) => key.slice(COMMAND_SETTING_PREFIX.length));
+  }
+  disabled = [...new Set(disabled.filter((name) => /^[a-z0-9_]{1,40}$/.test(name)))].sort();
+  return { disabled, version: crypto.createHash('sha256').update(JSON.stringify(disabled)).digest('hex').slice(0, 16) };
+}
+
+export async function setMemberCommandDisabled(name: string, disabled: boolean): Promise<void> {
+  if (!/^[a-z0-9_]{1,40}$/.test(name)) throw new Error('Invalid command.');
+  await setSettingValue(`${COMMAND_SETTING_PREFIX}${name}`, disabled ? '1' : '0');
+  await setFastPollWindow(30_000);
+}
+
+function supportMessage(row: Record<string, unknown>): SupportMessage {
+  return { id: Number(row.id), memberEmail: String(row.member_email), role: row.sender_role === 'admin' ? 'admin' : 'member', text: String(row.body), createdAt: Number(row.created_at) };
+}
+
+/** Atomic per-conversation throttling prevents a fast client bypassing the UI. */
+export async function addSupportMessage(email: string, role: 'member' | 'admin', text: string, now = Date.now()): Promise<SupportMessage | null> {
+  const owner = email.trim().toLowerCase();
+  if (!owner || !text || text.length > 2000) throw new Error('Invalid message.');
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(`INSERT INTO portal_support_messages (member_email, sender_role, body, created_at)
+      SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM portal_support_messages
+        WHERE member_email = ? AND sender_role = ? AND created_at > ?) RETURNING *`,
+      [owner, role, text, now, owner, role, now - 5000]);
+    return rows?.length ? supportMessage(rows[0]) : null;
+  }
+  const store = readDiskStore();
+  if (store.supportMessages.some((item) => item.memberEmail === owner && item.role === role && item.createdAt > now - 5000)) return null;
+  const id = Math.max(0, ...store.supportMessages.map((item) => item.id)) + 1;
+  const message: SupportMessage = { id, memberEmail: owner, role, text, createdAt: now };
+  store.supportMessages.push(message);
+  writeDiskStore(store);
+  return message;
+}
+
+export async function listSupportMessages(email: string, viewer: 'member' | 'admin', markRead = true): Promise<SupportMessage[]> {
+  const owner = email.trim().toLowerCase();
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(`SELECT * FROM portal_support_messages WHERE member_email = ? ORDER BY id DESC LIMIT 200`, [owner]);
+    const messages = (rows || []).map(supportMessage).reverse();
+    const lastId = messages[messages.length - 1]?.id || 0;
+    if (markRead && lastId) {
+      const column = viewer === 'admin' ? 'admin_seen_id' : 'member_seen_id';
+      await queryD1(`INSERT INTO portal_support_reads (member_email, ${column}) VALUES (?, ?)
+        ON CONFLICT(member_email) DO UPDATE SET ${column} = MAX(${column}, excluded.${column})`, [owner, lastId]);
+    }
+    return messages;
+  }
+  const store = readDiskStore();
+  const messages = store.supportMessages.filter((item) => item.memberEmail === owner).slice(-200);
+  const lastId = messages[messages.length - 1]?.id || 0;
+  if (markRead && lastId) {
+    const seen = store.supportReads[owner] || { admin: 0, member: 0 };
+    seen[viewer] = Math.max(seen[viewer], lastId); store.supportReads[owner] = seen; writeDiskStore(store);
+  }
+  return messages;
+}
+
+export async function listSupportThreads(): Promise<SupportThread[]> {
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(`SELECT m.member_email,
+      MAX(m.created_at) AS latest_at,
+      (SELECT body FROM portal_support_messages x WHERE x.member_email = m.member_email ORDER BY x.id DESC LIMIT 1) AS preview,
+      SUM(CASE WHEN m.sender_role = 'member' AND m.id > COALESCE(r.admin_seen_id, 0) THEN 1 ELSE 0 END) AS unread
+      FROM portal_support_messages m LEFT JOIN portal_support_reads r ON r.member_email = m.member_email
+      GROUP BY m.member_email ORDER BY latest_at DESC LIMIT 200`);
+    return (rows || []).map((row) => ({ email: String(row.member_email), latestAt: Number(row.latest_at), preview: String(row.preview), unread: Number(row.unread) }));
+  }
+  const store = readDiskStore();
+  const emails = [...new Set(store.supportMessages.map((item) => item.memberEmail))];
+  return emails.map((email) => {
+    const messages = store.supportMessages.filter((item) => item.memberEmail === email);
+    const last = messages[messages.length - 1];
+    return { email, latestAt: last.createdAt, preview: last.text, unread: messages.filter((item) => item.role === 'member' && item.id > (store.supportReads[email]?.admin || 0)).length };
+  }).sort((a, b) => b.latestAt - a.latestAt).slice(0, 200);
+}
+
+export async function countMemberSupportUnread(email: string): Promise<number> {
+  const owner = email.trim().toLowerCase();
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(`SELECT COUNT(*) AS total FROM portal_support_messages m LEFT JOIN portal_support_reads r ON r.member_email = m.member_email
+      WHERE m.member_email = ? AND m.sender_role = 'admin' AND m.id > COALESCE(r.member_seen_id, 0)`, [owner]);
+    return Number(rows?.[0]?.total) || 0;
+  }
+  const store = readDiskStore();
+  return store.supportMessages.filter((item) => item.memberEmail === owner && item.role === 'admin' && item.id > (store.supportReads[owner]?.member || 0)).length;
+}
+
+export interface SessionBackupRecord { slot: string; generation: string; claimToken: string; revision: number; ciphertext: string; revoked: boolean; updatedAt: number }
+function mapSessionBackup(row: Record<string, unknown>): SessionBackupRecord {
+  return { slot: String(row.slot), generation: String(row.generation), claimToken: String(row.claim_token || ''), revision: Number(row.revision), ciphertext: String(row.ciphertext || ''), revoked: Boolean(Number(row.revoked)), updatedAt: Number(row.updated_at) };
+}
+/** Session recovery is deliberately unavailable on the ephemeral disk fallback. */
+export async function listSessionBackupMetadata(after = ''): Promise<Omit<SessionBackupRecord, 'ciphertext'>[] | null> {
+  if (!(await ensureD1Tables())) return null;
+  const rows = await queryD1(`SELECT slot, generation, claim_token, revision, revoked, updated_at FROM portal_session_backups WHERE slot > ? ORDER BY slot LIMIT 100`, [after]);
+  return (rows || []).map((row) => { const { ciphertext: _ciphertext, ...rest } = mapSessionBackup(row); return rest; });
+}
+export async function getSessionBackup(slot: string): Promise<SessionBackupRecord | null> {
+  if (!(await ensureD1Tables())) return null;
+  const rows = await queryD1(`SELECT * FROM portal_session_backups WHERE slot = ? LIMIT 1`, [slot]);
+  return rows?.length ? mapSessionBackup(rows[0]) : null;
+}
+/** Portal ownership data used to recheck a backup write in the same SQL statement. */
+export interface SessionBackupClaim { key: string; owner: string }
+export function sessionBackupClaim(user: Pick<ApprovedUser, 'claimId' | 'addedAt' | 'addedBy'>): { token: string; identity: SessionBackupClaim } {
+  const identity = { key: String(user.claimId || user.addedAt || ''), owner: String(user.addedBy || '').toLowerCase() };
+  return { token: crypto.createHash('sha256').update(JSON.stringify([identity.key, identity.owner])).digest('hex'), identity };
+}
+function claimFromRow(row: Record<string, unknown>): string {
+  return sessionBackupClaim({ claimId: row.claim_id ? String(row.claim_id) : undefined,
+    addedAt: String(row.added_at || ''), addedBy: row.added_by ? String(row.added_by) : undefined }).token;
+}
+function backupEligibility(slot: string, identity?: SessionBackupClaim | null): { sql: string; params: string[] } {
+  if (slot === 'primary') return { sql: '1 = 1', params: [] };
+  if (!identity || !/^linked:\d{7,15}$/.test(slot)) return { sql: '0 = 1', params: [] };
+  return { sql: `EXISTS (SELECT 1 FROM portal_whatsapp_access u
+    LEFT JOIN portal_member_permissions p ON lower(p.email) = lower(u.added_by)
+    WHERE u.number = ? AND COALESCE(NULLIF(u.claim_id, ''), u.added_at, '') = ?
+      AND lower(COALESCE(u.added_by, '')) = ? AND COALESCE(p.allowed, 1) = 1
+      AND (COALESCE(u.approval_status, 'approved') = 'pending'
+        OR (COALESCE(u.approval_status, 'approved') = 'approved' AND u.enabled = 1)))`,
+    params: [slot.slice(7), identity.key, identity.owner] };
+}
+/** Read the backup only if its ownership is still current at the SQL snapshot. */
+export async function getEligibleSessionBackup(slot: string, claimToken: string, identity?: SessionBackupClaim | null): Promise<SessionBackupRecord | null> {
+  if (!(await ensureD1Tables())) return null;
+  const check = backupEligibility(slot, identity);
+  const rows = await queryD1(`SELECT * FROM portal_session_backups WHERE slot = ? AND claim_token = ? AND revoked = 0 AND ${check.sql} LIMIT 1`,
+    [slot, claimToken, ...check.params]);
+  return rows?.length ? mapSessionBackup(rows[0]) : null;
+}
+/** Compare-and-swap and check the current claim atomically, not in a prior request. */
+export async function putSessionBackup(slot: string, generation: string, claimToken: string, ciphertext: string, expected: number, identity?: SessionBackupClaim | null): Promise<number | null> {
+  if (!(await ensureD1Tables())) return null;
+  const check = backupEligibility(slot, identity);
+  const rows = expected === 0
+    ? await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at)
+        SELECT ?, ?, ?, 1, ?, 0, ? WHERE ${check.sql} ON CONFLICT(slot) DO NOTHING RETURNING revision`,
+      [slot, generation, claimToken, ciphertext, Date.now(), ...check.params])
+    : await queryD1(`UPDATE portal_session_backups SET generation = ?, claim_token = ?, revision = revision + 1, ciphertext = ?, revoked = 0, updated_at = ?
+        WHERE slot = ? AND revision = ? AND (revoked = 0 OR generation != ?) AND ${check.sql} RETURNING revision`,
+      [generation, claimToken, ciphertext, Date.now(), slot, expected, generation, ...check.params]);
+  return rows?.length ? Number(rows[0].revision) : null;
+}
+/** A delayed deletion can erase only the deleted owner's backup, never a replacement. */
+async function revokeBackupForClaim(slot: string, claimToken: string): Promise<void> {
+  if (!(await ensureD1Tables())) return;
+  await queryD1(`UPDATE portal_session_backups SET revision = revision + 1, ciphertext = '', revoked = 1, updated_at = ?
+    WHERE slot = ? AND claim_token = ?`, [Date.now(), slot, claimToken]);
+}
+export async function revokeSessionBackup(slot: string, generation?: string): Promise<void> {
+  if (!(await ensureD1Tables())) return;
+  // When a generation is supplied, a delayed logout cannot revoke a newer link.
+  if (generation) {
+    await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at) VALUES (?, ?, '', 1, '', 1, ?)
+      ON CONFLICT(slot) DO UPDATE SET revision = portal_session_backups.revision + 1, ciphertext = '', revoked = 1, updated_at = excluded.updated_at
+      WHERE portal_session_backups.generation = excluded.generation`, [slot, generation, Date.now()]);
+  } else {
+    await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at) VALUES (?, '', '', 1, '', 1, ?)
+      ON CONFLICT(slot) DO UPDATE SET revision = portal_session_backups.revision + 1, ciphertext = '', revoked = 1, updated_at = excluded.updated_at`, [slot, Date.now()]);
+  }
 }
 
 export async function getPanelConnectionConfig(): Promise<PanelConnectionConfig> {
@@ -1162,7 +1390,7 @@ export async function getNextBotPollMs(): Promise<number> {
 
 function canonicalWhitelist(users: ApprovedUser[]) {
   return users
-    .map((u) => ({ number: u.number, label: u.label || '', enabled: Boolean(u.enabled), addedBy: (u.addedBy || '').toLowerCase() }))
+    .map((u) => ({ number: u.number, label: u.label || '', enabled: Boolean(u.enabled), pairAllowed: u.pairAllowed === true, addedBy: (u.addedBy || '').toLowerCase(), claimId: u.claimId || '', addedAt: u.addedAt || '' }))
     .sort((a, b) => a.number.localeCompare(b.number));
 }
 

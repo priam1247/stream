@@ -21,6 +21,8 @@ vi.mock('../lib/bot-proxy', () => ({
   })),
 }));
 vi.mock('../lib/storage', () => ({
+  sessionBackupClaim: () => ({ token: 'a'.repeat(64) }),
+  getMemberCommandPolicy: vi.fn(async () => ({ disabled: [], version: 'test' })),
   listStoredWhatsAppUsers: vi.fn(async () => [
     { number: '15550001111', enabled: true, addedBy: 'member@example.com' },
     { number: '15550002222', enabled: true, addedBy: 'other@example.com' },
@@ -55,6 +57,14 @@ describe('member WhatsApp status privacy', () => {
     expect(JSON.stringify(body)).not.toContain('15550002222');
   });
 
+  it('hides a previous owner’s session and strips internal ownership tokens', async () => {
+    state.accounts = [{ number: '15550001111', state: 'paused', sessionId: 'b'.repeat(24), claimToken: 'c'.repeat(64) }];
+    expect((await (await GET(request())).json()).accounts).toEqual([]);
+    state.accounts = [{ number: '15550001111', state: 'paused', sessionId: 'b'.repeat(24), claimToken: 'a'.repeat(64) }];
+    const body = await (await GET(request())).json();
+    expect(body.accounts).toEqual([{ number: '15550001111', state: 'paused', sessionId: 'b'.repeat(24) }]);
+    expect(JSON.stringify(body)).not.toContain('a'.repeat(64));
+  });
   it('reports unknown account status when the server does not provide it', async () => {
     const body = await (await GET(request())).json();
     expect(body.accounts).toBeNull();

@@ -1,15 +1,15 @@
 import type { AdminOverviewPayload, PanelLiveStatus } from './types';
 import type { ScribdStatusPayload } from './scribd-types';
 
-export type OwnerTab = 'overview' | 'server' | 'scribd' | 'members' | 'activity';
-export type WhatsAppPage = 'numbers' | 'service' | 'power' | 'sync' | 'hosting';
+export type OwnerTab = 'overview' | 'server' | 'scribd' | 'members' | 'activity' | 'support';
+export type WhatsAppPage = 'numbers' | 'commands' | 'service' | 'power' | 'sync' | 'hosting';
 export type ScribdPage = 'search' | 'queue' | 'files';
 export type ActivityPage = 'alerts' | 'history';
 export type RoomTarget =
   | { tab: 'server'; page?: WhatsAppPage }
   | { tab: 'scribd'; page?: ScribdPage }
   | { tab: 'activity'; page?: ActivityPage }
-  | { tab: 'overview' | 'members' };
+  | { tab: 'overview' | 'members' | 'support' };
 export interface ScribdSnapshot {
   status: ScribdStatusPayload | null;
   error: string | null;
@@ -32,6 +32,10 @@ export function getRoomAlerts(
   panel: PanelLiveStatus | null = null,
 ): RoomAlert[] {
   const alerts: RoomAlert[] = [];
+  const linkedPending = data.users.filter((user) => user.approval === 'pending' && data.accounts?.some((account) => account.number === user.number && account.sessionId && account.claimCurrent === true && ['connected', 'connecting', 'paused'].includes(account.state))).length;
+  if (linkedPending) {
+    alerts.push({ id: 'link-approvals', title: `${linkedPending} link ${linkedPending === 1 ? 'request' : 'requests'} awaiting approval`, detail: 'A member has linked WhatsApp and is waiting for your decision.', target: { tab: 'members' }, level: 'warning' });
+  }
   if (panel?.state === 'suspended') {
     alerts.push({ id: 'panel-suspended', title: 'Hosting server suspended', detail: 'The hosting panel reports this server is suspended. Review the panel for details.', target: { tab: 'server', page: 'service' }, level: 'danger' });
   } else if (panel?.state === 'offline') {

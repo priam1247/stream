@@ -86,8 +86,11 @@ started from another directory. Do not commit or share `.env` or session files.
 ## Linking additional WhatsApp accounts
 
 Update both the dashboard and the WhatsApp service, and make sure the service
-has `DASHBOARD_URL` and the matching `BOT_SYNC_TOKEN` configured. On the dashboard,
-approve and enable the number, then select **Get code**. On that phone, open
+has `DASHBOARD_URL` and the matching `BOT_SYNC_TOKEN` configured. A member selects **Get code** and links first. An administrator then reviews
+the linked request under **Members** and approves or rejects it. Until approval,
+the linked session cannot respond to commands. Existing approved numbers retain
+access. Each member may have one pending request, and pending sessions count
+toward `MAX_LINKED_ACCOUNTS`. On that phone, open
 WhatsApp → Linked devices → Link a device → Link with phone number instead, and
 enter the code. A code being issued does not mean that linking is complete;
 check the individual connection status after entering it. Existing linked
@@ -107,6 +110,54 @@ fallbacks are retained for compatibility when these variables are empty.
 If a custom `SESSION_NAME` is used, keep that whole directory out of Git and
 backups/logs shared with others. The default `session/` and common Baileys key
 files are ignored, but a custom directory can contain additional private files.
+
+## Encrypted session recovery
+
+Session files are sensitive credentials. Recovery is optional and **does not**
+guarantee WhatsApp will keep accepting a device. For Vercel, configure the portal's
+Cloudflare D1 variables first and confirm the administrator status reports D1.
+Update the dashboard and the bot together. In the bot host's private Environment,
+set the existing `DASHBOARD_URL`, `BOT_SYNC_TOKEN`, and `SESSION_BACKUP_KEY`.
+Generate the key privately once, for example:
+
+```sh
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Store that value somewhere secure, then put it in the bot Environment; never
+commit it, put it in the dashboard, or share it in chat. The bot uses AES-256-GCM
+and uploads only ciphertext over signed HTTPS to D1. The key is not stored there.
+Without the original key, backups cannot be recovered. Changing the key while
+existing backups still use it prevents startup and is not a rotation procedure.
+
+The bot takes bounded snapshots of registered credentials after serialized auth
+writes; allow time for them to finish. Under **WhatsApp → Sync**, verify the
+reported last encrypted snapshot and check that all registered sessions have a
+current snapshot. A connected recovery service or a recent timestamp alone is not
+a complete backup; check service logs for failures. Existing, unreadable,
+newer, or conflicting local session files are never silently overwritten; resolve
+conflicts manually with secure copies. Revoked sessions and removed ownership
+claims are excluded, and confirmed unlink clears the corresponding ciphertext.
+If a revocation cannot reach the portal, recovery status reports an error and the
+bot persists the revocation locally and retries; do not move hosts until it has
+synchronized. If that host is lost before the revocation reaches D1, the remote
+backup may still be stale; WhatsApp ultimately decides whether it can reconnect. A crash immediately
+following a credential change or a failed/offline sync can leave the last snapshot
+stale. The encrypted payload is limited to 1 MB; oversize sessions report failure.
+
+For a move, stop the old instance only after a recent successful snapshot, and
+start **one** updated instance with the same key and private sync token on the new
+host. The service attempts recovery before creating fresh local sessions. Never
+run two instances with the same WhatsApp sessions. Keep a separate secure local
+backup and be prepared to relink if WhatsApp has revoked the device or recovery
+fails. Legacy session manifests without an ownership claim bind once to the
+current portal claim; their earlier ownership cannot be proven. No inbound Botkeep port is needed. The legacy XS SFTP workflow will not
+upload on a push; manual use now requires explicit destination confirmation.
+
+Members' command switches are controlled under **WhatsApp → Commands**. The
+service enforces canonical commands, their aliases, and outstanding selections;
+the owner can still test. A switch remains **awaiting service sync** until the
+running bot acknowledges it. Already-running work is not forcibly cancelled.
 
 ## Disk Budget & Concurrency (10 GB Panel Plan)
 

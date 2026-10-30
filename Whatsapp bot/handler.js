@@ -10,6 +10,7 @@ const { jidVariants, isSystemJid } = require('./utils/jid');
 const { safeErrorMessage } = require('./utils/userErrors');
 const telemetry = require('./utils/telemetry');
 const accountSockets = require('./utils/accountSockets');
+const memberCommandPolicy = require('./utils/memberCommandPolicy');
 
 // Load all commands
 const commands = loadCommands();
@@ -104,6 +105,11 @@ async function runCommand(sock, msg, name, args, { from, sender, senderIds }) {
     return true;
   }
 
+  if (!isOwner(senderIds, sock.__sessionDir) && memberCommandPolicy.isUnavailable(command.name || invoked)) {
+    await sock.sendMessage(from, { text: 'This command is temporarily unavailable. Please try again later.' }, selections.quoteOpts(msg));
+    return true;
+  }
+
   console.log(`Executing command: ${invoked}`);
   telemetry.recordCommand(command.name || invoked);
   try {
@@ -134,8 +140,14 @@ async function handleSelection(sock, msg, body, { from, sender, senderIds, quote
 
   const picked = selections.match(from, senderIds, body, opts);
   if (picked) {
+    const originatingName = picked.entry.commandName || '';
+    const canonicalName = commands.get(originatingName)?.name || originatingName;
+    if (!isOwner(senderIds, sock.__sessionDir) && memberCommandPolicy.isUnavailable(canonicalName)) {
+      await sock.sendMessage(from, { text: 'This command is temporarily unavailable. Please try again later.' }, selections.quoteOpts(msg));
+      return true;
+    }
     try {
-      await picked.entry.run(sock, msg, buildExtra(sock, msg, { from, sender, senderIds }), picked.item);
+      await picked.entry.run(sock, msg, buildExtra(sock, msg, { from, sender, senderIds, commandName: originatingName }), picked.item);
     } catch (e) {
       telemetry.recordFailure('selection');
       console.error('Error running selection:', e.message);

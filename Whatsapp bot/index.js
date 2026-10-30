@@ -212,12 +212,21 @@ function getWebVersion() {
   return versionPromise;
 }
 
-const sessions = createSessionManager({
+async function startService() {
+  const portalSyncConfigured = Boolean(config.admin?.dashboardUrl && config.admin?.syncToken);
+  let permissionsSynced = !portalSyncConfigured;
+  const { createSessionBackup } = require('./utils/sessionBackup');
+  const backup = createSessionBackup({ sessionDir: config.sessionName, dashboardUrl: config.admin?.dashboardUrl,
+    token: config.admin?.syncToken, key: process.env.SESSION_BACKUP_KEY,
+    isEligible: (number, claim) => readWL().users.some((user) => String(user.number) === number && user.backupClaim === claim && (user.enabled !== false || user.pairAllowed === true)) });
+  // Do not create a fresh manifest or credentials when recovery is unavailable.
+  await backup.restore();
+  const sessions = createSessionManager({
   sessionDir: config.sessionName,
   pairNumber: config.pairNumber,
   maxAccounts: Number(process.env.MAX_LINKED_ACCOUNTS || 20),
   loggedOutCode: DisconnectReason.loggedOut,
-  loadAuthState: useMultiFileAuthState,
+  loadAuthState: (dir) => backup.wrapAuth(useMultiFileAuthState, dir),
   getVersion: getWebVersion,
   makeSocket: ({ auth, version }) => makeWASocket({
     version,
@@ -230,10 +239,15 @@ const sessions = createSessionManager({
     markOnlineOnConnect: false,
     getMessage: async () => undefined,
   }),
-  isAllowed: (number) => readWL().users.some((user) => String(user.number) === number && user.enabled !== false),
+  isAllowed: (number) => permissionsSynced && readWL().users.some((user) => String(user.number) === number && user.enabled !== false),
+  canPair: (number) => permissionsSynced && readWL().users.some((user) => String(user.number) === number && (user.enabled !== false || user.pairAllowed === true)),
+  enforceClaims: portalSyncConfigured,
+  getClaim: (number) => readWL().users.find((user) => String(user.number) === number && (user.enabled !== false || user.pairAllowed === true))?.backupClaim || '',
   isSystemJid,
   onMessage: (sock, msg) => handler.handleMessage(sock, msg),
   onOpen: (sock) => { handler.onSocketOpen?.(sock); console.log('WhatsApp connection is ready.'); },
+  onRevoked: (slot, generation) => { void backup.revoke(slot, generation); },
+  onClaimBound: (dir) => backup.schedule(dir),
   onStatusChange: () => { try { require('./utils/dashboardSync').triggerImmediateSync(); } catch { /* ignore */ } },
   onQr: (qr) => { console.log('Scan this QR code with WhatsApp:'); qrcode.generate(qr, { small: true }); },
   // A code requested from the dashboard is never printed to the server logs.
@@ -243,50 +257,28 @@ const sessions = createSessionManager({
   },
 });
 
-require('./utils/logger').banner([
-  'WhatsApp Service',
-  `prefix   ${config.prefix}`,
-  `node     ${process.version}`,
-]);
-
-// yt-dlp looks after itself: install/repair at boot, verify every 30 minutes,
-// and re-download the binary when a download reports it as missing or broken.
-(() => {
-  const YT = require('./utils/youtubedl');
-  const ffmpeg = require('./utils/ffmpeg');
-  const nm3u8dl = require('./utils/nm3u8dl');
-  console.log(ffmpeg.works() ? `🎞️ ffmpeg  ${ffmpeg.version() || 'ready'}` : '🎞️ ffmpeg  ❌ not available');
-  YT.scheduleAutoUpdate();
-  YT.healthCheck().then((cmd) => {
-    console.log(cmd ? `🎬 yt-dlp  ${YT.version() || 'ready'}` : '🎬 yt-dlp  ❌ not available (will retry while running)');
-  }).catch(() => {});
-  YT.startWatchdog({ everyMinutes: 30 });
-  nm3u8dl.ensureInstalled().then((bin) => {
-    console.log(
-      bin
-        ? `⚡ N_m3u8DL-RE  ${nm3u8dl.version() || 'ready'} (${nm3u8dl.threadCount()}t)`
-        : '⚡ N_m3u8DL-RE  unavailable (falling back to ffmpeg/native HLS)'
-    );
-  }).catch(() => {});
-})();
-
 // ── Dashboard Outbound HTTPS Sync + Optional Inbound API ─────────────────────
 // Recommended on Hydrodactyl / Pterodactyl: set DASHBOARD_URL + BOT_SYNC_TOKEN
 // (with ADMIN_API_ENABLED=false so no open port is needed). The bot pushes live
 // heartbeats, pulls versioned whitelist deltas, and picks up pairing requests.
-(function startDashboardBridge() {
+const { startSessionServices } = require('./utils/serviceStartup');
+await startSessionServices(sessions, async function startDashboardBridge() {
+  let sync; let api;
+  try {
   const admin = config.admin || {};
   const { startAdminApi } = require('./utils/adminApi');
   const { startDashboardSync } = require('./utils/dashboardSync');
 
-  const sync = startDashboardSync({
+  sync = startDashboardSync({
     dashboardUrl: admin.dashboardUrl,
     token: admin.syncToken,
     intervalMs: admin.syncIntervalMs,
     getStatus: () => sessions.status(),
+    getBackupStatus: () => backup.status(),
     requestPairing: (number) => sessions.requestPair(number),
     unlinkAccount: (number, sessionId) => sessions.unlinkAccount(number, sessionId),
     onWhitelistChanged: () => sessions.refreshPermissions(),
+    onPermissionsReady: () => { if (!permissionsSynced) { permissionsSynced = true; sessions.refreshPermissions(); } },
     requestRestart: async () => {
       console.log('Dashboard requested a reload and reconnection.');
       try {
@@ -300,7 +292,7 @@ require('./utils/logger').banner([
   });
 
   if (admin.apiEnabled && admin.token) {
-    startAdminApi({
+    api = startAdminApi({
       port: admin.port,
       token: admin.token,
       allowedOrigins: admin.corsOrigins || [],
@@ -324,9 +316,50 @@ require('./utils/logger').banner([
   } else {
     console.log('Dashboard sync is off (set DASHBOARD_URL + BOT_SYNC_TOKEN to connect).');
   }
+  } catch (error) {
+    sync?.stop();
+    if (api) await api.stop().catch(() => {});
+    throw error;
+  }
+}, () => backup.stop());
+
+try { require('./utils/logger').banner([
+  'WhatsApp Service',
+  `prefix   ${config.prefix}`,
+  `node     ${process.version}`,
+]); } catch (error) { console.warn('Startup banner warning:', error.message); }
+
+// yt-dlp looks after itself: install/repair at boot, verify every 30 minutes,
+// and re-download the binary when a download reports it as missing or broken.
+(() => {
+  try {
+  const YT = require('./utils/youtubedl');
+  const ffmpeg = require('./utils/ffmpeg');
+  const nm3u8dl = require('./utils/nm3u8dl');
+  console.log(ffmpeg.works() ? `🎞️ ffmpeg  ${ffmpeg.version() || 'ready'}` : '🎞️ ffmpeg  ❌ not available');
+  YT.scheduleAutoUpdate();
+  YT.healthCheck().then((cmd) => {
+    console.log(cmd ? `🎬 yt-dlp  ${YT.version() || 'ready'}` : '🎬 yt-dlp  ❌ not available (will retry while running)');
+  }).catch(() => {});
+  YT.startWatchdog({ everyMinutes: 30 });
+  nm3u8dl.ensureInstalled().then((bin) => {
+    console.log(
+      bin
+        ? `⚡ N_m3u8DL-RE  ${nm3u8dl.version() || 'ready'} (${nm3u8dl.threadCount()}t)`
+        : '⚡ N_m3u8DL-RE  unavailable (falling back to ffmpeg/native HLS)'
+    );
+  }).catch(() => {});
+  } catch (error) { console.warn('Media helper startup warning:', error.message); }
 })();
 
-sessions.start().catch((err) => console.error('Initial connection failed:', err.message || err));
+}
+function retryServiceStart() {
+  startService().catch((err) => {
+    console.error('Session recovery/startup unavailable; local files were preserved. Check the backup key, dashboard and durable storage.', err.message);
+    setTimeout(retryServiceStart, 30000);
+  });
+}
+retryServiceStart();
 // Handle process termination
 process.on('uncaughtException', (err) => {
   // Handle ENOSPC errors gracefully without crashing

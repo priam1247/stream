@@ -5,14 +5,14 @@ import { claimPairCooldown, completeBotCommand, isUsingCloudflareD1, saveMemberW
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
-  globalThis.__zafarD1SchemaV5Ready = undefined;
-  globalThis.__zafarD1SchemaV5Promise = undefined;
+  globalThis.__zafarD1SchemaV6Ready = undefined;
+  globalThis.__zafarD1SchemaV6Promise = undefined;
   globalThis.__zafarD1UnreachableInDev = undefined;
 });
 
 it('initializes D1 tables once when concurrent requests arrive on a cold start', async () => {
-  globalThis.__zafarD1SchemaV5Ready = undefined;
-  globalThis.__zafarD1SchemaV5Promise = undefined;
+  globalThis.__zafarD1SchemaV6Ready = undefined;
+  globalThis.__zafarD1SchemaV6Promise = undefined;
   globalThis.__zafarD1UnreachableInDev = undefined;
   vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test-account');
   vi.stubEnv('D1_DATABASE_ID', 'test-db');
@@ -30,7 +30,7 @@ it('initializes D1 tables once when concurrent requests arrive on a cold start',
 });
 
 it('guards D1 command completion against duplicate result reports', async () => {
-  globalThis.__zafarD1SchemaV5Ready = true;
+  globalThis.__zafarD1SchemaV6Ready = true;
   vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test-account');
   vi.stubEnv('D1_DATABASE_ID', 'test-db');
   vi.stubEnv('CLOUDFLARE_API_TOKEN', 'test-token');
@@ -49,7 +49,7 @@ it('guards D1 command completion against duplicate result reports', async () => 
 });
 
 it('uses an atomic conditional D1 upsert for the resend cooldown', async () => {
-  globalThis.__zafarD1SchemaV5Ready = true;
+  globalThis.__zafarD1SchemaV6Ready = true;
   vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test-account');
   vi.stubEnv('D1_DATABASE_ID', 'test-db');
   vi.stubEnv('CLOUDFLARE_API_TOKEN', 'test-token');
@@ -66,7 +66,7 @@ it('uses an atomic conditional D1 upsert for the resend cooldown', async () => {
 });
 
 it('atomically claims a member number only for its existing owner', async () => {
-  globalThis.__zafarD1SchemaV5Ready = true;
+  globalThis.__zafarD1SchemaV6Ready = true;
   vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test-account');
   vi.stubEnv('D1_DATABASE_ID', 'test-db');
   vi.stubEnv('CLOUDFLARE_API_TOKEN', 'test-token');
@@ -78,5 +78,5 @@ it('atomically claims a member number only for its existing owner', async () => 
   expect(await saveMemberWhatsAppUser('265991234567', 'Member', 'MEMBER@example.com')).toBe(false);
   expect(queries[0].sql).toMatch(/ON CONFLICT\(number\) DO UPDATE/i);
   expect(queries[0].sql).toMatch(/lower\(portal_whatsapp_access.added_by\) = \?/i);
-  expect(queries[0].params[4]).toBe('member@example.com');
+  expect(queries[0].params[5]).toBe('member@example.com');
 });

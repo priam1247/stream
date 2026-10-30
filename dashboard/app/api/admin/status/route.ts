@@ -13,6 +13,7 @@ import {
   isUsingCloudflareD1,
   listAllMembers,
   listStoredWhatsAppUsers,
+  sessionBackupClaim,
 } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -72,10 +73,14 @@ export async function GET(req: NextRequest) {
     botError: liveStatus.error || null,
     connected: liveStatus.connected,
     botNumber: liveStatus.botNumber,
-    accounts: liveStatus.accounts ?? null,
+    accounts: liveStatus.accounts?.map(({ claimToken, ...account }) => {
+      const owner = users.find((item) => item.number === account.number);
+      return { ...account, claimCurrent: Boolean(owner && claimToken && claimToken === sessionBackupClaim(owner).token) };
+    }) ?? null,
     lastSeenAt: liveStatus.lastSeenAt ?? null,
     lastSeenSecondsAgo: liveStatus.lastSeenSecondsAgo ?? null,
     whitelistSync: whitelistSyncState(liveStatus, users, target.botEnabledForMembers),
+    sessionBackup: liveStatus.sessionBackup ?? null,
     botVersion: liveStatus.version ?? null,
     uptimeSeconds: liveStatus.uptimeSeconds ?? null,
     commandsTotal: liveStatus.commandsTotal ?? null,

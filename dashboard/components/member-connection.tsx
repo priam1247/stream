@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertCircle, ArrowRight, Check, ChevronRight, Copy, Link2, Loader2, LogOut, Search, ShieldCheck, Smartphone, Unlink } from 'lucide-react';
-import { BOT_COMMANDS } from '@/lib/bot-data';
+import { AlertCircle, ArrowRight, Check, ChevronRight, Copy, Link2, Loader2, LogOut, MessageSquare, Search, ShieldCheck, Smartphone, Unlink } from 'lucide-react';
+import { MEMBER_COMMANDS } from '@/lib/bot-data';
 import { authHeaders, performSignOut } from '@/lib/client-session';
 import { formatCountdown, maskMemberNumber, normalizeMalawiNumber } from '@/lib/member-link';
 import type { AuthUser, MemberOverviewPayload } from '@/lib/types';
@@ -25,22 +25,6 @@ interface LinkCache {
   unlinkRequestId?: string;
   unlinked?: boolean;
 }
-
-// The admin catalog groups some distinct commands into one row. Each member
-// entry must instead copy the actual command the user searched for.
-const MEMBER_COMMANDS = BOT_COMMANDS.filter((command) => !command.ownerOnly).flatMap((command) => {
-  if (command.name === 'ping') return [
-    { ...command, name: 'ping', aliases: ['p'], category: 'general', summary: 'Check response time' },
-    { ...command, name: 'menu', aliases: ['help', 'commands'], category: 'general', summary: 'Show the command menu' },
-    { ...command, name: 'info', aliases: ['meta', 'ids', 'lookup'], category: 'general', summary: 'Look up movie or series details' },
-    { ...command, name: 'debrid', aliases: ['rd', 'debridstatus'], category: 'general', summary: 'Check debrid status' },
-  ];
-  if (command.name === 'providers') return [
-    { ...command, aliases: ['sources'], category: 'general' },
-    { ...command, name: 'moviestatus', aliases: ['moviestats', 'enginestats'], category: 'general', summary: 'Check download engine status' },
-  ];
-  return [{ ...command, category: ['sticker', 'viewonce'].includes(command.name) ? 'general' : command.category }];
-});
 
 const storeKey = (user: AuthUser) => `zafar-member-link-v1:${String(user.email).toLowerCase()}`;
 function readCache(key: string): LinkCache {
@@ -88,7 +72,9 @@ export function MemberConnection({ user }: { user: AuthUser }) {
   const [confirmUnlink, setConfirmUnlink] = useState(false);
   const [notice, setNotice] = useState<{ text: string; bad?: boolean } | null>(null);
   const [copied, setCopied] = useState('');
+  const [supportUnread, setSupportUnread] = useState(0);
   const [search, setSearch] = useState('');
+  const [commandCategory, setCommandCategory] = useState<'media' | 'vault' | 'general'>('general');
   const checkedNumber = useRef('');
   const codeCard = useRef<HTMLElement | null>(null);
 
@@ -124,6 +110,11 @@ export function MemberConnection({ user }: { user: AuthUser }) {
     return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); window.removeEventListener('focus', onVisible); };
   }, [refreshStatus]);
 
+  useEffect(() => {
+    const check = async () => { try { const response = await fetch('/api/support?summary=1', { headers: authHeaders(), cache: 'no-store' }); if (response.ok) { const json = await response.json(); setSupportUnread(Number(json.unread) || 0); } } catch { /* keep the last known count */ } };
+    void check(); const timer = window.setInterval(() => void check(), 15000); return () => window.clearInterval(timer);
+  }, []);
+
   // Adopt an existing connected number, without guessing that approval is a link.
   useEffect(() => {
     if (!hydrated || !overview || cache.number || cache.unlinked) return;
@@ -136,6 +127,8 @@ export function MemberConnection({ user }: { user: AuthUser }) {
   const ownsNumber = Boolean(cache.number && overview?.numbers.some((item) => item.number === cache.number));
   const account = ownsNumber && !cache.unlinked ? overview?.accounts?.find((item) => item.number === cache.number) : undefined;
   const reachable = !statusError && overview?.botReachable === true;
+  const selectedNumber = overview?.numbers.find((item) => item.number === cache.number);
+  const approval = selectedNumber?.approval || 'approved';
   const accountIsLinked = account?.state === 'connected' || account?.state === 'connecting' || account?.state === 'paused';
   const isLinked = !cache.unlinked && (accountIsLinked || (ownsNumber && Boolean(cache.unlinkRequestId)) || (!reachable && ownsNumber && cache.hadLink === true));
   const disconnected = reachable && account?.state === 'logged_out';
@@ -363,21 +356,24 @@ export function MemberConnection({ user }: { user: AuthUser }) {
       <main className="mx-auto w-full max-w-[500px] px-4 pb-12 pt-7">
         {loading ? <div className="flex min-h-40 items-center justify-center gap-2 text-xs text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading your connection…</div> : <>
           {isLinked ? <>
-            <div className="mb-5"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-teal-700">Your connection</p><h1 className="mt-2 text-[25px] font-bold tracking-tight">You’re linked, {headingName || 'welcome'}.</h1><p className="mt-1 text-xs leading-5 text-slate-500">Your WhatsApp number is ready to use.</p></div>
+            <div className="mb-5"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-teal-700">Your connection</p><h1 className="mt-2 text-[25px] font-bold tracking-tight">You’re linked, {headingName || 'welcome'}.</h1><p className="mt-1 text-xs leading-5 text-slate-500">{approval === 'pending' ? 'Your link is waiting for administrator approval.' : approval === 'rejected' ? 'Your link request was not approved.' : 'Your WhatsApp number is ready to use.'}</p></div>
             <section aria-label="Linked number" className="overflow-hidden rounded-[22px] border border-[#d9ebe4] bg-white shadow-[0_12px_38px_-28px_rgba(15,80,65,.35)]">
               <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-4">
                 <div className="flex min-w-0 gap-3"><div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-teal-50 text-teal-700"><Smartphone className="h-5 w-5" /></div><div><p className="text-[11px] font-medium text-slate-500">WhatsApp number</p><p className="mt-1 font-mono text-[15px] font-bold tracking-tight">{maskMemberNumber(cache.number || '')}</p></div></div>
-                <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10px] font-bold ${reachable && account?.state === 'connected' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}><span className={`h-1.5 w-1.5 rounded-full ${reachable && account?.state === 'connected' ? 'bg-emerald-500' : 'bg-slate-400'}`} />{reachable && account?.state === 'connected' ? 'Bot active' : 'Bot offline'}</span>
+                <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10px] font-bold ${reachable && account?.state === 'connected' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}><span className={`h-1.5 w-1.5 rounded-full ${reachable && account?.state === 'connected' ? 'bg-emerald-500' : 'bg-slate-400'}`} />{approval === 'pending' ? 'Awaiting approval' : approval === 'rejected' ? 'Not approved' : reachable && account?.state === 'connected' ? 'Bot active' : reachable && account?.state === 'paused' ? 'Access syncing' : 'Bot offline'}</span>
               </div>
               <div className="flex items-center justify-between gap-2 px-4 py-3"><p className="text-xs text-slate-500">Linked <span className="font-semibold text-slate-700">{friendlyDate(account?.linkedAt || cache.linkedAt)}</span></p><button type="button" disabled={busy || Boolean(cache.unlinkRequestId)} onClick={() => setConfirmUnlink(true)} className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-slate-500 hover:text-rose-700 disabled:opacity-50"><Unlink className="h-3.5 w-3.5" />{cache.unlinkRequestId ? 'Unlinking…' : 'Unlink'}</button></div>
             </section>
             {confirmUnlink && <div role="alertdialog" aria-modal="true" aria-labelledby="unlink-title" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"><div className="w-full max-w-[360px] rounded-2xl bg-white p-5 shadow-xl"><h2 id="unlink-title" className="text-base font-bold">Unlink this number?</h2><p className="mt-2 text-xs leading-5 text-slate-600">The WhatsApp session will be disconnected. You can link it again later.</p><div className="mt-4 flex justify-end gap-2"><button type="button" onClick={() => setConfirmUnlink(false)} className="min-h-[44px] rounded-xl px-4 text-xs font-semibold text-slate-600">Cancel</button><button type="button" disabled={busy} onClick={() => void unlink()} className="min-h-[44px] rounded-xl bg-rose-700 px-4 text-xs font-semibold text-white disabled:opacity-50">{busy ? 'Unlinking…' : 'Yes, unlink'}</button></div></div></div>}
+            {approval !== 'approved' && <p role="status" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">{approval === 'pending' ? 'Your number is linked. Commands will be available after the administrator approves your request.' : 'Please contact the administrator or unlink this number.'}</p>}
             <section className="mt-8" aria-label="Commands"><div className="flex items-end justify-between gap-2"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-teal-700">Explore</p><h2 className="mt-1 text-lg font-bold tracking-tight">Commands</h2></div><span className="pb-1 text-[11px] text-slate-400">Tap to copy</span></div>
               <div className="relative mt-3"><Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input type="search" aria-label="Search commands" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search commands" className="min-h-[46px] w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-base text-slate-900 outline-none focus:border-teal-600" /></div>
-              {matches.length === 0 ? <p className="py-6 text-center text-xs text-slate-500">No commands found.</p> : (['media', 'vault', 'general'] as const).map((category) => {
+              {!search.trim() && <div className="mt-3 flex gap-2" aria-label="Command categories">{(['general', 'media', 'vault'] as const).map((category) => <button key={category} type="button" aria-pressed={commandCategory === category} onClick={() => setCommandCategory(category)} className={`min-h-[40px] rounded-full px-4 text-xs font-semibold capitalize ${commandCategory === category ? 'bg-teal-700 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200'}`}>{category.charAt(0).toUpperCase() + category.slice(1)}</button>)}</div>}
+              {matches.length === 0 ? <p className="py-6 text-center text-xs text-slate-500">No commands found.</p> : (['general', 'media', 'vault'] as const).map((category) => {
+                if (!search.trim() && category !== commandCategory) return null;
                 const items = matches.filter((cmd) => cmd.category === category);
                 if (!items.length) return null;
-                return <div key={category} className="mt-5"><h3 className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">{category === 'media' ? 'Media' : category === 'vault' ? 'Vault' : 'General'}</h3><div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">{items.map((cmd) => <button type="button" key={cmd.name} onClick={() => void copy(`.${cmd.name}`)} aria-label={`Copy .${cmd.name} command`} className="flex min-h-[58px] w-full items-center gap-3 border-b border-slate-100 px-3.5 py-2 text-left last:border-0 hover:bg-teal-50/50"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 font-mono text-xs font-bold text-teal-700">›_</span><span className="min-w-0 flex-1"><span className="block font-mono text-xs font-bold text-slate-800">.{cmd.name}</span><span className="mt-0.5 block truncate text-[11px] text-slate-500">{cmd.summary}</span></span>{copied === `.${cmd.name}` ? <Check className="h-4 w-4 shrink-0 text-teal-600" /> : <Copy className="h-4 w-4 shrink-0 text-slate-400" />}</button>)}</div></div>;
+                return <div key={category} className="mt-5"><h3 className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">{category === 'media' ? 'Media' : category === 'vault' ? 'Vault' : 'General'}</h3><div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">{items.map((cmd) => <button type="button" key={cmd.name} onClick={() => void copy(`.${cmd.name}`)} aria-label={`Copy .${cmd.name} command`} className="flex min-h-[58px] w-full items-center gap-3 border-b border-slate-100 px-3.5 py-2 text-left last:border-0 hover:bg-teal-50/50"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 font-mono text-xs font-bold text-teal-700">›_</span><span className="min-w-0 flex-1"><span className="block font-mono text-xs font-bold text-slate-800">.{cmd.name}</span><span className="mt-0.5 block truncate text-[11px] text-slate-500">{overview?.disabledMemberCommands?.includes(cmd.name) ? 'Temporarily unavailable' : cmd.summary}</span></span>{copied === `.${cmd.name}` ? <Check className="h-4 w-4 shrink-0 text-teal-600" /> : <Copy className="h-4 w-4 shrink-0 text-slate-400" />}</button>)}</div></div>;
               })}
             </section>
           </> : <>
@@ -399,6 +395,7 @@ export function MemberConnection({ user }: { user: AuthUser }) {
               {!cache.starting && <div className="mt-4 border-t border-slate-100 pt-3"><p className="text-xs font-semibold text-slate-700">On your phone</p><p className="mt-2 flex flex-wrap items-center gap-1 text-xs leading-5 text-slate-600">WhatsApp <ChevronRight className="h-3 w-3" /> Linked devices <ChevronRight className="h-3 w-3" /> Link with phone number</p><p className="mt-2 text-[11px] text-slate-400">This page updates automatically once connected.</p></div>}
             </section>}
           </>}
+          <button type="button" onClick={() => router.push('/support')} className="mt-6 flex min-h-[52px] w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 text-left text-xs font-bold text-slate-700"><MessageSquare className="h-4 w-4 text-teal-700"/> Report a problem {supportUnread > 0 && <span className="rounded-full bg-rose-50 px-2 py-1 text-[10px] text-rose-700">{supportUnread} new</span>}<ChevronRight className="ml-auto h-4 w-4 text-slate-400"/></button>
           {notice && <div role={notice.bad ? 'alert' : 'status'} className={`mt-4 flex items-start gap-2 rounded-xl border px-3.5 py-3 text-xs leading-5 ${notice.bad ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-teal-100 bg-teal-50 text-teal-800'}`}><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{notice.text}</div>}
         </>}
       </main>

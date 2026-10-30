@@ -10,7 +10,7 @@ vi.mock('node:fs', () => ({
     writeFileSync: (_path: string, value: string) => { if (disk.fail) throw new Error('read-only'); disk.text = value; },
   },
 }));
-import { appendActivity, claimPairCooldown, completeBotCommand, deleteWhatsAppUserIfOwned, enqueueBotCommand, getBotCommandById, getLatestPairCommand, getPairCooldown, isMemberScribdAllowed, listRecentActivity, releasePairCooldown, saveCompletedPairResult, saveMemberWhatsAppUser, saveStoredWhatsAppUser, setMemberScribdAllowed } from '../lib/storage';
+import { appendActivity, claimPairCooldown, completeBotCommand, deleteWhatsAppUserIfOwned, enqueueBotCommand, getBotCommandById, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, updateStoredWhatsAppUser, resolvePendingWhatsAppUser, setMemberPermission, getMemberCommandPolicy, setMemberCommandDisabled, addSupportMessage, listSupportMessages, listSupportThreads, countMemberSupportUnread, isMemberScribdAllowed, listRecentActivity, releasePairCooldown, saveCompletedPairResult, saveMemberWhatsAppUser, saveStoredWhatsAppUser, setMemberScribdAllowed } from '../lib/storage';
 import { maskedNumber } from '../lib/activity';
 
 beforeEach(() => {
@@ -86,6 +86,47 @@ describe('local control-room persistence', () => {
     expect(await saveMemberWhatsAppUser('265991234567', 'Maya again', 'maya@example.com')).toBe(true);
     expect(await deleteWhatsAppUserIfOwned('265991234567', 'other@example.com')).toBe(false);
     expect(await deleteWhatsAppUserIfOwned('265991234567', 'maya@example.com')).toBe(true);
+  });
+
+  it('grandfathers old numbers but requires approval for each new member link', async () => {
+    disk.text = JSON.stringify({ whatsappUsers: [{ number: '11111111', enabled: true, addedBy: 'old@example.com' }] });
+    expect(await getStoredWhatsAppUser('11111111')).toMatchObject({ approval: 'approved', enabled: true });
+    expect(await saveMemberWhatsAppUser('265991234567', 'Maya', 'maya@example.com')).toBe(true);
+    expect(await getStoredWhatsAppUser('265991234567')).toMatchObject({ approval: 'pending', enabled: false, pairAllowed: true });
+    expect(await saveMemberWhatsAppUser('265991234568', 'Second', 'maya@example.com')).toBe(false);
+    await updateStoredWhatsAppUser('265991234567', { enabled: true });
+    expect(await getStoredWhatsAppUser('265991234567')).toMatchObject({ approval: 'pending', enabled: false });
+    await setMemberPermission('maya@example.com', false);
+    expect(await getStoredWhatsAppUser('265991234567')).toMatchObject({ enabled: false, pairAllowed: false });
+    expect(await resolvePendingWhatsAppUser('265991234567', 'maya@example.com', true)).toBeNull();
+    await setMemberPermission('maya@example.com', true);
+    expect(await getStoredWhatsAppUser('265991234567')).toMatchObject({ approval: 'pending', enabled: false, pairAllowed: true });
+    expect(await resolvePendingWhatsAppUser('265991234567', 'other@example.com', true)).toBeNull();
+    expect(await resolvePendingWhatsAppUser('265991234567', 'maya@example.com', true)).toMatchObject({ approval: 'approved', enabled: true, pairAllowed: false });
+  });
+
+  it('stores independent command switches with a version that changes on each policy change', async () => {
+    const original = await getMemberCommandPolicy();
+    await setMemberCommandDisabled('movie', true); await setMemberCommandDisabled('song', true);
+    const changed = await getMemberCommandPolicy();
+    expect(changed.disabled).toEqual(['movie', 'song']);
+    expect(changed.version).not.toBe(original.version);
+    await setMemberCommandDisabled('movie', false);
+    expect((await getMemberCommandPolicy()).disabled).toEqual(['song']);
+  });
+
+  it('persists separate support conversations, read positions and send throttles', async () => {
+    expect(await addSupportMessage('one@example.com', 'member', 'Help', 10000)).toMatchObject({ text: 'Help' });
+    expect(await addSupportMessage('one@example.com', 'member', 'Too soon', 12000)).toBeNull();
+    await addSupportMessage('two@example.com', 'member', 'A different problem', 12000);
+    await addSupportMessage('one@example.com', 'admin', 'I can help', 12001);
+    expect(await countMemberSupportUnread('one@example.com')).toBe(1);
+    expect(await countMemberSupportUnread('two@example.com')).toBe(0);
+    expect((await listSupportThreads()).find((thread) => thread.email === 'one@example.com')?.unread).toBe(1);
+    expect((await listSupportMessages('one@example.com', 'member')).map((message) => message.text)).toEqual(['Help', 'I can help']);
+    expect(await countMemberSupportUnread('one@example.com')).toBe(0);
+    await listSupportMessages('one@example.com', 'admin');
+    expect((await listSupportThreads()).find((thread) => thread.email === 'one@example.com')?.unread).toBe(0);
   });
 
   it('does not report successful permission changes when local storage is read-only', async () => {

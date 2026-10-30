@@ -103,6 +103,7 @@ export async function fetchLiveBotStatus(customTarget?: {
   lastSeenSecondsAgo?: number | null;
   version?: string | null;
   whitelistVersion?: string | null;
+  sessionBackup?: import('./types').BotHeartbeatRecord['sessionBackup'] | null;
   uptimeSeconds?: number | null;
   commandsTotal?: number | null;
   downloadsSuccess?: number | null;
@@ -130,6 +131,7 @@ export async function fetchLiveBotStatus(customTarget?: {
           lastSeenSecondsAgo: ageSec,
           version: hb.version || null,
           whitelistVersion: hb.whitelistVersion || null,
+          sessionBackup: hb.sessionBackup || null,
           uptimeSeconds: hb.uptimeSeconds ?? null,
           commandsTotal: hb.commandsTotal ?? null,
           downloadsSuccess: hb.downloadsSuccess ?? null,
@@ -156,6 +158,7 @@ export async function fetchLiveBotStatus(customTarget?: {
           lastSeenSecondsAgo: ageSec,
           version: hb.version || null,
           whitelistVersion: hb.whitelistVersion || null,
+          sessionBackup: hb.sessionBackup || null,
           uptimeSeconds: null,
           commandsTotal: null,
           downloadsSuccess: null,
@@ -266,6 +269,7 @@ export async function syncNumberToLiveBot(
   number: string,
   label: string,
   enabled: boolean,
+  pairAllowed = false,
 ): Promise<'accepted' | 'pending'> {
   await setFastPollWindow(30_000).catch(() => {});
   const { baseUrl, token } = await getResolvedBotTarget();
@@ -278,7 +282,7 @@ export async function syncNumberToLiveBot(
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ number, label, enabled }),
+        body: JSON.stringify({ number, label, enabled, pairAllowed }),
         cache: 'no-store',
         signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
       });
@@ -330,7 +334,7 @@ export async function checkQueuedPairCommand(requestId: string, requestedBy?: st
   // flight. Never disclose an outstanding code to a no-longer-authorized user.
   const number = normalizePhoneNumber(cmd.payload?.number);
   const stored = number ? await getStoredWhatsAppUser(number) : null;
-  if (!stored?.enabled || (requestedBy && (stored.addedBy || '').toLowerCase() !== requestedBy.toLowerCase())) {
+  if (!(stored?.enabled || stored?.pairAllowed) || (requestedBy && (stored.addedBy || '').toLowerCase() !== requestedBy.toLowerCase())) {
     return { ok: false, status: 403, error: 'This number is no longer approved for linking.' };
   }
   if (cmd.status === 'completed' && cmd.result?.code) {
@@ -433,7 +437,7 @@ export async function requestLiveBotPairingCode(
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.code) {
         const stored = await getStoredWhatsAppUser(number);
-        if (!stored?.enabled || (requireNumberOwnership && (!requestedBy || (stored.addedBy || '').toLowerCase() !== requestedBy.toLowerCase()))) {
+        if (!(stored?.enabled || stored?.pairAllowed) || (requireNumberOwnership && (!requestedBy || (stored.addedBy || '').toLowerCase() !== requestedBy.toLowerCase()))) {
           return { ok: false, status: 403, error: 'This number is no longer approved for linking.' };
         }
         const reportedSeconds = Number(data.expiresInSeconds);
@@ -464,14 +468,14 @@ export async function requestLiveBotPairingCode(
 }
 
 /** Dispatch a version-guarded unlink; never fall back to removing approval alone. */
-export async function requestLiveBotUnlink(number: string, sessionId: string, owner: string): Promise<{
+export async function requestLiveBotUnlink(number: string, sessionId: string, owner: string, claimKey: string): Promise<{
   ok: boolean; status: number; pending?: boolean; requestId?: string; error?: string;
 }> {
   const [{ baseUrl, token }, hb] = await Promise.all([getResolvedBotTarget(), getBotHeartbeat()]);
   const hbFresh = Boolean(hb) && Date.now() - (hb?.lastSeenAt || 0) <= HEARTBEAT_FRESH_SECONDS * 1000;
   if (hbFresh) {
     const cmd = await enqueueBotCommand({
-      type: 'unlink', payload: { number, sessionId, owner: owner.toLowerCase() }, requestedBy: owner, ttlMs: 90_000,
+      type: 'unlink', payload: { number, sessionId, owner: owner.toLowerCase(), claimKey }, requestedBy: owner, ttlMs: 90_000,
     });
     return { ok: true, status: 202, pending: true, requestId: cmd.id };
   }

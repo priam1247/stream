@@ -88,9 +88,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!existing.enabled) {
+  if (!existing.enabled && !existing.pairAllowed) {
     return NextResponse.json(
-      { error: 'Enable this number first before requesting a WhatsApp linking code.' },
+      { error: 'This number is not available for linking. Contact the administrator.' },
       { status: 403 },
     );
   }
