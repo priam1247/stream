@@ -4,7 +4,7 @@
  */
 import { normalizeScribdHit, safeScribdThumbnail, scribdDocumentId } from './scribd-search';
 import { filesFromJob, safeScribdName } from './scribd-job';
-import { DEFAULT_SCRIBD_WEB_URL } from './scribd-config';
+import { DEFAULT_SCRIBD_WEB_URL, TEMPORARY_INSECURE_SCRIBD_ORIGIN } from './scribd-config';
 export { filesFromJob, safeScribdName } from './scribd-job';
 export { DEFAULT_SCRIBD_WEB_URL } from './scribd-config';
 import type {
@@ -81,12 +81,14 @@ async function panelRequest(path: string, options: RequestOptions = {}): Promise
   }
 
   const url = new URL(`${config.baseUrl}${path}`);
-  // The service uses a bearer token in its query string. Never expose that
-  // credential over public plaintext HTTP; loopback remains useful for local
-  // development and contract tests. Unauthenticated health checks stay safe.
+  // The service uses a bearer token in its query string. Public HTTP exposes it
+  // and the document traffic. Allow the owner's explicit temporary opt-in only
+  // for the selected origin; an old URL override must never receive the token.
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (options.authenticated !== false && config.key && url.protocol !== 'https:' && !loopback) {
-    return { ok: false, status: 503, error: 'Scribd needs HTTPS before its token can be sent. Configure SCRIBD_WEB_URL.' };
+  const explicitlyAllowed = process.env.SCRIBD_ALLOW_INSECURE_HTTP === 'true' &&
+    url.origin === TEMPORARY_INSECURE_SCRIBD_ORIGIN;
+  if (options.authenticated !== false && config.key && url.protocol !== 'https:' && !loopback && !explicitlyAllowed) {
+    return { ok: false, status: 503, error: 'Scribd needs HTTPS or an explicit HTTP setting for the selected server. Check SCRIBD_WEB_URL.' };
   }
   for (const [name, value] of Object.entries(options.query || {})) url.searchParams.set(name, value);
   if (options.authenticated !== false && config.key) url.searchParams.set('t', config.key);
