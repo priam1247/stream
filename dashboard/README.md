@@ -132,14 +132,19 @@ browser.
 ### Server address and optional token
 
 The dashboard defaults to the Scribd server at `http://toby.hidencloud.com:24702`.
-That address is plain HTTP: it can be used for a token-free health check, but the
-dashboard refuses to send a configured token over public HTTP. Set up an HTTPS
-reverse proxy for the service, then configure `SCRIBD_WEB_URL` to the resulting
-HTTPS address and `SCRIBD_WEB_TOKEN` to the server's private token. An existing
-`SCRIBD_WEB_URL` overrides the built-in address. The address is only a destination:
-deploying the dashboard does not start `scribd_web.py`. Its host must run the
-service and accept connections from the dashboard. The live service's availability
-has not been verified by this repository.
+That address is plain HTTP: token, searches and document data are **not encrypted**
+and may be read or altered in transit. Public HTTP is blocked by default. For the
+owner's temporary choice of this particular host, set both `SCRIBD_WEB_TOKEN` and
+`SCRIBD_ALLOW_INSECURE_HTTP=true` in the dashboard deployment's server-side
+environment and redeploy. This opt-in applies only to that exact origin; it will
+not send the token to a different HTTP host or port. Keep the token private and
+rotate it if exposed. An existing `SCRIBD_WEB_URL` overrides the built-in address;
+remove or update a stale override before opting in.
+
+For a secure connection, set up an HTTPS reverse proxy, set `SCRIBD_WEB_URL` to its
+HTTPS address and remove `SCRIBD_ALLOW_INSECURE_HTTP`. The service must be running
+and reachable; deploying the dashboard does not start `scribd_web.py`. A successful
+health check alone does not verify the token, search, or downloads.
 
 If the service moves, set the optional server-side `SCRIBD_WEB_URL` in the dashboard
 deployment (for example, Vercel's environment settings) and redeploy. An existing
@@ -161,7 +166,7 @@ environment or the service's `.env`.
 If the server has no token, anyone who can reach its port can use it directly.
 Protect it before public exposure. The service sends tokens in a query string,
 which upstream access logs may record; configure the HTTPS proxy not to log them.
-The dashboard permits token-bearing HTTP only for loopback development addresses
+Token-bearing HTTP is otherwise allowed only for loopback development addresses
 (`localhost`, `127.0.0.1`, or `::1`).
 
 Legacy saved panel addresses/keys and `SCRIBD_PANEL_URL` / `SCRIBD_PANEL_KEY` no
