@@ -68,10 +68,19 @@ export function seasonQuery(title, year, season) {
 // separates the title and SxxExx. A range may contain the requested episode.
 export function episodeFileLabel(name) {
   const text = String(name || '');
-  const sxe = /(?:^|[^a-z0-9])s(\d{1,2})[\s._-]*e(\d{1,3})(?:[\s._]*(?:e|-\s*e?)(\d{1,3}))?(?:[^0-9]|$)/i.exec(text);
-  if (sxe) return { season: Number(sxe[1]), first: Number(sxe[2]), last: Number(sxe[3] || sxe[2]) };
-  const alt = /(?:^|[^a-z0-9])(\d{1,2})x(\d{1,3})(?:[\s._-]+(\d{1,3}))?(?:[^0-9]|$)/i.exec(text);
-  return alt ? { season: Number(alt[1]), first: Number(alt[2]), last: Number(alt[3] || alt[2]) } : null;
+  const sane = (m) => {
+    if (!m) return null;
+    const first = Number(m[2]);
+    let last = Number(m[3] || m[2]);
+    if (last < first || last - first > 50) last = first;
+    return { season: Number(m[1]), first, last };
+  };
+  // Require a second E in SxxExx ranges; bare numbers can be resolutions.
+  const sxe = /(?:^|[^a-z0-9])s(\d{1,2})[\s._-]*e(\d{1,3})(?:[\s._]*-?[\s._]*e(\d{1,3})(?![0-9pik]))?(?:[^0-9]|$)/i.exec(text);
+  if (sxe) return sane(sxe);
+  // NxMM ranges need an explicit dash or X; reject resolution suffixes.
+  const alt = /(?:^|[^a-z0-9])(\d{1,2})x(\d{1,3})(?:[\s._]*(?:x|-[\s._]*x?)(\d{1,3})(?![0-9pik]))?(?:[^0-9]|$)/i.exec(text);
+  return sane(alt);
 }
 
 // From a debrid pack, never choose a known different episode or an arbitrary

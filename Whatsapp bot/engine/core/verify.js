@@ -176,12 +176,12 @@ export async function verify(cand, opts = {}) {
     metrics.bump('verify.fail');
     throw new Error(`too small (${sizeMB.toFixed(0)}MB) — likely a sample`);
   }
-  // Reject only genuinely absurd files. The old check used the WhatsApp send
-  // cap, so a normal 1080p movie (2–4 GB) was thrown away as "too big" and the
-  // user got "no usable source found" for every title.
-  if (sizeMB && sizeMB > config.maxDownloadMB * 1.4) {
+  // Use the same rounded byte ceiling as HTTP/HLS downloads, rather than the
+  // unrelated WhatsApp send limit or a looser verification-only allowance.
+  const maxBytes = Math.round(config.maxDownloadMB * config.downloadCapFactor * 1048576);
+  if (maxBytes > 0 && sizeMB && sizeMB * 1048576 > maxBytes) {
     metrics.bump('verify.fail');
-    throw new Error(`too big (${sizeMB.toFixed(0)}MB, cap ${config.maxDownloadMB}MB)`);
+    throw new Error(`too big (${sizeMB.toFixed(0)}MB, cap ${(maxBytes / 1048576).toFixed(2)}MB)`);
   }
 
   // quality truth-check (only when ffprobe exists)

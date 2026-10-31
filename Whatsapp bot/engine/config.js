@@ -85,9 +85,11 @@ const cfg = {
 
   // limits
   maxSendMB: num(process.env.MAX_SEND_MB, 2000),
-  // Hard ceiling for a single download. This is NOT WhatsApp's send limit:
+  // Base download limit. Verification and HTTP/HLS use the factor below;
+  // direct torrents use the base value. This is NOT WhatsApp's send limit:
   // anything over maxSendMB is delivered as a Drime link by the bot adapters.
   maxDownloadMB: num(process.env.MAX_DOWNLOAD_MB, 2000),
+  downloadCapFactor: 1.2, // shared by verification and HTTP/HLS downloads
   minFreeMB: num(process.env.MIN_FREE_MB, 800),
   diskSizeMultiplier: num(process.env.MOVIE_DISK_SIZE_MULTIPLIER, 2),
   diskOverheadMB: num(process.env.MOVIE_DISK_OVERHEAD_MB, 500),
