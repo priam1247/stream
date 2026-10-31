@@ -159,13 +159,13 @@ test('Brave fallback parses result markup and does not trust its site filter', a
   assert.equal(search.parseBrave(`<main id="results"><a href="${examples.youku}">Alternative markup</a></main>`)[0].url, examples.youku);
 });
 
-test('Firecrawl keyless fallback is domain-filtered, bounded and validates every returned URL', async () => {
+test('Firecrawl keyless fallback can scope to the video path and validates every returned URL', async () => {
   axios.get = async () => { throw new Error('other sources offline'); };
   axios.post = async (endpoint, body, opts) => {
     assert.equal(endpoint, 'https://api.firecrawl.dev/v2/search');
-    assert.deepEqual(body.includeDomains, ['douyin.com']);
+    assert.equal(body.includeDomains, undefined);
     assert.deepEqual(body.sources, ['web']);
-    assert.equal(body.query, 'cat');
+    assert.equal(body.query, 'cat site:douyin.com/video');
     assert.equal(body.limit, 9);
     assert.equal(body.timeout, 9000);
     assert.equal(opts.maxRedirects, 0);
@@ -183,6 +183,18 @@ test('Firecrawl keyless fallback is domain-filtered, bounded and validates every
   const found = await search.searchProvider('douyin', 'cat', { limit: 3 });
   assert.equal(found.source, 'firecrawl');
   assert.deepEqual(found.results.map((r) => r.url), [examples.douyin]);
+});
+
+test('Firecrawl uses hostname filters for providers without a narrower video path', async () => {
+  axios.get = denied;
+  axios.post = async (_endpoint, body) => {
+    assert.equal(body.query, 'cat');
+    assert.deepEqual(body.includeDomains, ['vimeo.com']);
+    return success({ success: true, data: { web: [{ url: examples.vimeo, title: 'Vimeo video' }] } });
+  };
+  const found = await search.searchProvider('vimeo', 'cat');
+  assert.equal(found.source, 'firecrawl');
+  assert.equal(found.results[0].url, examples.vimeo);
 });
 
 test('Firecrawl errors, changed schemas and rate limits remain bounded failures', async () => {
@@ -437,29 +449,60 @@ test('AcFun, Reddit, Rumble and Odysee native responses use individually validat
   assert.equal(rpc.params.text, 'a title');
 });
 
-test('Dailymotion and Niconico use bounded yt-dlp searches with JSON-encoded fields and no shell', async () => {
+test('Dailymotion and Niconico public APIs return validated video titles and durations', async () => {
+  axios.get = async (endpoint, opts) => {
+    assert.equal(opts.headers.Cookie, undefined);
+    assert.equal(opts.headers.Authorization, undefined);
+    assert.equal(opts.maxRedirects, 0);
+    if (endpoint === 'https://api.dailymotion.com/videos') {
+      assert.equal(opts.params.search, 'cat');
+      assert.equal(opts.params.limit, 9);
+      return success({ list: [
+        { id: 'x7xyz', title: 'Daily title', url: examples.dailymotion, duration: 42, 'owner.screenname': 'Creator' },
+        { id: 'x7other', title: 'Wrong host', url: examples.vimeo },
+        { id: '../bad', title: 'Bad video' },
+      ] });
+    }
+    assert.ok(endpoint.startsWith('https://snapshot.search.nicovideo.jp/'));
+    assert.equal(opts.params.q, 'cat');
+    assert.equal(opts.params._limit, 9);
+    return success({ meta: { status: 200 }, data: [
+      { contentId: 'sm9', title: 'Nico title', lengthSeconds: 63 },
+      { contentId: '../bad', title: 'Bad video' },
+    ] });
+  };
+  const daily = await search.searchProvider('dailymotion', 'cat', { limit: 3 });
+  const nico = await search.searchProvider('niconico', 'cat', { limit: 3 });
+  assert.equal(daily.source, 'provider');
+  assert.equal(daily.results.length, 1);
+  assert.equal(nico.results.length, 1);
+  assert.equal(daily.results[0].url, examples.dailymotion);
+  assert.equal(daily.results[0].duration, 42);
+  assert.equal(daily.results[0].author, 'Creator');
+  assert.equal(nico.source, 'provider');
+  assert.equal(nico.results[0].url, examples.niconico);
+  assert.equal(nico.results[0].duration, 63);
+});
+
+test('Niconico can fall back to bounded yt-dlp search with JSON-encoded fields and no shell', async () => {
   YT.resolveCommand = () => ['yt-dlp'];
   YT.baseArgs = () => ['--no-playlist', '--ignore-config', '--cookies', '/private/cookies'];
   YT.capabilities = () => ({ noCheckFormats: true });
-  for (const site of ['dailymotion', 'niconico']) {
-    let call;
-    YT.run = async (args, options) => {
-      call = { args, options };
-      const parts = [examples[site], null, 'video-id', 'Title\twith\nlines', 120, 'Author'];
-      return { stdout: parts.map((x) => x === null ? 'NA' : JSON.stringify(x)).join('\t'), stderr: '' };
-    };
-    const found = await search.searchProvider(site, 'a title --ignored ; $(not a shell)', { limit: 3 });
-    assert.equal(found.source, 'provider');
-    assert.equal(found.results[0].title, 'Title with lines');
-    assert.equal(call.options.timeout, 30000);
-    assert.ok(call.args.includes('--no-flat-playlist'));
-    assert.ok(call.args.includes('--ignore-errors'));
-    assert.ok(!call.args.includes('--no-playlist'));
-    assert.equal(call.args[call.args.length - 2], '--');
-    const target = call.args.at(-1);
-    if (site === 'niconico') assert.equal(target, 'nicosearch3:a title --ignored ; $(not a shell)');
-    else assert.equal(target, 'https://www.dailymotion.com/search/a%20title%20--ignored%20%3B%20%24(not%20a%20shell)/videos');
-  }
+  let call;
+  YT.run = async (args, options) => {
+    call = { args, options };
+    const parts = [examples.niconico, null, 'video-id', 'Title\twith\nlines', 120, 'Author'];
+    return { stdout: parts.map((x) => x === null ? 'NA' : JSON.stringify(x)).join('\t'), stderr: '' };
+  };
+  const found = await search.searchProvider('niconico', 'a title --ignored ; $(not a shell)', { limit: 3 });
+  assert.equal(found.source, 'provider');
+  assert.equal(found.results[0].title, 'Title with lines');
+  assert.equal(call.options.timeout, 30000);
+  assert.ok(call.args.includes('--no-flat-playlist'));
+  assert.ok(call.args.includes('--ignore-errors'));
+  assert.ok(!call.args.includes('--no-playlist'));
+  assert.equal(call.args[call.args.length - 2], '--');
+  assert.equal(call.args.at(-1), 'nicosearch3:a title --ignored ; $(not a shell)');
 });
 
 test('partial yt-dlp output survives a timeout; offsite rows never pass validation', async () => {

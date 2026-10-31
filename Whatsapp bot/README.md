@@ -50,8 +50,8 @@ prefixed number or `.cancel`. `--first` skips the list. For title searches use
 search title. Direct links still accept the older `audio` and `480` options.
 `SEARCH_RESULTS` (1–10, default 5) and `SEARCH_TTL_MINUTES` apply to the list.
 
-Bilibili, Youku, AcFun, Reddit, Rumble and Odysee first try public site search;
-Dailymotion and Niconico first try yt-dlp's site search. All 14 can fall back to
+Bilibili, Youku, AcFun, Reddit, Rumble, Odysee, Dailymotion and Niconico first
+try public site search or APIs. Niconico may also try yt-dlp. All 14 can fall back to
 DuckDuckGo, Brave Search and the Firecrawl keyless search API with a site filter.
 Those services receive the search words. Firecrawl's free access is capped per
 IP and may rate-limit requests. For an English Youku episode search with no

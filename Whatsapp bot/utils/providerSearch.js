@@ -110,15 +110,16 @@ function normalizeSiteUrl(site, input) {
   return valid ? url.toString() : null;
 }
 
-function dom(html, contentType = 'text/html') {
-  const { JSDOM } = require('jsdom'); // already used by the bot; no scripts or resources are loaded
-  return new JSDOM(html, { contentType }).window.document;
+function dom(html) {
+  // Parse markup without executing scripts or fetching resources. Cheerio is
+  // already used by yt-search and supports the bot's declared Node versions.
+  return require('cheerio').load(html);
 }
 
 function cleanText(value, max = 120) {
   const text = String(value ?? '').slice(0, 2000);
   // Search metadata can contain highlighted HTML. Parsing never executes it.
-  const plain = text.includes('<') || text.includes('&') ? dom(`<body>${text}</body>`).body.textContent : text;
+  const plain = text.includes('<') || text.includes('&') ? dom(`<body>${text}</body>`)('body').text() : text;
   return plain.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ')
     .replace(/[*_~`]/g, '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
@@ -292,6 +293,28 @@ async function searchAcfun(query) {
   }));
 }
 
+async function searchDailymotion(query, limit) {
+  const body = parseJson(await getText('https://api.dailymotion.com/videos', {
+    search: query, fields: 'id,title,url,duration,owner.screenname', limit: Math.min(30, limit * 3), page: 1,
+  }));
+  if (!Array.isArray(body?.list)) throw new Error('Dailymotion search unavailable');
+  return body.list.map((item) => ({
+    url: item.url || (/^[a-z0-9]+$/i.test(String(item.id || '')) ? `https://www.dailymotion.com/video/${item.id}` : ''),
+    title: item.title, duration: item.duration, author: item['owner.screenname'],
+  }));
+}
+
+async function searchNiconicoSnapshot(query, limit) {
+  const body = parseJson(await getText('https://snapshot.search.nicovideo.jp/api/v2/snapshot/video/contents/search', {
+    q: query, targets: 'title,description,tags', fields: 'contentId,title,lengthSeconds',
+    _sort: '-viewCounter', _limit: Math.min(30, limit * 3), _context: 'video-search',
+  }));
+  if (Number(body?.meta?.status) !== 200 || !Array.isArray(body?.data)) throw new Error('Niconico snapshot search unavailable');
+  return body.data.filter((item) => /^(?:[a-z]{2})?\d+$/i.test(String(item.contentId || ''))).map((item) => ({
+    url: `https://www.nicovideo.jp/watch/${item.contentId}`, title: item.title, duration: item.lengthSeconds,
+  }));
+}
+
 async function searchReddit(query, limit) {
   const body = parseJson(await getText('https://www.reddit.com/search.json', { q: query, type: 'link', sort: 'relevance', limit: Math.min(30, limit * 4), raw_json: 1 }));
   if (!Array.isArray(body?.data?.children)) throw new Error('Reddit search unavailable');
@@ -302,14 +325,14 @@ async function searchReddit(query, limit) {
 }
 
 async function searchRumble(query) {
-  const html = await getText('https://rumble.com/search/all', { q: query });
-  const document = dom(html);
-  const anchors = [...document.querySelectorAll('a.video-item--a, a.videostream__link')];
-  if (!anchors.length && !document.querySelector('.video-list, .search-results, [data-search-results]')) throw new Error('Rumble search unavailable');
-  return anchors.map((a) => {
+  const $ = dom(await getText('https://rumble.com/search/all', { q: query }));
+  const anchors = $('a.video-item--a, a.videostream__link').toArray();
+  if (!anchors.length && !$('.video-list, .search-results, [data-search-results]').length) throw new Error('Rumble search unavailable');
+  return anchors.map((node) => {
+    const a = $(node);
     let url = '';
-    try { url = new URL(a.getAttribute('href'), 'https://rumble.com').toString(); } catch { /* skip invalid */ }
-    return { url, title: a.getAttribute('title') || a.querySelector('img')?.getAttribute('alt') || a.textContent };
+    try { url = new URL(a.attr('href'), 'https://rumble.com').toString(); } catch { /* skip invalid */ }
+    return { url, title: a.attr('title') || a.find('img').attr('alt') || a.text() };
   });
 }
 
@@ -348,11 +371,9 @@ function parseYtdlpLines(stdout) {
   }).filter(Boolean);
 }
 
-async function searchYtdlp(site, query, limit) {
+async function searchNiconicoYtdlp(query, limit) {
   if (!YT.resolveCommand()) throw new Error('yt-dlp unavailable');
-  const target = site === 'niconico'
-    ? `nicosearch${limit}:${query}`
-    : `https://www.dailymotion.com/search/${encodeURIComponent(query)}/videos`;
+  const target = `nicosearch${limit}:${query}`;
   const args = [
     ...YT.baseArgs().filter((arg) => arg !== '--no-playlist'),
     '--no-flat-playlist', '--skip-download', '--ignore-errors', '--playlist-end', String(limit),
@@ -377,8 +398,11 @@ async function searchYtdlp(site, query, limit) {
 const NATIVE = Object.freeze({
   bilibili: searchBilibili, youku: searchYouku, acfun: searchAcfun,
   reddit: searchReddit, rumble: searchRumble, odysee: searchOdysee,
-  dailymotion: (query, limit) => searchYtdlp('dailymotion', query, limit),
-  niconico: (query, limit) => searchYtdlp('niconico', query, limit),
+  dailymotion: searchDailymotion,
+  niconico: async (query, limit) => {
+    try { return await searchNiconicoSnapshot(query, limit); }
+    catch { return searchNiconicoYtdlp(query, limit); }
+  },
 });
 
 function indexQuery(site, query) {
@@ -397,23 +421,23 @@ function unwrapDuckLink(href) {
 }
 
 function parseDuck(html) {
-  const document = dom(html);
-  const anchors = [...document.querySelectorAll('a.result__a')];
-  if (!anchors.length && !document.querySelector('.results, .no-results, #links')) throw new Error('DuckDuckGo search unavailable');
-  return anchors.map((a) => ({ url: unwrapDuckLink(a.getAttribute('href') || ''), title: a.textContent }));
+  const $ = dom(html);
+  const anchors = $('a.result__a').toArray();
+  if (!anchors.length && !$('.results, .no-results, #links').length) throw new Error('DuckDuckGo search unavailable');
+  return anchors.map((node) => ({ url: unwrapDuckLink($(node).attr('href') || ''), title: $(node).text() }));
 }
 
 function parseBrave(html) {
-  const document = dom(html);
-  let anchors = [...document.querySelectorAll('.snippet a.result-header, a.result-header, [data-testid="result-header"]')];
+  const $ = dom(html);
+  let anchors = $('.snippet a.result-header, a.result-header, [data-testid="result-header"]').toArray();
   // Brave's markup changes; fall back to links inside the results container.
   // The caller still validates every destination as the requested site's video.
-  if (!anchors.length) anchors = [...document.querySelectorAll('#results a[href], #web-results a[href]')];
-  if (!anchors.length && !document.querySelector('#results, #web-results, .no-results')) throw new Error('Brave search unavailable');
-  return anchors.map((a) => ({
-    url: a.getAttribute('href') || '',
-    title: a.querySelector('.snippet-title')?.textContent || a.getAttribute('title') || a.textContent,
-  }));
+  if (!anchors.length) anchors = $('#results a[href], #web-results a[href]').toArray();
+  if (!anchors.length && !$('#results, #web-results, .no-results').length) throw new Error('Brave search unavailable');
+  return anchors.map((node) => {
+    const a = $(node);
+    return { url: a.attr('href') || '', title: a.find('.snippet-title').text() || a.attr('title') || a.text() };
+  });
 }
 
 async function searchDuck(site, query) {
@@ -426,9 +450,15 @@ async function searchBrave(site, query) {
 // Firecrawl's public keyless search is explicitly offered for programmatic use
 // but is subject to per-IP request/credit caps. Request links only, not scraping.
 async function searchFirecrawl(site, query, limit) {
+  const paths = PROVIDERS[site].indexSites;
+  // The API accepts hostnames in includeDomains, but a provider's search or
+  // music pages can drown out videos. For profiles with a known video path,
+  // include that path in the site: query instead of a broad hostname filter.
+  const scope = paths?.length === 1
+    ? { query: indexQuery(site, query) }
+    : { query, includeDomains: PROVIDERS[site].domains };
   const body = parseJson(await postJson('https://api.firecrawl.dev/v2/search', {
-    query, includeDomains: PROVIDERS[site].domains, limit: Math.min(20, limit * 3),
-    sources: ['web'], timeout: 9000,
+    ...scope, limit: Math.min(20, limit * 3), sources: ['web'], timeout: 9000,
   }));
   if (body?.success !== true || !Array.isArray(body?.data?.web)) throw new Error('Firecrawl search unavailable');
   return body.data.web.map((item) => ({ url: item.url, title: item.title }));

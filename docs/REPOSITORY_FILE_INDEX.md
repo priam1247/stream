@@ -4151,7 +4151,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — require and test-only instrumentation.
     - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
-  - **Outside modules:** `axios`, `crypto`, `jsdom`.
+  - **Outside modules:** `axios`, `cheerio`, `crypto`.
 
 - [`rcloneStore.js`](../Whatsapp%20bot/utils/rcloneStore.js) — Optional external link storage for large background-job results.
   - **References:**
