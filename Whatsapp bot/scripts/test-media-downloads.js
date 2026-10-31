@@ -474,9 +474,24 @@ test('a failed update is not reported as successful just because the old version
 
 test('owner-only hints use the configured prefix and non-YouTube errors do not blame YouTube', () => {
   const err = { code: 'BOT_CHECK' };
-  assert.doesNotMatch(YT.friendlyError(err), /\.ytdl|\.cookies/);
-  assert.match(YT.friendlyError(err, { isOwner: true }), /\.ytdl update.*\.cookies set/);
-  assert.doesNotMatch(YT.friendlyError(err, { isYouTube: false, isOwner: true }), /YouTube|\.cookies/);
+  assert.doesNotMatch(YT.friendlyError(err), /\.ytdl|\.ytlogin|\.cookies/);
+  assert.match(YT.friendlyError(err, { isOwner: true }), /\.ytdl.*\.ytlogin.*\.cookies set/);
+  assert.doesNotMatch(YT.friendlyError(err, { isYouTube: false, isOwner: true }), /YouTube|\.ytlogin|\.cookies/);
+});
+
+test('owner engine summary is concise, grouped, and contains no provider error text', () => {
+  const summary = YT.attemptsSummary([
+    { engine: 'yt-dlp:default', code: 'BOT_CHECK' },
+    { engine: 'yt-dlp:tv', code: 'BOT_CHECK' },
+    { engine: 'innertube:ANDROID_VR', code: 'LOGIN_REQUIRED' },
+    { engine: 'innertube', code: 'BOT_CHECK' },
+    { engine: 'yt1d', code: 'FAILED' },
+    { engine: 'cobalt', code: 'FAILED' },
+    { engine: 'private-fixture-token', code: 'private-fixture-token' },
+  ]);
+  assert.equal(summary, '\nTried: yt-dlp, Innertube, yt1d, Cobalt.');
+  assert.doesNotMatch(summary, /private-fixture-token/);
+  assert.equal(YT.attemptsSummary([]), '');
 });
 
 test('standalone installer enforces TLS, verifies checksum and never executes a mismatch', async () => {

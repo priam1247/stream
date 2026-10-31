@@ -818,7 +818,7 @@ const USER_HINTS = {
 const OWNER_HINTS = {
   PROXY_ERROR: 'Admin: clear or fix the proxy with `{p}ytdl proxy off`.',
   NO_YTDLP: 'Admin: run `{p}ytdl repair` or install `yt-dlp[default]` on the host.',
-  BOT_CHECK: 'Admin: try `{p}ytdl update`, then `{p}ytdl test <link>`. Your own private cookies.txt may help (`{p}cookies set`), but the host IP may still be challenged.',
+  BOT_CHECK: 'Admin: check `{p}ytdl` for auth status. Try `{p}ytlogin` for Innertube or private `{p}cookies set` for yt-dlp; the host IP may still be challenged.',
   AGE_RESTRICTED: 'Admin: access may require an eligible signed-in account and private cookies (`{p}cookies set`).',
   GEO_BLOCK: 'Admin: check regional availability; an appropriate proxy can be configured with `{p}ytdl proxy <url>`. Restrictions may still apply.',
   PO_TOKEN: 'Admin: try `{p}ytdl update` and check Node/EJS with `{p}ytdl`. Access may still be restricted.',
@@ -860,9 +860,19 @@ function friendlyError(err, { isOwner = false, isYouTube = true } = {}) {
 const displayCode = (code) => String(code || '').replace(/BOT_CHECK/gi, 'ACCESS_CHECK');
 
 function attemptsSummary(attempts) {
-  if (!Array.isArray(attempts) || !attempts.length) return '';
-  const lines = attempts.slice(0, 6).map(a => `• ${a.engine}: ${displayCode(a.code)}`);
-  return `\n\n*What was tried:*\n${lines.join('\n')}`;
+  if (!Array.isArray(attempts)) return '';
+  const names = new Set();
+  for (const attempt of attempts) {
+    const engine = typeof attempt?.engine === 'string' ? attempt.engine : '';
+    if (/^yt-dlp(?::|$)/i.test(engine)) names.add('yt-dlp');
+    else if (/^innertube(?::|$)/i.test(engine)) names.add('Innertube');
+    else if (/^yt1d$/i.test(engine)) names.add('yt1d');
+    else if (/^gifted$/i.test(engine)) names.add('Gifted');
+    else if (/^cobalt$/i.test(engine)) names.add('Cobalt');
+  }
+  // Only fixed engine names are shown: raw provider errors can contain URLs or
+  // credentials. One line also survives the commands' short-message limit.
+  return names.size ? `\nTried: ${[...names].join(', ')}.` : '';
 }
 
 // ─── INFO / DOWNLOAD ──────────────────────────────────────────────────────────

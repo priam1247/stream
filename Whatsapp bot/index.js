@@ -361,6 +361,11 @@ const lifecycle = createServiceLifecycle({
   onError: (err) => console.error('Session recovery/startup unavailable; local files were preserved. Check the backup key, dashboard and durable storage.', err?.message || err),
 });
 
+// This is a long-running service even when all sockets are disconnected and
+// maintenance timers are unref'd. Stay available for dashboard pairing and
+// retries until an explicit shutdown.
+const serviceLifetime = setInterval(() => {}, 24 * 60 * 60 * 1000);
+
 // Give accepted credential writes and encrypted backups a chance to finish on a
 // normal panel stop. A hard kill or the timeout can still interrupt the backup;
 // the local session files are never deleted.
@@ -377,6 +382,7 @@ function shutdown(signal) {
     if (finished) return;
     finished = true;
     if (timer) clearTimeout(timer);
+    clearInterval(serviceLifetime);
     if (timedOut) console.warn('Shutdown timed out; encrypted recovery may not have the latest changes. Local files were preserved.');
     try { require('./utils/telemetry').flushNow(); } catch { /* non-fatal */ }
     process.exit(0);

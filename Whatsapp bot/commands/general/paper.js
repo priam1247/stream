@@ -82,7 +82,9 @@ async function react(sock, msg, emoji) {
 
 // ─── DRIME CLOUD ──────────────────────────────────────────────────────────────
 function drimeClient(download = false) {
-  const token = config.drime?.apiToken;
+  // Accept either a bare token or a copied Authorization value, but send only
+  // one Bearer prefix. Never print the token or write it back to configuration.
+  const token = String(config.drime?.apiToken || '').trim().replace(/^Bearer(?:\s+|$)/i, '').trim();
   if (!token) throw new Error('Drime API token not configured (set the DRIME_API_TOKEN env var)');
   const client = axios.create({
     baseURL: config.drime?.baseUrl || 'https://app.drime.cloud/api/v1',
@@ -98,19 +100,42 @@ function drimeClient(download = false) {
     (err) => {
       if (err.response) {
         const status = err.response.status;
-        let detail = '';
-        try {
-          const data = err.response.data;
-          detail = (data && (data.message || data.error)) ||
-            (Buffer.isBuffer(data) ? Buffer.from(data).toString('utf-8').slice(0, 200) : JSON.stringify(data).slice(0, 200));
-        } catch (_) { /* ignore */ }
-        err.message = `Drime API ${status}${detail ? `: ${detail}` : ''}`;
+        if (status === 401) {
+          // The response can echo the rejected secret. Keep diagnostics useful
+          // without printing a body or assuming why authentication failed.
+          err.message = 'Drime API 401: authentication rejected. Check DRIME_API_TOKEN and DRIME_BASE_URL privately.';
+        } else if (status === 403) {
+          err.message = 'Drime API 403: access denied. Check token and folder/workspace permissions privately.';
+        } else {
+          let detail = '';
+          try {
+            const data = err.response.data;
+            detail = (data && (data.message || data.error)) ||
+              (Buffer.isBuffer(data) ? Buffer.from(data).toString('utf-8').slice(0, 200) : JSON.stringify(data).slice(0, 200));
+          } catch (_) { /* ignore */ }
+          // Avoid echoing a configured token in other provider error bodies too.
+          detail = require('../../utils/safeLog').redactSecrets(String(detail || '').replaceAll(token, '[REDACTED]')).slice(0, 200);
+          err.message = `Drime API ${status}${detail ? `: ${detail}` : ''}`;
+        }
       }
       return Promise.reject(err);
     }
   );
 
   return client;
+}
+
+function vaultFailureMessage(error, isOwner, fallback) {
+  if (error?.message && (error.message.includes('not configured') || error.message.includes('not set'))) {
+    return '⚙️ Paper vault not configured.';
+  }
+  if (isOwner && error?.response?.status === 401) {
+    return '❌ Paper vault authentication failed. Check DRIME_API_TOKEN and DRIME_BASE_URL in private host settings.';
+  }
+  if (isOwner && error?.response?.status === 403) {
+    return '❌ Paper vault access denied. Check the token and folder/workspace permissions privately.';
+  }
+  return fallback;
 }
 
 // Cheap headline count (1 request, always fresh).
@@ -733,10 +758,7 @@ module.exports = {
       telemetry.recordFailure('paper');
       console.error('[paper] command error:', error.message);
       await react(sock, msg, '❌');
-      if (error.message && (error.message.includes('not configured') || error.message.includes('not set'))) {
-        return extra.reply('⚙️ Paper vault not configured.');
-      }
-      return extra.reply('❌ Paper vault unavailable.');
+      return extra.reply(vaultFailureMessage(error, Boolean(extra?.isOwner), '❌ Paper vault unavailable.'));
     }
   },
 };
@@ -764,10 +786,7 @@ const countpapersCmd = {
     } catch (error) {
       console.error('[countpapers] error:', error.message);
       await react(sock, msg, '❌');
-      if (error.message && (error.message.includes('not configured') || error.message.includes('not set'))) {
-        return extra.reply('⚙️ Paper vault not configured.');
-      }
-      return extra.reply('❌ Could not count papers.');
+      return extra.reply(vaultFailureMessage(error, Boolean(extra?.isOwner), '❌ Could not count papers.'));
     }
   },
 };
@@ -792,7 +811,7 @@ const refreshpapersCmd = {
     } catch (error) {
       console.error('[refreshpapers] error:', error.message);
       await react(sock, msg, '❌');
-      return extra.reply('❌ Refresh failed.');
+      return extra.reply(vaultFailureMessage(error, true, '❌ Refresh failed.'));
     }
   },
 };

@@ -635,7 +635,43 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
 
     const ownerSock = mockSock();
     await songCmd.execute(ownerSock, mockMsg('.song https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ'], makeExtra(ownerSock));
-    assert.ok(ownerSock.sent.map(textOf).some((t) => /cookies/i.test(t)), 'owner missing cookies hint');
+    const ownerError = ownerSock.sent.map(textOf).find((t) => /automated access/i.test(t));
+    assert.ok(ownerError && /cookies/i.test(ownerError), 'owner missing cookies hint');
+    assert.match(ownerError, /Tried: yt-dlp/i, 'short owner message must include the attempted engines, not an empty heading');
+  });
+
+  await test('.song and .ytv show owners a concise, complete fallback summary', async () => {
+    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
+    const saved = { audio: YT.downloadAudio, video: YT.downloadVideo, info: YT.getInfo, remote: providersMod.resolveMedia };
+    try {
+      YT.getInfo = async () => ({ title: 'Fixture', uploader: 'Artist', duration: 20 });
+      YT.downloadAudio = YT.downloadVideo = async () => { throw Object.assign(new Error('sign in required'), { code: 'BOT_CHECK' }); };
+      it._setTestOverride(async (_url, _mode, options) => {
+        options.onAttempt('innertube:ANDROID_VR', { code: 'BOT_CHECK' });
+        throw Object.assign(new Error('sign in required'), { code: 'BOT_CHECK' });
+      });
+      providersMod.resolveMedia = async (_url, options) => {
+        options.onAttempt('yt1d', new Error('unavailable'), { code: 'FAILED' });
+        options.onAttempt('cobalt', new Error('unavailable'), { code: 'FAILED' });
+        throw new Error('all providers failed');
+      };
+      for (const command of [songCmd, ytvCmd]) {
+        const url = 'https://youtu.be/dQw4w9WgXcQ';
+        const ownerSock = mockSock();
+        await command.execute(ownerSock, mockMsg(`${command.name} ${url}`), [url], makeExtra(ownerSock));
+        const ownerText = ownerSock.sent.map(textOf).find((text) => /automated access/i.test(text));
+        assert.match(ownerText, /\.ytlogin.*\.cookies set/i);
+        assert.match(ownerText, /Tried: yt-dlp, Innertube, yt1d, Cobalt\./);
+        const memberSock = mockSock();
+        await command.execute(memberSock, mockMsg(`${command.name} ${url}`), [url], { ...makeExtra(memberSock), isOwner: false });
+        const memberText = memberSock.sent.map(textOf).find((text) => /automated access/i.test(text));
+        assert.ok(memberText);
+        assert.doesNotMatch(memberText, /\.ytlogin|\.cookies|Tried:/);
+      }
+    } finally {
+      it._setTestOverride(null);
+      YT.downloadAudio = saved.audio; YT.downloadVideo = saved.video; YT.getInfo = saved.info; providersMod.resolveMedia = saved.remote;
+    }
   });
 
   await test('.ytv sends the video and honours the quality argument', async () => {
