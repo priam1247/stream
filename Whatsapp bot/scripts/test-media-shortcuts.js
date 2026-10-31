@@ -41,15 +41,36 @@ const sock = { sent: [], async sendMessage(_id, body) { this.sent.push(body); } 
 test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 for (const [name, url] of cases) {
-  test(`${name} forwards a public video URL and quality through the shared pipeline`, async () => {
+  test(`${name} rejects a pasted link without searching or downloading it`, async () => {
     const cmd = find(name);
     assert.ok(cmd, `${name} not registered`);
     last = null;
+    sock.sent.length = 0;
     await cmd.execute(sock, msg, [url, '480'], extra);
+    assert.equal(last, null);
+    assert.match(sock.sent.at(-1).text, /searches titles only.*!dl/i);
+    const quoted = { ...msg, message: { extendedTextMessage: { contextInfo: { quotedMessage: { conversation: url } } } } };
+    sock.sent.length = 0;
+    await cmd.execute(sock, quoted, ['--audio'], extra);
+    assert.equal(last, null);
+    assert.match(sock.sent.at(-1).text, /searches titles only.*!dl/i);
+  });
+}
+
+const linkCases = [
+  ['tiktok', 'https://www.tiktok.com/@creator/video/123456789'],
+  ['x', 'https://x.com/creator/status/123456789'],
+  ['pinterest', 'https://www.pinterest.com/pin/123456789/'],
+  ['instagram', 'https://www.instagram.com/reel/Example/'],
+  ['fb', 'https://www.facebook.com/watch/?v=123456789'],
+];
+for (const [name, url] of linkCases) {
+  test(`${name} keeps the existing link and legacy quality behavior`, async () => {
+    last = null;
+    await find(name).execute(sock, msg, [url, '480'], extra);
     assert.equal(last.url, url);
     assert.equal(last.kind, 'video');
     assert.equal(last.height, 480);
-    assert.equal(last.lane, 'heavy');
     assert.equal(last.attempts[0].code, 'OK');
   });
 }
@@ -63,28 +84,53 @@ test('aliases are unique and point to their canonical commands', () => {
   assert.equal(new Set(allNames).size, allNames.length);
 });
 
-test('Bilibili short and international hosts and quoted messages are forwarded', async () => {
+test('new shortcuts do not download quoted or scheme-less links', async () => {
   const cmd = find('bili');
   const quoted = { ...msg, message: { extendedTextMessage: { contextInfo: { quotedMessage: { conversation: 'https://b23.tv/abcdefg' } } } } };
-  await cmd.execute(sock, quoted, [], extra);
-  assert.equal(last.url, 'https://b23.tv/abcdefg');
-  assert.equal(last.attempts[0].code, 'OK');
-  await cmd.execute(sock, msg, ['https://www.bilibili.tv/en/video/1234567890123'], extra);
-  assert.equal(last.attempts[0].code, 'OK');
+  for (const [message, args] of [[quoted, []], [quoted, ['--audio']], [msg, ['www.bilibili.com/video/BV1xx411c7mD']]]) {
+    last = null;
+    sock.sent.length = 0;
+    await cmd.execute(sock, message, args, extra);
+    assert.equal(last, null);
+    assert.match(sock.sent.at(-1).text, /searches titles only.*!dl/i);
+  }
 });
 
-test('audio mode uses the light lane; custom prefix is used in usage', async () => {
-  await find('bilibili').execute(sock, msg, [cases[0][1], 'audio'], extra);
-  assert.equal(last.kind, 'audio');
-  assert.equal(last.lane, 'light');
+test('older shortcuts apply explicit flags before or after links, including quoted links', async () => {
+  const url = linkCases[0][1];
+  const quoted = { ...msg, message: { extendedTextMessage: { contextInfo: { quotedMessage: { conversation: url } } } } };
+  for (const [message, args] of [
+    [msg, ['--audio', '--quality', '360', url]],
+    [msg, [url, '--audio', '--quality=360']],
+    [quoted, ['--audio', '--quality', '360']],
+  ]) {
+    last = null;
+    await find('tiktok').execute(sock, message, args, extra);
+    assert.equal(last.url, url);
+    assert.equal(last.kind, 'audio');
+    assert.equal(last.height, 360);
+    assert.equal(last.lane, 'light');
+  }
   sock.sent.length = 0;
   await find('bilibili').execute(sock, msg, [], extra);
   assert.match(sock.sent[0].text, /!bilibili/);
 });
 
-test('a lookalike host is not reported as the named site, but legacy permissive shortcut behavior is retained', async () => {
-  const url = 'https://example.org/?next=https://www.bilibili.com/video/BV1xx411c7mD';
-  await find('bilibili').execute(sock, msg, [url], extra);
+test('invalid explicit link quality never starts an older shortcut download', async () => {
+  const url = linkCases[0][1];
+  const quoted = { ...msg, message: { extendedTextMessage: { contextInfo: { quotedMessage: { conversation: url } } } } };
+  for (const [message, args] of [[msg, ['--quality=999', url]], [msg, [url, '--quality', '999']], [quoted, ['--quality=999']]]) {
+    last = null;
+    sock.sent.length = 0;
+    await find('tiktok').execute(sock, message, args, extra);
+    assert.equal(last, null);
+    assert.match(sock.sent.at(-1).text, /Quality must be/);
+  }
+});
+
+test('an older shortcut still forwards a lookalike host but reports the mismatch', async () => {
+  const url = 'https://example.org/?next=https://www.tiktok.com/video/123';
+  await find('tiktok').execute(sock, msg, [url], extra);
   assert.equal(last.url, url);
   assert.equal(last.attempts[0].code, 'HOST_MISMATCH');
 });

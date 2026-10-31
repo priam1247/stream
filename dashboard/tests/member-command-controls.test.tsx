@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { MemberCommandControls } from '../components/member-command-controls';
+import { BOT_COMMANDS, MEMBER_COMMANDS } from '../lib/bot-data';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -24,4 +25,15 @@ it('shows site shortcuts, searches aliases, and toggles the canonical member com
   await waitFor(() => expect(screen.getByRole('switch', { name: 'Allow .bilibili for members' }).getAttribute('aria-checked')).toBe('false'));
   const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
   expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ name: 'bilibili', disabled: true });
+});
+
+it('documents title-only search for all 14 site shortcuts', () => {
+  const sites = ['bilibili', 'vimeo', 'dailymotion', 'reddit', 'twitch', 'rumble', 'odysee', 'weibo', 'douyin', 'acfun', 'youku', 'vk', 'xiaohongshu', 'niconico'];
+  for (const name of sites) {
+    const command = BOT_COMMANDS.find((item) => item.name === name);
+    const member = MEMBER_COMMANDS.find((item) => item.name === name);
+    expect(command?.usage).toContain('<title>');
+    expect(member?.usage).toBe(command?.usage);
+  }
+  expect(BOT_COMMANDS.find((item) => item.name === 'youku')?.example).toBe('.youku the blood of youth s01e1');
 });

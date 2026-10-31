@@ -104,9 +104,9 @@ export const BOT_COMMANDS: CommandEntry[] = [
     { name: 'niconico', aliases: ['nico'], site: 'Niconico' },
   ].map(({ name, aliases, site }) => ({
     name, aliases, category: 'media' as const,
-    usage: `.${name} <url> [quality]`,
-    example: `.${name} <video-url>`,
-    summary: `${site} link via yt-dlp`,
+    usage: `.${name} <title> [--audio] [480p]`,
+    example: name === 'youku' ? '.youku the blood of youth s01e1' : `.${name} <video title>`,
+    summary: `Search ${site} by title`,
   })),
   {
     name: 'movie',
