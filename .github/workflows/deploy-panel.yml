@@ -105,21 +105,24 @@ jobs:
                 parsed: search.normalizeRows('douyin', search.parseBrave(response.data), 5).length,
               };
             } catch (err) { brave = { error: err.response?.status || err.code || err.message }; }
-            let firecrawl;
-            try {
-              const response = await axios.post('https://api.firecrawl.dev/v2/search', {
-                query: 'cat', includeDomains: ['douyin.com'], limit: 6, sources: ['web'], timeout: 9000,
-              }, { timeout: 10000, maxRedirects: 0 });
-              firecrawl = { status: response.status, success: response.data?.success,
-                returned: response.data?.data?.web?.length,
-                valid: search.normalizeRows('douyin', response.data?.data?.web || [], 5).length };
-            } catch (err) { firecrawl = { error: err.response?.status || err.code || err.message }; }
-            const sites = [];
-            for (const site of ['vimeo', 'twitch', 'vk', 'xiaohongshu']) {
-              const found = await search.searchProvider(site, 'cat', { limit: 3 });
-              sites.push({ site, status: found.status, source: found.source, count: found.results.length });
+            const firecrawl = [];
+            for (const [site, query, includeDomains] of [
+              ['douyin', 'cat', ['douyin.com']],
+              ['douyin', 'cat site:douyin.com/video', undefined],
+              ['xiaohongshu', 'cat', ['xiaohongshu.com']],
+              ['xiaohongshu', 'cat site:xiaohongshu.com/explore', undefined],
+            ]) {
+              try {
+                const response = await axios.post('https://api.firecrawl.dev/v2/search', {
+                  query, includeDomains, limit: 10, sources: ['web'], timeout: 9000,
+                }, { timeout: 10000, maxRedirects: 0 });
+                const rows = response.data?.data?.web || [];
+                firecrawl.push({ site, scoped: !includeDomains, status: response.status,
+                  valid: search.normalizeRows(site, rows, 5).length,
+                  paths: rows.slice(0, 5).map((row) => { try { const u = new URL(row.url); return u.hostname + u.pathname; } catch { return 'invalid'; } }) });
+              } catch (err) { firecrawl.push({ site, scoped: !includeDomains, error: err.response?.status || err.code || err.message }); }
             }
-            console.log('::notice title=Live search diagnostic::' + JSON.stringify({ brave, firecrawl, sites }));
+            console.log('::notice title=Live search diagnostic::' + JSON.stringify({ brave, firecrawl }));
           })().catch((err) => { console.error(err.message); process.exitCode = 1; });
           NODE
 
