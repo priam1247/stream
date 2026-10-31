@@ -1,38 +1,35 @@
-// src/core/jar.js — minimal per-host cookie jar.
-// Several DDL lockers bind the final link to the session cookie set on the
-// landing page — without this you get a 403. Parent-domain lookup included
-// (cookie set on .example.com must reach cdn.example.com).
+// In-memory cookie jar for provider requests. Use an RFC-aware implementation:
+// host-only, Domain, Path, Secure and expiry attributes must all be respected.
+import { CookieJar } from 'tough-cookie';
+
+function asUrl(origin) {
+  try {
+    const raw = String(origin || '');
+    const url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}/`);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+  } catch { return null; }
+}
+
 export default class Jar {
-  constructor() { this.store = new Map(); }
+  constructor() { this.jar = new CookieJar(); }
 
-  set(host, setCookie) {
-    if (!setCookie) return;
-    const arr = Array.isArray(setCookie) ? setCookie : [setCookie];
-    const bucket = this.store.get(host) || new Map();
-    for (const c of arr) {
-      const [pair] = String(c).split(';');
-      const i = pair.indexOf('=');
-      if (i < 1) continue;
-      bucket.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim());
+  // The full response URL is preferred so default cookie paths and Secure
+  // behavior are correct. A bare host remains accepted for compatibility.
+  set(origin, setCookie) {
+    const url = asUrl(origin);
+    if (!url || !setCookie) return;
+    for (const cookie of Array.isArray(setCookie) ? setCookie : [setCookie]) {
+      try { this.jar.setCookieSync(String(cookie), url, { ignoreError: true }); }
+      catch { /* malformed or invalid-domain cookie */ }
     }
-    this.store.set(host, bucket);
   }
 
-  header(host) {
-    const b = this.store.get(host);
-    if (!b || !b.size) return null;
-    return [...b.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
-  }
+  header(host) { return this.headerFor(asUrl(host)); }
 
   headerFor(url) {
-    try {
-      const h = new URL(url).hostname;
-      const parts = h.split('.');
-      for (let i = 0; i < parts.length - 1; i++) {
-        const c = this.header(parts.slice(i).join('.'));
-        if (c) return c;
-      }
-      return null;
-    } catch { return null; }
+    const target = asUrl(url);
+    if (!target) return null;
+    try { return this.jar.getCookieStringSync(target) || null; }
+    catch { return null; }
   }
 }

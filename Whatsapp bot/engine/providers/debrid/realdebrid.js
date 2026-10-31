@@ -2,6 +2,7 @@
 // 2.0 polled `torrents/info` up to 40 times × 3s with no early-exit on
 // queued state churn; 3.0 watches downloading progress and fails fast.
 import config from '../../config.js';
+import { pause, requestSignal } from './_http.js';
 
 const API = 'https://api.real-debrid.com/rest/1.0';
 const H = () => ({ Authorization: `Bearer ${config.realDebridKey}` });
@@ -34,22 +35,25 @@ export async function account() {
   };
 }
 
-export async function resolve(cand, opts) {
+export async function resolve(cand, opts = {}) {
+  const { signal } = opts;
   const add = await fetch(`${API}/torrents/addMagnet`, {
     method: 'POST', headers: H(), body: new URLSearchParams({ magnet: cand.magnet }),
-    signal: AbortSignal.timeout(20000)
+    signal: requestSignal(signal, 20000)
   }).then(r => r.json());
   if (!add?.id) throw new Error(add?.error || 'rd addMagnet failed');
   const id = add.id;
 
-  await fetch(`${API}/torrents/selectFiles/${id}`, {
-    method: 'POST', headers: H(), body: new URLSearchParams({ files: 'all' })
+  const selection = await fetch(`${API}/torrents/selectFiles/${id}`, {
+    method: 'POST', headers: H(), body: new URLSearchParams({ files: 'all' }),
+    signal: requestSignal(signal),
   });
+  if (!selection.ok) throw new Error(`rd select files HTTP ${selection.status}`);
 
   let info;
   for (let i = 0; i < 40; i++) {
-    await new Promise(r => setTimeout(r, 3000));
-    info = await fetch(`${API}/torrents/info/${id}`, { headers: H(), signal: AbortSignal.timeout(15000) }).then(r => r.json());
+    await pause(3000, signal);
+    info = await fetch(`${API}/torrents/info/${id}`, { headers: H(), signal: requestSignal(signal) }).then(r => r.json());
     if (['downloaded', 'error', 'dead', 'virus', 'magnet_error'].includes(info?.status)) break;
   }
   if (info?.status !== 'downloaded') throw new Error(`rd status ${info?.status || 'timeout'}`);
@@ -59,12 +63,16 @@ export async function resolve(cand, opts) {
   if (!chosen) throw new Error('rd no video file');
 
   // link order matches selected file order — pick the right one, not [0]
-  const idx = Math.max(0, (info.files || []).filter(f => f.selected === 1).findIndex(f => f.path === chosen.path));
-  const link = info.links?.[idx] || info.links?.[0];
-  if (!link) throw new Error('rd no link');
+  const selected = (info.files || []).filter(f => f.selected === 1);
+  const idx = selected.findIndex(f => f.path === chosen.path);
+  if (idx < 0 || !Array.isArray(info.links) || info.links.length !== selected.length || !info.links[idx]) {
+    throw new Error('rd no link for selected file');
+  }
+  const link = info.links[idx];
 
   const un = await fetch(`${API}/unrestrict/link`, {
-    method: 'POST', headers: H(), body: new URLSearchParams({ link })
+    method: 'POST', headers: H(), body: new URLSearchParams({ link }),
+    signal: requestSignal(signal),
   }).then(r => r.json());
   if (!un?.download) throw new Error(un?.error || 'rd unrestrict failed');
 

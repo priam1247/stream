@@ -212,7 +212,7 @@ async function hlsDownload(url, dest, {
  * Stream `url` to `dest` with the bot's downloader.
  * Progress is reported as (receivedBytes, totalBytes) like the engine expects.
  */
-async function download(url, dest, { headers = {}, maxBytes, onProgress } = {}) {
+async function download(url, dest, { headers = {}, maxBytes, onProgress, signal } = {}) {
   const m = transfer();
   if (!m || typeof m.downloadToFile !== 'function') {
     throw new Error('download helper unavailable (utils/mediaTransfer.js)');
@@ -223,6 +223,7 @@ async function download(url, dest, { headers = {}, maxBytes, onProgress } = {}) 
   const res = await m.downloadToFile(url, dest, {
     headers,
     maxBytes: cap,
+    signal,
     onProgress: typeof onProgress === 'function'
       ? (p) => { try { onProgress(p.downloaded || 0, p.total || 0); } catch { /* ignore */ } }
       : undefined,

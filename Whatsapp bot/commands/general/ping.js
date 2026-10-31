@@ -1,8 +1,6 @@
 /**
  * ZaFar Bot — Ping
  */
-const config = require('../../config');
-
 module.exports = {
   name: 'ping',
   aliases: ['p'],

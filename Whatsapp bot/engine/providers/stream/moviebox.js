@@ -16,7 +16,6 @@
 //
 // The guest token expires; a 401 re-acquires it once and replays the request.
 import { Provider, register } from '../../core/registry.js';
-import config from '../../config.js';
 import { log } from '../../core/log.js';
 import { nextUserAgent } from '../../core/http.js';
 

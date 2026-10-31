@@ -43,7 +43,11 @@ function sniff(head) {
   const b = head || Buffer.alloc(0);
   if (b.length > 12 && b.toString('ascii', 4, 8) === 'ftyp') {
     const brand = b.toString('ascii', 8, 12);
-    if (['avif', 'heic', 'heix', 'mif1'].includes(brand)) return { kind: 'image', ext: brand === 'avif' ? 'avif' : 'heic', mime: 'image/heic' };
+    if (['avif', 'heic', 'heix', 'mif1'].includes(brand)) {
+      return brand === 'avif'
+        ? { kind: 'image', ext: 'avif', mime: 'image/avif' }
+        : { kind: 'image', ext: 'heic', mime: 'image/heic' };
+    }
     // An mp4 with no video track is an .m4a — label it correctly instead of
     // sending audio to WhatsApp as a video ("cannot play this media").
     // The codec boxes live in `moov`, which ffmpeg/yt-dlp write at the END of
@@ -95,12 +99,16 @@ async function downloadToFile(url, dest, {
   timeout = 180000,
   headers = {},
   onProgress,
+  signal,
 } = {}) {
   const res = await axios.get(url, {
     responseType: 'stream',
     timeout,
+    signal,
     maxRedirects: 5,
-    maxContentLength: maxBytes,
+    // The streamed meter below applies the limit and provides a stable error
+    // code; Axios's stream wrapper otherwise rejects with ERR_BAD_RESPONSE.
+    maxContentLength: Infinity,
     maxBodyLength: Infinity,
     headers: { 'User-Agent': UA, Accept: '*/*', 'Accept-Encoding': 'identity', ...headers },
     validateStatus: () => true, // handled below so the message stays readable
@@ -141,10 +149,15 @@ async function downloadToFile(url, dest, {
     }
   });
 
-  await pipeline(res.data, fs.createWriteStream(dest));
+  try {
+    await pipeline(res.data, fs.createWriteStream(dest), { signal });
+  } catch (err) {
+    try { fs.rmSync(dest, { force: true }); } catch { /* ignore */ }
+    throw err;
+  }
 
   if (bytes < 10 * 1024) {
-    deleteTempFile(dest);
+    try { fs.rmSync(dest, { force: true }); } catch { /* ignore */ }
     const err = new Error('the downloaded file is too small to be media');
     err.code = 'BAD_SOURCE';
     throw err;
@@ -246,7 +259,26 @@ async function tagMp3(input, output, { title = '', artist = '', album = '' } = {
 function readId3(fileOrBuffer) {
   let buf = null;
   try {
-    buf = Buffer.isBuffer(fileOrBuffer) ? fileOrBuffer : fs.readFileSync(fileOrBuffer);
+    if (Buffer.isBuffer(fileOrBuffer)) buf = fileOrBuffer;
+    else {
+      // Tags live at the beginning; never read an entire large MP3 into RAM.
+      const fd = fs.openSync(fileOrBuffer, 'r');
+      try {
+        const header = Buffer.alloc(10);
+        if (fs.readSync(fd, header, 0, 10, 0) < 10 || header.toString('ascii', 0, 3) !== 'ID3') return null;
+        const size = ((header[6] & 0x7f) << 21) | ((header[7] & 0x7f) << 14) | ((header[8] & 0x7f) << 7) | (header[9] & 0x7f);
+        const length = Math.min(size, 16 * 1024 * 1024);
+        const data = Buffer.alloc(10 + length);
+        header.copy(data);
+        let read = 0;
+        while (read < length) {
+          const n = fs.readSync(fd, data, 10 + read, length - read, 10 + read);
+          if (!n) break;
+          read += n;
+        }
+        buf = data.subarray(0, 10 + read);
+      } finally { fs.closeSync(fd); }
+    }
   } catch { return null; }
   if (buf.length < 10 || buf.toString('ascii', 0, 3) !== 'ID3') return null;
 
@@ -254,7 +286,6 @@ function readId3(fileOrBuffer) {
   const size = ((buf[6] & 0x7f) << 21) | ((buf[7] & 0x7f) << 14) | ((buf[8] & 0x7f) << 7) | (buf[9] & 0x7f);
   const end = Math.min(buf.length, 10 + size);
   const out = { title: '', artist: '', album: '' };
-  const idSize = version >= 4 ? 4 : 4;
 
   let p = 10;
   while (p + 10 <= end) {
@@ -263,14 +294,18 @@ function readId3(fileOrBuffer) {
     const len = version >= 4
       ? ((buf[p + 4] & 0x7f) << 21) | ((buf[p + 5] & 0x7f) << 14) | ((buf[p + 6] & 0x7f) << 7) | (buf[p + 7] & 0x7f)
       : buf.readUInt32BE(p + 4);
+    if (!len || p + 10 + len > end) break;
     const body = buf.slice(p + 10, p + 10 + len);
     if (body.length) {
       const enc = body[0];
       const raw = body.slice(1);
       let text = '';
-      if (enc === 1) text = raw.toString('utf16le').replace(/^\uFEFF/, '');
-      else if (enc === 2) text = raw.swap16 ? raw.toString('utf16be') : '';
-      else text = raw.toString('utf8').replace(/\u0000+$/, '');
+      if (enc === 2 || (enc === 1 && raw[0] === 0xFE && raw[1] === 0xFF)) {
+        // Node does not have a utf16be encoding; swap a copy, never the input.
+        const be = Buffer.from(raw.subarray(0, raw.length - (raw.length % 2)));
+        text = be.swap16().toString('utf16le').replace(/^\uFEFF/, '');
+      } else if (enc === 1) text = raw.toString('utf16le').replace(/^\uFEFF/, '');
+      else text = raw.toString(enc === 0 ? 'latin1' : 'utf8');
       text = String(text).replace(/\u0000+$/g, '').trim();
       if (id === 'TIT2') out.title = text;
       else if (id === 'TPE1') out.artist = text;

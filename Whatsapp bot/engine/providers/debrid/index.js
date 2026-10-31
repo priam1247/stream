@@ -7,6 +7,7 @@
 // Note: the old TorBox-only "debridcache" tier 0 is gone with it —
 // RealDebrid/AllDebrid links come out of the normal resolve path below,
 // which is near-instant for cached torrents anyway.
+import { createHash } from 'node:crypto';
 import config from '../../config.js';
 import cache from '../../core/cache.js';
 import { metrics } from '../../core/metrics.js';
@@ -39,22 +40,30 @@ export async function probe() {
 }
 
 // ── resolve a candidate through the first debrid that succeeds ─────────────
-export async function resolve(cand, opts) {
-  const lk = `link:${cand.hash || cand.provider}:${cand.fileIdx ?? 0}:${opts.season ?? ''}:${opts.episode ?? ''}`;
-  const cachedUrl = cache.lget(lk);
-  if (cachedUrl) {
+export async function resolve(cand, opts = {}) {
+  if (opts.signal?.aborted) throw opts.signal.reason || new Error('aborted');
+  // A provider can return many magnets without a separate hash. Caching by
+  // provider alone would hand a previous film's link to a different request.
+  const identity = cand.hash ? `hash:${String(cand.hash).toLowerCase()}`
+    : cand.magnet ? `magnet:${createHash('sha256').update(String(cand.magnet)).digest('hex')}` : null;
+  const lk = identity && `link:${identity}:${cand.fileIdx ?? 0}:${opts.season ?? ''}:${opts.episode ?? ''}`;
+  const cached = lk && cache.lget(lk);
+  if (cached) {
     metrics.bump('cache.link');
-    return { url: cachedUrl, sizeMB: cand.sizeMB, cached: true };
+    return { ...(typeof cached === 'string' ? { url: cached } : cached), cached: true };
   }
 
   let lastErr;
-  for (const [name, has, mod] of active()) {
+  for (const [, , mod] of active()) {
     try {
       const r = await mod.resolve(cand, opts);
       if (!r.url) throw new Error('no url');
-      cache.lset(lk, r.url);
+      if (lk) cache.lset(lk, r);
       return r;
-    } catch (e) { lastErr = e; }
+    } catch (e) {
+      if (opts.signal?.aborted) throw opts.signal.reason || e;
+      lastErr = e;
+    }
   }
   throw lastErr || new Error('no debrid key configured (set REALDEBRID_API_KEY or ALLDEBRID_API_KEY)');
 }

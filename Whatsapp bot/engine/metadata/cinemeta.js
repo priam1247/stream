@@ -27,8 +27,12 @@ const norm = (m, type) => ({
  * Catalog search. Cinemeta only supports prefix search on its catalog endpoint,
  * which is enough for interactive lookups.
  */
-export async function search(title, type = 'movie') {
-  const cat = type === 'series' ? 'series' : 'movie';
+export async function search(title, typeOrOptions = 'movie') {
+  // The metadata orchestrator passes an options object, while callers of the
+  // adapter may still pass the media type as a string.
+  const requestedType = typeof typeOrOptions === 'string' ? typeOrOptions : typeOrOptions?.type;
+  const type = requestedType === 'series' ? 'series' : 'movie';
+  const cat = type;
   const url = `${BASE()}/catalog/${cat}/top/search=${encodeURIComponent(title)}.json`;
   const ck = `cinemeta:search:${cat}:${title.toLowerCase()}`;
   const hit = cache.mget(ck);

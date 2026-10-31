@@ -134,15 +134,15 @@ server (`../working scribd/`) are separate projects.
 
 ## Quick start
 
-From the repository root (Node.js 22.13 or newer within v22 is recommended;
-CI uses Node 22). Older runtimes may not support the installed Baileys/jsdom
-dependencies or the built-in SQLite used by background jobs:
+From the repository root, use Node.js **22.13 or newer** (Node 22 LTS is
+recommended; CI uses Node 22). Older runtimes do not provide all the features
+needed by the installed Baileys/jsdom dependencies and background jobs:
 
 ```bash
 cd "Whatsapp bot"
 cp .env.example .env   # configure privately, or use your host's startup variables
 npm ci
-npm run selftest       # offline checks; no WhatsApp connection
+npm run selftest       # offline checks, including preflight regressions; no WhatsApp connection
 npm run test:media     # offline YouTube, cookie, installer, and shortcut tests
 npm run test:jobs      # offline background-job tests
 npm run test:sessions  # offline pairing, permissions, and delivery tests
@@ -154,6 +154,12 @@ some checks load modules that access the bot's runtime database directory.
 Optionally run `npm run ytdlp:install` on a host that needs yt-dlp installed.
 The entry point uses this folder as its working directory, including when it is
 started from another directory. Do not commit or share `.env` or session files.
+
+For HLS streams, N_m3u8DL-RE or ffmpeg is recommended. The pure-Node fallback
+handles completed, supported playlists only; it refuses separate audio,
+byte-range/changing-map streams and oversized playlists or segments rather than
+sending incomplete or corrupt media. Its limits are 4 MiB per playlist and
+32 MiB per segment.
 
 ## Linking additional WhatsApp accounts
 
@@ -240,7 +246,7 @@ Shared container panels often report the entire host node's free space via `stat
 3. **Zero Caching & Boot Sweep**:
    - `QUEUE_LIGHT=20` (short social/music links) and `QUEUE_HEAVY=2` / `MOVIE_CONCURRENCY=2` (movies & episodes).
    - Every delivered media/movie file is deleted immediately after WhatsApp accepts it; `utils/cleanup.js` sweeps leftover `.part`/`.ytdl` partials on boot and caps `temp/` at `TEMP_MAX_MB` (`2048` MB default).
-   - Direct torrent support (`webtorrent` optional dependency) remains enabled when `TORRENT_DIRECT=true`.
+   - Direct torrent support requires both `TORRENT_DIRECT=true` and a working optional `webtorrent` install. npm can skip it if its native dependencies fail; run `npm ls webtorrent` and check the install log on the panel. Other sources can still work without it.
 
 ## Deploying to a server
 

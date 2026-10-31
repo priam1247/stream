@@ -30,7 +30,9 @@ const norm = (a) => ({
 });
 
 export async function search(title, { limit = 8 } = {}) {
-  const ck = `jikan:search:${title.toLowerCase()}`;
+  // Jikan applies the limit upstream, so differently sized searches cannot
+  // safely reuse the same cached response.
+  const ck = `jikan:search:${title.toLowerCase()}:${limit}`;
   const hit = cache.mget(ck);
   if (hit) { cache.hit('meta'); return hit; }
 

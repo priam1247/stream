@@ -48,14 +48,15 @@ const norm = (d) => ({
 
 /** Keyless suggestion search. */
 export async function suggest(title, { limit = 8 } = {}) {
-  const ck = `imdb:suggest:${title.toLowerCase()}`;
+  const ck = `imdb:suggest:full:${title.toLowerCase()}`;
   const hit = cache.mget(ck);
-  if (hit) { cache.hit('meta'); return hit; }
+  if (hit) { cache.hit('meta'); return hit.slice(0, limit); }
 
   const d = await req(`${SUGGEST_BASE()}/suggestion/x/${encodeURIComponent(title)}.json`, { retries: 1 });
-  const out = (d.d || []).map(norm).filter(x => x.imdbId).slice(0, limit);
+  // Cache the full upstream response, not the first caller's truncated view.
+  const out = (d.d || []).map(norm).filter(x => x.imdbId);
   cache.mset(ck, out, 6);
-  return out;
+  return out.slice(0, limit);
 }
 
 /**

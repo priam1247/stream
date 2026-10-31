@@ -274,7 +274,7 @@ module.exports = {
     return registry.table();
   },
   async stats() {
-    const { mlog } = await load();
+    await load();
     const { metrics } = await import(pathToFileURL(path.join(ENGINE, 'core', 'metrics.js')).href);
     return metrics.snapshot();
   },

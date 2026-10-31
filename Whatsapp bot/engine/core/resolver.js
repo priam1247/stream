@@ -34,13 +34,19 @@ const TIER_LIMITS = {
   3: { candidates: 6, perCandidateMs: 30_000 },
 };
 
-const withDeadline = (promise, ms, label) => {
+const withDeadline = (run, ms, label, parentSignal) => {
+  const controller = new AbortController();
+  const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
   let timer;
   const limit = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(Object.assign(new Error(`${label} timed out`), { code: 'DEADLINE' })), ms);
+    timer = setTimeout(() => {
+      const error = Object.assign(new Error(`${label} timed out`), { code: 'DEADLINE' });
+      controller.abort(error);
+      reject(error);
+    }, ms);
     timer.unref?.();
   });
-  return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
+  return Promise.race([Promise.resolve().then(() => run(signal)), limit]).finally(() => clearTimeout(timer));
 };
 
 // ── stale-on-error cache ───────────────────────────────────────────────────
@@ -201,7 +207,7 @@ async function resolve(media, opts = {}) {
   const torrentStatus = directTorrentAvailable
     ? 'download directly when seeded'
     : config.torrentDirect
-      ? 'unavailable — run npm rebuild node-datachannel'
+      ? 'unavailable — check optional WebTorrent installation and npm logs'
       : 'need a debrid account — set REALDEBRID_API_KEY or ALLDEBRID_API_KEY';
 
   for (const tier of hasDebrid ? DEBRID_TIERS : KEYLESS_TIERS) {
@@ -228,13 +234,11 @@ async function resolve(media, opts = {}) {
       }
       try {
         const out = await withDeadline(
-          resolveCandidate(cand, opts),
+          (signal) => resolveCandidate(cand, { ...opts, signal }),
           limits.perCandidateMs,
           `${cand.provider} resolve`,
+          opts.signal,
         );
-        if (out.kind !== 'torrent' && !/^magnet:/i.test(out.url || '')) {
-          cache.lset(`${cand.hash || cand.provider}:${cand.fileIdx ?? 0}:${opts.season ?? ''}:${opts.episode ?? ''}`, out.url);
-        }
         cache.ndel(cacheKey);                       // it exists after all
         metrics.bump(`tier.${tier[0]}`);
         metrics.bump('resolve.ok');

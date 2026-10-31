@@ -394,13 +394,6 @@ async function downloadFileToDisk(file) {
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-function formatSize(bytes) {
-  if (!bytes) return '';
-  const kb = parseInt(bytes) / 1024;
-  if (kb < 1024) return `${kb.toFixed(0)} KB`;
-  return `${(kb / 1024).toFixed(1)} MB`;
-}
-
 function cleanName(filename) {
   return filename.replace(/\.pdf$/i, '').replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim();
 }

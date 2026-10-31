@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node --expose-gc index.js",
     "ytdlp:install": "bash scripts/install-ytdlp.sh",
-    "selftest": "node scripts/selftest.js",
+    "selftest": "node scripts/selftest.js && npm run test:preflight",
+    "test:preflight": "node --test scripts/test-preflight.js",
     "test:media": "node --test scripts/test-media-downloads.js scripts/test-media-shortcuts.js scripts/test-provider-search.js scripts/test-provider-search-handler.js",
     "test:jobs": "node --test scripts/test-provider-core.js",
     "test:sessions": "node --test scripts/test-sessions.js scripts/test-account-routing.js scripts/test-bridge.js scripts/test-delivery.js scripts/test-session-backup.js scripts/test-service-startup.js"
@@ -29,11 +30,12 @@
     "node-webpmux": "^3.1.7",
     "pino": "^9.0.0",
     "qrcode-terminal": "^0.12.0",
+    "tough-cookie": "^6.0.2",
     "youtubei.js": "^18.3.0",
     "yt-search": "^2.13.1"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=22.13.0"
   },
   "optionalDependencies": {
     "@sparticuz/chromium": "153.0.0",
