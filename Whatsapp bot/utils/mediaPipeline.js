@@ -331,7 +331,7 @@ async function downloadAndSend(sock, msg, extra, {
       const isOwner = Boolean(extra?.isOwner);
       const tail = isOwner ? YT.attemptsSummary(merged) : '';
       const lines = String(YT.friendlyError(err, { isOwner, isYouTube: YT.isYouTubeUrl(url) }) + tail).split('\n').filter(Boolean);
-      await say(lines.slice(0, 2).join('\n'));
+      await say(lines.slice(0, isOwner ? 3 : 2).join('\n'));
     }
     await react('❌');
     return { sent: false, kind, via: 'none', code: info.code, error: err };

@@ -640,7 +640,8 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     assert.match(ownerError, /Tried: yt-dlp/i, 'short owner message must include the attempted engines, not an empty heading');
   });
 
-  await test('.song and .ytv show owners a concise, complete fallback summary', async () => {
+  await test('.song, .ytv and .dl show owners a concise, complete fallback summary', async () => {
+    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
     const it = require(path.join(REPO, 'utils/ytInnertube.js'));
     const saved = { audio: YT.downloadAudio, video: YT.downloadVideo, info: YT.getInfo, remote: providersMod.resolveMedia };
     try {
@@ -655,7 +656,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
         options.onAttempt('cobalt', new Error('unavailable'), { code: 'FAILED' });
         throw new Error('all providers failed');
       };
-      for (const command of [songCmd, ytvCmd]) {
+      for (const command of [songCmd, ytvCmd, dlCmd]) {
         const url = 'https://youtu.be/dQw4w9WgXcQ';
         const ownerSock = mockSock();
         await command.execute(ownerSock, mockMsg(`${command.name} ${url}`), [url], makeExtra(ownerSock));
