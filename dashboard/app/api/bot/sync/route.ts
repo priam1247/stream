@@ -8,25 +8,26 @@ import {
   recordRateLimitHit,
 } from '@/lib/rate-limit';
 import {
-  claimFailoverLease,
   claimPendingBotCommands,
   completeBotCommand,
   computeWhitelistSnapshot,
   getBotHeartbeat,
-  getFailoverStatus,
   getMemberCommandPolicy,
   getNextBotPollMs,
-  getStoredWhatsAppUser,
-  importLocalUserForLease,
+  importLocalWhatsAppUser,
   saveBotHeartbeat,
-  type FailoverFence,
-  type FailoverIdentity,
 } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
 const SYNC_WINDOW_MS = 60 * 1000;
 const MAX_SYNC_PER_MINUTE = 120;
+const SYNC_FIELDS = new Set([
+  'connected', 'botNumber', 'accounts', 'botName', 'version', 'uptimeSeconds',
+  'commandsTotal', 'downloadsSuccess', 'failedTotal', 'ramUsedMB', 'queueLight',
+  'queueHeavy', 'diskUsedMB', 'diskBudgetMB', 'whitelistVersion',
+  'commandPolicyVersion', 'sessionBackup', 'localUsers', 'completedResults',
+]);
 
 export async function POST(req: NextRequest) {
   const ipKey = `botsync:ip:${getClientIp(req)}`;
@@ -52,74 +53,35 @@ export async function POST(req: NextRequest) {
   if (rawBody) {
     try {
       const parsed = JSON.parse(rawBody);
-      if (parsed && typeof parsed === 'object') body = parsed;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+      body = parsed;
     } catch {
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
   }
 
-  let lease: Awaited<ReturnType<typeof claimFailoverLease>> | undefined;
-  let fence: FailoverFence | undefined;
-  let reportedEpoch = 0;
-  if (body.failover !== undefined) {
-    if (!body.failover || typeof body.failover !== 'object' || Array.isArray(body.failover)) {
-      return NextResponse.json({ error: 'Invalid failover identity.' }, { status: 400 });
-    }
-    const raw = body.failover as Record<string, unknown>;
-    if ((raw.role !== 'xs' && raw.role !== 'botkeep') || typeof raw.instance !== 'string' || !/^[a-f0-9]{32}$/.test(raw.instance)) {
-      return NextResponse.json({ error: 'Invalid failover identity.' }, { status: 400 });
-    }
-    if (auth.credentialRole !== raw.role) {
-      return NextResponse.json({ error: 'This service credential is not authorized for that host role.' }, { status: 403 });
-    }
-    // The generic sync endpoint retains bearer-only compatibility for legacy
-    // single-node installations; failover messages must always be signed.
-    if (!req.headers.get('x-bot-timestamp') || !req.headers.get('x-bot-nonce') || !req.headers.get('x-bot-signature')) {
-      return NextResponse.json({ error: 'Signed requests are required for failover.' }, { status: 401 });
-    }
-    const identity: FailoverIdentity = { role: raw.role, instance: raw.instance };
-    reportedEpoch = Number.isSafeInteger(raw.epoch) ? Number(raw.epoch) : 0;
-    try {
-      // Fail over the owner's primary pairing device, not merely any one of
-      // the optional linked member sessions that happen to remain online.
-      lease = await claimFailoverLease(identity, { connected: raw.primaryConnected === true,
-        accountNumber: typeof raw.accountNumber === 'string' && /^\d{7,15}$/.test(raw.accountNumber) ? raw.accountNumber : '',
-        deviceFingerprint: typeof raw.deviceFingerprint === 'string' ? raw.deviceFingerprint : '',
-        version: typeof body.version === 'string' ? body.version : '' });
-    } catch {
-      return NextResponse.json({ error: 'Shared failover storage is unavailable.' }, { status: 503 });
-    }
-    if (lease.granted && lease.epoch) fence = { ...identity, epoch: lease.epoch };
-  } else {
-    if (auth.credentialRole !== 'legacy') {
-      return NextResponse.json({ error: 'Host credentials require a failover identity.' }, { status: 403 });
-    }
-    if ((await getFailoverStatus()).enabled) {
-      // Old versions cannot be trusted to stop serving after a lease expires.
-      return NextResponse.json({ error: 'This dashboard requires the updated failover service.' }, { status: 409 });
-    }
+  // A client speaking an obsolete protocol must not consume commands it cannot
+  // execute. Reject unknown fields before any heartbeat or queue mutation.
+  if (Object.keys(body).some((key) => !SYNC_FIELDS.has(key))) {
+    return NextResponse.json({ error: 'Unsupported service protocol. Update the Botkeep service.' }, { status: 409 });
   }
-  const mayServe = !lease || Boolean(fence);
 
-  // 1. Import any unsynced WhatsApp `.allow` numbers from the active bot into D1
+  // 1. Import any unsynced WhatsApp `.allow` numbers from the bot into D1
   let importedAnyLocal = false;
-  if (mayServe && Array.isArray(body.localUsers)) {
+  if (Array.isArray(body.localUsers)) {
     const adminOwner = getAdminEmail();
     for (const raw of body.localUsers.slice(0, 200)) {
       if (!raw || typeof raw !== 'object') continue;
       const item = raw as Record<string, unknown>;
       const num = String(item.number || '').replace(/[^0-9]/g, '');
       if (num.length < 7 || num.length > 15) continue;
-      const existing = await getStoredWhatsAppUser(num);
-      if (!existing) {
-        const label = String(item.label || 'Added via WhatsApp .allow').slice(0, 60);
-        importedAnyLocal = await importLocalUserForLease(num, label, adminOwner, fence) || importedAnyLocal;
-      }
+      const label = String(item.label || 'Added via WhatsApp .allow').slice(0, 60);
+      importedAnyLocal = await importLocalWhatsAppUser(num, label, adminOwner) || importedAnyLocal;
     }
   }
 
   // 2. Record completed command results reported by the bot
-  if (mayServe && (!lease || reportedEpoch === fence?.epoch) && Array.isArray(body.completedResults)) {
+  if (Array.isArray(body.completedResults)) {
     for (const item of body.completedResults) {
       if (item && typeof item === 'object' && typeof item.id === 'string') {
         await completeBotCommand({
@@ -130,14 +92,14 @@ export async function POST(req: NextRequest) {
               ? (item.result as Record<string, unknown>)
               : undefined,
           error: typeof item.error === 'string' ? item.error : undefined,
-        }, fence);
+        });
       }
     }
   }
 
   // 3. Store fresh bot heartbeat + live telemetry counters
-  const prevHb = mayServe ? await getBotHeartbeat() : null;
-  if (mayServe) await saveBotHeartbeat({
+  const prevHb = await getBotHeartbeat();
+  await saveBotHeartbeat({
     lastSeenAt: Date.now(),
     connected: typeof body.connected === 'boolean' ? body.connected : null,
     botNumber: body.botNumber ? String(body.botNumber) : null,
@@ -160,7 +122,6 @@ export async function POST(req: NextRequest) {
         : undefined,
     commandPolicyVersion: typeof body.commandPolicyVersion === 'string' && /^[a-f0-9]{16}$/i.test(body.commandPolicyVersion)
       ? body.commandPolicyVersion.toLowerCase() : undefined,
-    ...(fence ? { failover: { role: fence.role, epoch: fence.epoch } } : {}),
     sessionBackup: (() => {
       const raw = body.sessionBackup;
       if (!raw || typeof raw !== 'object' || !('state' in raw)) return undefined;
@@ -172,12 +133,12 @@ export async function POST(req: NextRequest) {
       const counts = Number.isSafeInteger(sessions) && sessions >= 0 && sessions <= 101 && Number.isSafeInteger(backedUp) && backedUp >= 0 && backedUp <= sessions ? { sessions, backedUp } : {};
       return { state: state as 'disabled' | 'starting' | 'ready' | 'error' | 'conflict', lastBackupAt: Number.isSafeInteger(last) && last > 0 && last <= Date.now() + 60000 ? last : null, ...counts };
     })(),
-  }, fence);
+  });
 
-  // 4. Both nodes receive permissions; only the lease holder claims commands.
+  // 4. Compute versioned whitelist delta + claim queued commands + poll interval
   const [snapshot, commands, nextPollMs, policy] = await Promise.all([
     computeWhitelistSnapshot(),
-    mayServe ? claimPendingBotCommands(fence) : Promise.resolve([]),
+    claimPendingBotCommands(),
     getNextBotPollMs(),
     getMemberCommandPolicy(),
   ]);
@@ -189,8 +150,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     serverTime: Date.now(),
-    nextPollMs: commands.length > 0 ? 2_000 : lease ? Math.min(nextPollMs, 5_000) : nextPollMs,
-    ...(lease ? { failover: lease } : {}),
+    nextPollMs: commands.length > 0 ? 2_000 : nextPollMs,
     whitelistVersion: snapshot.version,
     whitelistChanged,
     commandPolicyVersion: policy.version,

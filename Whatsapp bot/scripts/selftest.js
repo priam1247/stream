@@ -2482,14 +2482,12 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       assert.strictEqual(procfile, `web: ${pkg.scripts.start}`, 'Procfile and package.json start script drifted');
 
       if (FULL_REPOSITORY) {
-        const wf = fs.readFileSync(path.join(WORKSPACE, '.github/workflows/deploy-panel.yml'), 'utf8');
+        const wf = fs.readFileSync(path.join(WORKSPACE, '.github/workflows/ci.yml'), 'utf8');
         assert.match(wf, /npm ci/);
         assert.match(wf, /npm run selftest/);
-        assert.match(wf, /needs:\s*selftest/);
-        assert.match(wf, /database\/\*\.json/);
+        assert.match(wf, /npm run test:sessions/);
         assert.match(wf, /working-directory:\s*Whatsapp bot/);
-        assert.ok(wf.includes("git archive 'HEAD:Whatsapp bot'"), 'deploy must archive only the bot subtree');
-        assert.ok(!wf.includes('"http://$BASE_HOST"'), 'deploy workflow must not try cleartext HTTP with PANEL_API_KEY');
+        assert.doesNotMatch(wf, /\b(?:sftp|lftp|scp|ssh|rsync)\b/i, 'CI must not upload or restart a host');
       } else {
         console.log('  - Repository workflow checks skipped in standalone bot installation');
       }
@@ -2559,7 +2557,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       }
     });
 
-    console.log('\n── 23. outbound dashboard sync & hydrodactyl panel client ──');
+    console.log('\n── 23. outbound dashboard sync ──');
 
     await test('safeLog redacts Hydrodactyl (hydro_) and Pterodactyl (ptlc_/ptla_) keys', () => {
       const { redactSecrets } = require(path.join(REPO, 'utils', 'safeLog'));
@@ -2567,51 +2565,6 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       assert.ok(!out.includes('TestVector99'), `hydro_ secret leaked: ${out}`);
       assert.ok(out.includes('hydro_[REDACTED]'), `missing hydro_ redaction: ${out}`);
       assert.ok(out.includes('ptlc_[REDACTED]'), `missing ptlc_ redaction: ${out}`);
-    });
-
-    await test('panelClient auto-discovers server ID via GET /api/client and sends restart over HTTPS', async () => {
-      const { panelRestart } = require(path.join(REPO, 'utils', 'panelClient'));
-      const calls = [];
-      const fakeFetch = async (url, init = {}) => {
-        calls.push({ url, method: init.method || 'GET', body: init.body });
-        if (url.endsWith('/api/client')) {
-          return {
-            ok: true,
-            status: 200,
-            json: async () => ({
-              data: [{ attributes: { identifier: 'srv99abc', uuid: 'srv99abc-1111' } }],
-            }),
-          };
-        }
-        if (url.endsWith('/api/client/servers/srv99abc/power')) {
-          return { ok: true, status: 204, json: async () => ({}) };
-        }
-        return { ok: false, status: 404, json: async () => ({}) };
-      };
-
-      const res = await panelRestart({
-        env: {
-          PANEL_URL: 'https://panel.xsystemshosting.com',
-          PANEL_API_KEY: 'hydro_SyntheticTestKey01',
-          PANEL_SERVER_ID: '',
-          P_SERVER_UUID: '',
-        },
-        fetchImpl: fakeFetch,
-      });
-      assert.strictEqual(res.ok, true);
-      assert.strictEqual(res.serverId, 'srv99abc');
-      assert.strictEqual(calls.length, 2);
-
-      const httpRejected = await panelRestart({
-        env: {
-          PANEL_URL: 'http://panel.xsystemshosting.com',
-          PANEL_API_KEY: 'hydro_SyntheticTestKey01',
-          PANEL_SERVER_ID: 'srv99abc',
-        },
-        fetchImpl: fakeFetch,
-      });
-      assert.strictEqual(httpRejected.ok, false);
-      assert.ok(/https:\/\//i.test(httpRejected.reason));
     });
 
     await test('dashboardSync signs HMAC requests, applies whitelist deltas, and answers queued pair commands', async () => {
@@ -2758,7 +2711,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       assert.strictEqual(typeof syncPayload.ramUsedMB, 'number');
     });
 
-    await test('hotReload purges cached commands/handler from disk when panel power API returns 404', () => {
+    await test('hotReload purges cached commands/handler from disk before reconnecting', () => {
       const { onReload, reloadRuntime } = require(path.join(REPO, 'utils', 'hotReload'));
       const telemetry = require(path.join(REPO, 'utils', 'telemetry'));
       const beforeHandler = require(path.join(REPO, 'handler'));

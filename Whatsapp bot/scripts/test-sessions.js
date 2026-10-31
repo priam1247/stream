@@ -358,204 +358,29 @@ test('ownership changes pause and retire the old session before a new claim can 
   assert.notEqual(next.sock, old.sock);
 });
 
-test('the failover gate blocks primary and linked devices from handling or sending while on standby', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-failover-gate-'));
+test('approval is checked again before a queued message handler runs', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-approval-race-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(root, 'creds.json'), JSON.stringify({ registered: true, me: { id: '265990000000:1@s.whatsapp.net' } }));
-  let serving = false;
-  const fx = fixture(root, { canServe: () => serving });
-  t.after(() => fx.manager.stop());
-  await fx.manager.start();
-  const primary = fx.created[0];
-  open(primary, '265990000000');
-  primary.ev.emit('messages.upsert', { type: 'notify', messages: [message('standby')] });
-  await delay(5);
-  assert.equal(fx.messages.length, 0);
-  await assert.rejects(primary.sendMessage('chat', { text: 'blocked' }), /offline or paused/i);
-
-  serving = true;
-  fx.manager.refreshPermissions();
-  primary.ev.emit('messages.upsert', { type: 'notify', messages: [message('active')] });
-  await waitFor(() => fx.messages.length === 1);
-  await primary.sendMessage('chat', { text: 'allowed' });
-  const { sock: linked } = await request(fx, '265991111111');
-  open(linked, '265991111111');
-  await linked.sendMessage('chat', { text: 'allowed too' });
-
-  // The lease can expire after the event listener runs but before the queued
-  // handler microtask starts.
-  primary.ev.emit('messages.upsert', { type: 'notify', messages: [message('queued-before-expiry')] });
-  serving = false;
-  await delay(5);
-  assert.equal(fx.messages.length, 1);
-  primary.ev.emit('messages.upsert', { type: 'notify', messages: [message('expired')] });
-  await delay(5);
-  assert.equal(fx.messages.length, 1);
-  linked.ev.emit('messages.upsert', { type: 'notify', messages: [message('linked-standby')] });
-  await delay(5);
-  assert.equal(fx.messages.length, 1);
-  await assert.rejects(primary.sendMessage('chat', { text: 'late result' }), /offline or paused/i);
-  await assert.rejects(linked.sendMessage('chat', { text: 'linked standby' }), /offline or paused/i);
-});
-
-test('failover health tracks the primary device independently of connected members', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-failover-health-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(root, 'creds.json'), JSON.stringify({ registered: true, me: { id: '265990000000:1@s.whatsapp.net' } }));
-  const fx = fixture(root, { reconnectBaseMs: 5000 });
-  t.after(() => fx.manager.stop());
-  await fx.manager.start();
-  const primary = fx.created[0]; open(primary, '265990000000');
-  const { sock: linked } = await request(fx, '265991111111'); open(linked, '265991111111');
-  assert.equal(fx.manager.status().primaryConnected, true);
-  assert.equal(fx.manager.status().primaryNumber, '265990000000');
-  primary.ev.emit('connection.update', { connection: 'close' });
-  assert.equal(fx.manager.status().primaryConnected, false);
-  assert.equal(fx.manager.status().connected, true);
-  assert.equal(fx.manager.status().botNumber, '265991111111', 'legacy status still reports the online member');
-  assert.equal(fx.manager.status().primaryNumber, '265990000000', 'failover identity must remain the primary number');
-  primary.user = null;
-  assert.equal(fx.manager.status().primaryNumber, '265990000000', 'saved primary credentials remain usable during reconnect');
-});
-
-test('a pairing command whose epoch expires during auth cannot create a socket or request a code', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-lease-pair-auth-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(root, 'creds.json'), JSON.stringify({ registered: true, me: { id: '265990000000:1@s.whatsapp.net' } }));
-  let release, loading = false, epoch = 1;
-  const gate = new Promise((resolve) => { release = resolve; });
-  const fx = fixture(root, {
-    canServe: () => true,
-    loadAuthState: async (dir) => {
-      if (dir.includes(`${path.sep}linked${path.sep}`)) { loading = true; await gate; }
-      fs.mkdirSync(dir, { recursive: true });
-      let creds;
-      try { creds = JSON.parse(fs.readFileSync(path.join(dir, 'creds.json'), 'utf8')); } catch { creds = { registered: false }; }
-      return { state: { creds }, saveCreds: async () => {} };
-    },
-  });
-  t.after(() => fx.manager.stop());
-  await fx.manager.start();
-  const pair = fx.manager.requestPair('265991111111', { canExecute: () => epoch === 1 });
-  const rejected = assert.rejects(pair, /lease|ownership/i);
-  await waitFor(() => loading);
-  epoch = 2; // this host might even hold a new lease; the old command is stale
-  release();
-  await Promise.race([rejected, delay(300).then(() => assert.fail('stale pairing did not stop'))]);
-  assert.equal(fx.created.filter((sock) => sock.__sessionId === 'linked:265991111111').length, 0);
-});
-
-test('a stale pairing epoch is checked again immediately before requesting the WhatsApp code', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-lease-pair-qr-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const fx = fixture(root, { canServe: () => true });
-  t.after(() => fx.manager.stop());
-  await fx.manager.start();
-  let epoch = 1, codeRequests = 0;
-  const pair = fx.manager.requestPair('265991111111', { canExecute: () => epoch === 1 });
-  const rejected = assert.rejects(pair, /lease|ownership/i);
-  await waitFor(() => fx.created.some((sock) => sock.__sessionId === 'linked:265991111111'));
-  const linked = fx.created.find((sock) => sock.__sessionId === 'linked:265991111111');
-  linked.requestPairingCode = async () => { codeRequests++; return 'NEVER'; };
-  epoch = 2;
-  linked.ev.emit('connection.update', { qr: 'ready' });
-  await Promise.race([rejected, delay(300).then(() => assert.fail('stale pairing did not stop'))]);
-  assert.equal(codeRequests, 0);
-});
-
-test('unlink checks the command epoch immediately before logging out the linked device', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-lease-unlink-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const fx = fixture(root, { canServe: () => true });
+  const fx = fixture(root);
   t.after(() => fx.manager.stop());
   await fx.manager.start();
   const { sock } = await request(fx, '265991111111');
   open(sock, '265991111111');
-  const sessionId = fx.manager.status().accounts.find((item) => item.number === '265991111111').sessionId;
-  let checks = 0;
-  await assert.rejects(fx.manager.unlinkAccount('265991111111', sessionId, { canExecute: () => ++checks === 1 }), /lease|ownership/i);
-  assert.equal(sock.loggedOut, undefined);
-  assert.equal(sock.ended, false);
-});
-
-test('a code already being requested is discarded if its command loses the lease', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-lease-pair-flight-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const fx = fixture(root, { canServe: () => true });
-  t.after(() => fx.manager.stop());
-  await fx.manager.start();
-  let epoch = 1, requested = false, release;
-  const wait = new Promise((resolve) => { release = resolve; });
-  const pair = fx.manager.requestPair('265991111111', { canExecute: () => epoch === 1 });
-  const rejected = assert.rejects(pair, /lease|ownership/i);
-  await waitFor(() => fx.created.some((sock) => sock.__sessionId === 'linked:265991111111'));
-  const linked = fx.created.find((sock) => sock.__sessionId === 'linked:265991111111');
-  linked.requestPairingCode = async () => { requested = true; return wait; };
-  linked.ev.emit('connection.update', { qr: 'ready' });
-  await waitFor(() => requested);
-  epoch = 2;
-  release('STALE-CODE');
-  await Promise.race([rejected, delay(300).then(() => assert.fail('stale pairing did not stop'))]);
-  assert.equal(linked.ended, true);
-});
-
-test('losing a lease actively retires an unregistered member pairing', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-lease-retire-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  let serving = true;
-  const fx = fixture(root, { canServe: () => serving });
-  t.after(() => fx.manager.stop());
-  await fx.manager.start();
-  const pair = fx.manager.requestPair('265991111111');
-  const rejected = assert.rejects(pair, /lease|ownership/i);
-  await waitFor(() => fx.created.some((sock) => sock.__sessionId === 'linked:265991111111'));
-  const linked = fx.created.find((sock) => sock.__sessionId === 'linked:265991111111');
-  serving = false;
-  fx.manager.refreshPermissions();
-  await rejected;
-  assert.equal(linked.ended, true);
-});
-
-test('the real sync bridge and session manager fence a pairing across a handover', async (t) => {
-  const { createFailoverLease } = require('../utils/failoverLease');
-  const { startDashboardSync } = require('../utils/dashboardSync');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-lease-bridge-session-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  let release, loading = false, calls = 0;
-  const gate = new Promise((resolve) => { release = resolve; });
-  let manager;
-  const lease = createFailoverLease('xs', { instance: 'a'.repeat(32), onChange: () => manager?.refreshPermissions() });
-  const fx = fixture(root, {
-    canServe: () => lease.canServe(),
-    loadAuthState: async (dir) => {
-      if (dir.includes(`${path.sep}linked${path.sep}`)) { loading = true; await gate; }
-      fs.mkdirSync(dir, { recursive: true });
-      return { state: { creds: { registered: false } }, saveCreds: async () => {} };
-    },
-  });
-  manager = fx.manager;
-  t.after(() => manager.stop());
-  await manager.start();
-  const bodies = [];
-  const sync = startDashboardSync({ dashboardUrl: 'https://dashboard.example', token: 'test-token', manualOnly: true,
-    wlFile: path.join(root, 'whitelist.json'), failover: lease,
-    requestPairing: (number, options) => manager.requestPair(number, options),
-    fetchImpl: async (_url, init) => {
-      bodies.push(JSON.parse(init.body));
-      return { ok: true, json: async () => ({
-        failover: ++calls === 1 ? { granted: true, role: 'xs', instance: 'a'.repeat(32), epoch: 1, ttlMs: 30_000 } : { granted: false },
-        whitelistChanged: calls === 1, whitelistVersion: '0123456789abcdef', users: [{ number: '265991111111', enabled: true }],
-        commands: calls === 1 ? [{ id: 'pair', type: 'pair', payload: { number: '265991111111' }, expiresAt: Date.now() + 60_000 }] : [],
-      }) };
-    },
-  });
-  t.after(() => sync.stop());
-  await sync.syncNow();
-  await waitFor(() => loading);
-  await sync.syncNow();
-  release();
+  sock.ev.emit('messages.upsert', { type: 'notify', messages: [message('approval-race')] });
+  fx.approved.delete('265991111111');
   await delay(5);
-  await sync.syncNow();
-  assert.equal(fx.created.filter((sock) => sock.__sessionId === 'linked:265991111111').length, 0);
-  assert.deepEqual(bodies[2].completedResults, []);
+  assert.equal(fx.messages.length, 0);
+});
+
+test('a missing socket user still recognizes the saved primary identity', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-primary-id-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'creds.json'), JSON.stringify({ registered: true, me: { id: '265990000000:1@s.whatsapp.net' } }));
+  const fx = fixture(root, { approved: ['265990000000'] });
+  t.after(() => fx.manager.stop());
+  await fx.manager.start();
+  const primary = fx.created[0]; open(primary, '265990000000');
+  primary.user = null;
+  assert.equal(fx.manager.status().accounts[0].number, '265990000000');
+  await assert.rejects(fx.manager.requestPair('265990000000'), /already linked/i);
 });

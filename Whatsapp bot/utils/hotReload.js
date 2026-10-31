@@ -3,13 +3,10 @@
 /**
  * ZaFar Bot — In-Process Runtime Hot Reload
  *
- * XS Systems' custom Hydrodactyl panel omits Pterodactyl's
- * `/api/client/servers/<id>/power` endpoint (returning HTTP 404/405).
- * When `.restart` or the web dashboard triggers a restart without panel power
- * access, `reloadRuntime()` purges cached command, engine, config, and handler
- * modules from `require.cache` and reloads them straight from disk before
- * reconnecting the WhatsApp socket — picking up newly SFTP-deployed code
- * without killing PID 1.
+ * When `.restart` requests a reconnect, `reloadRuntime()`
+ * purges cached command, engine, config, and handler modules from
+ * `require.cache` and reloads them from disk before reconnecting WhatsApp,
+ * without restarting the hosting server or killing PID 1.
  */
 
 const path = require('path');

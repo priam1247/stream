@@ -18,7 +18,6 @@ vi.mock('../lib/storage', () => ({
   getBotCommandById: vi.fn(async () => state.command),
   getStoredWhatsAppUser: vi.fn(async () => state.stored),
   getBotConnectionConfig: vi.fn(async () => ({ botApiUrl: '', botAdminToken: '', botSyncToken: '', botEnabledForMembers: state.linkingEnabled })),
-  getFailoverStatus: vi.fn(async () => ({ enabled: false, activeRole: null, epoch: null, xs: null, botkeep: null })),
 }));
 vi.mock('../lib/activity', () => ({ recordActivity: vi.fn(), maskedNumber: () => 'masked' }));
 import { GET, POST } from '../app/api/member/pair/route';

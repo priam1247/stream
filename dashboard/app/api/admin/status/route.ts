@@ -10,7 +10,6 @@ import { whitelistSyncState } from '@/lib/sync-status';
 import { scribdPanelConfig } from '@/lib/scribd-panel';
 import {
   getPanelConnectionConfig,
-  getFailoverStatus,
   isUsingCloudflareD1,
   listAllMembers,
   listStoredWhatsAppUsers,
@@ -43,7 +42,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const [target, panelCfg, d1Active, users, members, liveStatus, scribdConfig, failover] =
+  const [target, panelCfg, d1Active, users, members, liveStatus, scribdConfig] =
     await Promise.all([
       getResolvedBotTarget(),
       getPanelConnectionConfig(),
@@ -52,7 +51,6 @@ export async function GET(req: NextRequest) {
       listAllMembers(isAdminEmail),
       fetchLiveBotStatus(),
       scribdPanelConfig(),
-      getFailoverStatus(),
     ]);
 
   const botLinked =
@@ -67,8 +65,6 @@ export async function GET(req: NextRequest) {
     botApiUrl: target.rawUrl,
     hasBotToken: Boolean(target.token),
     hasBotSyncToken: Boolean(target.syncToken),
-    hasXsSyncToken: target.hasXsSyncToken,
-    hasBotkeepSyncToken: target.hasBotkeepSyncToken,
     isInsecureHttp: target.isInsecureHttp,
     botEnabledForMembers: target.botEnabledForMembers,
     storageEngine: d1Active ? 'cloudflare-d1' : 'persistent-db',
@@ -85,7 +81,6 @@ export async function GET(req: NextRequest) {
     lastSeenSecondsAgo: liveStatus.lastSeenSecondsAgo ?? null,
     whitelistSync: whitelistSyncState(liveStatus, users, target.botEnabledForMembers),
     sessionBackup: liveStatus.sessionBackup ?? null,
-    failover,
     botVersion: liveStatus.version ?? null,
     uptimeSeconds: liveStatus.uptimeSeconds ?? null,
     commandsTotal: liveStatus.commandsTotal ?? null,
@@ -96,7 +91,7 @@ export async function GET(req: NextRequest) {
     diskBudgetMB: liveStatus.diskBudgetMB ?? null,
     queueLight: liveStatus.queueLight ?? null,
     queueHeavy: liveStatus.queueHeavy ?? null,
-    panelConfigured: Boolean(panelCfg.panelApiKey),
+    panelConfigured: Boolean(panelCfg.panelApiKey && panelCfg.panelServerId),
     panelUrl: panelCfg.panelUrl,
     panelServerId: panelCfg.panelServerId,
     hasPanelApiKey: Boolean(panelCfg.panelApiKey),

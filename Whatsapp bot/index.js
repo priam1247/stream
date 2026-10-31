@@ -30,7 +30,7 @@ if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 13)) {
 // Override with NODE_ENV=development when debugging locally.
 process.env.NODE_ENV = process.env.NODE_ENV || 'production';
 
-// The Scribd search + download panel is a separate server in `working scribd/`.
+// The Scribd search + download panel is a separate server in `scribd/`.
 // This bot does not start it; the dashboard talks to it independently.
 
 const { formatArgs, redactArg } = require('./utils/safeLog');
@@ -103,7 +103,7 @@ const {
 const qrcode = require('qrcode-terminal');
 const config = require('./config');
 let handler = require('./handler');
-const { onReload, reloadRuntime } = require('./utils/hotReload');
+const { onReload } = require('./utils/hotReload');
 onReload((freshHandler) => { handler = freshHandler; });
 const { isSystemJid } = require('./utils/jid');
 const fs = require('fs');
@@ -222,15 +222,6 @@ function getWebVersion() {
 
 async function startService() {
   const portalSyncConfigured = Boolean(config.admin?.dashboardUrl && config.admin?.syncToken);
-  const { getFailoverRole } = require('./utils/failoverConfig');
-  const failoverRole = getFailoverRole(process.env, config.admin);
-  let sessions;
-  const failover = failoverRole ? require('./utils/failoverLease').createFailoverLease(failoverRole, {
-    onChange: (active) => {
-      console.log(`WhatsApp failover: ${failoverRole} ${active ? 'active' : 'standby'}.`);
-      sessions?.refreshPermissions();
-    },
-  }) : null;
   let permissionsSynced = !portalSyncConfigured;
   const { createSessionBackup } = require('./utils/sessionBackup');
   const backup = createSessionBackup({ sessionDir: config.sessionName, dashboardUrl: config.admin?.dashboardUrl,
@@ -238,10 +229,9 @@ async function startService() {
     isEligible: (number, claim) => readWL().users.some((user) => String(user.number) === number && user.backupClaim === claim && (user.enabled !== false || user.pairAllowed === true)) });
   // Do not create a fresh manifest or credentials when recovery is unavailable.
   await backup.restore();
-  sessions = createSessionManager({
+  const sessions = createSessionManager({
   sessionDir: config.sessionName,
   pairNumber: config.pairNumber,
-  canServe: () => !failover || failover.canServe(),
   maxAccounts: Number(process.env.MAX_LINKED_ACCOUNTS || 20),
   loggedOutCode: DisconnectReason.loggedOut,
   loadAuthState: (dir) => backup.wrapAuth(useMultiFileAuthState, dir),
@@ -276,7 +266,7 @@ async function startService() {
 });
 
 // ── Dashboard Outbound HTTPS Sync + Optional Inbound API ─────────────────────
-// Recommended on Hydrodactyl / Pterodactyl: set DASHBOARD_URL + BOT_SYNC_TOKEN
+// Recommended on Botkeep: set DASHBOARD_URL + BOT_SYNC_TOKEN
 // (with ADMIN_API_ENABLED=false so no open port is needed). The bot pushes live
 // heartbeats, pulls versioned whitelist deltas, and picks up pairing requests.
 const { startSessionServices } = require('./utils/serviceStartup');
@@ -291,27 +281,15 @@ await startSessionServices(sessions, async function startDashboardBridge() {
     dashboardUrl: admin.dashboardUrl,
     token: admin.syncToken,
     intervalMs: admin.syncIntervalMs,
-    failover,
-    getStatus: () => ({ ...sessions.status(), ...(failover ? { primaryDeviceFingerprint: sessions.primaryDeviceFingerprint() } : {}) }),
+    getStatus: () => sessions.status(),
     getBackupStatus: () => backup.status(),
-    requestPairing: (number, options) => sessions.requestPair(number, options),
-    unlinkAccount: (number, sessionId, options) => sessions.unlinkAccount(number, sessionId, options),
+    requestPairing: (number) => sessions.requestPair(number),
+    unlinkAccount: (number, sessionId) => sessions.unlinkAccount(number, sessionId),
     onWhitelistChanged: () => sessions.refreshPermissions(),
     onPermissionsReady: () => { if (!permissionsSynced) { permissionsSynced = true; sessions.refreshPermissions(); } },
-    requestRestart: async () => {
-      console.log('Dashboard requested a reload and reconnection.');
-      try {
-        const res = reloadRuntime();
-        console.log(`Reloaded ${res.evicted} module(s) from disk.`);
-      } catch (err) {
-        console.error('Reload warning:', err?.message || err);
-      }
-      await sessions.reconnectAll();
-    },
   });
 
-  // A direct per-host bridge could bypass the shared command lease.
-  if (admin.apiEnabled && admin.token && !failover) {
+  if (admin.apiEnabled && admin.token) {
     api = startAdminApi({
       port: admin.port,
       token: admin.token,

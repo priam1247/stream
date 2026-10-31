@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
+import { BOTKEEP_API_BASE } from '../lib/botkeep-config';
 
 const state = vi.hoisted(() => ({
   role: 'admin' as 'admin' | 'member' | 'anonymous',
@@ -46,14 +47,14 @@ describe('owner-only panel resource status', () => {
 
   it('reports actual state and suspension, with a no-redirect server-side token', async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(Response.json({ attributes: { current_state: 'running', is_suspended: false } }))
-      .mockResolvedValueOnce(Response.json({ attributes: { current_state: 'offline', is_suspended: true } }));
+      .mockResolvedValueOnce(Response.json({ status: 'running' }))
+      .mockResolvedValueOnce(Response.json({ status: 'suspended' }));
     vi.stubGlobal('fetch', fetchMock);
     const first = await GET(request());
     expect(await first.json()).toMatchObject({ configured: true, reachable: true, state: 'running' });
     expect(first.headers.get('cache-control')).toContain('no-store');
-    expect(fetchMock.mock.calls[0][0]).toBe('https://panel.example.test/api/client/servers/server-1/resources');
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: 'manual', headers: { Authorization: 'Bearer secret-panel-key' } });
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BOTKEEP_API_BASE}/workloads/server-1`);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: 'error', headers: { Authorization: 'Bearer secret-panel-key' } });
     expect(await (await GET(request())).json()).toMatchObject({ state: 'suspended' });
   });
 

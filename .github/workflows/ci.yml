@@ -1,0 +1,72 @@
+name: Bot and dashboard checks
+
+# Validation only: deployments are managed separately in Botkeep.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: bot-dashboard-ci-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  selftest:
+    name: Selftest & Dashboard Build Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            Whatsapp bot/package-lock.json
+            dashboard/package-lock.json
+
+      - name: Test repository deployment safety
+        run: node --test .github/tests/repository-safety.test.cjs
+
+      - name: Install bot dependencies
+        working-directory: Whatsapp bot
+        run: npm ci
+
+      - name: Bot offline selftest
+        working-directory: Whatsapp bot
+        run: npm run selftest
+
+      - name: Media regression tests
+        working-directory: Whatsapp bot
+        run: npm run test:media
+
+      - name: Background job tests
+        working-directory: Whatsapp bot
+        run: npm run test:jobs
+
+      - name: Session and routing tests
+        working-directory: Whatsapp bot
+        run: npm run test:sessions
+
+      - name: Offline provider URL recognition
+        working-directory: Whatsapp bot
+        run: |
+          python3 -m venv "$RUNNER_TEMP/yt-extractors"
+          "$RUNNER_TEMP/yt-extractors/bin/python" -m pip install 'yt-dlp==2026.10.26'
+          "$RUNNER_TEMP/yt-extractors/bin/python" scripts/test-media-extractors.py
+
+      - name: Live HLS downloader smoke test
+        working-directory: Whatsapp bot
+        run: node scripts/test-nm3u8dl-live.js
+
+      - name: Verify standalone dashboard typecheck & build
+        working-directory: dashboard
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npm run build

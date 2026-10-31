@@ -72,8 +72,6 @@ export interface BotConnectionConfig {
   botApiUrl: string;
   botAdminToken: string;
   botSyncToken: string;
-  botXsSyncToken: string;
-  botBotkeepSyncToken: string;
   botEnabledForMembers: boolean;
   updatedAt?: string;
 }
@@ -109,16 +107,6 @@ export interface WhatsAppAccountStatus {
   linkedAt?: number;
 }
 
-export type WhatsAppFailoverRole = 'xs' | 'botkeep';
-export interface WhatsAppFailoverStatus {
-  enabled: boolean;
-  activeRole: WhatsAppFailoverRole | null;
-  epoch: number | null;
-  issue: 'shared-session' | 'different-account' | null;
-  xs: { lastSeenAt: number; connected: boolean | null; version: string } | null;
-  botkeep: { lastSeenAt: number; connected: boolean | null; version: string } | null;
-}
-
 export interface BotHeartbeatRecord {
   lastSeenAt: number;
   connected: boolean | null;
@@ -138,7 +126,6 @@ export interface BotHeartbeatRecord {
   /** Version of the last whitelist snapshot the bot reports applying. */
   whitelistVersion?: string;
   commandPolicyVersion?: string;
-  failover?: { role: WhatsAppFailoverRole; epoch: number };
   sessionBackup?: { state: 'disabled' | 'starting' | 'ready' | 'error' | 'conflict'; lastBackupAt: number | null; sessions?: number; backedUp?: number };
 }
 
@@ -161,8 +148,6 @@ export interface AdminOverviewPayload {
   botApiUrl: string;
   hasBotToken: boolean;
   hasBotSyncToken?: boolean;
-  hasXsSyncToken?: boolean;
-  hasBotkeepSyncToken?: boolean;
   botEnabledForMembers: boolean;
   storageEngine: 'bot-live' | 'cloudflare-d1' | 'persistent-db';
   connectionMode?: 'heartbeat' | 'direct' | 'unconfigured';
@@ -196,7 +181,6 @@ export interface AdminOverviewPayload {
   members: MemberRecord[];
   latencyMs?: number;
   sessionBackup?: { state: 'disabled' | 'starting' | 'ready' | 'error' | 'conflict'; lastBackupAt: number | null; sessions?: number; backedUp?: number } | null;
-  failover?: WhatsAppFailoverStatus;
 }
 
 export interface MemberOverviewPayload {

@@ -1,81 +1,62 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BOTKEEP_API_BASE } from '../lib/botkeep-config';
 
-const store = vi.hoisted(() => ({
-  config: { panelUrl: 'https://panel.example.test', panelApiKey: 'secret-panel-key', panelServerId: 'aaaa1111' },
-  save: vi.fn(async () => ({})),
-}));
-vi.mock('../lib/storage', () => ({
-  getPanelConnectionConfig: vi.fn(async () => ({ ...store.config })),
-  savePanelConnectionConfig: store.save,
-}));
-import { sendPanelPowerSignal } from '../lib/panel-client';
+const store = vi.hoisted(() => ({ config: { panelUrl: 'https://untrusted-old-panel.invalid', panelApiKey: 'secret-panel-key-for-testing', panelServerId: 'workload-123' } }));
+vi.mock('../lib/storage', () => ({ getPanelConnectionConfig: vi.fn(async () => ({ ...store.config })) }));
+import { readPanelStatus, sendPanelPowerSignal } from '../lib/panel-client';
 
-const servers = [
-  { attributes: { identifier: 'aaaa1111', uuid: 'aaaa1111-1111-1111-1111-111111111111', name: 'Bot' } },
-  { attributes: { identifier: 'bbbb2222', uuid: 'bbbb2222-2222-2222-2222-222222222222', name: 'Other server' } },
-];
-
-function mockPanel(powerStatus = 404, discovered = servers) {
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (init?.method === 'GET') return Response.json({ data: discovered });
-    return new Response(null, { status: powerStatus });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  return fetchMock;
-}
-
-beforeEach(() => {
-  store.config = { panelUrl: 'https://panel.example.test', panelApiKey: 'secret-panel-key', panelServerId: 'aaaa1111' };
-  store.save.mockClear();
-});
+beforeEach(() => { store.config = { panelUrl: 'https://untrusted-old-panel.invalid', panelApiKey: 'secret-panel-key-for-testing', panelServerId: 'workload-123' }; });
 afterEach(() => vi.unstubAllGlobals());
 
-describe('safe panel power targets', () => {
-  it('never retries a failed power action against another discovered server', async () => {
-    const fetchMock = mockPanel();
-    const result = await sendPanelPowerSignal('stop');
-    expect(result.ok).toBe(false);
-    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
-    expect(posts.length).toBeGreaterThan(0);
-    expect(posts.every(([url]) => String(url).includes('aaaa1111'))).toBe(true);
-    expect(posts.some(([url]) => String(url).includes('bbbb2222'))).toBe(false);
-    expect(posts.every(([, init]) => init?.redirect === 'error')).toBe(true);
-  });
-
-  it('requires an explicit choice when multiple servers exist', async () => {
+describe('Botkeep Developer API', () => {
+  it('requires an explicit ID and key and refuses unsafe IDs without calling any host', async () => {
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
     store.config.panelServerId = '';
-    const fetchMock = mockPanel(204);
-    const result = await sendPanelPowerSignal('restart');
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/multiple servers/i);
-    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
-    expect(store.save).not.toHaveBeenCalled();
+    expect(await sendPanelPowerSignal('restart')).toMatchObject({ ok: false, status: 400 });
+    expect(await readPanelStatus()).toMatchObject({ configured: false, state: 'unknown' });
+    store.config.panelServerId = '../another';
+    expect(await sendPanelPowerSignal('start')).toMatchObject({ ok: false, status: 400 });
+    expect(await readPanelStatus()).toMatchObject({ state: 'unknown' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('rejects a mismatched ID rather than switching servers', async () => {
-    store.config.panelServerId = 'missing';
-    const fetchMock = mockPanel(204);
-    const result = await sendPanelPowerSignal('start');
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/not found/i);
-    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  it('posts one documented action with bearer and unique idempotency keys to the exact workload', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 202 })); vi.stubGlobal('fetch', fetchMock);
+    expect(await sendPanelPowerSignal('restart')).toMatchObject({ ok: true, status: 202, serverId: 'workload-123' });
+    expect(await sendPanelPowerSignal('stop')).toMatchObject({ ok: true, status: 202 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${BOTKEEP_API_BASE}/workloads/workload-123/actions`);
+    expect(init).toMatchObject({ method: 'POST', redirect: 'error', headers: { Authorization: 'Bearer secret-panel-key-for-testing', 'Content-Type': 'application/json' } });
+    expect(JSON.parse(String(init.body))).toEqual({ action: 'restart' });
+    const key1 = (init.headers as Record<string, string>)['Idempotency-Key'];
+    const key2 = ((fetchMock.mock.calls[1] as unknown as [string, RequestInit])[1].headers as Record<string, string>)['Idempotency-Key'];
+    expect(key1).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
+    expect(key2).not.toBe(key1);
   });
 
-  it('sends a successful request only to the chosen server', async () => {
-    store.config.panelServerId = 'bbbb2222';
-    const fetchMock = mockPanel(204);
-    const result = await sendPanelPowerSignal('restart');
-    expect(result).toMatchObject({ ok: true, serverId: 'bbbb2222' });
-    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
-    expect(posts).toHaveLength(1);
-    expect(String(posts[0][0])).toContain('/servers/bbbb2222/power');
+  it('never follows a redirect or retries an uncertain outcome elsewhere', async () => {
+    const fetchMock = vi.fn().mockRejectedValueOnce(new Error('secret-panel-key-for-testing')).mockResolvedValueOnce(new Response(null, { status: 500 })); vi.stubGlobal('fetch', fetchMock);
+    const rejected = await sendPanelPowerSignal('restart');
+    expect(rejected).toMatchObject({ ok: false, status: 502 });
+    expect(JSON.stringify(rejected)).not.toContain('secret-panel-key-for-testing');
+    const failed = await sendPanelPowerSignal('start');
+    expect(failed).toMatchObject({ ok: false, status: 500 });
+    expect(failed.error).toMatch(/check server status before retrying/i);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([url]) => String(url) === `${BOTKEEP_API_BASE}/workloads/workload-123/actions`)).toBe(true);
   });
 
-  it('does not retry an uncertain server error at another route or identifier', async () => {
-    const fetchMock = mockPanel(500);
-    const result = await sendPanelPowerSignal('restart');
-    expect(result).toMatchObject({ ok: false, status: 500 });
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
-    expect(result.error).toMatch(/check server status before retrying/i);
+  it('reports unknown when response shape or remote state is unfamiliar, without exposing errors', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({ status: 'running' })).mockResolvedValueOnce(Response.json({ foo: 'bar' })).mockResolvedValueOnce(new Response('secret-panel-key-for-testing', { status: 403 })).mockRejectedValueOnce(new Error('secret-panel-key-for-testing')); vi.stubGlobal('fetch', fetchMock);
+    expect(await readPanelStatus()).toMatchObject({ configured: true, reachable: true, state: 'running' });
+    expect(await readPanelStatus()).toMatchObject({ reachable: true, state: 'unknown' });
+    const rejected = await readPanelStatus();
+    expect(rejected).toMatchObject({ reachable: true, state: 'unknown' });
+    const unreachable = await readPanelStatus();
+    expect(unreachable).toMatchObject({ reachable: false, state: 'unknown' });
+    expect(JSON.stringify([rejected, unreachable])).not.toContain('secret-panel-key-for-testing');
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BOTKEEP_API_BASE}/workloads/workload-123`);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: 'error' });
   });
 });

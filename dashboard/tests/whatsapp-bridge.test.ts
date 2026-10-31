@@ -8,7 +8,6 @@ const state = vi.hoisted(() => ({
   users: new Map<string, ApprovedUser>(),
   commands: new Map<string, BotCommandRecord>(),
   sequence: 0,
-  failover: { enabled: false, activeRole: null as 'xs' | 'botkeep' | null, epoch: null as number | null, xs: null, botkeep: null },
 }));
 const mocks = vi.hoisted(() => ({
   enqueue: vi.fn(async (params: { type: 'pair'; payload: Record<string, unknown>; requestedBy?: string; ttlMs: number }) => {
@@ -28,12 +27,11 @@ vi.mock('../lib/storage', () => ({
   getBotCommandById: vi.fn(async (id: string) => state.commands.get(id) || null),
   getBotConnectionConfig: vi.fn(async () => state.config),
   getBotHeartbeat: vi.fn(async () => state.heartbeat),
-  getFailoverStatus: vi.fn(async () => state.failover),
   getStoredWhatsAppUser: vi.fn(async (number: string) => state.users.get(number) || null),
   setFastPollWindow: vi.fn(async () => {}),
 }));
 
-import { checkQueuedPairCommand, fetchLiveBotStatus, getResolvedBotTarget, requestLiveBotPairingCode } from '../lib/bot-proxy';
+import { checkQueuedPairCommand, fetchLiveBotStatus, requestLiveBotPairingCode } from '../lib/bot-proxy';
 import { accountStatusLabel, readAccountStatuses, serviceText } from '../lib/whatsapp-accounts';
 
 beforeEach(() => {
@@ -45,7 +43,6 @@ beforeEach(() => {
   ]);
   state.commands = new Map();
   state.sequence = 0;
-  state.failover = { enabled: false, activeRole: null, epoch: null, xs: null, botkeep: null };
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
@@ -142,17 +139,6 @@ describe('independent pairing bridge', () => {
 });
 
 describe('reported link status', () => {
-  it('does not use a stale direct Botkeep bridge or an old leader heartbeat during failover', async () => {
-    state.config.botApiUrl = 'https://old-botkeep.example';
-    state.config.botAdminToken = 'old-secret';
-    state.failover = { enabled: true, activeRole: 'botkeep', epoch: 2, xs: null, botkeep: null };
-    state.heartbeat = { lastSeenAt: Date.now(), connected: true, botNumber: '15550009999', failover: { role: 'xs', epoch: 1 } };
-    expect(await getResolvedBotTarget()).toMatchObject({ baseUrl: null, token: '', rawUrl: '' });
-    expect(await fetchLiveBotStatus()).toMatchObject({ reachable: false, connected: null, connectionMode: 'heartbeat' });
-    state.heartbeat.failover = { role: 'botkeep', epoch: 2 };
-    expect(await fetchLiveBotStatus()).toMatchObject({ reachable: true, connected: true, connectionMode: 'heartbeat' });
-  });
-
   it('validates account state and never guesses when an older service reports no accounts', async () => {
     expect(readAccountStatuses([{ number: '15550001111', state: 'connected' }, { number: 'bad', state: 'connected' }, { number: '15550002222', state: 'invented' }])).toEqual([{ number: '15550001111', state: 'connected' }]);
     state.heartbeat = { lastSeenAt: Date.now(), connected: true, botNumber: '15550009999' };

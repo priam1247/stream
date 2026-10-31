@@ -1,15 +1,14 @@
 # Complete repository file and connection index
 
-This snapshot lists **all 349 repository files**: the 346 tracked files at commit `c6176af` plus three new provider-search files.
+This snapshot lists **all 353 repository files**, including the current single-Botkeep refactor.
 The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, complete tree, runtime flows, route list, and scope.
 
 ## How to read an entry
 
-- **References** lists direct static imports, route URLs, documented file mentions, or explicitly identified build/runtime relationships. The label says which; it does not imply that a conditional feature always runs.
-- **Referenced by** reverses those same relationships, including tests, documentation, and generated-file provenance. A file without a detected caller may still be loaded by a framework, an operator, or a computed path.
-- **Outside modules** are literal imports that resolve to the language runtime, a third-party package, or another external module rather than a tracked repository file. They are not separate files in this repository.
-- **Dynamic loading** means the parser found a non-literal `require` or `import`; relevant known links are also listed where identified. External HTTP services, database state, and files generated at runtime are described in the overview, not listed as tracked files.
-- The index is a snapshot, not a proof of every possible runtime path: values built at runtime, remote services, and operator actions cannot all be inferred statically.
+- **References** lists detected static imports, route URLs, documented file mentions, or explicitly identified build/runtime relationships. The label says which; it does not imply that a conditional feature always runs.
+- **Referenced by** reverses those same relationships. A file without a detected caller may still be loaded by a framework, an operator, or a computed path.
+- **Outside modules** are literal imports that resolve to the language runtime, a third-party package, or another external module rather than a tracked repository file.
+- Relationships for updated files were rescanned for literal references; the index is not a proof of every dynamic or remote runtime path. External services and runtime state are not tracked files.
 
 ## Files
 
@@ -19,107 +18,88 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:** none detected in this snapshot.
   - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
 
-- [`README.md`](../README.md) — Repository entry point and links to the three projects; some deployment text is stale (see overview).
+- [`README.md`](../README.md) — Repository entry point and links to the three projects.
   - **References:**
-    - [`dashboard/README.md`](../dashboard/README.md) — explicit relationship, documentation link, file path mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — explicit relationship, documentation link, file path mentioned.
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — explicit relationship, documentation link.
+    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — documentation link.
+    - [`dashboard/README.md`](../dashboard/README.md) — documentation link.
+    - [`scribd/README.md`](../scribd/README.md) — documentation link.
   - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
 
 - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — Architecture overview, full repository tree, service flows, routes, and reading guide.
   - **References:**
-    - [`docs/REPOSITORY_FILE_INDEX.md`](REPOSITORY_FILE_INDEX.md) — explicit relationship.
+    - [`dashboard/app/api/admin/activity/route.ts`](../dashboard/app/api/admin/activity/route.ts) — documentation link.
+    - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — documentation link.
+    - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — documentation link.
+    - [`dashboard/app/api/admin/members/route.ts`](../dashboard/app/api/admin/members/route.ts) — documentation link.
+    - [`dashboard/app/api/admin/members/scribd/route.ts`](../dashboard/app/api/admin/members/scribd/route.ts) — documentation link.
+    - [`dashboard/app/api/admin/pair/route.ts`](../dashboard/app/api/admin/pair/route.ts) — documentation link.
+    - [`dashboard/app/api/admin/panel/route.ts`](../dashboard/app/api/admin/panel/route.ts) — documentation link.
+    - [`dashboard/app/api/admin/panel/status/route.ts`](../dashboard/app/api/admin/panel/status/route.ts) — documentation link.
+    - [`dashboard/app/api/admin/settings/route.ts`](../dashboard/app/api/admin/settings/route.ts) — documentation link.
+    - [`dashboard/app/api/admin/status/route.ts`](../dashboard/app/api/admin/status/route.ts) — documentation link.
+    - [`dashboard/app/api/admin/users/route.ts`](../dashboard/app/api/admin/users/route.ts) — documentation link.
+    - [`dashboard/app/api/auth/forgot-password/route.ts`](../dashboard/app/api/auth/forgot-password/route.ts) — documentation link.
+    - [`dashboard/app/api/auth/login/route.ts`](../dashboard/app/api/auth/login/route.ts) — documentation link.
+    - [`dashboard/app/api/auth/logout/route.ts`](../dashboard/app/api/auth/logout/route.ts) — documentation link.
+    - [`dashboard/app/api/auth/me/route.ts`](../dashboard/app/api/auth/me/route.ts) — documentation link.
+    - [`dashboard/app/api/auth/register/route.ts`](../dashboard/app/api/auth/register/route.ts) — documentation link.
+    - [`dashboard/app/api/auth/resend/route.ts`](../dashboard/app/api/auth/resend/route.ts) — documentation link.
+    - [`dashboard/app/api/auth/reset-password/route.ts`](../dashboard/app/api/auth/reset-password/route.ts) — documentation link.
+    - [`dashboard/app/api/auth/verify/route.ts`](../dashboard/app/api/auth/verify/route.ts) — documentation link.
+    - [`dashboard/app/api/bot/session-backups/route.ts`](../dashboard/app/api/bot/session-backups/route.ts) — documentation link.
+    - [`dashboard/app/api/bot/sync/route.ts`](../dashboard/app/api/bot/sync/route.ts) — documentation link.
+    - [`dashboard/app/api/bot/whitelist/route.ts`](../dashboard/app/api/bot/whitelist/route.ts) — documentation link.
+    - [`dashboard/app/api/member/numbers/route.ts`](../dashboard/app/api/member/numbers/route.ts) — documentation link.
+    - [`dashboard/app/api/member/pair/route.ts`](../dashboard/app/api/member/pair/route.ts) — documentation link.
+    - [`dashboard/app/api/member/status/route.ts`](../dashboard/app/api/member/status/route.ts) — documentation link.
+    - [`dashboard/app/api/member/unlink/route.ts`](../dashboard/app/api/member/unlink/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/clear/route.ts`](../dashboard/app/api/scribd/clear/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/config/route.ts`](../dashboard/app/api/scribd/config/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/file-ticket/route.ts`](../dashboard/app/api/scribd/file-ticket/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/file/route.ts`](../dashboard/app/api/scribd/file/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/files/route.ts`](../dashboard/app/api/scribd/files/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/find/route.ts`](../dashboard/app/api/scribd/find/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/link/route.ts`](../dashboard/app/api/scribd/link/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/reset/route.ts`](../dashboard/app/api/scribd/reset/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/run/route.ts`](../dashboard/app/api/scribd/run/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/status/route.ts`](../dashboard/app/api/scribd/status/route.ts) — documentation link.
+    - [`dashboard/app/api/scribd/thumb/route.ts`](../dashboard/app/api/scribd/thumb/route.ts) — documentation link.
+    - [`dashboard/app/api/support/route.ts`](../dashboard/app/api/support/route.ts) — documentation link.
+    - [`docs/REPOSITORY_FILE_INDEX.md`](../docs/REPOSITORY_FILE_INDEX.md) — documentation link.
   - **Referenced by:**
-    - [`docs/REPOSITORY_FILE_INDEX.md`](REPOSITORY_FILE_INDEX.md) — explicit relationship.
-
-### `.github/scripts/`
-
-- [`bot-diff.sh`](../.github/scripts/bot-diff.sh) — Compares two commits for changes to bot runtime content.
-  - **References:** none detected in this snapshot.
-  - **Referenced by:**
-    - [`.github/scripts/check-bot-freshness.sh`](../.github/scripts/check-bot-freshness.sh) — file name mentioned.
-    - [`.github/scripts/should-deploy-bot.sh`](../.github/scripts/should-deploy-bot.sh) — file name mentioned.
-
-- [`check-bot-freshness.sh`](../.github/scripts/check-bot-freshness.sh) — Prevents an older workflow from uploading stale bot files.
-  - **References:**
-    - [`.github/scripts/bot-diff.sh`](../.github/scripts/bot-diff.sh) — file name mentioned.
-  - **Referenced by:**
-    - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — file path mentioned.
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — explicit relationship, file path mentioned.
-
-- [`check-panel-config.sh`](../.github/scripts/check-panel-config.sh) — Checks whether legacy panel SFTP credentials are configured without printing them.
-  - **References:** none detected in this snapshot.
-  - **Referenced by:**
-    - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — file path mentioned.
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — explicit relationship, file path mentioned.
-
-- [`restart-panel.sh`](../.github/scripts/restart-panel.sh) — Optionally restarts an explicitly configured legacy panel server over HTTPS.
-  - **References:** none detected in this snapshot.
-  - **Referenced by:**
-    - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — file path mentioned.
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — explicit relationship, file path mentioned.
-
-- [`should-deploy-bot.sh`](../.github/scripts/should-deploy-bot.sh) — Decides whether a workflow event should attempt the legacy bot deployment.
-  - **References:**
-    - [`.github/scripts/bot-diff.sh`](../.github/scripts/bot-diff.sh) — file name mentioned.
-  - **Referenced by:**
-    - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — file path mentioned.
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — explicit relationship, file path mentioned.
+    - [`docs/REPOSITORY_FILE_INDEX.md`](../docs/REPOSITORY_FILE_INDEX.md) — documentation link.
 
 ### `.github/tests/`
 
-- [`deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — Node tests for the workflow deployment, freshness, secret-check, and restart gates.
-  - **References:**
-    - [`.github/scripts/check-bot-freshness.sh`](../.github/scripts/check-bot-freshness.sh) — file path mentioned.
-    - [`.github/scripts/check-panel-config.sh`](../.github/scripts/check-panel-config.sh) — file path mentioned.
-    - [`.github/scripts/restart-panel.sh`](../.github/scripts/restart-panel.sh) — file path mentioned.
-    - [`.github/scripts/should-deploy-bot.sh`](../.github/scripts/should-deploy-bot.sh) — file path mentioned.
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — file path mentioned.
-    - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — file path mentioned.
-    - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — file path mentioned.
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — file path mentioned.
+- [`repository-safety.test.cjs`](../.github/tests/repository-safety.test.cjs) — Regression guard that checks repository automation cannot upload or restart a service.
+  - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — explicit relationship, file path mentioned.
-  - **Outside modules:** `node:assert/strict`, `node:child_process`, `node:fs`, `node:os`, `node:path`, `node:test`.
+    - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — CI invocation.
+  - **Outside modules:** `node:assert/strict`, `node:fs`, `node:path`, `node:test`.
 
 ### `.github/workflows/`
 
-- [`deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — GitHub Actions test/build workflow and explicitly confirmed manual-only legacy SFTP upload.
+- [`ci.yml`](../.github/workflows/ci.yml) — Validation-only GitHub Actions workflow; never uploads or restarts a service.
   - **References:**
-    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — invoked via npm test:media.
-    - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — invoked via npm test:media.
-    - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — invoked via npm test:media.
-    - [`Whatsapp bot/scripts/test-media-extractors.py`](../Whatsapp%20bot/scripts/test-media-extractors.py) — test invocation.
-    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — invoked via npm test:media.
-    - [`.github/scripts/check-bot-freshness.sh`](../.github/scripts/check-bot-freshness.sh) — explicit relationship, file path mentioned.
-    - [`.github/scripts/check-panel-config.sh`](../.github/scripts/check-panel-config.sh) — explicit relationship, file path mentioned.
-    - [`.github/scripts/restart-panel.sh`](../.github/scripts/restart-panel.sh) — explicit relationship, file path mentioned.
-    - [`.github/scripts/should-deploy-bot.sh`](../.github/scripts/should-deploy-bot.sh) — explicit relationship, file path mentioned.
-    - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — explicit relationship, file path mentioned.
-    - [`dashboard/package-lock.json`](../dashboard/package-lock.json) — explicit relationship.
-    - [`dashboard/package.json`](../dashboard/package.json) — explicit relationship.
-    - [`Whatsapp bot/package-lock.json`](../Whatsapp%20bot/package-lock.json) — explicit relationship.
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
-    - [`Whatsapp bot/scripts/test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — explicit relationship.
-  - **Referenced by:**
-    - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — file path mentioned.
+    - [`.github/tests/repository-safety.test.cjs`](../.github/tests/repository-safety.test.cjs) — CI invocation.
+    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — CI invocation.
+    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — CI invocation.
+    - [`Whatsapp bot/scripts/test-media-extractors.py`](../Whatsapp%20bot/scripts/test-media-extractors.py) — CI invocation.
+    - [`Whatsapp bot/scripts/test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — CI invocation.
+    - [`Whatsapp bot/scripts/test-preflight.js`](../Whatsapp%20bot/scripts/test-preflight.js) — CI invocation.
+    - [`dashboard/package.json`](../dashboard/package.json) — CI invocation.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
 
 ### `dashboard/`
 
 - [`.env.example`](../dashboard/.env.example) — Template for dashboard server configuration; it does not contain live deployment secrets.
-  - **References:**
-    - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — explicit relationship.
-    - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — explicit relationship.
-    - [`dashboard/lib/email-service.ts`](../dashboard/lib/email-service.ts) — explicit relationship.
-    - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — explicit relationship.
-    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — explicit relationship.
+  - **References:** none detected in this snapshot.
   - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
 
 - [`instrumentation.ts`](../dashboard/instrumentation.ts) — Next.js startup hook that validates the production JWT signing secret.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
     - [`dashboard/package.json`](../dashboard/package.json) — Next.js/build discovery.
-    - [`dashboard/README.md`](../dashboard/README.md) — file name mentioned.
 
 - [`next.config.mjs`](../dashboard/next.config.mjs) — Next.js configuration including Turbopack root and preview development origins.
   - **References:** none detected in this snapshot.
@@ -130,7 +110,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`package-lock.json`](../dashboard/package-lock.json) — Pinned npm dependency graph used by npm ci for the dashboard.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — explicit relationship.
     - [`dashboard/package.json`](../dashboard/package.json) — npm lockfile.
 
 - [`package.json`](../dashboard/package.json) — Next.js dashboard package, dependencies, and dev/build/test scripts.
@@ -145,8 +124,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/tsconfig.json`](../dashboard/tsconfig.json) — explicit relationship.
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — explicit relationship.
   - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — explicit relationship.
-    - [`dashboard/README.md`](../dashboard/README.md) — file path mentioned, file name mentioned.
+    - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — CI invocation.
 
 - [`postcss.config.mjs`](../dashboard/postcss.config.mjs) — PostCSS pipeline using Tailwind CSS and Autoprefixer.
   - **References:**
@@ -155,15 +133,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/package.json`](../dashboard/package.json) — Next.js/build discovery.
 
 - [`README.md`](../dashboard/README.md) — Setup, security, storage, bot bridge, and Scribd integration guidance for the dashboard.
-  - **References:**
-    - [`dashboard/instrumentation.ts`](../dashboard/instrumentation.ts) — file name mentioned.
-    - [`dashboard/package.json`](../dashboard/package.json) — file path mentioned, file name mentioned.
-    - [`scribd/scribd_web.py`](../scribd/scribd_web.py) — file path mentioned.
-    - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — file path mentioned.
-    - [`Whatsapp bot/utils/adminApi.js`](../Whatsapp%20bot/utils/adminApi.js) — file path mentioned.
+  - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`README.md`](../README.md) — explicit relationship, documentation link, file path mentioned.
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — documentation link, file path mentioned.
+    - [`README.md`](../README.md) — documentation link.
+    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — documentation link.
 
 - [`tailwind.config.ts`](../dashboard/tailwind.config.ts) — Tailwind source scanning and theme configuration.
   - **References:** none detected in this snapshot.
@@ -180,7 +153,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`vitest.config.ts`](../dashboard/vitest.config.ts) — Vitest setup, jsdom default, @ alias, and test-file discovery.
   - **References:**
-    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — test discovery.
     - [`dashboard/tests/admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — test discovery.
     - [`dashboard/tests/admin-route-authorization.test.ts`](../dashboard/tests/admin-route-authorization.test.ts) — test discovery.
     - [`dashboard/tests/auth-screen.test.tsx`](../dashboard/tests/auth-screen.test.tsx) — test discovery.
@@ -191,6 +163,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/tests/control-room-storage.test.ts`](../dashboard/tests/control-room-storage.test.ts) — test discovery.
     - [`dashboard/tests/d1-initialization.test.ts`](../dashboard/tests/d1-initialization.test.ts) — test discovery.
     - [`dashboard/tests/email-branding.test.ts`](../dashboard/tests/email-branding.test.ts) — test discovery.
+    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — test discovery.
     - [`dashboard/tests/member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — test discovery.
     - [`dashboard/tests/member-home.test.tsx`](../dashboard/tests/member-home.test.tsx) — test discovery.
     - [`dashboard/tests/member-link-api.test.ts`](../dashboard/tests/member-link-api.test.ts) — test discovery.
@@ -267,8 +240,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
-    - [`dashboard/tests/admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/tests/control-room-security.test.ts`](../dashboard/tests/control-room-security.test.ts) — import, route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -281,7 +253,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/tests/member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — import, route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -294,6 +266,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — route URL reference.
     - [`dashboard/tests/member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — import, route URL reference.
   - **Outside modules:** `next/server`.
@@ -307,7 +280,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/admin/members/scribd/`
@@ -318,8 +291,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
-    - [`dashboard/tests/admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/tests/control-room-security.test.ts`](../dashboard/tests/control-room-security.test.ts) — import, route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -332,8 +304,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
-    - [`dashboard/tests/admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/admin/panel/`
@@ -342,13 +313,13 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`dashboard/lib/activity.ts`](../dashboard/lib/activity.ts) — import.
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
+    - [`dashboard/lib/botkeep-config.ts`](../dashboard/lib/botkeep-config.ts) — import.
     - [`dashboard/lib/jwt.ts`](../dashboard/lib/jwt.ts) — import.
     - [`dashboard/lib/panel-client.ts`](../dashboard/lib/panel-client.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
-    - [`dashboard/tests/admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — route URL reference.
-    - [`dashboard/tests/panel-route.test.ts`](../dashboard/tests/panel-route.test.ts) — import, route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
+    - [`dashboard/tests/panel-route.test.ts`](../dashboard/tests/panel-route.test.ts) — import.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/admin/panel/status/`
@@ -357,12 +328,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/panel-client.ts`](../dashboard/lib/panel-client.ts) — import.
-    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
-    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — type import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
-    - [`dashboard/tests/admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — route URL reference.
-    - [`dashboard/tests/panel-status.test.ts`](../dashboard/tests/panel-status.test.ts) — import, route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
+    - [`dashboard/tests/panel-status.test.ts`](../dashboard/tests/panel-status.test.ts) — import.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/admin/settings/`
@@ -374,7 +342,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
+    - [`dashboard/tests/bot-settings-route.test.ts`](../dashboard/tests/bot-settings-route.test.ts) — import.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/admin/status/`
@@ -388,8 +357,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
     - [`dashboard/lib/sync-status.ts`](../dashboard/lib/sync-status.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
-    - [`dashboard/tests/admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/admin/users/`
@@ -401,7 +369,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/admin/users/[number]/`
@@ -412,8 +380,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
-  - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/admin/users/[number]/sync/`
@@ -424,8 +391,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
-  - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/auth/forgot-password/`
@@ -434,6 +400,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/auth-screen.tsx`](../dashboard/components/auth-screen.tsx) — route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -446,6 +413,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/jwt.ts`](../dashboard/lib/jwt.ts) — import.
     - [`dashboard/lib/rate-limit.ts`](../dashboard/lib/rate-limit.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/auth-screen.tsx`](../dashboard/components/auth-screen.tsx) — route URL reference.
     - [`dashboard/tests/auth-screen.test.tsx`](../dashboard/tests/auth-screen.test.tsx) — route URL reference.
   - **Outside modules:** `next/server`.
@@ -456,6 +424,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`dashboard/lib/jwt.ts`](../dashboard/lib/jwt.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/lib/client-session.ts`](../dashboard/lib/client-session.ts) — route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -466,11 +435,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/jwt.ts`](../dashboard/lib/jwt.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/member-portal.tsx`](../dashboard/components/member-portal.tsx) — route URL reference.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — route URL reference.
     - [`dashboard/lib/client-session.ts`](../dashboard/lib/client-session.ts) — route URL reference.
-    - [`dashboard/tests/admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — route URL reference.
     - [`dashboard/tests/auth-security.test.ts`](../dashboard/tests/auth-security.test.ts) — route URL reference.
     - [`dashboard/tests/client-session.test.ts`](../dashboard/tests/client-session.test.ts) — route URL reference.
     - [`dashboard/tests/member-portal.test.tsx`](../dashboard/tests/member-portal.test.tsx) — route URL reference.
@@ -485,6 +453,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/rate-limit.ts`](../dashboard/lib/rate-limit.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/auth-screen.tsx`](../dashboard/components/auth-screen.tsx) — route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -494,6 +463,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/auth-screen.tsx`](../dashboard/components/auth-screen.tsx) — route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -503,6 +473,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/auth-screen.tsx`](../dashboard/components/auth-screen.tsx) — route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -514,6 +485,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/jwt.ts`](../dashboard/lib/jwt.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/auth-screen.tsx`](../dashboard/components/auth-screen.tsx) — route URL reference.
     - [`dashboard/tests/auth-security.test.ts`](../dashboard/tests/auth-security.test.ts) — import, route URL reference.
   - **Outside modules:** `next/server`.
@@ -525,8 +497,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-sync-auth.ts`](../dashboard/lib/bot-sync-auth.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
-    - [`dashboard/tests/session-backup-api.test.ts`](../dashboard/tests/session-backup-api.test.ts) — import, route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`Whatsapp bot/utils/sessionBackup.js`](../Whatsapp%20bot/utils/sessionBackup.js) — route URL reference, outbound HTTP.
+    - [`dashboard/tests/session-backup-api.test.ts`](../dashboard/tests/session-backup-api.test.ts) — import.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/bot/sync/`
@@ -539,8 +512,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
     - [`dashboard/lib/whatsapp-accounts.ts`](../dashboard/lib/whatsapp-accounts.ts) — import.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — route URL reference.
-    - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — route URL reference, outbound HTTP.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
+    - [`dashboard/tests/bot-sync-route.test.ts`](../dashboard/tests/bot-sync-route.test.ts) — import.
+    - [`dashboard/tests/single-host-e2e.test.ts`](../dashboard/tests/single-host-e2e.test.ts) — import.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/bot/whitelist/`
@@ -550,7 +524,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-sync-auth.ts`](../dashboard/lib/bot-sync-auth.ts) — import.
     - [`dashboard/lib/rate-limit.ts`](../dashboard/lib/rate-limit.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
-  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
+  - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/member/numbers/`
@@ -562,6 +537,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/member-connection.tsx`](../dashboard/components/member-connection.tsx) — route URL reference.
     - [`dashboard/components/member-portal.tsx`](../dashboard/components/member-portal.tsx) — route URL reference.
     - [`dashboard/tests/member-portal.test.tsx`](../dashboard/tests/member-portal.test.tsx) — route URL reference.
@@ -588,11 +564,12 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/member-connection.tsx`](../dashboard/components/member-connection.tsx) — route URL reference.
     - [`dashboard/components/member-portal.tsx`](../dashboard/components/member-portal.tsx) — route URL reference.
     - [`dashboard/tests/member-link-api.test.ts`](../dashboard/tests/member-link-api.test.ts) — import, route URL reference.
     - [`dashboard/tests/member-portal.test.tsx`](../dashboard/tests/member-portal.test.tsx) — route URL reference.
-    - [`dashboard/tests/pairing-security.test.ts`](../dashboard/tests/pairing-security.test.ts) — import, route URL reference.
+    - [`dashboard/tests/pairing-security.test.ts`](../dashboard/tests/pairing-security.test.ts) — import.
   - **Outside modules:** `next/server`.
 
 ### `dashboard/app/api/member/status/`
@@ -605,6 +582,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
     - [`dashboard/lib/sync-status.ts`](../dashboard/lib/sync-status.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/member-connection.tsx`](../dashboard/components/member-connection.tsx) — route URL reference.
     - [`dashboard/components/member-portal.tsx`](../dashboard/components/member-portal.tsx) — route URL reference.
     - [`dashboard/tests/member-portal.test.tsx`](../dashboard/tests/member-portal.test.tsx) — route URL reference.
@@ -621,6 +599,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/member-connection.tsx`](../dashboard/components/member-connection.tsx) — route URL reference.
     - [`dashboard/tests/member-link-api.test.ts`](../dashboard/tests/member-link-api.test.ts) — import, route URL reference.
     - [`dashboard/tests/member-portal.test.tsx`](../dashboard/tests/member-portal.test.tsx) — route URL reference.
@@ -634,6 +613,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — route URL reference.
     - [`dashboard/tests/scribd-desk.test.tsx`](../dashboard/tests/scribd-desk.test.tsx) — route URL reference.
     - [`dashboard/tests/scribd-web-contract.test.ts`](../dashboard/tests/scribd-web-contract.test.ts) — import, route URL reference.
@@ -646,6 +626,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/tests/scribd-panel.test.ts`](../dashboard/tests/scribd-panel.test.ts) — import, route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -659,6 +640,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/app/api/scribd/link/route.ts`](../dashboard/app/api/scribd/link/route.ts) — route URL reference.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — route URL reference.
     - [`dashboard/lib/scribd-download-ticket.ts`](../dashboard/lib/scribd-download-ticket.ts) — route URL reference.
@@ -676,6 +658,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — route URL reference.
     - [`dashboard/tests/scribd-desk.test.tsx`](../dashboard/tests/scribd-desk.test.tsx) — route URL reference.
     - [`dashboard/tests/scribd-download-ticket.test.ts`](../dashboard/tests/scribd-download-ticket.test.ts) — import, route URL reference.
@@ -688,6 +671,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/tests/scribd-desk.test.tsx`](../dashboard/tests/scribd-desk.test.tsx) — route URL reference.
     - [`dashboard/tests/scribd-web-contract.test.ts`](../dashboard/tests/scribd-web-contract.test.ts) — import, route URL reference.
   - **Outside modules:** `next/server`.
@@ -699,6 +683,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — route URL reference.
     - [`dashboard/tests/member-scribd-navigation.test.tsx`](../dashboard/tests/member-scribd-navigation.test.tsx) — route URL reference.
     - [`dashboard/tests/scribd-desk.test.tsx`](../dashboard/tests/scribd-desk.test.tsx) — route URL reference.
@@ -713,6 +698,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/tests/scribd-web-contract.test.ts`](../dashboard/tests/scribd-web-contract.test.ts) — import, route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -724,6 +710,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — route URL reference.
     - [`dashboard/tests/scribd-desk.test.tsx`](../dashboard/tests/scribd-desk.test.tsx) — route URL reference.
     - [`dashboard/tests/scribd-web-contract.test.ts`](../dashboard/tests/scribd-web-contract.test.ts) — import, route URL reference.
@@ -737,6 +724,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — route URL reference.
     - [`dashboard/tests/scribd-desk.test.tsx`](../dashboard/tests/scribd-desk.test.tsx) — route URL reference.
     - [`dashboard/tests/scribd-web-contract.test.ts`](../dashboard/tests/scribd-web-contract.test.ts) — import, route URL reference.
@@ -749,9 +737,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — route URL reference.
-    - [`dashboard/tests/admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — route URL reference.
     - [`dashboard/tests/member-scribd-navigation.test.tsx`](../dashboard/tests/member-scribd-navigation.test.tsx) — route URL reference.
     - [`dashboard/tests/scribd-desk.test.tsx`](../dashboard/tests/scribd-desk.test.tsx) — route URL reference.
     - [`dashboard/tests/scribd-web-contract.test.ts`](../dashboard/tests/scribd-web-contract.test.ts) — import, route URL reference.
@@ -764,6 +751,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — import.
   - **Referenced by:**
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — route URL reference.
     - [`dashboard/tests/scribd-desk.test.tsx`](../dashboard/tests/scribd-desk.test.tsx) — route URL reference.
     - [`dashboard/tests/scribd-web-contract.test.ts`](../dashboard/tests/scribd-web-contract.test.ts) — import, route URL reference.
@@ -776,7 +764,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — route URL reference.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
     - [`dashboard/components/member-connection.tsx`](../dashboard/components/member-connection.tsx) — route URL reference.
     - [`dashboard/components/support-desk.tsx`](../dashboard/components/support-desk.tsx) — route URL reference.
     - [`dashboard/tests/member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — import, route URL reference.
@@ -822,21 +810,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`admin-console.tsx`](../dashboard/components/admin-console.tsx) — Owner workspace controller and page composition.
   - **References:**
-    - [`dashboard/app/api/admin/activity/route.ts`](../dashboard/app/api/admin/activity/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/members/route.ts`](../dashboard/app/api/admin/members/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/members/scribd/route.ts`](../dashboard/app/api/admin/members/scribd/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/pair/route.ts`](../dashboard/app/api/admin/pair/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/panel/route.ts`](../dashboard/app/api/admin/panel/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/panel/status/route.ts`](../dashboard/app/api/admin/panel/status/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/settings/route.ts`](../dashboard/app/api/admin/settings/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/status/route.ts`](../dashboard/app/api/admin/status/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/users/[number]/route.ts`](../dashboard/app/api/admin/users/%5Bnumber%5D/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/users/[number]/sync/route.ts`](../dashboard/app/api/admin/users/%5Bnumber%5D/sync/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/users/route.ts`](../dashboard/app/api/admin/users/route.ts) — route URL reference.
-    - [`dashboard/app/api/auth/me/route.ts`](../dashboard/app/api/auth/me/route.ts) — route URL reference.
-    - [`dashboard/app/api/scribd/status/route.ts`](../dashboard/app/api/scribd/status/route.ts) — route URL reference.
-    - [`dashboard/app/api/support/route.ts`](../dashboard/app/api/support/route.ts) — route URL reference.
     - [`dashboard/components/account-modal.tsx`](../dashboard/components/account-modal.tsx) — import.
     - [`dashboard/components/control-room-activity.tsx`](../dashboard/components/control-room-activity.tsx) — import.
     - [`dashboard/components/control-room-home.tsx`](../dashboard/components/control-room-home.tsx) — import.
@@ -851,7 +824,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/client-session.ts`](../dashboard/lib/client-session.ts) — import.
     - [`dashboard/lib/control-room.ts`](../dashboard/lib/control-room.ts) — import.
     - [`dashboard/lib/room-alert-reads.ts`](../dashboard/lib/room-alert-reads.ts) — import.
-    - [`dashboard/lib/scribd-types.ts`](../dashboard/lib/scribd-types.ts) — type import.
+    - [`dashboard/lib/scribd-types.ts`](../dashboard/lib/scribd-types.ts) — import.
     - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
     - [`dashboard/lib/whatsapp-accounts.ts`](../dashboard/lib/whatsapp-accounts.ts) — import.
   - **Referenced by:**
@@ -920,8 +893,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
     - [`dashboard/lib/client-session.ts`](../dashboard/lib/client-session.ts) — import.
   - **Referenced by:**
-    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — import.
     - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — import.
+    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — import.
   - **Outside modules:** `lucide-react`, `react`.
 
 - [`member-connection.tsx`](../dashboard/components/member-connection.tsx) — Member account connection, linking, pairing, and approval interface.
@@ -1078,6 +1051,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/app/api/scribd/reset/route.ts`](../dashboard/app/api/scribd/reset/route.ts) — import.
     - [`dashboard/app/api/scribd/run/route.ts`](../dashboard/app/api/scribd/run/route.ts) — import.
     - [`dashboard/tests/auth-security.test.ts`](../dashboard/tests/auth-security.test.ts) — test mock.
+    - [`dashboard/tests/bot-settings-route.test.ts`](../dashboard/tests/bot-settings-route.test.ts) — test mock.
     - [`dashboard/tests/control-room-security.test.ts`](../dashboard/tests/control-room-security.test.ts) — test mock.
     - [`dashboard/tests/control-room-storage.test.ts`](../dashboard/tests/control-room-storage.test.ts) — import.
     - [`dashboard/tests/member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — test mock.
@@ -1093,7 +1067,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
     - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
   - **Referenced by:**
-    - [`dashboard/.env.example`](../dashboard/.env.example) — explicit relationship.
     - [`dashboard/app/api/admin/activity/route.ts`](../dashboard/app/api/admin/activity/route.ts) — import.
     - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — import.
     - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — import.
@@ -1125,6 +1098,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-guard.ts`](../dashboard/lib/scribd-guard.ts) — import.
     - [`dashboard/tests/admin-route-authorization.test.ts`](../dashboard/tests/admin-route-authorization.test.ts) — test mock.
     - [`dashboard/tests/auth-security.test.ts`](../dashboard/tests/auth-security.test.ts) — import.
+    - [`dashboard/tests/bot-settings-route.test.ts`](../dashboard/tests/bot-settings-route.test.ts) — test mock.
+    - [`dashboard/tests/bot-sync-route.test.ts`](../dashboard/tests/bot-sync-route.test.ts) — test mock.
     - [`dashboard/tests/control-room-security.test.ts`](../dashboard/tests/control-room-security.test.ts) — test mock.
     - [`dashboard/tests/member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — test mock.
     - [`dashboard/tests/member-link-api.test.ts`](../dashboard/tests/member-link-api.test.ts) — test mock.
@@ -1141,21 +1116,19 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
   - **Referenced by:**
-    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — import.
     - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — import.
     - [`dashboard/components/command-directory.tsx`](../dashboard/components/command-directory.tsx) — import.
     - [`dashboard/components/media-vault-desk.tsx`](../dashboard/components/media-vault-desk.tsx) — import.
     - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — import.
     - [`dashboard/components/member-connection.tsx`](../dashboard/components/member-connection.tsx) — import.
+    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — import.
 
 - [`bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — Dashboard-to-bot HTTP proxy and queued-command fallback.
   - **References:**
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
-    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — type import.
+    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
     - [`dashboard/lib/whatsapp-accounts.ts`](../dashboard/lib/whatsapp-accounts.ts) — import.
-    - [`Whatsapp bot/utils/adminApi.js`](../Whatsapp%20bot/utils/adminApi.js) — optional HTTP API.
   - **Referenced by:**
-    - [`dashboard/.env.example`](../dashboard/.env.example) — explicit relationship.
     - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — import.
     - [`dashboard/app/api/admin/members/route.ts`](../dashboard/app/api/admin/members/route.ts) — import.
     - [`dashboard/app/api/admin/pair/route.ts`](../dashboard/app/api/admin/pair/route.ts) — import.
@@ -1169,6 +1142,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/app/api/member/pair/route.ts`](../dashboard/app/api/member/pair/route.ts) — import.
     - [`dashboard/app/api/member/status/route.ts`](../dashboard/app/api/member/status/route.ts) — import.
     - [`dashboard/app/api/member/unlink/route.ts`](../dashboard/app/api/member/unlink/route.ts) — import.
+    - [`dashboard/tests/bot-settings-route.test.ts`](../dashboard/tests/bot-settings-route.test.ts) — test mock.
     - [`dashboard/tests/member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — test mock.
     - [`dashboard/tests/member-link-api.test.ts`](../dashboard/tests/member-link-api.test.ts) — test mock.
     - [`dashboard/tests/whatsapp-bridge.test.ts`](../dashboard/tests/whatsapp-bridge.test.ts) — import.
@@ -1181,6 +1155,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/app/api/bot/session-backups/route.ts`](../dashboard/app/api/bot/session-backups/route.ts) — import.
     - [`dashboard/app/api/bot/sync/route.ts`](../dashboard/app/api/bot/sync/route.ts) — import.
     - [`dashboard/app/api/bot/whitelist/route.ts`](../dashboard/app/api/bot/whitelist/route.ts) — import.
+    - [`dashboard/tests/bot-sync-auth.test.ts`](../dashboard/tests/bot-sync-auth.test.ts) — import.
+    - [`dashboard/tests/bot-sync-route.test.ts`](../dashboard/tests/bot-sync-route.test.ts) — test mock.
     - [`dashboard/tests/session-backup-api.test.ts`](../dashboard/tests/session-backup-api.test.ts) — test mock.
   - **Outside modules:** `next/server`, `node:crypto`.
 
@@ -1222,7 +1198,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`email-service.ts`](../dashboard/lib/email-service.ts) — Email delivery for authentication and verification flows.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`dashboard/.env.example`](../dashboard/.env.example) — explicit relationship.
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/tests/auth-security.test.ts`](../dashboard/tests/auth-security.test.ts) — test mock.
     - [`dashboard/tests/email-branding.test.ts`](../dashboard/tests/email-branding.test.ts) — import.
@@ -1252,8 +1227,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/components/member-connection.tsx`](../dashboard/components/member-connection.tsx) — import.
     - [`dashboard/tests/member-portal.test.tsx`](../dashboard/tests/member-portal.test.tsx) — import.
 
-- [`panel-client.ts`](../dashboard/lib/panel-client.ts) — Optional panel hosting API client.
+- [`panel-client.ts`](../dashboard/lib/panel-client.ts) — Optional server-side Botkeep Developer API status and power client.
   - **References:**
+    - [`dashboard/lib/botkeep-config.ts`](../dashboard/lib/botkeep-config.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
     - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
   - **Referenced by:**
@@ -1261,6 +1237,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/app/api/admin/panel/status/route.ts`](../dashboard/app/api/admin/panel/status/route.ts) — import.
     - [`dashboard/tests/panel-client.test.ts`](../dashboard/tests/panel-client.test.ts) — import.
     - [`dashboard/tests/panel-route.test.ts`](../dashboard/tests/panel-route.test.ts) — test mock.
+  - **Outside modules:** `node:crypto`.
 
 - [`rate-limit.ts`](../dashboard/lib/rate-limit.ts) — In-process request rate limiting.
   - **References:** none detected in this snapshot.
@@ -1269,6 +1246,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/app/api/auth/register/route.ts`](../dashboard/app/api/auth/register/route.ts) — import.
     - [`dashboard/app/api/bot/sync/route.ts`](../dashboard/app/api/bot/sync/route.ts) — import.
     - [`dashboard/app/api/bot/whitelist/route.ts`](../dashboard/app/api/bot/whitelist/route.ts) — import.
+    - [`dashboard/tests/bot-sync-route.test.ts`](../dashboard/tests/bot-sync-route.test.ts) — test mock.
   - **Outside modules:** `next/server`.
 
 - [`room-alert-reads.ts`](../dashboard/lib/room-alert-reads.ts) — Pure alert/read-state logic.
@@ -1335,7 +1313,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/scribd-types.ts`](../dashboard/lib/scribd-types.ts) — type import.
     - [`scribd/scribd_web.py`](../scribd/scribd_web.py) — HTTP API contract.
   - **Referenced by:**
-    - [`dashboard/.env.example`](../dashboard/.env.example) — explicit relationship.
     - [`dashboard/app/api/admin/status/route.ts`](../dashboard/app/api/admin/status/route.ts) — import.
     - [`dashboard/app/api/scribd/clear/route.ts`](../dashboard/app/api/scribd/clear/route.ts) — import.
     - [`dashboard/app/api/scribd/config/route.ts`](../dashboard/app/api/scribd/config/route.ts) — import.
@@ -1363,7 +1340,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`scribd-types.ts`](../dashboard/lib/scribd-types.ts) — TypeScript types shared by Scribd dashboard features.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — type import.
+    - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — import.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — type import.
     - [`dashboard/lib/control-room.ts`](../dashboard/lib/control-room.ts) — type import.
     - [`dashboard/lib/scribd-job.ts`](../dashboard/lib/scribd-job.ts) — type import.
@@ -1373,10 +1350,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`storage.ts`](../dashboard/lib/storage.ts) — Dashboard persistence for accounts, permissions, queue, activity, support, recovery, and configuration.
   - **References:**
+    - [`dashboard/lib/botkeep-config.ts`](../dashboard/lib/botkeep-config.ts) — import.
     - [`dashboard/lib/scribd-config.ts`](../dashboard/lib/scribd-config.ts) — import.
     - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
   - **Referenced by:**
-    - [`dashboard/.env.example`](../dashboard/.env.example) — explicit relationship.
     - [`dashboard/app/api/admin/activity/route.ts`](../dashboard/app/api/admin/activity/route.ts) — import.
     - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — import.
     - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — import.
@@ -1384,7 +1361,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/app/api/admin/members/scribd/route.ts`](../dashboard/app/api/admin/members/scribd/route.ts) — import.
     - [`dashboard/app/api/admin/pair/route.ts`](../dashboard/app/api/admin/pair/route.ts) — import.
     - [`dashboard/app/api/admin/panel/route.ts`](../dashboard/app/api/admin/panel/route.ts) — import.
-    - [`dashboard/app/api/admin/panel/status/route.ts`](../dashboard/app/api/admin/panel/status/route.ts) — import.
     - [`dashboard/app/api/admin/settings/route.ts`](../dashboard/app/api/admin/settings/route.ts) — import.
     - [`dashboard/app/api/admin/status/route.ts`](../dashboard/app/api/admin/status/route.ts) — import.
     - [`dashboard/app/api/admin/users/[number]/route.ts`](../dashboard/app/api/admin/users/%5Bnumber%5D/route.ts) — import.
@@ -1407,6 +1383,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/panel-client.ts`](../dashboard/lib/panel-client.ts) — import.
     - [`dashboard/lib/sync-status.ts`](../dashboard/lib/sync-status.ts) — import.
     - [`dashboard/tests/auth-security.test.ts`](../dashboard/tests/auth-security.test.ts) — type import, test mock.
+    - [`dashboard/tests/bot-settings-route.test.ts`](../dashboard/tests/bot-settings-route.test.ts) — test mock.
+    - [`dashboard/tests/bot-sync-auth.test.ts`](../dashboard/tests/bot-sync-auth.test.ts) — test mock.
+    - [`dashboard/tests/bot-sync-route.test.ts`](../dashboard/tests/bot-sync-route.test.ts) — test mock.
     - [`dashboard/tests/control-room-security.test.ts`](../dashboard/tests/control-room-security.test.ts) — test mock.
     - [`dashboard/tests/control-room-storage.test.ts`](../dashboard/tests/control-room-storage.test.ts) — import.
     - [`dashboard/tests/d1-initialization.test.ts`](../dashboard/tests/d1-initialization.test.ts) — import.
@@ -1422,6 +1401,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/tests/scribd-web-contract.test.ts`](../dashboard/tests/scribd-web-contract.test.ts) — test mock.
     - [`dashboard/tests/session-backup-api.test.ts`](../dashboard/tests/session-backup-api.test.ts) — test mock.
     - [`dashboard/tests/session-backup-sqlite.test.ts`](../dashboard/tests/session-backup-sqlite.test.ts) — import.
+    - [`dashboard/tests/single-host-e2e.test.ts`](../dashboard/tests/single-host-e2e.test.ts) — import.
+    - [`dashboard/tests/single-host-storage.test.ts`](../dashboard/tests/single-host-storage.test.ts) — import.
+    - [`dashboard/tests/storage-outage.test.ts`](../dashboard/tests/storage-outage.test.ts) — import.
     - [`dashboard/tests/sync-status.test.ts`](../dashboard/tests/sync-status.test.ts) — import.
     - [`dashboard/tests/whatsapp-bridge.test.ts`](../dashboard/tests/whatsapp-bridge.test.ts) — test mock.
     - [`dashboard/tests/whatsapp-status-privacy.test.ts`](../dashboard/tests/whatsapp-status-privacy.test.ts) — test mock.
@@ -1440,7 +1422,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`types.ts`](../dashboard/lib/types.ts) — Shared dashboard data and API types.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`dashboard/app/api/admin/panel/status/route.ts`](../dashboard/app/api/admin/panel/status/route.ts) — type import.
     - [`dashboard/components/account-modal.tsx`](../dashboard/components/account-modal.tsx) — import.
     - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — import.
     - [`dashboard/components/auth-screen.tsx`](../dashboard/components/auth-screen.tsx) — import.
@@ -1454,7 +1435,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/activity.ts`](../dashboard/lib/activity.ts) — type import.
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
-    - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — type import.
+    - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/client-session.ts`](../dashboard/lib/client-session.ts) — import.
     - [`dashboard/lib/control-room.ts`](../dashboard/lib/control-room.ts) — type import.
     - [`dashboard/lib/panel-client.ts`](../dashboard/lib/panel-client.ts) — import.
@@ -1466,10 +1447,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/tests/control-room-alerts.test.ts`](../dashboard/tests/control-room-alerts.test.ts) — type import.
     - [`dashboard/tests/member-home.test.tsx`](../dashboard/tests/member-home.test.tsx) — type import.
     - [`dashboard/tests/member-link-api.test.ts`](../dashboard/tests/member-link-api.test.ts) — type import.
-    - [`dashboard/tests/pairing-security.test.ts`](../dashboard/tests/pairing-security.test.ts) — type import.
+    - [`dashboard/tests/pairing-security.test.ts`](../dashboard/tests/pairing-security.test.ts) — import.
     - [`dashboard/tests/room-alert-reads.test.ts`](../dashboard/tests/room-alert-reads.test.ts) — type import.
     - [`dashboard/tests/scribd-download-ticket.test.ts`](../dashboard/tests/scribd-download-ticket.test.ts) — type import.
-    - [`dashboard/tests/whatsapp-bridge.test.ts`](../dashboard/tests/whatsapp-bridge.test.ts) — type import.
+    - [`dashboard/tests/whatsapp-bridge.test.ts`](../dashboard/tests/whatsapp-bridge.test.ts) — import.
     - [`dashboard/tests/whatsapp-status-privacy.test.ts`](../dashboard/tests/whatsapp-status-privacy.test.ts) — type import.
     - [`dashboard/tests/workspace-shell.test.tsx`](../dashboard/tests/workspace-shell.test.tsx) — type import.
 
@@ -1484,6 +1465,16 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/tests/whatsapp-bridge.test.ts`](../dashboard/tests/whatsapp-bridge.test.ts) — import.
 
+- [`botkeep-config.ts`](../dashboard/lib/botkeep-config.ts) — Fixed official Botkeep Developer API base and workload-ID validation.
+  - **References:** none detected in this snapshot.
+  - **Referenced by:**
+    - [`dashboard/app/api/admin/panel/route.ts`](../dashboard/app/api/admin/panel/route.ts) — import.
+    - [`dashboard/lib/panel-client.ts`](../dashboard/lib/panel-client.ts) — import.
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
+    - [`dashboard/tests/panel-client.test.ts`](../dashboard/tests/panel-client.test.ts) — import.
+    - [`dashboard/tests/panel-status.test.ts`](../dashboard/tests/panel-status.test.ts) — import.
+    - [`dashboard/tests/single-host-storage.test.ts`](../dashboard/tests/single-host-storage.test.ts) — import.
+
 ### `dashboard/scripts/`
 
 - [`check-prod-env.mjs`](../dashboard/scripts/check-prod-env.mjs) — Checks required production settings before the standalone dashboard server starts.
@@ -1495,14 +1486,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — Vitest regression tests for admin console; see direct references below for the exercised modules.
   - **References:**
-    - [`dashboard/app/api/admin/activity/route.ts`](../dashboard/app/api/admin/activity/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/members/scribd/route.ts`](../dashboard/app/api/admin/members/scribd/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/pair/route.ts`](../dashboard/app/api/admin/pair/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/panel/route.ts`](../dashboard/app/api/admin/panel/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/panel/status/route.ts`](../dashboard/app/api/admin/panel/status/route.ts) — route URL reference.
-    - [`dashboard/app/api/admin/status/route.ts`](../dashboard/app/api/admin/status/route.ts) — route URL reference.
-    - [`dashboard/app/api/auth/me/route.ts`](../dashboard/app/api/auth/me/route.ts) — route URL reference.
-    - [`dashboard/app/api/scribd/status/route.ts`](../dashboard/app/api/scribd/status/route.ts) — route URL reference.
     - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — import.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — test mock.
     - [`dashboard/lib/client-session.ts`](../dashboard/lib/client-session.ts) — import.
@@ -1590,8 +1573,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — Tests admin command controls, alias search, the canonical Bilibili switch, and all 14 title-search catalog entries.
   - **References:**
-    - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
     - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — import.
+    - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
   - **Referenced by:**
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
   - **Outside modules:** `@testing-library/react`, `vitest`.
@@ -1666,17 +1649,18 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`pairing-security.test.ts`](../dashboard/tests/pairing-security.test.ts) — Vitest regression tests for pairing security; see direct references below for the exercised modules.
   - **References:**
-    - [`dashboard/app/api/member/pair/route.ts`](../dashboard/app/api/member/pair/route.ts) — import, route URL reference.
+    - [`dashboard/app/api/member/pair/route.ts`](../dashboard/app/api/member/pair/route.ts) — import.
     - [`dashboard/lib/activity.ts`](../dashboard/lib/activity.ts) — test mock.
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — test mock.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — test mock.
-    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — type import.
+    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
   - **Referenced by:**
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
   - **Outside modules:** `next/server`, `vitest`.
 
 - [`panel-client.test.ts`](../dashboard/tests/panel-client.test.ts) — Vitest regression tests for panel client; see direct references below for the exercised modules.
   - **References:**
+    - [`dashboard/lib/botkeep-config.ts`](../dashboard/lib/botkeep-config.ts) — import.
     - [`dashboard/lib/panel-client.ts`](../dashboard/lib/panel-client.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — test mock.
   - **Referenced by:**
@@ -1685,7 +1669,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`panel-route.test.ts`](../dashboard/tests/panel-route.test.ts) — Vitest regression tests for panel route; see direct references below for the exercised modules.
   - **References:**
-    - [`dashboard/app/api/admin/panel/route.ts`](../dashboard/app/api/admin/panel/route.ts) — import, route URL reference.
+    - [`dashboard/app/api/admin/panel/route.ts`](../dashboard/app/api/admin/panel/route.ts) — import.
     - [`dashboard/lib/activity.ts`](../dashboard/lib/activity.ts) — test mock.
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — test mock.
     - [`dashboard/lib/panel-client.ts`](../dashboard/lib/panel-client.ts) — test mock.
@@ -1696,8 +1680,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`panel-status.test.ts`](../dashboard/tests/panel-status.test.ts) — Vitest regression tests for panel status; see direct references below for the exercised modules.
   - **References:**
-    - [`dashboard/app/api/admin/panel/status/route.ts`](../dashboard/app/api/admin/panel/status/route.ts) — import, route URL reference.
+    - [`dashboard/app/api/admin/panel/status/route.ts`](../dashboard/app/api/admin/panel/status/route.ts) — import.
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — test mock.
+    - [`dashboard/lib/botkeep-config.ts`](../dashboard/lib/botkeep-config.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — test mock.
   - **Referenced by:**
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
@@ -1793,7 +1778,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`session-backup-api.test.ts`](../dashboard/tests/session-backup-api.test.ts) — Vitest regression tests for session backup api; see direct references below for the exercised modules.
   - **References:**
-    - [`dashboard/app/api/bot/session-backups/route.ts`](../dashboard/app/api/bot/session-backups/route.ts) — import, route URL reference.
+    - [`dashboard/app/api/bot/session-backups/route.ts`](../dashboard/app/api/bot/session-backups/route.ts) — import.
     - [`dashboard/lib/bot-sync-auth.ts`](../dashboard/lib/bot-sync-auth.ts) — test mock.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — test mock.
   - **Referenced by:**
@@ -1826,7 +1811,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — import.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — test mock.
-    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — type import.
+    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
     - [`dashboard/lib/whatsapp-accounts.ts`](../dashboard/lib/whatsapp-accounts.ts) — import.
   - **Referenced by:**
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
@@ -1859,6 +1844,54 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
   - **Outside modules:** `@testing-library/react`, `node:fs`, `node:path`, `postcss`, `vitest`.
 
+- [`bot-settings-route.test.ts`](../dashboard/tests/bot-settings-route.test.ts) — Regression tests for explicit Botkeep bridge configuration.
+  - **References:**
+    - [`dashboard/app/api/admin/settings/route.ts`](../dashboard/app/api/admin/settings/route.ts) — import.
+    - [`dashboard/lib/activity.ts`](../dashboard/lib/activity.ts) — test mock.
+    - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — test mock.
+    - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — test mock.
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — test mock.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
+  - **Outside modules:** `next/server`, `vitest`.
+
+- [`bot-sync-auth.test.ts`](../dashboard/tests/bot-sync-auth.test.ts) — Regression tests for single-service sync authentication and HMAC replay handling.
+  - **References:**
+    - [`dashboard/lib/bot-sync-auth.ts`](../dashboard/lib/bot-sync-auth.ts) — import.
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — test mock.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
+  - **Outside modules:** `next/server`, `node:crypto`, `vitest`.
+
+- [`bot-sync-route.test.ts`](../dashboard/tests/bot-sync-route.test.ts) — Regression tests for the single-service sync endpoint.
+  - **References:**
+    - [`dashboard/app/api/bot/sync/route.ts`](../dashboard/app/api/bot/sync/route.ts) — import.
+    - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — test mock.
+    - [`dashboard/lib/bot-sync-auth.ts`](../dashboard/lib/bot-sync-auth.ts) — test mock.
+    - [`dashboard/lib/rate-limit.ts`](../dashboard/lib/rate-limit.ts) — test mock.
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — test mock.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
+  - **Outside modules:** `next/server`, `vitest`.
+
+- [`single-host-e2e.test.ts`](../dashboard/tests/single-host-e2e.test.ts) — Vitest regression tests for single-host-e2e.
+  - **References:**
+    - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
+    - [`dashboard/app/api/bot/sync/route.ts`](../dashboard/app/api/bot/sync/route.ts) — import.
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
+  - **Outside modules:** `next/server`, `node:fs`, `node:module`, `node:os`, `node:path`, `node:sqlite`, `vitest`.
+
+- [`single-host-storage.test.ts`](../dashboard/tests/single-host-storage.test.ts) — SQLite-backed regressions for old settings, credentials, command claiming and imports.
+  - **References:**
+    - [`dashboard/lib/botkeep-config.ts`](../dashboard/lib/botkeep-config.ts) — import.
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
+  - **Outside modules:** `node:sqlite`, `vitest`.
+
+- [`storage-outage.test.ts`](../dashboard/tests/storage-outage.test.ts) — Regression tests for database outage handling and recovery safety.
+  - **References:**
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
+  - **Outside modules:** `node:fs`, `vitest`.
+
 ### `dashboard/tests/fixtures/`
 
 - [`scribd_web_contract.py`](../dashboard/tests/fixtures/scribd_web_contract.py) — Loopback fixture using the real Python Scribd HTTP handler with expensive and external operations stubbed.
@@ -1870,11 +1903,11 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 ### `docs/`
 
-- [`REPOSITORY_FILE_INDEX.md`](REPOSITORY_FILE_INDEX.md) — Exhaustive per-file role and reference index accompanying the repository map.
+- [`REPOSITORY_FILE_INDEX.md`](../docs/REPOSITORY_FILE_INDEX.md) — Exhaustive per-file role and reference index accompanying the repository map.
   - **References:**
-    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — explicit relationship.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
   - **Referenced by:**
-    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — explicit relationship.
+    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
 
 ### `scribd/`
 
@@ -1886,9 +1919,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/run.py`](../scribd/run.py) — explicit relationship.
     - [`scribd/scribd_web.py`](../scribd/scribd_web.py) — explicit relationship.
   - **Referenced by:**
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/bootstrap.sh`](../scribd/bootstrap.sh) — file name mentioned.
     - [`scribd/panel_setup.sh`](../scribd/panel_setup.sh) — file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/test_discord_bot.py`](../scribd/test_discord_bot.py) — file name mentioned.
 
 - [`.gitignore`](../scribd/.gitignore) — Excludes Scribd output, credentials, installed tools, caches, and local runtime state.
@@ -1918,9 +1951,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/chromium_setup.py`](../scribd/chromium_setup.py) — import, file name mentioned.
     - [`scribd/logfmt.py`](../scribd/logfmt.py) — import.
   - **Referenced by:**
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/discord_bot.py`](../scribd/discord_bot.py) — import.
     - [`scribd/make_bundle.py`](../scribd/make_bundle.py) — reads bundle source, file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/requirements.txt`](../scribd/requirements.txt) — dependency manifest.
     - [`scribd/run.py`](../scribd/run.py) — import.
     - [`scribd/scribd_all.py`](../scribd/scribd_all.py) — generated from source, embedded source (generated).
@@ -1935,9 +1968,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/logfmt.py`](../scribd/logfmt.py) — import.
     - [`scribd/scribd_shot.py`](../scribd/scribd_shot.py) — file name mentioned.
   - **Referenced by:**
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/bootstrap.sh`](../scribd/bootstrap.sh) — explicit relationship, file name mentioned.
     - [`scribd/chromium_launch.py`](../scribd/chromium_launch.py) — import, file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/requirements.txt`](../scribd/requirements.txt) — dependency manifest.
     - [`scribd/run.py`](../scribd/run.py) — file name mentioned.
     - [`scribd/scribd_pdf.py`](../scribd/scribd_pdf.py) — file name mentioned.
@@ -1962,9 +1995,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/scribd_web.py`](../scribd/scribd_web.py) — import, file name mentioned.
   - **Referenced by:**
     - [`scribd/.env.example`](../scribd/.env.example) — explicit relationship.
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/bot-requirements.txt`](../scribd/bot-requirements.txt) — dependency manifest.
     - [`scribd/panel_setup.sh`](../scribd/panel_setup.sh) — file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/run.py`](../scribd/run.py) — selected startup mode, file name mentioned.
     - [`scribd/start.sh`](../scribd/start.sh) — selected startup mode, file name mentioned.
     - [`scribd/test_discord_bot.py`](../scribd/test_discord_bot.py) — import, file name mentioned.
@@ -1977,10 +2010,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/envfile.py`](../scribd/envfile.py) — import.
   - **Referenced by:**
     - [`scribd/.env.example`](../scribd/.env.example) — explicit relationship.
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/bootstrap.sh`](../scribd/bootstrap.sh) — file name mentioned.
     - [`scribd/discord_bot.py`](../scribd/discord_bot.py) — import.
     - [`scribd/make_bundle.py`](../scribd/make_bundle.py) — reads bundle source, file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/scribd_all.py`](../scribd/scribd_all.py) — generated from source, embedded source (generated).
     - [`scribd/scribd_shot.py`](../scribd/scribd_shot.py) — import.
     - [`scribd/scribd_web.py`](../scribd/scribd_web.py) — import.
@@ -1991,10 +2024,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:** none detected in this snapshot.
   - **Referenced by:**
     - [`scribd/.env.example`](../scribd/.env.example) — explicit relationship.
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/discord_bot.py`](../scribd/discord_bot.py) — import.
     - [`scribd/drime.py`](../scribd/drime.py) — import.
     - [`scribd/make_bundle.py`](../scribd/make_bundle.py) — reads bundle source, file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/run.py`](../scribd/run.py) — import.
     - [`scribd/scribd_all.py`](../scribd/scribd_all.py) — generated from source, embedded source (generated).
     - [`scribd/scribd_shot.py`](../scribd/scribd_shot.py) — import.
@@ -2005,10 +2038,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`logfmt.py`](../scribd/logfmt.py) — Shared console formatting and machine-readable progress/event records.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/chromium_launch.py`](../scribd/chromium_launch.py) — import.
     - [`scribd/chromium_setup.py`](../scribd/chromium_setup.py) — import.
     - [`scribd/make_bundle.py`](../scribd/make_bundle.py) — reads bundle source, file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/run.py`](../scribd/run.py) — import.
     - [`scribd/scribd_all.py`](../scribd/scribd_all.py) — generated from source, embedded source (generated).
     - [`scribd/scribd_pdf.py`](../scribd/scribd_pdf.py) — import.
@@ -2072,10 +2105,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/test_scribd_web.py`](../scribd/test_scribd_web.py) — file name mentioned.
     - [`scribd/web-ui.png`](../scribd/web-ui.png) — documentation link, file name mentioned.
   - **Referenced by:**
-    - [`README.md`](../README.md) — explicit relationship, documentation link, file path mentioned.
+    - [`README.md`](../README.md) — documentation link.
+    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — documentation link.
     - [`scribd/test_chromium.py`](../scribd/test_chromium.py) — file name mentioned.
     - [`scribd/test_discord_bot.py`](../scribd/test_discord_bot.py) — file name mentioned.
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — file path mentioned.
 
 - [`requirements-mupdf.txt`](../scribd/requirements-mupdf.txt) — Optional PyMuPDF dependency for an alternate PDF assembly engine.
   - **References:**
@@ -2090,9 +2123,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/scribd_shot.py`](../scribd/scribd_shot.py) — dependency manifest.
     - [`scribd/scribd_web.py`](../scribd/scribd_web.py) — dependency manifest.
   - **Referenced by:**
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/bootstrap.sh`](../scribd/bootstrap.sh) — explicit relationship, file name mentioned.
     - [`scribd/panel_setup.sh`](../scribd/panel_setup.sh) — explicit relationship, file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/run.py`](../scribd/run.py) — file name mentioned.
     - [`scribd/test_run.py`](../scribd/test_run.py) — file name mentioned.
 
@@ -2119,10 +2152,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/scribd_pdf.py`](../scribd/scribd_pdf.py) — generated from source, embedded source (generated).
     - [`scribd/scribd_shot.py`](../scribd/scribd_shot.py) — generated from source.
   - **Referenced by:**
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/bootstrap.sh`](../scribd/bootstrap.sh) — file name mentioned.
     - [`scribd/discord_bot.py`](../scribd/discord_bot.py) — starts converter when available, file name mentioned.
     - [`scribd/make_bundle.py`](../scribd/make_bundle.py) — writes generated bundle, file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/run.py`](../scribd/run.py) — selected startup mode, file name mentioned.
     - [`scribd/scribd_job.sh`](../scribd/scribd_job.sh) — starts converter when available, file name mentioned.
     - [`scribd/scribd_shot.py`](../scribd/scribd_shot.py) — file name mentioned.
@@ -2146,8 +2179,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/chromium_setup.py`](../scribd/chromium_setup.py) — file name mentioned.
     - [`scribd/logfmt.py`](../scribd/logfmt.py) — import.
   - **Referenced by:**
-    - [`scribd/make_bundle.py`](../scribd/make_bundle.py) — reads bundle source, file name mentioned.
     - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
+    - [`scribd/make_bundle.py`](../scribd/make_bundle.py) — reads bundle source, file name mentioned.
     - [`scribd/scribd_all.py`](../scribd/scribd_all.py) — generated from source, embedded source (generated).
     - [`scribd/scribd_shot.py`](../scribd/scribd_shot.py) — import, file name mentioned.
     - [`scribd/test_chromium.py`](../scribd/test_chromium.py) — file name mentioned.
@@ -2166,10 +2199,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/scribd_pdf.py`](../scribd/scribd_pdf.py) — import, file name mentioned.
     - [`scribd/scribd_web.py`](../scribd/scribd_web.py) — file name mentioned.
   - **Referenced by:**
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/chromium_setup.py`](../scribd/chromium_setup.py) — file name mentioned.
     - [`scribd/discord_bot.py`](../scribd/discord_bot.py) — fallback converter source, file name mentioned.
     - [`scribd/make_bundle.py`](../scribd/make_bundle.py) — reads bundle source, file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/requirements-mupdf.txt`](../scribd/requirements-mupdf.txt) — optional dependency manifest.
     - [`scribd/requirements.txt`](../scribd/requirements.txt) — dependency manifest.
     - [`scribd/scribd_all.py`](../scribd/scribd_all.py) — generated from source.
@@ -2193,12 +2226,11 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`dashboard/lib/scribd-config.ts`](../dashboard/lib/scribd-config.ts) — configured external service.
     - [`dashboard/lib/scribd-panel.ts`](../dashboard/lib/scribd-panel.ts) — HTTP API contract.
-    - [`dashboard/README.md`](../dashboard/README.md) — file path mentioned.
     - [`dashboard/tests/fixtures/scribd_web_contract.py`](../dashboard/tests/fixtures/scribd_web_contract.py) — import, fixture imports real handler.
     - [`scribd/.env.example`](../scribd/.env.example) — explicit relationship.
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/discord_bot.py`](../scribd/discord_bot.py) — import, file name mentioned.
     - [`scribd/panel_setup.sh`](../scribd/panel_setup.sh) — file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/requirements.txt`](../scribd/requirements.txt) — dependency manifest.
     - [`scribd/run.py`](../scribd/run.py) — selected startup mode, file name mentioned.
     - [`scribd/scribd_shot.py`](../scribd/scribd_shot.py) — file name mentioned.
@@ -2216,14 +2248,14 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`scribd/scribd_all.py`](../scribd/scribd_all.py) — selected startup mode, file name mentioned.
     - [`scribd/scribd_web.py`](../scribd/scribd_web.py) — selected startup mode, file name mentioned.
   - **Referenced by:**
-    - [`scribd/bootstrap.sh`](../scribd/bootstrap.sh) — explicit relationship, file name mentioned.
     - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
+    - [`scribd/bootstrap.sh`](../scribd/bootstrap.sh) — explicit relationship, file name mentioned.
 
 - [`test_chromium.py`](../scribd/test_chromium.py) — Python regression tests for chromium; see direct references below for the exercised modules.
   - **References:**
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/chromium_launch.py`](../scribd/chromium_launch.py) — import, file name mentioned.
     - [`scribd/chromium_setup.py`](../scribd/chromium_setup.py) — import, file name mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/scribd_pdf.py`](../scribd/scribd_pdf.py) — file name mentioned.
     - [`scribd/scribd_shot.py`](../scribd/scribd_shot.py) — file name mentioned.
     - [`scribd/scribd_web.py`](../scribd/scribd_web.py) — file name mentioned.
@@ -2235,9 +2267,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`scribd/.env.example`](../scribd/.env.example) — file name mentioned.
     - [`scribd/.gitignore`](../scribd/.gitignore) — file name mentioned.
+    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/discord_bot.py`](../scribd/discord_bot.py) — import, file name mentioned.
     - [`scribd/envfile.py`](../scribd/envfile.py) — import.
-    - [`scribd/README.md`](../scribd/README.md) — file name mentioned.
     - [`scribd/scribd_all.py`](../scribd/scribd_all.py) — file name mentioned.
     - [`scribd/scribd_shot.py`](../scribd/scribd_shot.py) — file name mentioned.
     - [`scribd/scribd_web.py`](../scribd/scribd_web.py) — file name mentioned.
@@ -2406,12 +2438,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 ### `Whatsapp bot/`
 
 - [`.env.example`](../Whatsapp%20bot/.env.example) — Template of the WhatsApp service environment settings; not the live secrets.
-  - **References:**
-    - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — explicit relationship.
-    - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — explicit relationship.
-    - [`Whatsapp bot/utils/sessionBackup.js`](../Whatsapp%20bot/utils/sessionBackup.js) — explicit relationship.
-  - **Referenced by:**
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — file name mentioned.
+  - **References:** none detected in this snapshot.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
 
 - [`.gitignore`](../Whatsapp%20bot/.gitignore) — Excludes bot dependencies, private credentials, session files, runtime databases, and scratch files.
   - **References:** none detected in this snapshot.
@@ -2424,10 +2452,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`config.js`](../Whatsapp%20bot/config.js) — Loads bot configuration, defaults, environment values, and feature settings.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — computed bot-root path.
-    - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — file path mentioned.
-    - [`Whatsapp bot/.env.example`](../Whatsapp%20bot/.env.example) — explicit relationship.
     - [`Whatsapp bot/commands/admin/botmanage.js`](../Whatsapp%20bot/commands/admin/botmanage.js) — require.
     - [`Whatsapp bot/commands/admin/toggle.js`](../Whatsapp%20bot/commands/admin/toggle.js) — require.
     - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — require.
@@ -2445,8 +2469,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
     - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — file name mentioned.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — computed bot-root path.
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/utils/api.js`](../Whatsapp%20bot/utils/api.js) — require.
     - [`Whatsapp bot/utils/cleanup.js`](../Whatsapp%20bot/utils/cleanup.js) — require.
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
@@ -2461,21 +2485,19 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — require.
     - [`Whatsapp bot/utils/spotify.js`](../Whatsapp%20bot/utils/spotify.js) — require.
     - [`Whatsapp bot/utils/userErrors.js`](../Whatsapp%20bot/utils/userErrors.js) — require.
-    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
     - [`Whatsapp bot/utils/youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — require.
+    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
   - **Outside modules:** `fs`, `path`.
 
 - [`database.js`](../Whatsapp%20bot/database.js) — Bot-local data and persisted WhatsApp service state.
   - **References:**
     - [`Whatsapp bot/utils/jsonStore.js`](../Whatsapp%20bot/utils/jsonStore.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/commands/admin/toggle.js`](../Whatsapp%20bot/commands/admin/toggle.js) — require.
     - [`Whatsapp bot/commands/general/paper.js`](../Whatsapp%20bot/commands/general/paper.js) — require.
     - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require.
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — file name mentioned.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-account-routing.js`](../Whatsapp%20bot/scripts/test-account-routing.js) — require.
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
   - **Outside modules:** `fs`, `path`.
 
 - [`handler.js`](../Whatsapp%20bot/handler.js) — Dispatches prefixed messages from each linked account to loaded commands, selections, and policy checks.
@@ -2490,12 +2512,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/telemetry.js`](../Whatsapp%20bot/utils/telemetry.js) — require.
     - [`Whatsapp bot/utils/userErrors.js`](../Whatsapp%20bot/utils/userErrors.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — file name mentioned.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-account-routing.js`](../Whatsapp%20bot/scripts/test-account-routing.js) — require.
-    - [`Whatsapp bot/utils/hotReload.js`](../Whatsapp%20bot/utils/hotReload.js) — computed bot-root path.
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
 
 - [`index.js`](../Whatsapp%20bot/index.js) — Bot process entry point: initializes storage, recovery, sessions, sync, message handling, and media helpers.
   - **References:**
@@ -2519,64 +2538,31 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
   - **Referenced by:**
-    - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — file path mentioned.
-    - [`dashboard/README.md`](../dashboard/README.md) — file path mentioned.
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship, file name mentioned.
     - [`Whatsapp bot/Procfile`](../Whatsapp%20bot/Procfile) — explicit relationship.
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — file name mentioned.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `@whiskeysockets/baileys`, `fs`, `path`, `pino`, `qrcode-terminal`, `zlib`.
 
 - [`package-lock.json`](../Whatsapp%20bot/package-lock.json) — Pinned npm dependency graph used by npm ci for the bot.
   - **References:** none detected in this snapshot.
-  - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — explicit relationship.
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm lockfile.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
 
 - [`package.json`](../Whatsapp%20bot/package.json) — CommonJS bot package, dependencies, startup, and test scripts.
-  - **References:**
-    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — npm test:media script.
-    - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — npm test:media script.
-    - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — npm test:media script.
-    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — npm test:media script.
-    - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — explicit relationship, file name mentioned.
-    - [`Whatsapp bot/package-lock.json`](../Whatsapp%20bot/package-lock.json) — npm lockfile.
-    - [`Whatsapp bot/scripts/install-ytdlp.sh`](../Whatsapp%20bot/scripts/install-ytdlp.sh) — explicit relationship.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — explicit relationship.
-    - [`Whatsapp bot/scripts/test-account-routing.js`](../Whatsapp%20bot/scripts/test-account-routing.js) — explicit relationship.
-    - [`Whatsapp bot/scripts/test-bridge.js`](../Whatsapp%20bot/scripts/test-bridge.js) — explicit relationship.
-    - [`Whatsapp bot/scripts/test-delivery.js`](../Whatsapp%20bot/scripts/test-delivery.js) — explicit relationship.
-    - [`Whatsapp bot/scripts/test-provider-core.js`](../Whatsapp%20bot/scripts/test-provider-core.js) — explicit relationship.
-    - [`Whatsapp bot/scripts/test-service-startup.js`](../Whatsapp%20bot/scripts/test-service-startup.js) — explicit relationship.
-    - [`Whatsapp bot/scripts/test-session-backup.js`](../Whatsapp%20bot/scripts/test-session-backup.js) — explicit relationship.
-    - [`Whatsapp bot/scripts/test-sessions.js`](../Whatsapp%20bot/scripts/test-sessions.js) — explicit relationship.
+  - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — explicit relationship.
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — file name mentioned.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
+    - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — CI invocation.
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
 
 - [`Procfile`](../Whatsapp%20bot/Procfile) — Panel/platform process declaration that starts the bot with Node.
   - **References:**
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — explicit relationship.
-  - **Referenced by:**
-    - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — file name mentioned.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
 
 - [`README.md`](../Whatsapp%20bot/README.md) — Bot commands, operations, linking, backup, and deployment guidance; some older paths are stale.
   - **References:**
-    - [`dashboard/README.md`](../dashboard/README.md) — documentation link, file path mentioned.
-    - [`scribd/README.md`](../scribd/README.md) — file path mentioned.
-    - [`Whatsapp bot/.env.example`](../Whatsapp%20bot/.env.example) — file name mentioned.
-    - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — file name mentioned.
-    - [`Whatsapp bot/database.js`](../Whatsapp%20bot/database.js) — file name mentioned.
-    - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — file name mentioned.
-    - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — file name mentioned.
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — file name mentioned.
-    - [`Whatsapp bot/Procfile`](../Whatsapp%20bot/Procfile) — file name mentioned.
+    - [`dashboard/README.md`](../dashboard/README.md) — documentation link.
+    - [`scribd/README.md`](../scribd/README.md) — documentation link.
   - **Referenced by:**
-    - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — file path mentioned.
-    - [`README.md`](../README.md) — explicit relationship, documentation link.
+    - [`README.md`](../README.md) — documentation link.
+  - **Outside modules:** `crypto`.
 
 ### `Whatsapp bot/commands/admin/`
 
@@ -2585,7 +2571,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
     - [`Whatsapp bot/utils/diskSpace.js`](../Whatsapp%20bot/utils/diskSpace.js) — require.
     - [`Whatsapp bot/utils/hotReload.js`](../Whatsapp%20bot/utils/hotReload.js) — require.
-    - [`Whatsapp bot/utils/panelClient.js`](../Whatsapp%20bot/utils/panelClient.js) — require.
     - [`Whatsapp bot/utils/telemetry.js`](../Whatsapp%20bot/utils/telemetry.js) — require.
   - **Referenced by:**
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
@@ -2623,7 +2608,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/ytAuth.js`](../Whatsapp%20bot/utils/ytAuth.js) — require.
     - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
 
 - [`ytlogin.js`](../Whatsapp%20bot/commands/admin/ytlogin.js) — Owner command for YouTube device/OAuth login.
@@ -2631,7 +2615,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
     - [`Whatsapp bot/utils/ytAuth.js`](../Whatsapp%20bot/utils/ytAuth.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
 
 ### `Whatsapp bot/commands/general/`
@@ -2684,7 +2667,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/nm3u8dl.js`](../Whatsapp%20bot/utils/nm3u8dl.js) — require.
     - [`Whatsapp bot/utils/telemetry.js`](../Whatsapp%20bot/utils/telemetry.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
 
 - [`sticker.js`](../Whatsapp%20bot/commands/general/sticker.js) — Converts image or video input to a sticker.
@@ -2709,7 +2691,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
 
 - [`movie.js`](../Whatsapp%20bot/commands/media/movie.js) — Searches and delivers selected movies.
@@ -2747,15 +2728,14 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — Social-media download shortcuts and provider-scoped title search with numbered selections.
   - **References:**
-    - [`Whatsapp bot/utils/jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — require.
-    - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — require.
-    - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require.
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
+    - [`Whatsapp bot/utils/jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — require.
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
+    - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require.
+    - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — require.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
   - **Referenced by:**
     - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — computed bot-root path.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
 
 - [`song.js`](../Whatsapp%20bot/commands/media/song.js) — Searches and downloads YouTube audio.
@@ -2771,11 +2751,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/telemetry.js`](../Whatsapp%20bot/utils/telemetry.js) — require.
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require.
     - [`Whatsapp bot/utils/userErrors.js`](../Whatsapp%20bot/utils/userErrors.js) — require.
-    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
     - [`Whatsapp bot/utils/youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — require.
+    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
     - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
   - **Outside modules:** `fs`, `path`.
 
@@ -2784,10 +2763,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
     - [`Whatsapp bot/utils/spotify.js`](../Whatsapp%20bot/utils/spotify.js) — require.
-    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
     - [`Whatsapp bot/utils/youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — require.
+    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
 
 - [`ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — Searches and downloads YouTube video.
@@ -2803,11 +2781,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/telemetry.js`](../Whatsapp%20bot/utils/telemetry.js) — require.
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require.
     - [`Whatsapp bot/utils/userErrors.js`](../Whatsapp%20bot/utils/userErrors.js) — require.
-    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
     - [`Whatsapp bot/utils/youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — require.
+    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
     - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
   - **Outside modules:** `fs`, `path`.
 
@@ -2841,7 +2818,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — import.
     - [`Whatsapp bot/engine/providers/debrid/realdebrid.js`](../Whatsapp%20bot/engine/providers/debrid/realdebrid.js) — import.
     - [`Whatsapp bot/engine/providers/stream/moviebox.js`](../Whatsapp%20bot/engine/providers/stream/moviebox.js) — import.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `node:fs`, `node:path`.
 
 - [`host.js`](../Whatsapp%20bot/engine/host.js) — Lazy bridge from the ES-module engine to the bot's CommonJS host adapter.
@@ -2988,7 +2964,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/providers/torrent/torrentio.js`](../Whatsapp%20bot/engine/providers/torrent/torrentio.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/torrentscsv.js`](../Whatsapp%20bot/engine/providers/torrent/torrentscsv.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/yts.js`](../Whatsapp%20bot/engine/providers/torrent/yts.js) — import.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `node:dns`.
 
 - [`jar.js`](../Whatsapp%20bot/engine/core/jar.js) — Per-host HTTP cookie jar.
@@ -3033,7 +3008,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/providers/ddl/fourkhdhub.js`](../Whatsapp%20bot/engine/providers/ddl/fourkhdhub.js) — import.
     - [`Whatsapp bot/engine/providers/ddl/hdhub4u.js`](../Whatsapp%20bot/engine/providers/ddl/hdhub4u.js) — import.
     - [`Whatsapp bot/engine/providers/ddl/moviesdrive.js`](../Whatsapp%20bot/engine/providers/ddl/moviesdrive.js) — import.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
 
 - [`queue.js`](../Whatsapp%20bot/engine/core/queue.js) — Concurrency-limited media job queue.
   - **References:**
@@ -3052,7 +3026,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/core/resolver.js`](../Whatsapp%20bot/engine/core/resolver.js) — import.
     - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
 
 - [`registry.js`](../Whatsapp%20bot/engine/core/registry.js) — Provider registration, health, and circuit breaker.
   - **References:**
@@ -3124,7 +3097,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
 
 - [`tv.js`](../Whatsapp%20bot/engine/core/tv.js) — Series, season, episode, and pack selection helpers.
   - **References:**
@@ -3160,7 +3132,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/media/downloader.js`](../Whatsapp%20bot/engine/media/downloader.js) — import.
     - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — computed bot-root path.
   - **Outside modules:** `node:child_process`, `node:fs`, `node:path`.
 
@@ -3171,7 +3142,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/media/torrent.js`](../Whatsapp%20bot/engine/media/torrent.js) — import.
   - **Referenced by:**
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/movieEngine.js`](../Whatsapp%20bot/utils/movieEngine.js) — computed dynamic import.
 
 - [`hls.js`](../Whatsapp%20bot/engine/media/hls.js) — HLS and DASH download handling and fallback.
@@ -3180,7 +3150,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/engine/media/download.js`](../Whatsapp%20bot/engine/media/download.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `node:crypto`, `node:fs`, `node:path`.
 
 - [`index.js`](../Whatsapp%20bot/engine/media/index.js) — Main movie/series engine API; imports and registers the selected providers.
@@ -3229,7 +3198,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/core/resolver.js`](../Whatsapp%20bot/engine/core/resolver.js) — import.
     - [`Whatsapp bot/engine/media/downloader.js`](../Whatsapp%20bot/engine/media/downloader.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `node:fs`, `node:path`, `webtorrent`.
 
 ### `Whatsapp bot/engine/metadata/`
@@ -3374,7 +3342,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/core/resolver.js`](../Whatsapp%20bot/engine/core/resolver.js) — import.
     - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
 
 - [`realdebrid.js`](../Whatsapp%20bot/engine/providers/debrid/realdebrid.js) — Real-Debrid provider adapter.
   - **References:**
@@ -3382,6 +3349,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
     - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — import.
+
+- [`_http.js`](../Whatsapp%20bot/engine/providers/debrid/_http.js) — Shared HTTP client for supported debrid providers.
+  - **References:** none detected in this snapshot.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
 
 ### `Whatsapp bot/engine/providers/stream/`
 
@@ -3394,7 +3365,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import, dynamic import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `node:fs`, `node:path`.
 
 - [`vaplayer.js`](../Whatsapp%20bot/engine/providers/stream/vaplayer.js) — VAPlayer stream-source adapter.
@@ -3550,74 +3520,22 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/media/download.js`](../Whatsapp%20bot/engine/media/download.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
 
+- [`httpBody.js`](../Whatsapp%20bot/engine/utils/httpBody.js) — Bounded HTTP response-body helper for the media engine.
+  - **References:** none detected in this snapshot.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
+
 ### `Whatsapp bot/scripts/`
 
 - [`install-ytdlp.sh`](../Whatsapp%20bot/scripts/install-ytdlp.sh) — Installs or updates yt-dlp for the bot.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — isolated installer fixture.
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — copied into an isolated installer fixture.
 
 - [`selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — Broad offline bot and media-engine self-test.
-  - **References:**
-    - [`dashboard/app/api/bot/sync/route.ts`](../dashboard/app/api/bot/sync/route.ts) — route URL reference.
-    - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — computed bot-root path.
-    - [`Whatsapp bot/commands/admin/ytlogin.js`](../Whatsapp%20bot/commands/admin/ytlogin.js) — computed bot-root path.
-    - [`Whatsapp bot/commands/general/providers.js`](../Whatsapp%20bot/commands/general/providers.js) — computed bot-root path.
-    - [`Whatsapp bot/commands/media/dl.js`](../Whatsapp%20bot/commands/media/dl.js) — computed bot-root path.
-    - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — computed bot-root path.
-    - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — computed bot-root path.
-    - [`Whatsapp bot/commands/media/spotify.js`](../Whatsapp%20bot/commands/media/spotify.js) — computed bot-root path.
-    - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — computed bot-root path.
-    - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — computed bot-root path.
-    - [`Whatsapp bot/database.js`](../Whatsapp%20bot/database.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/config.js`](../Whatsapp%20bot/engine/config.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/core/http.js`](../Whatsapp%20bot/engine/core/http.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/core/mirrors.js`](../Whatsapp%20bot/engine/core/mirrors.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/core/ranker.js`](../Whatsapp%20bot/engine/core/ranker.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/core/resolver.js`](../Whatsapp%20bot/engine/core/resolver.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/media/download.js`](../Whatsapp%20bot/engine/media/download.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/media/downloader.js`](../Whatsapp%20bot/engine/media/downloader.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/media/hls.js`](../Whatsapp%20bot/engine/media/hls.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/media/torrent.js`](../Whatsapp%20bot/engine/media/torrent.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — computed bot-root path.
-    - [`Whatsapp bot/engine/providers/stream/moviebox.js`](../Whatsapp%20bot/engine/providers/stream/moviebox.js) — computed bot-root path.
-    - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — computed bot-root path.
-    - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — computed bot-root path.
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — computed bot-root path.
-    - [`Whatsapp bot/Procfile`](../Whatsapp%20bot/Procfile) — computed bot-root path.
-    - [`Whatsapp bot/utils/accessControl.js`](../Whatsapp%20bot/utils/accessControl.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/adminApi.js`](../Whatsapp%20bot/utils/adminApi.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/cleanup.js`](../Whatsapp%20bot/utils/cleanup.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/converter.js`](../Whatsapp%20bot/utils/converter.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/downloadProviders.js`](../Whatsapp%20bot/utils/downloadProviders.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/ffmpeg.js`](../Whatsapp%20bot/utils/ffmpeg.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/jsonStore.js`](../Whatsapp%20bot/utils/jsonStore.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/logger.js`](../Whatsapp%20bot/utils/logger.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/mediaSettings.js`](../Whatsapp%20bot/utils/mediaSettings.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/mediaTransfer.js`](../Whatsapp%20bot/utils/mediaTransfer.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/movieEngine.js`](../Whatsapp%20bot/utils/movieEngine.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/movieHost.js`](../Whatsapp%20bot/utils/movieHost.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/nm3u8dl.js`](../Whatsapp%20bot/utils/nm3u8dl.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/paperSearch.js`](../Whatsapp%20bot/utils/paperSearch.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/reconnect.js`](../Whatsapp%20bot/utils/reconnect.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/safeLog.js`](../Whatsapp%20bot/utils/safeLog.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/sessionManager.js`](../Whatsapp%20bot/utils/sessionManager.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/spotify.js`](../Whatsapp%20bot/utils/spotify.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/telemetry.js`](../Whatsapp%20bot/utils/telemetry.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/yt1d.js`](../Whatsapp%20bot/utils/yt1d.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/ytAuth.js`](../Whatsapp%20bot/utils/ytAuth.js) — computed bot-root path.
-    - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — computed bot-root path.
+  - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
-  - **Outside modules:** `@whiskeysockets/baileys`, `assert`, `bgutils-js`, `child_process`, `crypto`, `events`, `fs`, `http`, `node:child_process`, `os`, `path`, `url`, `vm`, `ws`, `zlib`.
-  - **Dynamic loading observed:** `import`, `require`, `require.resolve`.
+    - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — CI invocation.
+  - **Outside modules:** `1a45dfa3`, `@whiskeysockets/baileys`, `A_OPUS`, `ID3`, `ID3\\x04\\x00\\x00\\x00\\x00\\x00\\x00`, `V_VP9A_OPUS`, `assert`, `avc1mp4a`, `bgutils-js`, `child_process`, `crypto`, `events`, `fs`, `ftypM4A `, `ftypisom`, `http`, `http download without torrent engine`, `mp4a`, `node:child_process`, `node:module`, `os`, `path`, `url`, `vm`, `ws`, `zlib`.
 
 - [`test-account-routing.js`](../Whatsapp%20bot/scripts/test-account-routing.js) — Tests routing work and replies to the correct linked account.
   - **References:**
@@ -3630,15 +3548,13 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/jobDelivery.js`](../Whatsapp%20bot/utils/jobDelivery.js) — require.
     - [`Whatsapp bot/utils/memberCommandPolicy.js`](../Whatsapp%20bot/utils/memberCommandPolicy.js) — require.
     - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — require.
-  - **Referenced by:**
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `node:assert/strict`, `node:fs`, `node:os`, `node:path`, `node:test`.
 
 - [`test-bridge.js`](../Whatsapp%20bot/scripts/test-bridge.js) — Tests the bot/dashboard synchronization bridge.
   - **References:**
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
-  - **Referenced by:**
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `node:assert/strict`, `node:fs`, `node:os`, `node:path`, `node:test`.
 
 - [`test-delivery.js`](../Whatsapp%20bot/scripts/test-delivery.js) — Tests account-scoped background result delivery and recovery.
@@ -3648,8 +3564,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/jobDelivery.js`](../Whatsapp%20bot/utils/jobDelivery.js) — require.
     - [`Whatsapp bot/utils/persistentJobs.js`](../Whatsapp%20bot/utils/persistentJobs.js) — require.
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require.
-  - **Referenced by:**
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `node:assert/strict`, `node:child_process`, `node:fs`, `node:os`, `node:path`, `node:sqlite`, `node:test`.
 
 - [`test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — Offline synthetic tests for YouTube clients, token binding, cookie safety, retry, stream cleanup and both installer paths.
@@ -3658,16 +3573,13 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/scripts/install-ytdlp.sh`](../Whatsapp%20bot/scripts/install-ytdlp.sh) — copied into an isolated installer fixture.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — computed bot-root path and test-only instrumentation.
     - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — test-only instrumentation.
-  - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — invoked via npm test:media.
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm test:media script.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `axios`, `node:assert/strict`, `node:child_process`, `node:crypto`, `node:fs`, `node:module`, `node:os`, `node:path`, `node:stream`, `node:test`, `youtubei.js`.
-  - **Dynamic loading observed:** `import`, `require`.
 
 - [`test-media-extractors.py`](../Whatsapp%20bot/scripts/test-media-extractors.py) — Checks offline URL-pattern recognition for the named providers using an installed yt-dlp; it does not download videos.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — direct test invocation with pinned yt-dlp.
+    - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — CI invocation.
   - **Outside modules:** `sys`, `unittest`, `yt_dlp`, `yt_dlp.extractor`.
 
 - [`test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — Tests shortcut dispatch, aliases, quality options, quoted URLs and menu discovery with a stubbed pipeline.
@@ -3675,77 +3587,69 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/general/menu.js`](../Whatsapp%20bot/commands/general/menu.js) — computed bot-root path.
     - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — computed bot-root path.
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — computed bot-root path and stubbed downloader.
-  - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — invoked via npm test:media.
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm test:media script.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `node:assert/strict`, `node:fs`, `node:os`, `node:path`, `node:test`.
-  - **Dynamic loading observed:** `require`.
 
 - [`test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — Live smoke test of the HLS/DASH download helper.
   - **References:**
-    - [`Whatsapp bot/utils/movieHost.js`](../Whatsapp%20bot/utils/movieHost.js) — computed bot-root path and test-only instrumentation.
     - [`Whatsapp bot/engine/media/download.js`](../Whatsapp%20bot/engine/media/download.js) — computed bot-root path.
     - [`Whatsapp bot/utils/ffmpeg.js`](../Whatsapp%20bot/utils/ffmpeg.js) — computed bot-root path.
     - [`Whatsapp bot/utils/mediaTransfer.js`](../Whatsapp%20bot/utils/mediaTransfer.js) — computed bot-root path.
+    - [`Whatsapp bot/utils/movieHost.js`](../Whatsapp%20bot/utils/movieHost.js) — computed bot-root path and test-only instrumentation.
     - [`Whatsapp bot/utils/nm3u8dl.js`](../Whatsapp%20bot/utils/nm3u8dl.js) — computed bot-root path.
   - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — explicit relationship.
+    - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — CI invocation.
   - **Outside modules:** `assert`, `child_process`, `fs`, `http`, `os`, `path`, `url`.
-  - **Dynamic loading observed:** `import`, `require`.
 
 - [`test-provider-core.js`](../Whatsapp%20bot/scripts/test-provider-core.js) — Offline tests for background jobs and provider routing/storage.
   - **References:**
     - [`Whatsapp bot/utils/persistentJobs.js`](../Whatsapp%20bot/utils/persistentJobs.js) — computed bot-root path.
     - [`Whatsapp bot/utils/providerRouter.js`](../Whatsapp%20bot/utils/providerRouter.js) — computed bot-root path.
     - [`Whatsapp bot/utils/rcloneStore.js`](../Whatsapp%20bot/utils/rcloneStore.js) — computed bot-root path.
-  - **Referenced by:**
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `node:assert`, `node:fs`, `node:os`, `node:path`, `node:sqlite`, `node:test`.
-  - **Dynamic loading observed:** `require`.
 
 - [`test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — Offline real-handler tests for all provider searches, numbered choices, session isolation, options and member policy.
   - **References:**
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/utils/jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/utils/memberCommandPolicy.js`](../Whatsapp%20bot/utils/memberCommandPolicy.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/database.js`](../Whatsapp%20bot/database.js) — require and test-only instrumentation.
-  - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — invoked via npm test:media.
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm test:media script.
+    - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/memberCommandPolicy.js`](../Whatsapp%20bot/utils/memberCommandPolicy.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — require and test-only instrumentation.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `node:assert/strict`, `node:fs`, `node:os`, `node:path`, `node:test`.
 
 - [`test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — Offline mocked tests for provider search, URL validation, public indexes and metadata fallback.
   - **References:**
     - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require and test-only instrumentation.
-  - **Referenced by:**
-    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — invoked via npm test:media.
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm test:media script.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `axios`, `node:assert/strict`, `node:http`, `node:test`.
 
 - [`test-service-startup.js`](../Whatsapp%20bot/scripts/test-service-startup.js) — Tests startup order and cleanup when session or bridge startup fails.
   - **References:**
     - [`Whatsapp bot/utils/serviceStartup.js`](../Whatsapp%20bot/utils/serviceStartup.js) — require.
-  - **Referenced by:**
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `node:assert/strict`, `node:test`.
 
 - [`test-session-backup.js`](../Whatsapp%20bot/scripts/test-session-backup.js) — Tests encrypted session backup, restoration, eligibility, and revocation behavior.
   - **References:**
     - [`Whatsapp bot/utils/sessionBackup.js`](../Whatsapp%20bot/utils/sessionBackup.js) — require.
-  - **Referenced by:**
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `crypto`, `fs`, `node:assert/strict`, `node:test`, `os`, `path`.
 
 - [`test-sessions.js`](../Whatsapp%20bot/scripts/test-sessions.js) — Tests multi-account session lifecycle and permissions.
   - **References:**
     - [`Whatsapp bot/utils/sessionManager.js`](../Whatsapp%20bot/utils/sessionManager.js) — require.
-  - **Referenced by:**
-    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
+  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `node:assert/strict`, `node:events`, `node:fs`, `node:os`, `node:path`, `node:test`.
+
+- [`test-preflight.js`](../Whatsapp%20bot/scripts/test-preflight.js) — Offline bot preflight regression tests.
+  - **References:** none detected in this snapshot.
+  - **Referenced by:**
+    - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — CI invocation.
 
 ### `Whatsapp bot/utils/`
 
@@ -3756,7 +3660,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/commands/admin/users.js`](../Whatsapp%20bot/commands/admin/users.js) — require.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-account-routing.js`](../Whatsapp%20bot/scripts/test-account-routing.js) — require.
     - [`Whatsapp bot/utils/adminApi.js`](../Whatsapp%20bot/utils/adminApi.js) — require.
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
@@ -3778,10 +3681,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/accessControl.js`](../Whatsapp%20bot/utils/accessControl.js) — require.
     - [`Whatsapp bot/utils/logger.js`](../Whatsapp%20bot/utils/logger.js) — require.
   - **Referenced by:**
-    - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — optional HTTP API.
-    - [`dashboard/README.md`](../dashboard/README.md) — file path mentioned.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `crypto`, `http`.
 
 - [`allowlistSync.js`](../Whatsapp%20bot/utils/allowlistSync.js) — Compatibility wrapper around the outbound dashboard sync.
@@ -3803,7 +3703,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/commands/general/providers.js`](../Whatsapp%20bot/commands/general/providers.js) — require.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-delivery.js`](../Whatsapp%20bot/scripts/test-delivery.js) — require.
     - [`Whatsapp bot/utils/diskGuard.js`](../Whatsapp%20bot/utils/diskGuard.js) — require.
   - **Outside modules:** `fs`, `path`.
@@ -3833,21 +3732,17 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — dynamic command discovery.
   - **Referenced by:**
     - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `fs`, `path`.
-  - **Dynamic loading observed:** `require`.
 
 - [`converter.js`](../Whatsapp%20bot/utils/converter.js) — Resolves and runs ffmpeg conversion helpers.
   - **References:**
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/ffmpeg.js`](../Whatsapp%20bot/utils/ffmpeg.js) — require.
   - **Outside modules:** `@ffmpeg-installer/ffmpeg`, `child_process`, `fs`, `os`, `path`.
 
 - [`dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — Sends outbound authenticated heartbeats and synchronizes commands, access, and policy with the dashboard.
   - **References:**
-    - [`dashboard/app/api/bot/sync/route.ts`](../dashboard/app/api/bot/sync/route.ts) — route URL reference, outbound HTTP.
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
     - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — require.
     - [`Whatsapp bot/utils/accessControl.js`](../Whatsapp%20bot/utils/accessControl.js) — require.
@@ -3855,16 +3750,14 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — require.
     - [`Whatsapp bot/utils/logger.js`](../Whatsapp%20bot/utils/logger.js) — require.
     - [`Whatsapp bot/utils/memberCommandPolicy.js`](../Whatsapp%20bot/utils/memberCommandPolicy.js) — require.
-    - [`Whatsapp bot/utils/panelClient.js`](../Whatsapp%20bot/utils/panelClient.js) — require.
     - [`Whatsapp bot/utils/telemetry.js`](../Whatsapp%20bot/utils/telemetry.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/.env.example`](../Whatsapp%20bot/.env.example) — explicit relationship.
     - [`Whatsapp bot/commands/admin/users.js`](../Whatsapp%20bot/commands/admin/users.js) — require.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-bridge.js`](../Whatsapp%20bot/scripts/test-bridge.js) — require.
     - [`Whatsapp bot/utils/allowlistSync.js`](../Whatsapp%20bot/utils/allowlistSync.js) — require.
     - [`Whatsapp bot/utils/sessionBackup.js`](../Whatsapp%20bot/utils/sessionBackup.js) — require.
+    - [`dashboard/tests/single-host-e2e.test.ts`](../dashboard/tests/single-host-e2e.test.ts) — require.
   - **Outside modules:** `crypto`, `path`.
 
 - [`diskGuard.js`](../Whatsapp%20bot/utils/diskGuard.js) — Monitors disk use and triggers guarded cleanup.
@@ -3901,7 +3794,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — require.
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
   - **Outside modules:** `axios`.
 
@@ -3913,7 +3805,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/general/providers.js`](../Whatsapp%20bot/commands/general/providers.js) — require.
     - [`Whatsapp bot/commands/general/sticker.js`](../Whatsapp%20bot/commands/general/sticker.js) — require.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — computed bot-root path.
     - [`Whatsapp bot/utils/mediaTransfer.js`](../Whatsapp%20bot/utils/mediaTransfer.js) — require.
     - [`Whatsapp bot/utils/movieHost.js`](../Whatsapp%20bot/utils/movieHost.js) — lazy import.
@@ -3924,7 +3815,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`hotReload.js`](../Whatsapp%20bot/utils/hotReload.js) — Reloads bot command/runtime modules without relying on a panel restart.
   - **References:**
-    - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — computed bot-root path.
     - [`Whatsapp bot/utils/nm3u8dl.js`](../Whatsapp%20bot/utils/nm3u8dl.js) — require.
     - [`Whatsapp bot/utils/telemetry.js`](../Whatsapp%20bot/utils/telemetry.js) — require.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
@@ -3933,7 +3823,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
     - [`Whatsapp bot/scripts/test-account-routing.js`](../Whatsapp%20bot/scripts/test-account-routing.js) — require.
   - **Outside modules:** `path`.
-  - **Dynamic loading observed:** `require`.
 
 - [`jid.js`](../Whatsapp%20bot/utils/jid.js) — Normalizes and matches WhatsApp phone-number and LID identifiers.
   - **References:**
@@ -3967,10 +3856,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
   - **Outside modules:** `os`.
@@ -3980,7 +3869,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/commands/general/paper.js`](../Whatsapp%20bot/commands/general/paper.js) — require.
     - [`Whatsapp bot/database.js`](../Whatsapp%20bot/database.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/accessControl.js`](../Whatsapp%20bot/utils/accessControl.js) — require.
     - [`Whatsapp bot/utils/mediaSettings.js`](../Whatsapp%20bot/utils/mediaSettings.js) — require.
     - [`Whatsapp bot/utils/memberCommandPolicy.js`](../Whatsapp%20bot/utils/memberCommandPolicy.js) — require.
@@ -3999,7 +3887,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/adminApi.js`](../Whatsapp%20bot/utils/adminApi.js) — require.
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
     - [`Whatsapp bot/utils/diskSpace.js`](../Whatsapp%20bot/utils/diskSpace.js) — require.
@@ -4009,7 +3896,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — Shared URL-download and WhatsApp delivery pipeline.
   - **References:**
-    - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — require.
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
     - [`Whatsapp bot/utils/diskSpace.js`](../Whatsapp%20bot/utils/diskSpace.js) — require.
     - [`Whatsapp bot/utils/downloadProviders.js`](../Whatsapp%20bot/utils/downloadProviders.js) — require.
@@ -4020,12 +3906,13 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require.
     - [`Whatsapp bot/utils/userErrors.js`](../Whatsapp%20bot/utils/userErrors.js) — require.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
+    - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — computed bot-root path.
     - [`Whatsapp bot/commands/media/dl.js`](../Whatsapp%20bot/commands/media/dl.js) — require.
     - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
     - [`Whatsapp bot/commands/media/spotify.js`](../Whatsapp%20bot/commands/media/spotify.js) — require.
+    - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — computed bot-root path and stubbed downloader.
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
   - **Outside modules:** `fs`, `path`.
 
 - [`mediaSettings.js`](../Whatsapp%20bot/utils/mediaSettings.js) — Persisted media behavior settings.
@@ -4035,7 +3922,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — require.
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/downloadProviders.js`](../Whatsapp%20bot/utils/downloadProviders.js) — require.
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
     - [`Whatsapp bot/utils/movieHost.js`](../Whatsapp%20bot/utils/movieHost.js) — lazy import.
@@ -4050,7 +3936,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/media/movie.js`](../Whatsapp%20bot/commands/media/movie.js) — require.
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — computed bot-root path.
     - [`Whatsapp bot/utils/jobDelivery.js`](../Whatsapp%20bot/utils/jobDelivery.js) — require.
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
@@ -4062,9 +3947,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`Whatsapp bot/utils/jsonStore.js`](../Whatsapp%20bot/utils/jsonStore.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require.
     - [`Whatsapp bot/scripts/test-account-routing.js`](../Whatsapp%20bot/scripts/test-account-routing.js) — require.
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
   - **Outside modules:** `crypto`, `path`.
 
@@ -4081,9 +3966,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/general/providers.js`](../Whatsapp%20bot/commands/general/providers.js) — require.
     - [`Whatsapp bot/commands/media/movie.js`](../Whatsapp%20bot/commands/media/movie.js) — require.
     - [`Whatsapp bot/commands/media/series.js`](../Whatsapp%20bot/commands/media/series.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `path`, `url`.
-  - **Dynamic loading observed:** `import`.
 
 - [`movieHost.js`](../Whatsapp%20bot/utils/movieHost.js) — Host adapter exposing the bot's temp, download, ffmpeg, HLS, and delivery helpers to the engine.
   - **References:**
@@ -4095,13 +3978,11 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — lazy import.
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require, lazy import.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — computed bot-root path and test-only instrumentation.
     - [`Whatsapp bot/commands/media/movie.js`](../Whatsapp%20bot/commands/media/movie.js) — require.
     - [`Whatsapp bot/commands/media/series.js`](../Whatsapp%20bot/commands/media/series.js) — require.
     - [`Whatsapp bot/engine/host.js`](../Whatsapp%20bot/engine/host.js) — lazy import.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
+    - [`Whatsapp bot/scripts/test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — computed bot-root path and test-only instrumentation.
   - **Outside modules:** `fs`, `path`.
-  - **Dynamic loading observed:** `require`.
 
 - [`nm3u8dl.js`](../Whatsapp%20bot/utils/nm3u8dl.js) — Installs, checks, and invokes the N_m3u8DL-RE HLS/DASH helper.
   - **References:**
@@ -4110,23 +3991,15 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/commands/general/providers.js`](../Whatsapp%20bot/commands/general/providers.js) — require.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — computed bot-root path.
     - [`Whatsapp bot/utils/hotReload.js`](../Whatsapp%20bot/utils/hotReload.js) — require.
     - [`Whatsapp bot/utils/movieHost.js`](../Whatsapp%20bot/utils/movieHost.js) — lazy import.
   - **Outside modules:** `axios`, `child_process`, `fs`, `https`, `os`, `path`, `zlib`.
 
-- [`panelClient.js`](../Whatsapp%20bot/utils/panelClient.js) — Optional HTTPS Pterodactyl/Hydrodactyl panel API client.
-  - **References:** none detected in this snapshot.
-  - **Referenced by:**
-    - [`Whatsapp bot/commands/admin/botmanage.js`](../Whatsapp%20bot/commands/admin/botmanage.js) — require.
-    - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
-
 - [`paperSearch.js`](../Whatsapp%20bot/utils/paperSearch.js) — Normalizes and suggests exam-paper search terms.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
     - [`Whatsapp bot/commands/general/paper.js`](../Whatsapp%20bot/commands/general/paper.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
 
 - [`persistentJobs.js`](../Whatsapp%20bot/utils/persistentJobs.js) — Persistent background-job queue, recovery, retries, and workers.
   - **References:**
@@ -4152,9 +4025,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — Provider-scoped title discovery, public search sources, safe result parsing, and Youku original-title fallback.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
+    - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
     - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
   - **Outside modules:** `axios`, `cheerio`, `crypto`.
 
 - [`rcloneStore.js`](../Whatsapp%20bot/utils/rcloneStore.js) — Optional external link storage for large background-job results.
@@ -4168,14 +4041,12 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`reconnect.js`](../Whatsapp%20bot/utils/reconnect.js) — Reconnect scheduling and exponential backoff.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/sessionManager.js`](../Whatsapp%20bot/utils/sessionManager.js) — require.
 
 - [`safeLog.js`](../Whatsapp%20bot/utils/safeLog.js) — Redacts sensitive data from console output.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/logger.js`](../Whatsapp%20bot/utils/logger.js) — require.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
 
@@ -4185,15 +4056,14 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/accountSockets.js`](../Whatsapp%20bot/utils/accountSockets.js) — require.
     - [`Whatsapp bot/utils/jid.js`](../Whatsapp%20bot/utils/jid.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
     - [`Whatsapp bot/commands/media/movie.js`](../Whatsapp%20bot/commands/media/movie.js) — require.
     - [`Whatsapp bot/commands/media/series.js`](../Whatsapp%20bot/commands/media/series.js) — require.
+    - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
     - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-account-routing.js`](../Whatsapp%20bot/scripts/test-account-routing.js) — require.
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/utils/movieHost.js`](../Whatsapp%20bot/utils/movieHost.js) — lazy import.
   - **Outside modules:** `@whiskeysockets/baileys`, `crypto`.
 
@@ -4205,11 +4075,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`sessionBackup.js`](../Whatsapp%20bot/utils/sessionBackup.js) — Encrypts, restores, uploads, and revokes eligible multi-file session backups.
   - **References:**
-    - [`dashboard/app/api/bot/session-backups/route.ts`](../dashboard/app/api/bot/session-backups/route.ts) — route URL reference, outbound HTTP.
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
     - [`Whatsapp bot/utils/jsonStore.js`](../Whatsapp%20bot/utils/jsonStore.js) — require.
+    - [`dashboard/app/api/bot/session-backups/route.ts`](../dashboard/app/api/bot/session-backups/route.ts) — route URL reference, outbound HTTP.
   - **Referenced by:**
-    - [`Whatsapp bot/.env.example`](../Whatsapp%20bot/.env.example) — explicit relationship.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
     - [`Whatsapp bot/scripts/test-session-backup.js`](../Whatsapp%20bot/scripts/test-session-backup.js) — require.
   - **Outside modules:** `crypto`, `fs`, `path`, `zlib`.
@@ -4221,7 +4090,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/reconnect.js`](../Whatsapp%20bot/utils/reconnect.js) — require.
   - **Referenced by:**
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-sessions.js`](../Whatsapp%20bot/scripts/test-sessions.js) — require.
   - **Outside modules:** `crypto`, `fs`, `path`.
 
@@ -4230,7 +4098,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
   - **Referenced by:**
     - [`Whatsapp bot/commands/media/spotify.js`](../Whatsapp%20bot/commands/media/spotify.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `axios`.
 
 - [`telemetry.js`](../Whatsapp%20bot/utils/telemetry.js) — In-process command and service telemetry counters.
@@ -4245,7 +4112,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
     - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
     - [`Whatsapp bot/utils/hotReload.js`](../Whatsapp%20bot/utils/hotReload.js) — require.
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
@@ -4261,7 +4127,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/test-delivery.js`](../Whatsapp%20bot/scripts/test-delivery.js) — require.
     - [`Whatsapp bot/utils/cleanup.js`](../Whatsapp%20bot/utils/cleanup.js) — require.
     - [`Whatsapp bot/utils/converter.js`](../Whatsapp%20bot/utils/converter.js) — require.
@@ -4296,7 +4161,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/safeLog.js`](../Whatsapp%20bot/utils/safeLog.js) — require.
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — test-only instrumentation and computed bot-root path.
     - [`Whatsapp bot/commands/admin/cookies.js`](../Whatsapp%20bot/commands/admin/cookies.js) — require.
     - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — require.
     - [`Whatsapp bot/commands/media/dl.js`](../Whatsapp%20bot/commands/media/dl.js) — require.
@@ -4305,7 +4169,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/media/spotify.js`](../Whatsapp%20bot/commands/media/spotify.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — computed bot-root path and test-only instrumentation.
     - [`Whatsapp bot/utils/hotReload.js`](../Whatsapp%20bot/utils/hotReload.js) — require.
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
     - [`Whatsapp bot/utils/providerRouter.js`](../Whatsapp%20bot/utils/providerRouter.js) — require.
@@ -4322,13 +4186,11 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/spotify.js`](../Whatsapp%20bot/commands/media/spotify.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
   - **Outside modules:** `yt-search`.
 
 - [`yt1d.js`](../Whatsapp%20bot/utils/yt1d.js) — Remote YouTube resolver fallback.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/downloadProviders.js`](../Whatsapp%20bot/utils/downloadProviders.js) — require.
   - **Outside modules:** `ws`.
 
@@ -4338,7 +4200,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — require.
     - [`Whatsapp bot/commands/admin/ytlogin.js`](../Whatsapp%20bot/commands/admin/ytlogin.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — require.
   - **Outside modules:** `fs`, `path`, `youtubei.js`.
 
@@ -4349,11 +4210,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
     - [`Whatsapp bot/utils/ytAuth.js`](../Whatsapp%20bot/utils/ytAuth.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — test-only instrumentation.
-    - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
     - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — require.
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
-    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — test-only instrumentation.
+    - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
     - [`Whatsapp bot/utils/youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — require.
   - **Outside modules:** `bgutils-js`, `child_process`, `crypto`, `fs`, `googlevideo/sabr-stream`, `googlevideo/utils`, `jsdom`, `path`, `stream`, `stream/promises`, `youtubei.js`.

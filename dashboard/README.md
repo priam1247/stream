@@ -1,6 +1,6 @@
 # ZaFar Control Room (Web Portal)
 
-Standalone Next.js 16 application for member sign-in, WhatsApp number self-service, and the administrator console (`/admin`). It talks to the live bot over `/admin/api/*` (`Whatsapp bot/utils/adminApi.js`, started by `Whatsapp bot/index.js`) through a server-side proxy (`lib/bot-proxy.ts`) so `ADMIN_DASHBOARD_TOKEN` never leaves the server.
+Standalone Next.js 16 application for member sign-in, WhatsApp number self-service, and the administrator console (`/admin`). The Botkeep service synchronizes outbound over HTTPS; an optional direct bridge can be configured separately. Secrets stay server-side.
 
 ## Deploying on Vercel (or Self-Hosted Node)
 
@@ -23,54 +23,54 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 | `RESEND_API_KEY` + `EMAIL_FROM` | Pick Resend **or** SMTP | Sends 6-digit verification & password-reset codes over HTTPS (works cleanly on serverless/edge hosts). |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Pick Resend **or** SMTP | Direct SMTP mail delivery (e.g. Gmail App Password on port `587` or `465`). |
 | `ZAFAR_AUTH_API_URL` | Optional (legacy migration only) | Leave empty. If set during migration from an older external auth service, existing accounts are verified once (6 s cap) and migrated permanently into local D1. |
-| `BOT_API_URL` / `ADMIN_DASHBOARD_TOKEN` | Optional | Defaults if not yet saved inside `/admin` → **Bot**. |
+| `BOT_SYNC_TOKEN` | Recommended | Shared private token for the bot’s outbound sync. |
+| `BOTKEEP_BOT_API_URL` / `BOTKEEP_BOT_ADMIN_TOKEN` | Optional | Botkeep-only direct bridge defaults; older generic bridge addresses and tokens are not used for inbound control. |
+| `BOTKEEP_WORKLOAD_ID` / `BOTKEEP_API_KEY` | Optional | Explicit Botkeep server ID and Developer API key for server status and power. The key needs `workloads:read` and `power:write`. |
 
-## Linking the Bot Securely (HTTPS Tunnel Recommended)
+## Linking Botkeep securely
 
-1. **On the bot host / panel** (`.env` or Startup Variables):
-   ```ini
-   ADMIN_API_PORT=3000
-   ADMIN_DASHBOARD_TOKEN=<long-random-shared-secret>
-   DASHBOARD_URL=https://your-portal.vercel.app
-   # Optional if any browser origin ever calls the bot directly:
-   ADMIN_CORS_ORIGINS=https://your-portal.vercel.app
-   ```
-   Restart the bot and confirm `Dashboard API: on` in the console.
-2. **Expose `/admin/api` over HTTPS (Cloudflare Tunnel recommended)**:
-   Plain `http://<node-ip>:<port>` works through the server-side proxy, but sends `ADMIN_DASHBOARD_TOKEN` unencrypted across the network. Whenever possible, put `cloudflared` or an HTTPS reverse proxy in front of the bot port:
-   ```bash
-   # Quick tunnel test:
-   cloudflared tunnel --url http://127.0.0.1:3000
+For normal operation set `DASHBOARD_URL` and a private `BOT_SYNC_TOKEN` on the
+Botkeep service, and configure the same token under **WhatsApp → Sync** or as a
+dashboard environment secret. The bot initiates the connection; no inbound bot
+port is needed. Keep `SESSION_BACKUP_KEY` unchanged if encrypted recovery is in
+use. Old saved single-host sync credentials remain supported; a saved Botkeep
+role token is used only when no single-host token or legacy admin token exists.
+The owner can explicitly save the matching token if needed. Sync and recovery
+requests must include the timestamped HMAC signature and nonce used by the
+Botkeep client; bearer-only clients must be updated.
 
-   # Permanent production tunnel (Cloudflare Zero Trust → Networks → Tunnels):
-   # Route https://bot-api.yourdomain.com → http://127.0.0.1:3000
-   ```
-3. **Save inside `/admin` → Bot**:
-   Paste the `https://` tunnel URL (or `http://<node-ip>:<allocated-port>`) and the same `ADMIN_DASHBOARD_TOKEN`, then click **Test & Save Bot Link**.
-   - The owner view separates the bot bridge from the bot's reported WhatsApp connection. A missing or stale heartbeat is not proof that the hosting server itself is offline.
-   - If the bot has no inbound tunnel, keep `DASHBOARD_URL` and `BOT_SYNC_TOKEN` set so the bot can synchronize via its outbound heartbeat. The displayed list sync state compares the most recent reported whitelist version, not a guarantee that every individual action was applied.
+An optional direct bot bridge can be enabled separately on Botkeep. Enter its
+HTTPS address and token under **WhatsApp → Sync**, or set
+`BOTKEEP_BOT_API_URL` and `BOTKEEP_BOT_ADMIN_TOKEN` server-side. Old generic
+bridge addresses and old hosting-panel credentials are intentionally ignored,
+so they cannot silently target a previous host. Prefer HTTPS for all token
+traffic. A heartbeat is a report by the bot, not proof of hosting power state.
+
+Botkeep server controls are optional. In **WhatsApp → Hosting**, explicitly
+enter the Botkeep server/workload ID and a Botkeep Developer API key. The
+server sends credentials only to the fixed official HTTPS Developer API. It
+does not discover or choose a server automatically. Power requests require an
+owner confirmation and an accepted request does not mean it has completed.
+
+If an older coordinated bot is still running on Botkeep, stop it before
+updating the bot code and synchronizing the single-host token. The older code
+expects lease grants that the current dashboard no longer issues. Preserve its
+existing environment, database and session, and do not run a second copy. The
+separate deployment branch remains owner-managed.
 
 ## Owner control room and security
 
-- **WhatsApp → Status** distinguishes the XS primary and Botkeep standby after
-  each sends a failover heartbeat. A missing check-in is not proof of host
-  power state. The coordinated mode needs D1, updated bot code, separate
-  WhatsApp devices, and distinct XS and Botkeep sync tokens generated under
-  **WhatsApp → Sync**; see the bot README for the safe migration procedure.
-  Old shared/legacy tokens cannot claim either role. Direct per-host bridging
-  is disabled while coordinated failover is enabled.
-  The XS panel URL and server ID are defaults; old Botkeep panel credentials
-  remain separate and are never automatically forwarded to XS.
+- **WhatsApp → Status** shows the single service and optional Botkeep server
+  state. A missing check-in is not proof that the server is powered off.
 - Sign-in is kept only in the current page's memory. A full refresh or a closed,
   reopened or restored tab requires sign-in again; pending member pairing progress
   and its resend cooldown remain recoverable after signing in.
 - The owner home combines bot bridge, WhatsApp, Scribd, number-list and optional
-  hosting-panel checks. Hosting status is requested only when a panel API key and
-  explicit server ID are configured, at most once per minute during routine polling
-  while the page is open. Unreachable or unrecognized panel responses remain
-  **unknown**, not automatically offline. Power actions require confirmation;
-  multiple discovered servers require an explicit ID and a failed command is never
-  retried on a different server.
+  Botkeep server checks. Status is requested only with a Botkeep Developer API
+  key and explicit server ID, at most once per minute during routine polling while
+  the page is open. Unreachable or unrecognized responses remain **unknown**,
+  not automatically offline. Power actions require confirmation and are never
+  retried against a different server or queued to an older bot.
 - The member-linking pause blocks new linking and pairing requests. It is not a
   reliable kill switch for numbers already approved on the bot. Blocking or allowing
   a member changes that member's stored numbers too; allowing re-enables them.
@@ -112,8 +112,7 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
   Check **WhatsApp → Sync** and follow the recovery instructions in the bot README
   before moving hosts. A lost key, unsynchronized revocation, stale snapshot, or
   WhatsApp revocation can require a fresh link. Run only one bot instance per
-  session. The former XS SFTP workflow now requires a deliberate manual
-  confirmation and never uploads merely because code was merged to main.
+  session. Repository CI never uploads or restarts the service.
 
 ## Local Development
 
@@ -126,11 +125,11 @@ npm test
 npm run build
 ```
 
-If D1 is configured but unreachable, failover fails closed. For **isolated local
-single-host development only**, set `ZAFAR_DEV_STANDALONE_FALLBACK=1` to opt
-into the disk fallback. Never enable that override for a dashboard connected to
-live coordinated hosts; fenced operations and leases still require D1. It has no
-effect in production.
+If D1 is configured but unreachable, requests fail rather than silently using
+local disk. For **isolated local development only**, set
+`ZAFAR_DEV_STANDALONE_FALLBACK=1` to opt into the disk fallback. Never use that
+override for a dashboard connected to live accounts. It has no effect in
+production. Encrypted session recovery always requires D1.
 
 The Scribd contract test requires Python 3 and the `scribd` directory
 from this repository. It runs the unmodified web handler against temporary

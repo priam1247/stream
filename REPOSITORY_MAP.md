@@ -1,6 +1,6 @@
 # Complete repository map
 
-This map covers the 346 tracked files at commit `c6176af` plus the three files added for provider title search: **349 files** in this snapshot. The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
+This map covers **353 repository files** in the current single-Botkeep snapshot. The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
 
 ## Contents
 
@@ -154,10 +154,9 @@ The previously diagnosed page-audit logger crash is still present in this snapsh
 
 ## Automation, tests, and deployment
 
-- `.github/workflows/deploy-panel.yml` runs the bot safeguard/self-tests and dashboard tests, typecheck, and build. Its old SFTP upload is gated behind **manual workflow dispatch with explicit confirmation**; ordinary pushes do not upload to the retired panel. Botkeep deployment is separate.
-- The root `README.md` and parts of `Whatsapp bot/README.md` contain older automatic-deployment/`working scribd/` wording. The workflow and current `scribd/` directory are the source of truth; the old `working scribd/` link is not a current file.
-- `Whatsapp bot/scripts/` contains offline tests plus a separate live N_m3u8DL-RE smoke test. The media tests mock network and media, and the extractor test checks URL recognition only; they do not verify live provider downloads. `dashboard/tests/` is discovered by `vitest.config.ts`; the contract fixture starts the real Scribd HTTP handler locally with external operations stubbed. `scribd/test_*.py` covers Python tools separately.
-- `dashboard/package.json` and `Whatsapp bot/package.json` are independent npm projects with separate lockfiles. `scribd/requirements.txt`, the optional MuPDF/Discord requirements, and `scribd/uploads/requirements.txt` define separate Python dependency sets.
+- `.github/workflows/ci.yml` runs bot and dashboard tests, typecheck, and build. It performs validation only: it does not upload files or restart a service. Botkeep deployment is separately managed by the owner.
+- `Whatsapp bot/scripts/` contains offline tests plus a separate live N_m3u8DL-RE smoke test. Media tests mock network and media, and the extractor test checks URL recognition only; they do not verify live provider downloads. `dashboard/tests/` is discovered by `vitest.config.ts`; the contract fixture starts the real Scribd HTTP handler locally with external operations stubbed. `scribd/test_*.py` covers Python tools separately.
+- `dashboard/package.json` and `Whatsapp bot/package.json` are independent npm projects with separate lockfiles. `scribd/requirements.txt`, optional MuPDF/Discord requirements, and `scribd/uploads/requirements.txt` define separate Python dependency sets.
 - A GitHub Actions pass or public `/health` response is not proof that a production bot session, private token, full PDF conversion, or live D1 recovery works.
 
 ## State and secrets outside Git
@@ -237,16 +236,10 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 ```text
 .
 ├── .github/
-│   ├── scripts/
-│   │   ├── bot-diff.sh
-│   │   ├── check-bot-freshness.sh
-│   │   ├── check-panel-config.sh
-│   │   ├── restart-panel.sh
-│   │   └── should-deploy-bot.sh
 │   ├── tests/
-│   │   └── deploy-bot-gate.test.cjs
+│   │   └── repository-safety.test.cjs
 │   └── workflows/
-│       └── deploy-panel.yml
+│       └── ci.yml
 ├── dashboard/
 │   ├── app/
 │   │   ├── admin/
@@ -375,6 +368,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── bot-data.ts
 │   │   ├── bot-proxy.ts
 │   │   ├── bot-sync-auth.ts
+│   │   ├── botkeep-config.ts
 │   │   ├── client-session.ts
 │   │   ├── control-room.ts
 │   │   ├── email-service.ts
@@ -403,6 +397,9 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── admin-route-authorization.test.ts
 │   │   ├── auth-screen.test.tsx
 │   │   ├── auth-security.test.ts
+│   │   ├── bot-settings-route.test.ts
+│   │   ├── bot-sync-auth.test.ts
+│   │   ├── bot-sync-route.test.ts
 │   │   ├── client-session.test.ts
 │   │   ├── control-room-alerts.test.ts
 │   │   ├── control-room-security.test.ts
@@ -429,6 +426,9 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── scribd-web-contract.test.ts
 │   │   ├── session-backup-api.test.ts
 │   │   ├── session-backup-sqlite.test.ts
+│   │   ├── single-host-e2e.test.ts
+│   │   ├── single-host-storage.test.ts
+│   │   ├── storage-outage.test.ts
 │   │   ├── support-desk.test.tsx
 │   │   ├── sync-status.test.ts
 │   │   ├── whatsapp-bridge.test.ts
@@ -563,6 +563,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   │   │   ├── hdhub4u.js
 │   │   │   │   └── moviesdrive.js
 │   │   │   ├── debrid/
+│   │   │   │   ├── _http.js
 │   │   │   │   ├── alldebrid.js
 │   │   │   │   ├── index.js
 │   │   │   │   └── realdebrid.js
@@ -585,7 +586,8 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   │       └── yts.js
 │   │   ├── utils/
 │   │   │   ├── disk.js
-│   │   │   └── format.js
+│   │   │   ├── format.js
+│   │   │   └── httpBody.js
 │   │   ├── config.js
 │   │   ├── host.js
 │   │   └── package.json
@@ -599,6 +601,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── test-media-extractors.py
 │   │   ├── test-media-shortcuts.js
 │   │   ├── test-nm3u8dl-live.js
+│   │   ├── test-preflight.js
 │   │   ├── test-provider-core.js
 │   │   ├── test-provider-search-handler.js
 │   │   ├── test-provider-search.js
@@ -632,7 +635,6 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── movieEngine.js
 │   │   ├── movieHost.js
 │   │   ├── nm3u8dl.js
-│   │   ├── panelClient.js
 │   │   ├── paperSearch.js
 │   │   ├── persistentJobs.js
 │   │   ├── providerRouter.js

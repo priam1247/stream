@@ -46,15 +46,6 @@ function createSessionManager(opts) {
   const canPair = (number) => {
     try { return opts.canPair ? Boolean(opts.canPair(number)) : allowed(number); } catch { return false; }
   };
-  // Optional failover gate also covers the primary account and every outgoing
-  // reply, including work that began before the active lease expired.
-  const canServe = () => { try { return opts.canServe ? opts.canServe() === true : true; } catch { return false; } };
-  const ownsCommand = (guard) => {
-    try { return canServe() && (guard === undefined || (typeof guard === 'function' && guard() === true)); }
-    catch { return false; }
-  };
-  const leaseError = () => Object.assign(new Error('This command no longer owns the WhatsApp lease.'), { statusCode: 409, code: 'STALE_LEASE' });
-  const assertCommand = (guard) => { if (!ownsCommand(guard)) throw leaseError(); };
   const notify = () => { try { opts.onStatusChange?.(); } catch { /* non-fatal */ } };
   const validManifest = (data) => Boolean(
     data && data.version === 1 && data.accounts && typeof data.accounts === 'object' && !Array.isArray(data.accounts) &&
@@ -99,7 +90,7 @@ function createSessionManager(opts) {
       id, number, attempt,
       dir: number ? path.join(linkedRoot, number, attempt) : primaryDir,
       status: state, pairNumber, sock: null, auth: null, connected: false,
-      stopped: false, starting: null, requestStarted: false, pairResult: null, pairGuard: undefined,
+      stopped: false, starting: null, requestStarted: false, pairResult: null,
       waiters: [], expiryTimer: null, seen: new Map(),
     };
     entry.reconnector = createReconnector({
@@ -171,16 +162,10 @@ function createSessionManager(opts) {
     if (!entry.pairNumber || entry.requestStarted || entry.stopped || entry.sock !== sock || entry.auth?.creds?.registered) return;
     entry.requestStarted = true;
     try {
-      // Primary devices must be able to pair before any lease exists. Member
-      // pairing commands, however, must still own their original epoch at the
-      // exact point where WhatsApp is asked to issue a code.
-      if (entry.number) assertCommand(entry.pairGuard);
       if (entry.number && !canPair(entry.number)) {
         throw Object.assign(new Error('Number is no longer enabled'), { statusCode: 403 });
       }
-      if (entry.number) assertCommand(entry.pairGuard);
       const code = await sock.requestPairingCode(entry.pairNumber);
-      if (entry.number) assertCommand(entry.pairGuard);
       if (entry.number && !canPair(entry.number)) {
         throw Object.assign(new Error('Number is no longer enabled'), { statusCode: 403 });
       }
@@ -195,10 +180,9 @@ function createSessionManager(opts) {
     } catch (err) {
       if (entry.stopped || entry.sock !== sock) return;
       log.warn(`Could not request a linking code: ${err?.message || err}`);
-      const error = err?.code === 'STALE_LEASE' ? leaseError() : Object.assign(new Error(err?.statusCode === 403
+      settlePair(entry, Object.assign(new Error(err?.statusCode === 403
         ? 'This number is no longer enabled.'
-        : 'WhatsApp could not issue a linking code. Please try again.'), { statusCode: err?.statusCode === 403 ? 403 : 502 });
-      settlePair(entry, error);
+        : 'WhatsApp could not issue a linking code. Please try again.'), { statusCode: err?.statusCode === 403 ? 403 : 502 }));
       if (entry.number) {
         mark(entry, 'expired');
         void retire(entry, 'Linking request failed');
@@ -219,19 +203,16 @@ function createSessionManager(opts) {
         try { await old.end(new Error('reconnecting')); } catch { /* already closed */ }
       }
       entry.requestStarted = false;
-      if (entry.number && entry.status === 'pending' && entry.pairGuard && !entry.auth?.creds?.registered) assertCommand(entry.pairGuard);
       const auth = await opts.loadAuthState(entry.dir);
       if (stopped || entry.stopped) return null;
       entry.auth = auth.state;
-      if (entry.number && entry.status === 'pending' && entry.pairGuard && !entry.auth?.creds?.registered) assertCommand(entry.pairGuard);
       const version = await opts.getVersion();
       if (stopped || entry.stopped) return null;
-      if (entry.number && entry.status === 'pending' && entry.pairGuard && !entry.auth?.creds?.registered) assertCommand(entry.pairGuard);
       const sock = opts.makeSocket({ auth: auth.state, version });
       sock.__sessionId = entry.id;
       sock.__sessionDir = entry.dir;
       sock.__accountNumber = entry.number;
-      sock.__canRespond = () => canServe() && (!entry.number || allowed(entry.number));
+      sock.__canRespond = () => !entry.number || allowed(entry.number);
       entry.sock = sock;
       // A long-running command can finish after approval is revoked or after
       // its socket is replaced. Recheck at send time as well as at dispatch.
@@ -306,7 +287,7 @@ function createSessionManager(opts) {
           if (sentAt && now - sentAt > 5 * 60_000) continue;
           entry.seen.set(key, now);
           Promise.resolve().then(() => {
-            // The lease/approval can change before this queued microtask runs.
+            // Approval or the socket can change before this microtask runs.
             if (entry.stopped || entry.sock !== sock || !entry.connected || !sock.__canRespond()) return;
             return opts.onMessage(sock, msg);
           }).catch((err) => {
@@ -328,12 +309,6 @@ function createSessionManager(opts) {
     if (entry.stopped) return;
     try { await connect(entry); }
     catch (err) {
-      if (err?.code === 'STALE_LEASE' && entry.number && !entry.auth?.creds?.registered) {
-        settlePair(entry, leaseError());
-        mark(entry, 'expired');
-        await retire(entry, 'Linking command no longer owns the lease');
-        return;
-      }
       log.warn(`Could not start a WhatsApp session: ${err?.message || err}`);
       entry.reconnector.schedule();
     }
@@ -362,8 +337,7 @@ function createSessionManager(opts) {
     return numberFromCreds({ me: primary.sock?.user }) || numberFromCreds(primary.auth?.creds) || numberFromCreds(credentialsOnDisk(primaryDir));
   }
 
-  async function doRequestPair(number, guard) {
-    assertCommand(guard);
+  async function doRequestPair(number) {
     if (stopped) throw Object.assign(new Error('WhatsApp service is stopping.'), { statusCode: 503 });
     if (manifestError) throw Object.assign(new Error('Linked-account index is unavailable. Restore its backup first.'), { statusCode: 503 });
     if (!canPair(number)) throw Object.assign(new Error('Approve and enable this number for linking.'), { statusCode: 403 });
@@ -376,13 +350,12 @@ function createSessionManager(opts) {
     if (old && (old.status === 'active' || (old.status === 'pending' && (old.auth?.creds?.registered || credentialsOnDisk(old.dir)?.registered)))) {
       throw Object.assign(new Error('This WhatsApp account is already linked. Wait for it to reconnect if necessary.'), { statusCode: 409 });
     }
-    if (old?.pairResult && !old.stopped && ownsCommand(old.pairGuard) && Date.now() < old.pairResult.issuedAt + codeLifetimeMs) return old.pairResult;
+    if (old?.pairResult && !old.stopped && Date.now() < old.pairResult.issuedAt + codeLifetimeMs) return old.pairResult;
     const existingCount = [...entries.values()].filter((e) => e.number && ['pending', 'active'].includes(e.status)).length;
     if ((!old || !['pending', 'active'].includes(old.status)) && existingCount >= maxAccounts) {
       throw Object.assign(new Error('The linked-account limit has been reached.'), { statusCode: 409 });
     }
     if (old) await retire(old);
-    assertCommand(guard);
 
     const attempt = crypto.randomBytes(12).toString('hex');
     // Baileys writes individual keys using the process umask. Restrict the
@@ -392,7 +365,6 @@ function createSessionManager(opts) {
     try { claim = String(opts.getClaim?.(number) || ''); } catch { /* no recoverable claim yet */ }
     writeRecord(number, { attempt, state: 'pending', ...(/^[a-f0-9]{64}$/.test(claim) ? { claim } : {}) });
     const entry = newEntry({ id: `linked:${number}`, number, attempt, state: 'pending', pairNumber: number });
-    entry.pairGuard = guard;
     entries.set(entry.id, entry);
     const pending = waitForCode(entry);
     // Start in the background so the timeout also covers authentication and the
@@ -408,13 +380,11 @@ function createSessionManager(opts) {
     }
   }
 
-  function requestPair(rawNumber, options = {}) {
+  function requestPair(rawNumber) {
     const number = String(rawNumber || '').replace(/\D/g, '');
     if (!NUMBER_RE.test(number)) return Promise.reject(Object.assign(new Error('Enter a valid international WhatsApp number.'), { statusCode: 400 }));
-    const guard = options?.canExecute === undefined ? () => true : options.canExecute;
-    try { assertCommand(guard); } catch (err) { return Promise.reject(err); }
     if (flights.has(number)) return flights.get(number);
-    const flight = doRequestPair(number, guard).finally(() => { if (flights.get(number) === flight) flights.delete(number); });
+    const flight = doRequestPair(number).finally(() => { if (flights.get(number) === flight) flights.delete(number); });
     flights.set(number, flight);
     return flight;
   }
@@ -432,14 +402,12 @@ function createSessionManager(opts) {
         ...(record?.linkedAt ? { linkedAt: record.linkedAt } : {}) });
     }
     const online = accounts.filter((a) => a.state === 'connected');
-    return { connected: online.length > 0, primaryConnected: primary.connected, primaryNumber: primaryNumber(), botNumber: online[0]?.number || null, accounts };
+    return { connected: online.length > 0, botNumber: online[0]?.number || null, accounts };
   }
 
   // Revoke only the explicitly identified additional session. An old queued
   // unlink must never disconnect a newer pairing or the legacy primary socket.
-  async function unlinkAccount(rawNumber, expectedSessionId, options = {}) {
-    const guard = options?.canExecute;
-    assertCommand(guard);
+  async function unlinkAccount(rawNumber, expectedSessionId) {
     const number = String(rawNumber || '').replace(/\D/g, '');
     const attempt = String(expectedSessionId || '');
     if (!NUMBER_RE.test(number) || !ATTEMPT_RE.test(attempt)) {
@@ -450,17 +418,14 @@ function createSessionManager(opts) {
       throw Object.assign(new Error('This linking session has changed. Refresh and try again.'), { statusCode: 409 });
     }
     if (entry.status === 'logged_out' || entry.status === 'expired') {
-      assertCommand(guard);
       await retire(entry, 'Session unlinked');
       return { number, sessionId: attempt, unlinked: true };
     }
     if (!entry.connected || !entry.sock || typeof entry.sock.logout !== 'function') {
       throw Object.assign(new Error('The linked number is offline. Try again when it reconnects.'), { statusCode: 503 });
     }
-    // Baileys sends WhatsApp's remove-companion-device request. Recheck the
-    // exact command epoch immediately before making that irreversible request.
-    // Once in flight it cannot be recalled; a lost lease suppresses its result.
-    assertCommand(guard);
+    // Baileys sends WhatsApp's remove-companion-device request. Do not claim
+    // success, remove approval, or delete credentials when that request fails.
     await entry.sock.logout('Unlinked from the dashboard');
     mark(entry, 'logged_out');
     try { opts.onRevoked?.(`linked:${number}`, attempt); } catch { /* recovery retry is independent */ }
@@ -470,13 +435,6 @@ function createSessionManager(opts) {
 
   function refreshPermissions() {
     for (const entry of entries.values()) {
-      // Cancel an unregistered member link as soon as its command loses the
-      // lease. A later epoch on this same host must not revive the old request.
-      if (entry.number && entry.status === 'pending' && entry.pairGuard && !entry.auth?.creds?.registered && !ownsCommand(entry.pairGuard)) {
-        mark(entry, 'expired');
-        void retire(entry, 'Linking command no longer owns the lease');
-        continue;
-      }
       // Legacy manifests did not record an ownership generation. Bind them once
       // to the current authoritative snapshot; future ownership changes never rebind.
       if (entry.number && manifest.accounts[entry.number] && !manifest.accounts[entry.number].claim && canPair(entry.number)) {
@@ -513,11 +471,7 @@ function createSessionManager(opts) {
     await Promise.all([...entries.values()].map((entry) => retire(entry, 'Service stopped')));
   }
 
-  function primaryDeviceFingerprint() {
-    return require('./failoverLease').fingerprintDevice(primary.auth?.creds || credentialsOnDisk(primaryDir));
-  }
-
-  return { start, stop, requestPair, unlinkAccount, status, primaryDeviceFingerprint, refreshPermissions, reconnectAll };
+  return { start, stop, requestPair, unlinkAccount, status, refreshPermissions, reconnectAll };
 }
 
 module.exports = { createSessionManager };
