@@ -357,3 +357,58 @@ test('ownership changes pause and retire the old session before a new claim can 
   assert.equal(newRecord.claim, claim);
   assert.notEqual(next.sock, old.sock);
 });
+
+test('the failover gate blocks primary and linked devices from handling or sending while on standby', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-failover-gate-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'creds.json'), JSON.stringify({ registered: true, me: { id: '265990000000:1@s.whatsapp.net' } }));
+  let serving = false;
+  const fx = fixture(root, { canServe: () => serving });
+  t.after(() => fx.manager.stop());
+  await fx.manager.start();
+  const primary = fx.created[0];
+  open(primary, '265990000000');
+  primary.ev.emit('messages.upsert', { type: 'notify', messages: [message('standby')] });
+  await delay(5);
+  assert.equal(fx.messages.length, 0);
+  await assert.rejects(primary.sendMessage('chat', { text: 'blocked' }), /offline or paused/i);
+
+  serving = true;
+  fx.manager.refreshPermissions();
+  primary.ev.emit('messages.upsert', { type: 'notify', messages: [message('active')] });
+  await waitFor(() => fx.messages.length === 1);
+  await primary.sendMessage('chat', { text: 'allowed' });
+  const { sock: linked } = await request(fx, '265991111111');
+  open(linked, '265991111111');
+  await linked.sendMessage('chat', { text: 'allowed too' });
+
+  // The lease can expire after the event listener runs but before the queued
+  // handler microtask starts.
+  primary.ev.emit('messages.upsert', { type: 'notify', messages: [message('queued-before-expiry')] });
+  serving = false;
+  await delay(5);
+  assert.equal(fx.messages.length, 1);
+  primary.ev.emit('messages.upsert', { type: 'notify', messages: [message('expired')] });
+  await delay(5);
+  assert.equal(fx.messages.length, 1);
+  linked.ev.emit('messages.upsert', { type: 'notify', messages: [message('linked-standby')] });
+  await delay(5);
+  assert.equal(fx.messages.length, 1);
+  await assert.rejects(primary.sendMessage('chat', { text: 'late result' }), /offline or paused/i);
+  await assert.rejects(linked.sendMessage('chat', { text: 'linked standby' }), /offline or paused/i);
+});
+
+test('failover health tracks the primary device independently of connected members', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-failover-health-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'creds.json'), JSON.stringify({ registered: true, me: { id: '265990000000:1@s.whatsapp.net' } }));
+  const fx = fixture(root, { reconnectBaseMs: 5000 });
+  t.after(() => fx.manager.stop());
+  await fx.manager.start();
+  const primary = fx.created[0]; open(primary, '265990000000');
+  const { sock: linked } = await request(fx, '265991111111'); open(linked, '265991111111');
+  assert.equal(fx.manager.status().primaryConnected, true);
+  primary.ev.emit('connection.update', { connection: 'close' });
+  assert.equal(fx.manager.status().primaryConnected, false);
+  assert.equal(fx.manager.status().connected, true);
+});

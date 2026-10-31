@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
       if (discovery.servers.length === 0) {
         discoveryError =
           'API key authenticated, but 0 servers were returned on this panel account. Make sure you created the hydro_… key under the exact XS Systems account that owns server ' +
-          (saved.panelServerId || '32197077') +
+          (saved.panelServerId || '381c9516') +
           '.';
       } else if (!effectiveServerId && discovery.servers.length === 1) {
         // A single discovered server is unambiguous. With multiple servers,

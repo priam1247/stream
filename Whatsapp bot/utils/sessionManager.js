@@ -46,6 +46,9 @@ function createSessionManager(opts) {
   const canPair = (number) => {
     try { return opts.canPair ? Boolean(opts.canPair(number)) : allowed(number); } catch { return false; }
   };
+  // Optional failover gate also covers the primary account and every outgoing
+  // reply, including work that began before the active lease expired.
+  const canServe = () => { try { return opts.canServe ? opts.canServe() === true : true; } catch { return false; } };
   const notify = () => { try { opts.onStatusChange?.(); } catch { /* non-fatal */ } };
   const validManifest = (data) => Boolean(
     data && data.version === 1 && data.accounts && typeof data.accounts === 'object' && !Array.isArray(data.accounts) &&
@@ -212,7 +215,7 @@ function createSessionManager(opts) {
       sock.__sessionId = entry.id;
       sock.__sessionDir = entry.dir;
       sock.__accountNumber = entry.number;
-      sock.__canRespond = () => !entry.number || allowed(entry.number);
+      sock.__canRespond = () => canServe() && (!entry.number || allowed(entry.number));
       entry.sock = sock;
       // A long-running command can finish after approval is revoked or after
       // its socket is replaced. Recheck at send time as well as at dispatch.
@@ -286,7 +289,11 @@ function createSessionManager(opts) {
           const sentAt = Number(msg.messageTimestamp) * 1000;
           if (sentAt && now - sentAt > 5 * 60_000) continue;
           entry.seen.set(key, now);
-          Promise.resolve().then(() => opts.onMessage(sock, msg)).catch((err) => {
+          Promise.resolve().then(() => {
+            // The lease/approval can change before this queued microtask runs.
+            if (entry.stopped || entry.sock !== sock || !entry.connected || !sock.__canRespond()) return;
+            return opts.onMessage(sock, msg);
+          }).catch((err) => {
             if (!/rate-overlimit|not-authorized/.test(err?.message || '')) log.error(`Message handling failed: ${err?.message || err}`);
           });
         }
@@ -395,7 +402,7 @@ function createSessionManager(opts) {
         ...(record?.linkedAt ? { linkedAt: record.linkedAt } : {}) });
     }
     const online = accounts.filter((a) => a.state === 'connected');
-    return { connected: online.length > 0, botNumber: online[0]?.number || null, accounts };
+    return { connected: online.length > 0, primaryConnected: primary.connected, botNumber: online[0]?.number || null, accounts };
   }
 
   // Revoke only the explicitly identified additional session. An old queued
@@ -464,7 +471,11 @@ function createSessionManager(opts) {
     await Promise.all([...entries.values()].map((entry) => retire(entry, 'Service stopped')));
   }
 
-  return { start, stop, requestPair, unlinkAccount, status, refreshPermissions, reconnectAll };
+  function primaryDeviceFingerprint() {
+    return require('./failoverLease').fingerprintDevice(primary.auth?.creds || credentialsOnDisk(primaryDir));
+  }
+
+  return { start, stop, requestPair, unlinkAccount, status, primaryDeviceFingerprint, refreshPermissions, reconnectAll };
 }
 
 module.exports = { createSessionManager };

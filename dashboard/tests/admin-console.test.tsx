@@ -211,6 +211,31 @@ describe('owner control room', () => {
     expect(screen.getByText(/Pausing stops new requests, not approved numbers/)).toBeTruthy();
   });
 
+  it('shows XS as primary and Botkeep as standby from their individual heartbeats', async () => {
+    const fetchMock = mockApi();
+    const original = fetchMock.getMockImplementation()!;
+    let issue: 'shared-session' | null = null;
+    fetchMock.mockImplementation(async (input, init) => String(input) === '/api/admin/status'
+      ? reply({ ...overview, failover: { enabled: true, activeRole: 'xs', epoch: 1, issue,
+        xs: { lastSeenAt: Date.now(), connected: true, version: '2.2.0' },
+        botkeep: { lastSeenAt: Date.now(), connected: true, version: '2.2.0' } } })
+      : original(input, init));
+    render(<AdminConsole />);
+    const mainNav = await screen.findByRole('navigation', { name: 'Owner sections' });
+    fireEvent.click(within(mainNav).getByRole('button', { name: 'WhatsApp' }));
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Status' }));
+    const hosts = screen.getByRole('region', { name: 'WhatsApp hosts' });
+    expect(within(hosts).getByText('XS Systems · Primary')).toBeTruthy();
+    expect(within(hosts).getByText('Botkeep · Backup')).toBeTruthy();
+    expect(within(hosts).getByText('Active')).toBeTruthy();
+    expect(within(hosts).getByText('Standby')).toBeTruthy();
+    expect(within(hosts).getAllByText(/Device ready/)).toHaveLength(2);
+    issue = 'shared-session';
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(within(hosts).getByText('Needs attention')).toBeTruthy());
+    expect(within(hosts).getByRole('alert').textContent).toContain('same session');
+  });
+
   it('keeps activity filters and sends a number-sync alert to the numbers page', async () => {
     mockApi();
     render(<AdminConsole />);

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
 import { fetchLiveBotStatus, parseAndValidateBotUrl } from '@/lib/bot-proxy';
-import { saveBotConnectionConfig, setFastPollWindow } from '@/lib/storage';
+import { getFailoverStatus, saveBotConnectionConfig, setFastPollWindow } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +23,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
 
+  const failover = await getFailoverStatus();
+  if (failover.enabled && typeof body.botApiUrl === 'string' && body.botApiUrl.trim()) {
+    return NextResponse.json({ error: 'Failover uses outbound sync only; leave the direct URL blank.' }, { status: 400 });
+  }
   if (typeof body.botApiUrl === 'string' && body.botApiUrl.trim()) {
     const parsed = parseAndValidateBotUrl(body.botApiUrl);
     if (parsed.error) {
@@ -31,9 +35,9 @@ export async function POST(req: NextRequest) {
   }
 
   const saved = await saveBotConnectionConfig({
-    botApiUrl: typeof body.botApiUrl === 'string' ? body.botApiUrl : undefined,
+    botApiUrl: !failover.enabled && typeof body.botApiUrl === 'string' ? body.botApiUrl : undefined,
     botAdminToken:
-      typeof body.botAdminToken === 'string' && body.botAdminToken !== '••••••••'
+      !failover.enabled && typeof body.botAdminToken === 'string' && body.botAdminToken !== '••••••••'
         ? body.botAdminToken
         : undefined,
     botSyncToken:
@@ -52,7 +56,7 @@ export async function POST(req: NextRequest) {
     actor: session.user.email, outcome: 'success', detail: '' });
 
   const parsed = parseAndValidateBotUrl(saved.botApiUrl);
-  const probe = parsed.baseUrl
+  const probe = !failover.enabled && parsed.baseUrl
     ? await fetchLiveBotStatus({
         baseUrl: parsed.baseUrl,
         token: saved.botAdminToken,
@@ -61,8 +65,8 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    botApiUrl: saved.botApiUrl,
-    hasBotToken: Boolean(saved.botAdminToken),
+    botApiUrl: failover.enabled ? '' : saved.botApiUrl,
+    hasBotToken: !failover.enabled && Boolean(saved.botAdminToken),
     hasBotSyncToken: Boolean(saved.botSyncToken),
     botEnabledForMembers: saved.botEnabledForMembers,
     probe,

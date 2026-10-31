@@ -52,6 +52,13 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 
 ## Owner control room and security
 
+- **WhatsApp → Status** distinguishes the XS primary and Botkeep standby after
+  each sends a failover heartbeat. A missing check-in is not proof of host
+  power state. The coordinated mode needs D1, updated bot code and separate
+  WhatsApp devices; see the XS/Botkeep setup and limitations in the bot README.
+  Direct per-host bridging is disabled while coordinated failover is enabled.
+  The XS panel URL and server ID are defaults; old Botkeep panel credentials
+  remain separate and are never automatically forwarded to XS.
 - Sign-in is kept only in the current page's memory. A full refresh or a closed,
   reopened or restored tab requires sign-in again; pending member pairing progress
   and its resend cooldown remain recoverable after signing in.

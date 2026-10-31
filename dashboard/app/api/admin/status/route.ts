@@ -10,6 +10,7 @@ import { whitelistSyncState } from '@/lib/sync-status';
 import { scribdPanelConfig } from '@/lib/scribd-panel';
 import {
   getPanelConnectionConfig,
+  getFailoverStatus,
   isUsingCloudflareD1,
   listAllMembers,
   listStoredWhatsAppUsers,
@@ -42,7 +43,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const [target, panelCfg, d1Active, users, members, liveStatus, scribdConfig] =
+  const [target, panelCfg, d1Active, users, members, liveStatus, scribdConfig, failover] =
     await Promise.all([
       getResolvedBotTarget(),
       getPanelConnectionConfig(),
@@ -51,6 +52,7 @@ export async function GET(req: NextRequest) {
       listAllMembers(isAdminEmail),
       fetchLiveBotStatus(),
       scribdPanelConfig(),
+      getFailoverStatus(),
     ]);
 
   const botLinked =
@@ -81,6 +83,7 @@ export async function GET(req: NextRequest) {
     lastSeenSecondsAgo: liveStatus.lastSeenSecondsAgo ?? null,
     whitelistSync: whitelistSyncState(liveStatus, users, target.botEnabledForMembers),
     sessionBackup: liveStatus.sessionBackup ?? null,
+    failover,
     botVersion: liveStatus.version ?? null,
     uptimeSeconds: liveStatus.uptimeSeconds ?? null,
     commandsTotal: liveStatus.commandsTotal ?? null,

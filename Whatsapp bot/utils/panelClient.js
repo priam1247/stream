@@ -31,9 +31,13 @@ function normalizePanelBase(rawUrl) {
 function getPanelConfig(env = process.env) {
   const key = String(env.PANEL_API_KEY || '').trim();
   const { base, error } = normalizePanelBase(env.PANEL_URL || PANEL_URL_DEFAULT);
-  const uuid = String(env.P_SERVER_UUID || '').trim();
+  // Hosting panels commonly expose SERVER_UUID for the current container. It
+  // takes precedence over a stale PANEL_SERVER_ID copied from another host.
+  const uuid = String(env.SERVER_UUID || env.P_SERVER_UUID || '').trim();
   const configured = String(env.PANEL_SERVER_ID || '').trim();
-  const ids = [...new Set([configured, uuid.split('-')[0], uuid].filter(Boolean))];
+  const ids = uuid
+    ? [...new Set([uuid.split('-')[0], uuid].filter(Boolean))]
+    : [...new Set([configured].filter(Boolean))];
   return { key, base, baseError: error, ids };
 }
 
@@ -90,8 +94,15 @@ async function discoverPanelServerIds(base, key, fetchImpl = fetch) {
 }
 
 async function panelPowerSignal(signal = 'restart', opts = {}) {
+  const env = opts.env || process.env;
+  // The active peer can change: a credential left over from another host must
+  // not cause a remote power action on the wrong server. Callers fall back to
+  // reconnecting the local process; XS panel power remains in the dashboard.
+  if (String(env.WHATSAPP_FAILOVER_ROLE || '').trim()) {
+    return { ok: false, reason: 'Host power is disabled on failover peers; reconnect locally or use the XS dashboard control.' };
+  }
   const fetchImpl = opts.fetchImpl || fetch;
-  const { key, base, baseError, ids: initialIds } = getPanelConfig(opts.env || process.env);
+  const { key, base, baseError, ids: initialIds } = getPanelConfig(env);
   if (!key) return { ok: false, reason: 'PANEL_API_KEY is not set' };
   if (baseError || !base) return { ok: false, reason: baseError || 'Invalid PANEL_URL' };
 

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, expect, it, vi } from 'vitest';
-import { claimPairCooldown, completeBotCommand, isUsingCloudflareD1, saveMemberWhatsAppUser } from '../lib/storage';
+import { claimPairCooldown, completeBotCommand, getFailoverStatus, isUsingCloudflareD1, saveMemberWhatsAppUser } from '../lib/storage';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -8,6 +8,8 @@ afterEach(() => {
   globalThis.__zafarD1SchemaV6Ready = undefined;
   globalThis.__zafarD1SchemaV6Promise = undefined;
   globalThis.__zafarD1UnreachableInDev = undefined;
+  globalThis.__zafarFailoverSchemaReady = undefined;
+  globalThis.__zafarFailoverSchemaPromise = undefined;
 });
 
 it('initializes D1 tables once when concurrent requests arrive on a cold start', async () => {
@@ -79,4 +81,21 @@ it('atomically claims a member number only for its existing owner', async () => 
   expect(queries[0].sql).toMatch(/ON CONFLICT\(number\) DO UPDATE/i);
   expect(queries[0].sql).toMatch(/lower\(portal_whatsapp_access.added_by\) = \?/i);
   expect(queries[0].params[5]).toBe('member@example.com');
+});
+
+it('creates failover tables once even when the older dashboard schema is already warm', async () => {
+  globalThis.__zafarD1SchemaV6Ready = true;
+  vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test-account');
+  vi.stubEnv('D1_DATABASE_ID', 'test-db');
+  vi.stubEnv('CLOUDFLARE_API_TOKEN', 'test-token');
+  const sql: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+    sql.push(JSON.parse(String(init.body)).sql);
+    return Response.json({ success: true, result: [{ results: [] }] });
+  }));
+  expect(await Promise.all(Array.from({ length: 4 }, () => getFailoverStatus()))).toEqual(
+    Array.from({ length: 4 }, () => ({ enabled: false, activeRole: null, epoch: null, issue: null, xs: null, botkeep: null })),
+  );
+  expect(sql.filter((query) => query.includes('CREATE TABLE IF NOT EXISTS portal_bot_failover ('))).toHaveLength(1);
+  expect(sql.filter((query) => query.includes('CREATE TABLE IF NOT EXISTS portal_bot_failover_nodes'))).toHaveLength(1);
 });
