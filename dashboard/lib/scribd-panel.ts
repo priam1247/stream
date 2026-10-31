@@ -4,7 +4,7 @@
  */
 import { normalizeScribdHit, safeScribdThumbnail, scribdDocumentId } from './scribd-search';
 import { filesFromJob, safeScribdName } from './scribd-job';
-import { DEFAULT_SCRIBD_WEB_URL, TEMPORARY_INSECURE_SCRIBD_ORIGIN } from './scribd-config';
+import { DEFAULT_SCRIBD_WEB_URL } from './scribd-config';
 export { filesFromJob, safeScribdName } from './scribd-job';
 export { DEFAULT_SCRIBD_WEB_URL } from './scribd-config';
 import type {
@@ -47,14 +47,13 @@ export function cleanPanelUrl(raw: string): string {
 }
 
 /**
- * Use the current server by default. Legacy panel settings may refer to a
- * different service, so neither their address nor their key is used here.
- * Environment overrides remain available if the server moves or is secured.
+ * Pin the service address to the current HTTPS proxy. Ignore legacy settings
+ * and stale URL environment variables so they cannot send traffic over HTTP.
+ * The service token remains in the server's existing secret configuration.
  */
 export async function scribdPanelConfig(): Promise<ScribdPanelConfig> {
-  const webUrl = (process.env.SCRIBD_WEB_URL || '').trim() || DEFAULT_SCRIBD_WEB_URL;
   return {
-    baseUrl: cleanPanelUrl(webUrl),
+    baseUrl: cleanPanelUrl(DEFAULT_SCRIBD_WEB_URL),
     key: (process.env.SCRIBD_WEB_TOKEN || '').trim(),
   };
 }
@@ -77,17 +76,15 @@ async function panelRequest(path: string, options: RequestOptions = {}): Promise
     return { ok: false, status: 503, error: 'Could not load the Scribd server configuration.' };
   }
   if (!config.baseUrl) {
-    return { ok: false, status: 503, error: 'The Scribd server address is invalid. Check SCRIBD_WEB_URL.' };
+    return { ok: false, status: 503, error: 'The Scribd server address is invalid. Check the dashboard configuration.' };
   }
 
   const url = new URL(`${config.baseUrl}${path}`);
-  // The selected server uses public HTTP, which exposes its token and traffic.
-  // Keep this exception restricted to that origin; never forward the token to
-  // a different HTTP host due to a stale configuration override.
+  // Do not send the token over public HTTP, including the old HidenCloud port.
+  // Loopback HTTP remains usable by the local service contract tests.
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  const selectedServer = url.origin === TEMPORARY_INSECURE_SCRIBD_ORIGIN;
-  if (options.authenticated !== false && config.key && url.protocol !== 'https:' && !loopback && !selectedServer) {
-    return { ok: false, status: 503, error: 'Scribd needs HTTPS for this server. Check SCRIBD_WEB_URL.' };
+  if (options.authenticated !== false && config.key && url.protocol !== 'https:' && !loopback) {
+    return { ok: false, status: 503, error: 'Scribd needs HTTPS for this server.' };
   }
   for (const [name, value] of Object.entries(options.query || {})) url.searchParams.set(name, value);
   if (options.authenticated !== false && config.key) url.searchParams.set('t', config.key);

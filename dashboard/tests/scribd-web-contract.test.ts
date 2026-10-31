@@ -5,7 +5,15 @@ import { fileURLToPath } from 'node:url';
 import { NextRequest } from 'next/server';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const auth = vi.hoisted(() => ({ role: 'admin' as 'admin' | 'member' | 'granted' | 'blocked' | 'anonymous' }));
+const auth = vi.hoisted(() => ({
+  role: 'admin' as 'admin' | 'member' | 'granted' | 'blocked' | 'anonymous',
+  fixtureUrl: 'http://127.0.0.1:1',
+}));
+// Exercise the real adapter against the loopback service without allowing a
+// deployment environment variable to override the production address.
+vi.mock('../lib/scribd-config', () => ({
+  get DEFAULT_SCRIBD_WEB_URL() { return auth.fixtureUrl; },
+}));
 vi.mock('../lib/activity', () => ({ recordActivity: vi.fn() }));
 vi.mock('../lib/auth-engine', () => ({
   getAuthenticatedSession: vi.fn(async () => auth.role === 'anonymous' ? null : {
@@ -57,7 +65,7 @@ async function startFixture(): Promise<ChildProcessWithoutNullStreams> {
     child.once('error', (error) => { clearTimeout(timer); reject(error); });
     child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`Scribd fixture exited (${code}): ${stderr}`)); });
   });
-  vi.stubEnv('SCRIBD_WEB_URL', `http://127.0.0.1:${port}`);
+  auth.fixtureUrl = `http://127.0.0.1:${port}`;
   vi.stubEnv('SCRIBD_WEB_TOKEN', 'contract-token');
   return child;
 }

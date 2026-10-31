@@ -7,7 +7,7 @@ vi.mock('../lib/storage', () => ({
   getScribdConnectionConfig: vi.fn(),
 }));
 
-import { findScribdDocuments } from '../lib/scribd-panel';
+import { DEFAULT_SCRIBD_WEB_URL, findScribdDocuments } from '../lib/scribd-panel';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -85,7 +85,6 @@ describe('Scribd search results', () => {
       }),
     });
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubEnv('SCRIBD_WEB_URL', 'https://web.example');
     vi.stubEnv('SCRIBD_WEB_TOKEN', 'test-token');
 
     const result = await findScribdDocuments('algebra & geometry', 2);
@@ -96,7 +95,7 @@ describe('Scribd search results', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     const [requested, init] = fetchMock.mock.calls[0];
     const url = new URL(String(requested));
-    expect(url.origin).toBe('https://web.example');
+    expect(url.origin).toBe(DEFAULT_SCRIBD_WEB_URL);
     expect(url.pathname).toBe('/api/search');
     expect(url.searchParams.get('q')).toBe('algebra & geometry');
     expect(url.searchParams.get('page')).toBe('2');

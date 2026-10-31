@@ -6,6 +6,10 @@ const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   saveConfig: vi.fn(),
   isAdmin: true,
+  serviceUrl: 'https://troy.hidenplay.net',
+}));
+vi.mock('../lib/scribd-config', () => ({
+  get DEFAULT_SCRIBD_WEB_URL() { return mocks.serviceUrl; },
 }));
 vi.mock('../lib/storage', () => ({
   DEFAULT_SCRIBD_PANEL_URL: 'https://default.example',
@@ -34,6 +38,7 @@ function req(path: string, body?: unknown): NextRequest {
 }
 
 beforeEach(() => {
+  mocks.serviceUrl = 'https://troy.hidenplay.net';
   vi.stubEnv('SCRIBD_WEB_URL', 'https://saved.example/service?old=1#fragment');
   vi.stubEnv('SCRIBD_WEB_TOKEN', 'old-secret');
   mocks.getConfig.mockReset().mockResolvedValue({ panelUrl: 'https://saved.example/service?old=1#fragment', panelKey: 'old-secret', updatedAt: 123 });
@@ -47,7 +52,7 @@ describe('Scribd service configuration', () => {
     vi.stubEnv('SCRIBD_WEB_URL', undefined);
     vi.stubEnv('SCRIBD_WEB_TOKEN', undefined);
     mocks.getConfig.mockRejectedValueOnce(new Error('D1 unavailable'));
-    expect(DEFAULT_SCRIBD_WEB_URL).toBe('http://toby.hidencloud.com:24702');
+    expect(DEFAULT_SCRIBD_WEB_URL).toBe('https://troy.hidenplay.net');
     expect(await scribdPanelConfig()).toEqual({ baseUrl: DEFAULT_SCRIBD_WEB_URL, key: '' });
     expect(mocks.getConfig).not.toHaveBeenCalled();
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
@@ -59,12 +64,18 @@ describe('Scribd service configuration', () => {
     expect(url.searchParams.has('t')).toBe(false);
   });
 
-  it('accepts optional environment overrides without consulting old settings', async () => {
-    vi.stubEnv('SCRIBD_WEB_URL', ' https://new.example/base/?t=leak#fragment ');
+  it('ignores stale URL overrides while retaining the server-side token', async () => {
     vi.stubEnv('SCRIBD_WEB_TOKEN', undefined);
-    expect(await scribdPanelConfig()).toEqual({ baseUrl: 'https://new.example/base', key: '' });
+    for (const oldUrl of [
+      'http://toby.hidencloud.com:24702',
+      'https://new.example/base/?t=leak#fragment',
+      'https://user:secret@old.example',
+    ]) {
+      vi.stubEnv('SCRIBD_WEB_URL', oldUrl);
+      expect(await scribdPanelConfig()).toEqual({ baseUrl: 'https://troy.hidenplay.net', key: '' });
+    }
     vi.stubEnv('SCRIBD_WEB_TOKEN', ' new-secret ');
-    expect(await scribdPanelConfig()).toEqual({ baseUrl: 'https://new.example/base', key: 'new-secret' });
+    expect(await scribdPanelConfig()).toEqual({ baseUrl: 'https://troy.hidenplay.net', key: 'new-secret' });
     expect(mocks.getConfig).not.toHaveBeenCalled();
   });
 
@@ -87,8 +98,8 @@ describe('Scribd service configuration', () => {
     expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get('t')).toBe('old-secret');
   });
 
-  it('connects to the selected HTTP server without an extra switch', async () => {
-    vi.stubEnv('SCRIBD_WEB_URL', undefined);
+  it('uses the HTTPS proxy for authenticated requests even with the old HTTP address set', async () => {
+    vi.stubEnv('SCRIBD_WEB_URL', 'http://toby.hidencloud.com:24702');
     vi.stubEnv('SCRIBD_WEB_TOKEN', 'private-test-token');
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
       new URL(String(input)).pathname === '/health' ? new Response('ok') : jsonResponse({ items: [] }));
@@ -98,29 +109,30 @@ describe('Scribd service configuration', () => {
     expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.has('t')).toBe(false);
     expect(await getScribdStatus()).toMatchObject({ ok: true, data: { state: 'idle' } });
     const url = new URL(String(fetchMock.mock.calls[1][0]));
-    expect(url.origin).toBe(DEFAULT_SCRIBD_WEB_URL);
+    expect(url.origin).toBe('https://troy.hidenplay.net');
     expect(url.pathname).toBe('/api/job');
     expect(url.searchParams.get('t')).toBe('private-test-token');
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ redirect: 'error' });
   });
 
-  it('does not send the token to any other public HTTP origin', async () => {
+  it('does not send the token to any public HTTP origin, including the old port', async () => {
     vi.stubEnv('SCRIBD_WEB_TOKEN', 'private-test-token');
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     for (const other of [
+      'http://toby.hidencloud.com:24702',
       'http://195.123.189.181:25803',
       'http://toby.hidencloud.com:24703',
       'http://toby.hidencloud.com.evil.example:24702',
     ]) {
-      vi.stubEnv('SCRIBD_WEB_URL', other);
+      mocks.serviceUrl = other;
       expect(await getScribdStatus()).toMatchObject({ ok: false, status: 503 });
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects invalid configuration without making a request', async () => {
-    vi.stubEnv('SCRIBD_WEB_URL', 'https://user:secret@web.example');
+    mocks.serviceUrl = 'https://user:secret@web.example';
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     expect(await getScribdHealth()).toMatchObject({ ok: false, status: 503 });
@@ -138,7 +150,7 @@ describe('Scribd service configuration', () => {
     mocks.isAdmin = true;
     const response = await getConfig(req('/api/scribd/config'));
     const body = await response.json();
-    expect(body).toMatchObject({ ok: true, panelUrl: 'https://saved.example/service', hasPanelKey: true });
+    expect(body).toMatchObject({ ok: true, panelUrl: 'https://troy.hidenplay.net', hasPanelKey: true });
     expect(JSON.stringify(body)).not.toContain('old-secret');
     const refused = await patchConfig(req('/api/scribd/config', { panelUrl: 'https://example.com', panelKey: 'new-key' }));
     expect(refused.status).toBe(409);
@@ -217,7 +229,7 @@ describe('Scribd web API adapter', () => {
     expect(result).toMatchObject({ ok: true, data: { queued: 1, skipped: 1, acceptedIds: ['2'] } });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const target = new URL(String(fetchMock.mock.calls[1][0]));
-    expect(target.pathname).toBe('/service/api/download');
+    expect(target.pathname).toBe('/api/download');
     expect(target.searchParams.get('t')).toBe('old-secret');
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ docs: [{ id: '2', title: 'New', pages: 12 }] });
   });
@@ -240,7 +252,7 @@ describe('Scribd web API adapter', () => {
     vi.stubGlobal('fetch', fetchMock);
     expect(await resetScribdJob()).toMatchObject({ ok: true, data: { requested: true } });
     expect(await clearScribdQueue()).toMatchObject({ ok: true, data: { state: 'running', active: 1 } });
-    expect(fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(['/service/api/cancel', '/service/api/clear']);
+    expect(fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(['/api/cancel', '/api/clear']);
     expect(fetchMock.mock.calls.every(([, init]) => init.method === 'POST')).toBe(true);
   });
 
@@ -259,7 +271,7 @@ describe('Scribd web API adapter', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     const pdf = await readScribdFile('A book...pdf');
     expect(pdf).toMatchObject({ ok: true, data: { filename: 'A book...pdf', length: '8' } });
-    expect(new URL(String(fetchMock.mock.calls[0][0])).pathname).toBe('/service/files/A%20book...pdf');
+    expect(new URL(String(fetchMock.mock.calls[0][0])).pathname).toBe('/files/A%20book...pdf');
     expect(await readScribdThumbnail('https://img.scribdassets.com/cover.jpg')).toMatchObject({ ok: false, status: 502 });
     expect(await readScribdThumbnail('https://img.scribdassets.com/cover.jpg')).toMatchObject({ ok: false, status: 502 });
   });
