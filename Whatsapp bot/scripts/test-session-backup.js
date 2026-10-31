@@ -503,3 +503,91 @@ test('a later successful snapshot clears an earlier final-flush failure', async 
   const row = base.rows.get('primary');
   assert.match(open(row.ciphertext, key, row.slot, row.generation).files['creds.json'], /RETRY_FIXTURE/);
 });
+
+test('a re-paired primary is backed up when its identity changes inside the debounce window', { timeout: 4000 }, async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-primary-debounce-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const local = putLocal(tmp); const base = server(); let announce;
+  const uploaded = new Promise((resolve) => { announce = resolve; });
+  const fetchImpl = async (url, opts) => {
+    const body = JSON.parse(opts.body); const response = await base.fetch(url, opts);
+    if (body.action === 'put' && body.slot === 'primary') announce();
+    return response;
+  };
+  const backup = createSessionBackup({ sessionDir: local.root, statePath: path.join(tmp, 'state.json'),
+    dashboardUrl: 'https://example.test', token: 'test-token', key: keyText, fetchImpl, delayMs: 100, log: quiet });
+  await backup.restore();
+  const updated = JSON.parse(creds); updated.registrationId = 67890;
+  const auth = await backup.wrapAuth(async () => ({ state: { keys: { set: async () => {} } }, saveCreds: async () => {
+    fs.writeFileSync(path.join(local.root, 'creds.json'), JSON.stringify(updated));
+  } }), local.root);
+  await auth.saveCreds();
+  let timeout;
+  const saved = await Promise.race([uploaded.then(() => true), new Promise((resolve) => { timeout = setTimeout(() => resolve(false), 1500); })]);
+  clearTimeout(timeout);
+  await backup.stop();
+  assert.equal(saved, true, 'the pending timer must back up the new identity without another write');
+  const row = base.rows.get('primary');
+  const newGeneration = crypto.createHash('sha256').update(JSON.stringify([updated.registrationId, updated.me.id, null])).digest('hex').slice(0, 24);
+  assert.equal(row.generation, newGeneration);
+  assert.equal(JSON.parse(open(row.ciphertext, key, row.slot, row.generation).files['creds.json']).registrationId, 67890);
+});
+
+test('a stale primary descriptor schedules a fresh generation snapshot after releasing its lock', { timeout: 4000 }, async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-stale-descriptor-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const local = putLocal(tmp); const base = server(); let announce;
+  const uploaded = new Promise((resolve) => { announce = resolve; });
+  const fetchImpl = async (url, opts) => {
+    const body = JSON.parse(opts.body); const response = await base.fetch(url, opts);
+    if (body.action === 'put' && body.slot === 'primary') announce();
+    return response;
+  };
+  const backup = createSessionBackup({ sessionDir: local.root, statePath: path.join(tmp, 'state.json'),
+    dashboardUrl: 'https://example.test', token: 'test-token', key: keyText, fetchImpl, delayMs: 100, log: quiet });
+  await backup.restore();
+  const updated = JSON.parse(creds); updated.registrationId = 24680;
+  fs.writeFileSync(path.join(local.root, 'creds.json'), JSON.stringify(updated));
+  await backup._snapshot({ slot: 'primary', generation: primaryGeneration(), dir: local.root });
+  let timeout;
+  const saved = await Promise.race([uploaded.then(() => true), new Promise((resolve) => { timeout = setTimeout(() => resolve(false), 1500); })]);
+  clearTimeout(timeout);
+  await backup.stop();
+  assert.equal(saved, true, 'a stale descriptor must be retried without waiting for an unrelated write');
+  const row = base.rows.get('primary');
+  assert.equal(JSON.parse(open(row.ciphertext, key, row.slot, row.generation).files['creds.json']).registrationId, 24680);
+});
+
+test('revoking an old linked generation does not cancel a pending backup for its replacement', { timeout: 4000 }, async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-pending-generation-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const local = putLocal(tmp); const base = server(); let announce;
+  const uploaded = new Promise((resolve) => { announce = resolve; });
+  const fetchImpl = async (url, opts) => {
+    const body = JSON.parse(opts.body); const response = await base.fetch(url, opts);
+    if (body.action === 'put' && body.slot === `linked:${number}`) announce();
+    return response;
+  };
+  const backup = createSessionBackup({ sessionDir: local.root, statePath: path.join(tmp, 'state.json'),
+    dashboardUrl: 'https://example.test', token: 'test-token', key: keyText, fetchImpl, delayMs: 100, log: quiet });
+  await backup.restore();
+  backup.schedule(local.dir);
+  const newer = 'c'.repeat(24); const newDir = path.join(local.root, 'linked', number, newer);
+  fs.mkdirSync(newDir, { recursive: true });
+  fs.writeFileSync(path.join(newDir, 'creds.json'), creds.replace('PRIVATE_SESSION_DATA', 'NEW_GENERATION_FIXTURE'));
+  const manifestFile = path.join(local.root, 'linked', 'accounts.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8')); manifest.accounts[number].attempt = newer;
+  fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+  backup.schedule(newDir);
+  backup.schedule(local.dir); // an older queued write cannot replace the new generation's pending work
+  await backup.revoke(`linked:${number}`, attempt);
+  let timeout;
+  const saved = await Promise.race([uploaded.then(() => true), new Promise((resolve) => { timeout = setTimeout(() => resolve(false), 1500); })]);
+  clearTimeout(timeout);
+  await backup.stop();
+  assert.equal(saved, true, 'revoking an old generation must not discard a newer pending snapshot');
+  const row = base.rows.get(`linked:${number}`);
+  assert.equal(row.generation, newer);
+  assert.equal(row.revoked, false);
+  assert.match(open(row.ciphertext, key, row.slot, row.generation).files['creds.json'], /NEW_GENERATION_FIXTURE/);
+});

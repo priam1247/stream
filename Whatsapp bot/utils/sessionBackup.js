@@ -15,6 +15,7 @@ const MAX_CIPHERTEXT = 1_000_000;
 const FILE_RE = /^[A-Za-z0-9_@.+=-]{1,200}\.json$/;
 const ATTEMPT_RE = /^[a-f0-9]{24}$/;
 const NUMBER_RE = /^\d{7,15}$/;
+const STALE_PRIMARY = Symbol('stale primary generation');
 
 function parseKey(raw) {
   const value = String(raw || '').trim();
@@ -217,9 +218,23 @@ function createSessionBackup(opts = {}) {
   function schedule(dir) {
     if (!key || stopped || stopping) return;
     const desc = descriptor(dir); if (!desc || stoppedGenerations.has(`${desc.slot}:${desc.generation}`)) return;
-    if (pending.has(desc.slot)) return;
-    const timer = setTimeout(() => { pending.delete(desc.slot); void snapshot(desc).catch(() => { failures.add(desc.slot); status = 'error'; log.warn('Encrypted session backup could not be saved; local sessions were preserved.'); schedule(dir); }); }, Math.max(100, Number(opts.delayMs) || 15000));
-    timer.unref?.(); pending.set(desc.slot, { timer, dir: desc.dir });
+    // An old generation's timer or revocation must not cancel a replacement.
+    const id = `${desc.slot}:${desc.generation}`;
+    if (pending.has(id)) return;
+    const timer = setTimeout(() => {
+      const queued = pending.get(id); if (!queued) return;
+      pending.delete(id);
+      // Identity can change during the debounce interval. Resolve it again
+      // before snapshotting instead of uploading under the captured generation.
+      const current = descriptor(queued.dir);
+      if (!current || stoppedGenerations.has(`${current.slot}:${current.generation}`)) return;
+      void snapshot(current).catch(() => {
+        failures.add(current.slot); status = 'error';
+        log.warn('Encrypted session backup could not be saved; local sessions were preserved.');
+        schedule(queued.dir);
+      });
+    }, Math.max(100, Number(opts.delayMs) || 15000));
+    timer.unref?.(); pending.set(id, { timer, dir: desc.dir, slot: desc.slot });
   }
   async function snapshot(desc) {
     const upload = locked(`upload:${desc.slot}`, async () => {
@@ -236,9 +251,10 @@ function createSessionBackup(opts = {}) {
       // The primary identity can change while an earlier write is still in
       // flight. Never upload its new credentials under an old generation.
       const current = descriptor(desc.dir);
-      if (!current || current.slot !== desc.slot || current.generation !== desc.generation) return null;
+      if (!current || current.slot !== desc.slot || current.generation !== desc.generation) return STALE_PRIMARY;
       return { version: 1, slot: desc.slot, generation: desc.generation, files: collectFiles(desc.dir) };
     });
+    if (payload === STALE_PRIMARY) return STALE_PRIMARY;
     if (!payload || stopped || stoppedGenerations.has(`${desc.slot}:${desc.generation}`)) return;
     let creds;
     try { creds = JSON.parse(payload.files['creds.json'] || '{}'); } catch { throw new Error('Local session credentials are invalid.'); }
@@ -254,7 +270,12 @@ function createSessionBackup(opts = {}) {
     });
     uploadDirs.set(upload, desc.dir);
     void upload.then(() => uploadDirs.delete(upload), () => uploadDirs.delete(upload));
-    return upload;
+    const result = await upload;
+    if (result === STALE_PRIMARY && !stopped) {
+      // Retry with a fresh descriptor only after the old upload lock releases.
+      if (stopping) markShutdownDirty(desc.dir); else schedule(desc.dir);
+    }
+    return result;
   }
   async function flushRevocation(slot, generation) {
     await request({ action: 'revoke', slot, generation });
@@ -275,7 +296,7 @@ function createSessionBackup(opts = {}) {
     if (!validRevocation({ slot, generation })) { failures.add('revocation:unknown'); status = 'error'; log.warn('The revoked session generation could not be identified for recovery.'); return; }
     const id = `${slot}:${generation}`;
     stoppedGenerations.add(id);
-    if (pending.has(slot)) { clearTimeout(pending.get(slot).timer); pending.delete(slot); }
+    if (pending.has(id)) { clearTimeout(pending.get(id).timer); pending.delete(id); }
     if (!localState.revocations.some((item) => item.slot === slot && item.generation === generation)) {
       localState.revocations.push({ slot, generation });
       try { persist(); } catch { status = 'error'; log.warn('Could not persist the recovery revocation queue. Check disk space.'); }
@@ -388,7 +409,7 @@ function createSessionBackup(opts = {}) {
       const backedUp = slots.filter((item) => {
         const backup = remote.get(item.slot); const local = localState.slots[item.slot];
         const eligible = !item.number || !opts.isEligible || opts.isEligible(item.number, item.claim);
-        return eligible && !conflicts.has(item.slot) && !pending.has(item.slot) && !locks.has(`upload:${item.slot}`) && !locks.has(item.dir) &&
+        return eligible && !conflicts.has(item.slot) && ![...pending.values()].some((queued) => queued.slot === item.slot) && !locks.has(`upload:${item.slot}`) && !locks.has(item.dir) &&
           !stoppedGenerations.has(`${item.slot}:${item.generation}`) && backup && !backup.revoked && backup.generation === item.generation &&
           backup.claimToken === item.claim && local?.generation === item.generation && local.revision === backup.revision;
       }).length;
