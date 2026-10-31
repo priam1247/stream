@@ -384,10 +384,24 @@ function shutdown(signal) {
   timer = setTimeout(() => finish(true), 20_000);
   void lifecycle.shutdown().catch((err) => {
     console.warn('WhatsApp shutdown was incomplete.');
-    // Report each component separately: one noisy/sensitive socket error must
-    // not cause the console filter to suppress every other failure.
+    // Normal Baileys noise filtering may suppress an entire error merely because
+    // it mentions a closing session. Bypass that filter only for sanitized,
+    // component-labelled shutdown diagnostics; never print raw session data.
     const failures = err instanceof AggregateError && Array.isArray(err.errors) ? err.errors : [err];
-    for (const failure of failures) console.warn('Shutdown detail:', safeText(failure));
+    const labels = new Set(['Dashboard sync shutdown failed', 'Dashboard API shutdown failed', 'WhatsApp sessions shutdown failed', 'Session backup shutdown failed']);
+    for (const failure of failures) {
+      const detail = safeText(failure);
+      const lower = detail.toLowerCase();
+      const sensitive = forbiddenPatternsConsole.some((pattern) => pattern !== 'closing session' && pattern !== 'closing open session' && lower.includes(pattern)) ||
+        /\b(?:private|public|identity|signing|encryption|backup|chain|pre|base)[\s_-]*key\b|\b(?:buffer|uint8array)\b|[A-Za-z0-9+/]{40,}={0,2}/i.test(detail);
+      if (!sensitive) {
+        originalConsoleWarn.call(console, 'Shutdown detail:', detail);
+        continue;
+      }
+      const label = labels.has(failure?.message) ? failure.message : 'WhatsApp shutdown component failed';
+      const reason = lower.includes('closing open session') ? 'closing open session; ' : lower.includes('closing session') ? 'closing session; ' : '';
+      originalConsoleWarn.call(console, 'Shutdown detail:', `${label}; ${reason}sensitive session details omitted.`);
+    }
   }).finally(() => finish());
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
