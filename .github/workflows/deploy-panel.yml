@@ -78,6 +78,40 @@ jobs:
           "$RUNNER_TEMP/yt-extractors/bin/python" -m pip install 'yt-dlp==2026.10.26'
           "$RUNNER_TEMP/yt-extractors/bin/python" scripts/test-media-extractors.py
 
+      - name: One-time live provider search diagnostic
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 4
+        working-directory: Whatsapp bot
+        run: |
+          PATH="$RUNNER_TEMP/yt-extractors/bin:$PATH" node - <<'NODE'
+          const axios = require('axios');
+          const { JSDOM } = require('jsdom');
+          const search = require('./utils/providerSearch');
+          (async () => {
+            try {
+              const response = await axios.get('https://search.brave.com/search', {
+                params: { q: 'cat site:douyin.com/video', source: 'web' },
+                timeout: 10000, maxRedirects: 0, responseType: 'text',
+                headers: { 'User-Agent': 'Mozilla/5.0' },
+              });
+              const doc = new JSDOM(response.data).window.document;
+              console.log('BRAVE_MARKUP', JSON.stringify({
+                status: response.status, bytes: response.data.length,
+                snippet: doc.querySelectorAll('.snippet').length,
+                headers: doc.querySelectorAll('a.result-header').length,
+                results: doc.querySelectorAll('#results a[href], #web-results a[href]').length,
+                parsed: search.normalizeRows('douyin', search.parseBrave(response.data), 5).length,
+              }));
+            } catch (err) { console.log('BRAVE_MARKUP unavailable', err.response?.status || err.code || err.message); }
+            await Promise.all(Object.keys(search.PROVIDERS).map(async (site) => {
+              const query = site === 'youku' ? 'the blood of youth s01e1' : 'cat';
+              const found = await search.searchProvider(site, query, { limit: 3 });
+              console.log('LIVE_SEARCH', JSON.stringify({ site, status: found.status, source: found.source, count: found.results.length, firstEpisode: found.results[0]?.episode || 0 }));
+            }));
+          })().catch((err) => { console.error(err.message); process.exitCode = 1; });
+          NODE
+
       - name: Live HLS downloader smoke test
         working-directory: Whatsapp bot
         run: node scripts/test-nm3u8dl-live.js

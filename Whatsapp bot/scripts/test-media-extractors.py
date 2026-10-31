@@ -4,8 +4,13 @@
 Run: python3 scripts/test-media-extractors.py
 The URLs are syntactic fixtures, not promises that the videos exist or are public.
 """
+import json
+import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
+from urllib.parse import quote
 
 try:
     import yt_dlp
@@ -40,6 +45,54 @@ class MediaExtractors(unittest.TestCase):
             with self.subTest(provider=name):
                 self.assertIn(extractor, extractors)
                 self.assertTrue(extractors[extractor].suitable(url), f'{name}: {extractor} does not recognize the fixture')
+
+    def test_native_search_url_patterns(self):
+        extractors = {c.ie_key(): c for c in gen_extractor_classes()}
+        query = '猫 & a video'
+        targets = (
+            ('DailymotionSearch', f'https://www.dailymotion.com/search/{quote(query, safe="")}/videos'),
+            ('NicovideoSearch', f'nicosearch5:{query}'),
+        )
+        for key, target in targets:
+            with self.subTest(extractor=key):
+                self.assertIn(key, extractors)
+                self.assertTrue(extractors[key].suitable(target))
+
+    def test_search_print_template_with_real_ytdlp(self):
+        # This is a local synthetic playlist, not a network or download test.
+        fixture = {
+            '_type': 'playlist', 'id': 'fixture', 'title': 'Fixture',
+            'extractor': 'fixture', 'extractor_key': 'Fixture',
+            'webpage_url': 'https://example.com/playlist',
+            'entries': [
+                {'id': 'x7xyz', 'title': 'First\tname\nline', 'duration': 63, 'uploader': 'Creator',
+                 'extractor': 'fixture', 'extractor_key': 'Fixture',
+                 'webpage_url': 'https://www.dailymotion.com/video/x7xyz',
+                 'url': 'https://example.com/one.mp4', 'ext': 'mp4'},
+                {'id': 'x7uvw', 'title': 'Second', 'duration': 90,
+                 'extractor': 'fixture', 'extractor_key': 'Fixture',
+                 'webpage_url': 'https://www.dailymotion.com/video/x7uvw',
+                 'url': 'https://example.com/two.mp4', 'ext': 'mp4'},
+            ],
+        }
+        template = '%(webpage_url)j\t%(url)j\t%(id)j\t%(title)j\t%(duration)j\t%(uploader)j'
+        with tempfile.TemporaryDirectory() as folder:
+            info = Path(folder, 'playlist.json')
+            info.write_text(json.dumps(fixture), encoding='utf-8')
+            result = subprocess.run(
+                [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-clean-infojson',
+                 '--no-flat-playlist', '--skip-download', '--ignore-errors', '--playlist-end', '2',
+                 '--print', template, '--load-info-json', str(info)],
+                check=True, capture_output=True, text=True, timeout=30,
+            )
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 2)
+        fields = lines[0].split('\t')
+        self.assertEqual(len(fields), 6)
+        self.assertEqual(json.loads(fields[0]), 'https://www.dailymotion.com/video/x7xyz')
+        self.assertEqual(json.loads(fields[3]), 'First\tname\nline')
+        self.assertEqual(json.loads(fields[4]), 63)
+        self.assertEqual(lines[1].split('\t')[-1], 'NA')
 
 
 if __name__ == '__main__':

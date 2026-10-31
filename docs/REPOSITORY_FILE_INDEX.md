@@ -1,6 +1,6 @@
 # Complete repository file and connection index
 
-This snapshot lists **all 346 repository files**: the 342 tracked files at commit `f3c77ac` plus four new media and dashboard tests.
+This snapshot lists **all 349 repository files**: the 346 tracked files at commit `c6176af` plus three new provider-search files.
 The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, complete tree, runtime flows, route list, and scope.
 
 ## How to read an entry
@@ -86,6 +86,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — GitHub Actions test/build workflow and explicitly confirmed manual-only legacy SFTP upload.
   - **References:**
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — invoked via npm test:media.
+    - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — invoked via npm test:media.
     - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — invoked via npm test:media.
     - [`Whatsapp bot/scripts/test-media-extractors.py`](../Whatsapp%20bot/scripts/test-media-extractors.py) — test invocation.
     - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — invoked via npm test:media.
@@ -1139,6 +1141,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
   - **Referenced by:**
+    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — import.
     - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — import.
     - [`dashboard/components/command-directory.tsx`](../dashboard/components/command-directory.tsx) — import.
     - [`dashboard/components/media-vault-desk.tsx`](../dashboard/components/media-vault-desk.tsx) — import.
@@ -1585,8 +1588,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
   - **Outside modules:** `vitest`.
 
-- [`member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — Tests the admin command controls, alias search and canonical Bilibili switch.
+- [`member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — Tests admin command controls, alias search, the canonical Bilibili switch, and all 14 title-search catalog entries.
   - **References:**
+    - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
     - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — import.
   - **Referenced by:**
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
@@ -2464,6 +2468,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`Whatsapp bot/utils/jsonStore.js`](../Whatsapp%20bot/utils/jsonStore.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/commands/admin/toggle.js`](../Whatsapp%20bot/commands/admin/toggle.js) — require.
     - [`Whatsapp bot/commands/general/paper.js`](../Whatsapp%20bot/commands/general/paper.js) — require.
     - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require.
@@ -2484,6 +2489,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/telemetry.js`](../Whatsapp%20bot/utils/telemetry.js) — require.
     - [`Whatsapp bot/utils/userErrors.js`](../Whatsapp%20bot/utils/userErrors.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — require.
     - [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md) — file name mentioned.
     - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
@@ -2528,6 +2534,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`package.json`](../Whatsapp%20bot/package.json) — CommonJS bot package, dependencies, startup, and test scripts.
   - **References:**
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — npm test:media script.
+    - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — npm test:media script.
     - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — npm test:media script.
     - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — npm test:media script.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — explicit relationship, file name mentioned.
@@ -2736,8 +2744,11 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
   - **Outside modules:** `fs`, `path`.
 
-- [`shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — Social-media download shortcut commands.
+- [`shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — Social-media download shortcuts and provider-scoped title search with numbered selections.
   - **References:**
+    - [`Whatsapp bot/utils/jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — require.
+    - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — require.
+    - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require.
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
@@ -3652,7 +3663,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Outside modules:** `axios`, `node:assert/strict`, `node:child_process`, `node:crypto`, `node:fs`, `node:module`, `node:os`, `node:path`, `node:stream`, `node:test`, `youtubei.js`.
   - **Dynamic loading observed:** `import`, `require`.
 
-- [`test-media-extractors.py`](../Whatsapp%20bot/scripts/test-media-extractors.py) — Checks offline URL-pattern recognition for the named providers using an installed yt-dlp; it does not download videos.
+- [`test-media-extractors.py`](../Whatsapp%20bot/scripts/test-media-extractors.py) — Checks offline provider/search URL recognition and a synthetic playlist print template with installed yt-dlp; it does not download provider videos.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
     - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — direct test invocation with pinned yt-dlp.
@@ -3689,6 +3700,28 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
   - **Outside modules:** `node:assert`, `node:fs`, `node:os`, `node:path`, `node:sqlite`, `node:test`.
   - **Dynamic loading observed:** `require`.
+
+- [`test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — Offline real-handler tests for all provider searches, numbered choices, session isolation, options and member policy.
+  - **References:**
+    - [`Whatsapp bot/utils/memberCommandPolicy.js`](../Whatsapp%20bot/utils/memberCommandPolicy.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/database.js`](../Whatsapp%20bot/database.js) — require and test-only instrumentation.
+  - **Referenced by:**
+    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — invoked via npm test:media.
+    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm test:media script.
+  - **Outside modules:** `node:assert/strict`, `node:fs`, `node:os`, `node:path`, `node:test`.
+
+- [`test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — Offline mocked tests for provider search, URL validation, public indexes and metadata fallback.
+  - **References:**
+    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require and test-only instrumentation.
+  - **Referenced by:**
+    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — invoked via npm test:media.
+    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm test:media script.
+  - **Outside modules:** `axios`, `node:assert/strict`, `node:test`.
 
 - [`test-service-startup.js`](../Whatsapp%20bot/scripts/test-service-startup.js) — Tests startup order and cleanup when session or bridge startup fails.
   - **References:**
@@ -3931,6 +3964,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
@@ -3983,6 +4017,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/userErrors.js`](../Whatsapp%20bot/utils/userErrors.js) — require.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — computed bot-root path.
     - [`Whatsapp bot/commands/media/dl.js`](../Whatsapp%20bot/commands/media/dl.js) — require.
     - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
@@ -4023,6 +4058,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:**
     - [`Whatsapp bot/utils/jsonStore.js`](../Whatsapp%20bot/utils/jsonStore.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — require.
     - [`Whatsapp bot/scripts/test-account-routing.js`](../Whatsapp%20bot/scripts/test-account-routing.js) — require.
     - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — require.
@@ -4108,6 +4144,15 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/persistentJobs.js`](../Whatsapp%20bot/utils/persistentJobs.js) — require.
   - **Outside modules:** `fs`, `path`.
 
+- [`providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — Provider-scoped title discovery, public search sources, safe result parsing, and Youku original-title fallback.
+  - **References:**
+    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
+  - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
+  - **Outside modules:** `axios`, `crypto`, `jsdom`.
+
 - [`rcloneStore.js`](../Whatsapp%20bot/utils/rcloneStore.js) — Optional external link storage for large background-job results.
   - **References:**
     - [`Whatsapp bot/utils/logger.js`](../Whatsapp%20bot/utils/logger.js) — require.
@@ -4136,6 +4181,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/accountSockets.js`](../Whatsapp%20bot/utils/accountSockets.js) — require.
     - [`Whatsapp bot/utils/jid.js`](../Whatsapp%20bot/utils/jid.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
     - [`Whatsapp bot/commands/media/movie.js`](../Whatsapp%20bot/commands/media/movie.js) — require.
     - [`Whatsapp bot/commands/media/series.js`](../Whatsapp%20bot/commands/media/series.js) — require.
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
@@ -4245,6 +4292,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/safeLog.js`](../Whatsapp%20bot/utils/safeLog.js) — require.
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require.
     - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — test-only instrumentation and computed bot-root path.
     - [`Whatsapp bot/commands/admin/cookies.js`](../Whatsapp%20bot/commands/admin/cookies.js) — require.
     - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — require.

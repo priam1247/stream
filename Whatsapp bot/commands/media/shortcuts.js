@@ -14,7 +14,56 @@
 
 const config = require('../../config');
 const YT = require('../../utils/youtubedl');
+const providerSearch = require('../../utils/providerSearch');
+const selections = require('../../utils/selections');
+const jobQueue = require('../../utils/jobQueue');
 const { downloadAndSend, parseOptions } = require('../../utils/mediaPipeline');
+
+const QUALITIES = [144, 240, 360, 480, 720, 1080];
+
+// Search titles are free text: bare words such as "music" and "video" remain
+// part of the title. Explicit flags avoid the ambiguity of legacy link options.
+function searchOptions(args, defaultKind) {
+  const rest = [];
+  const defaults = parseOptions([], { kind: defaultKind });
+  let { kind, height } = defaults;
+  let first = false;
+  let invalidQuality = false;
+  for (let i = 0; i < args.length; i++) {
+    const token = String(args[i] || '');
+    if (/^--?first$/i.test(token)) { first = true; continue; }
+    if (/^--(?:audio|video|image)$/i.test(token)) { kind = token.slice(2).toLowerCase(); continue; }
+    const qualityFlag = /^--quality(?:=(.*))?$/i.exec(token);
+    if (qualityFlag) {
+      const value = qualityFlag[1] === undefined ? String(args[++i] || '') : qualityFlag[1];
+      const quality = Number(value.toLowerCase().replace(/p$/, ''));
+      if (QUALITIES.includes(quality)) height = quality;
+      else invalidQuality = true;
+      continue;
+    }
+    rest.push(token);
+  }
+  const tail = String(rest[rest.length - 1] || '');
+  if (rest.length > 1 && /^\d+p$/i.test(tail) && QUALITIES.includes(Number(tail.slice(0, -1)))) {
+    height = Number(tail.slice(0, -1));
+    rest.pop();
+  }
+  return { kind, height, first, invalidQuality, query: rest.join(' ').trim() };
+}
+
+// Keep the old URL syntax (audio, 480, etc.) and accept the explicit flags too.
+function linkOptions(args, defaultKind) {
+  const translated = [];
+  for (let i = 0; i < args.length; i++) {
+    const token = String(args[i] || '');
+    if (/^--?first$/i.test(token)) continue;
+    if (/^--(?:audio|video|image)$/i.test(token)) { translated.push(token.slice(2)); continue; }
+    const qualityFlag = /^--quality(?:=(.*))?$/i.exec(token);
+    if (qualityFlag) { translated.push(qualityFlag[1] === undefined ? String(args[++i] || '') : qualityFlag[1]); continue; }
+    translated.push(token);
+  }
+  return parseOptions(translated, { kind: defaultKind });
+}
 
 function quotedTextOf(msg) {
   const ctx = msg?.message?.extendedTextMessage?.contextInfo
@@ -30,7 +79,7 @@ function quotedTextOf(msg) {
   );
 }
 
-const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, label, defaultKind = 'video' }) => ({
+const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, label, searchable = false, defaultKind = 'video' }) => ({
   name,
   aliases,
   category: 'media',
@@ -41,33 +90,73 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
     const chatId = extra?.from || msg.key.remoteJid;
     const say = (text) => sock.sendMessage(chatId, { text }, { quoted: msg });
     const P = config.prefix || '.';
+    const input = Array.isArray(args) ? args : [];
+    const link = linkOptions(input, defaultKind);
+    const argUrl = YT.extractUrl(link.rest.join(' ').trim());
+    const quotedUrl = YT.extractUrl(quotedTextOf(msg));
+    const search = searchable ? searchOptions(input, defaultKind) : null;
+    // A quoted URL remains useful with no arguments or only download options;
+    // an actual title typed in the command takes precedence over a quoted URL.
+    const url = argUrl || (quotedUrl && (!searchable || !link.rest.length || !search.query) ? quotedUrl : null);
 
-    const { kind, height, rest } = parseOptions(args, { kind: defaultKind });
-    const url = YT.extractUrl(rest.join(' ').trim()) || YT.extractUrl(quotedTextOf(msg));
+    const send = (socket, message, context, selectedUrl, kind, height, known) => {
+      const imageUrl = /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(selectedUrl);
+      const lane = kind === 'audio' || kind === 'image' || imageUrl ? 'light' : 'heavy';
+      return downloadAndSend(socket, message, context, {
+        url: selectedUrl, kind, height, lane,
+        attempts: [{ engine: `${label} chain`, code: known ? 'OK' : 'HOST_MISMATCH' }],
+      });
+    };
 
-    if (!url) {
-      return say(`Usage: ${P}${usage.replace(/^\./, '')}`);
+    if (url) {
+      // Direct-link shortcuts have historically accepted other sites as well;
+      // this host check is diagnostic, not a new restriction on old behavior.
+      let host = '';
+      try { host = new URL(url).hostname.toLowerCase().replace(/\.$/, ''); } catch { /* pipeline reports invalid URLs */ }
+      const known = domains.some((d) => {
+        const domain = d.toLowerCase();
+        return domain.endsWith('.')
+          ? host.startsWith(domain) || host.includes(`.${domain}`)
+          : host === domain || host.endsWith(`.${domain}`);
+      });
+      return send(sock, msg, extra, url, link.kind, link.height, known);
     }
 
-    // This is diagnostic only: shortcuts have historically accepted other
-    // links too. Inspect the host rather than substrings in paths or queries.
-    let host = '';
-    try { host = new URL(url).hostname.toLowerCase().replace(/\.$/, ''); } catch { /* pipeline reports invalid URLs */ }
-    const known = domains.some((d) => {
-      const domain = d.toLowerCase();
-      return domain.endsWith('.')
-        ? host.startsWith(domain) || host.includes(`.${domain}`)
-        : host === domain || host.endsWith(`.${domain}`);
-    });
-    const imageUrl = /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(url);
-    const lane = kind === 'audio' || kind === 'image' || imageUrl ? 'light' : 'heavy';
+    if (!searchable || !search.query) return say(`Usage: ${P}${usage.replace(/^\./, '')}`);
+    if (search.invalidQuality) return say('Quality must be 144, 240, 360, 480, 720 or 1080.');
+    if (search.query.length > providerSearch.MAX_QUERY) return say(`Search titles must be ${providerSearch.MAX_QUERY} characters or fewer.`);
 
-    return downloadAndSend(sock, msg, extra, {
-      url,
-      kind,
-      height,
-      lane,
-      attempts: [{ engine: `${label} chain`, code: known ? 'OK' : 'HOST_MISMATCH' }],
+    await say(`Searching ${hostLabel}...`);
+    let found;
+    try {
+      // Release the lane before a selected download starts; there is no nested
+      // queue wait. A burst of searches is bounded but commands are not rejected.
+      found = await jobQueue.runInLane('light', () => providerSearch.searchProvider(name, search.query, {
+        limit: Number(config.search?.maxResults) || 5,
+      }));
+    } catch {
+      found = { results: [], status: 'unavailable' };
+    }
+    if (!found.results.length) {
+      if (found.status === 'unavailable') {
+        return say(`${hostLabel} search is unavailable right now. The site or search indexes may be blocked; try again or use a direct link.`);
+      }
+      return say(`No ${hostLabel} videos found. Try a shorter or original-language title, or use a direct link. Some videos may not be indexed.`);
+    }
+
+    if (search.first) return send(sock, msg, extra, found.results[0].url, search.kind, search.height, true);
+
+    const lines = found.results.map((r, i) => {
+      const time = r.duration ? ` (${Math.floor(r.duration / 60)}:${String(r.duration % 60).padStart(2, '0')})` : '';
+      return `*${i + 1}.* ${r.title}${r.episode ? ` · Episode ${r.episode}` : ''}${r.author ? ` — ${r.author}` : ''}${time}`;
+    });
+    const text = `*${hostLabel} results*\n${lines.join('\n')}\n\nReply ${P}1–${P}${found.results.length} or ${P}cancel.`;
+    return selections.sendTextPrompt(sock, msg, extra, {
+      text,
+      items: found.results,
+      label: name,
+      ttlMs: Math.max(1, Number(config.search?.ttlMinutes) || 5) * 60 * 1000,
+      run: (sock2, msg2, extra2, item) => send(sock2, msg2, extra2, item.url, search.kind, search.height, true),
     });
   },
 });
@@ -136,7 +225,8 @@ module.exports = [
   ].map((site) => makeCommand({
     ...site,
     label: site.name,
-    description: `Download a ${site.hostLabel} post or video via yt-dlp`,
-    usage: `.${site.name} <${site.hostLabel} link>`,
+    searchable: true,
+    description: `Search for or download a ${site.hostLabel} video`,
+    usage: `.${site.name} <title or ${site.hostLabel} link> [--audio] [480p]`,
   })),
 ];

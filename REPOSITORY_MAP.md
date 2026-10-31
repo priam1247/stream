@@ -1,6 +1,6 @@
 # Complete repository map
 
-This map covers the 342 tracked files at commit `f3c77ac` plus the four tests added with the video-provider integration: **346 files** in this snapshot. The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
+This map covers the 346 tracked files at commit `c6176af` plus the three files added for provider title search: **349 files** in this snapshot. The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
 
 ## Contents
 
@@ -75,7 +75,7 @@ engine/media/index.js → metadata, registry, resolver, providers, downloaders
 
 The bot is CommonJS. The nested `engine/package.json` switches that subtree to ES modules; the bridge uses dynamic `import()`. The engine entry point statically registers its selected stream and torrent providers. The three files in `engine/providers/ddl/` register themselves if loaded, but are not imported by the current `engine/media/index.js`; their presence alone does not mean they are active.
 
-Media shortcuts and `.dl` use `utils/mediaPipeline.js` → yt-dlp, an Innertube fallback for YouTube, and optional existing remote resolvers. Shortcuts are wrappers rather than independent extractors. `dashboard/lib/bot-data.ts` catalogs the canonical commands; member switches apply to individual commands, not website-wide blocking.
+Media shortcuts and `.dl` use `utils/mediaPipeline.js` → yt-dlp, an Innertube fallback for YouTube, and optional existing remote resolvers. Shortcuts are wrappers rather than independent extractors. The 14 newer shortcuts can also search by title: `commands/media/shortcuts.js` → `utils/providerSearch.js` → provider search or site-filtered web indexes, then `utils/selections.js` presents session-scoped choices. For an unsuccessful English Youku episode query, TVMaze may supply a matching original title before Youku is searched again. Search results are discovery hints, not verified downloads. `dashboard/lib/bot-data.ts` catalogs the canonical commands; member switches apply to individual commands, not website-wide blocking.
 
 ## Dashboard
 
@@ -600,6 +600,8 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── test-media-shortcuts.js
 │   │   ├── test-nm3u8dl-live.js
 │   │   ├── test-provider-core.js
+│   │   ├── test-provider-search-handler.js
+│   │   ├── test-provider-search.js
 │   │   ├── test-service-startup.js
 │   │   ├── test-session-backup.js
 │   │   └── test-sessions.js
@@ -634,6 +636,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── paperSearch.js
 │   │   ├── persistentJobs.js
 │   │   ├── providerRouter.js
+│   │   ├── providerSearch.js
 │   │   ├── rcloneStore.js
 │   │   ├── reconnect.js
 │   │   ├── safeLog.js

@@ -18,9 +18,11 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .ytv <name-or-YouTube-link> [quality]  Download YouTube MP4 with silent-audio verification
 .dl <URL> [audio|video] [quality]      Generic yt-dlp downloader (streamed to disk)
 .tiktok <URL>  .x <URL>  .pinterest <URL>  .instagram <URL>  .fb <URL>
-.bilibili <URL>  .vimeo <URL>  .dailymotion <URL>  .reddit <URL>  .twitch <URL>
-.rumble <URL>  .odysee <URL>  .weibo <URL>  .douyin <URL>  .acfun <URL>
-.youku <URL>  .vk <URL>  .xiaohongshu <URL>  .niconico <URL>
+.bilibili <title or URL>  .vimeo <title or URL>  .dailymotion <title or URL>
+.reddit <title or URL>    .twitch <title or URL>  .rumble <title or URL>
+.odysee <title or URL>    .weibo <title or URL>   .douyin <title or URL>
+.acfun <title or URL>     .youku <title or URL>   .vk <title or URL>
+.xiaohongshu <title or URL>  .niconico <title or URL>
 .spotify <Spotify URL or artist - title>
 .sticker (reply to media)              512x512 WebP sticker
 .viewonce (reply to view-once media)   Unwrap view-once photo/video/audio (from the session owner)
@@ -31,16 +33,44 @@ Interactive title and quality choices use a tap selector or a prefixed numbered 
 
 ### Video sites and YouTube troubleshooting
 
-The site commands are shortcuts to the existing yt-dlp pipeline, not separate
-extractors; `.bili`, `.daily`, `.xhs`, and `.nico` are aliases. `.dl` remains available
-for other supported links. Use individual public video/post URLs; the bot does
-not intentionally download whole playlists. Availability depends on the
-installed yt-dlp version, the provider, location, account permissions, and the
-server's network. Sign-in, regional restrictions, deleted videos, live streams,
-DRM and provider changes can prevent a download. The shortcuts do not guarantee
-access to a site or filter all explicit material hosted on general-purpose sites.
-Dashboard command switches apply to individual commands, not whole websites:
-turning off `.bilibili` for members does not stop `.dl` accepting a Bilibili URL.
+The 14 site commands accept a title as well as a direct link. For example:
+
+```text
+.youku the blood of youth s01e1
+.1
+.vimeo mountain video --audio
+.bili a title 480p
+.nico a title --first
+```
+
+Search shows numbered results even when `SEARCH_PICKER` is off; reply with a
+prefixed number or `.cancel`. `--first` skips the list. For title searches use
+`--audio`, `--video`, `--image`, a trailing quality such as `480p`, or
+`--quality 480`; bare words such as `music` and `video` remain part of the
+search title. Direct links still accept the older `audio` and `480` options.
+`SEARCH_RESULTS` (1–10, default 5) and `SEARCH_TTL_MINUTES` apply to the list.
+
+Bilibili, Youku, AcFun, Reddit, Rumble and Odysee first try public site search;
+Dailymotion and Niconico first try yt-dlp's site search. All 14 can fall back to
+DuckDuckGo and Brave Search with a site filter. These third parties receive the
+search words. For an English Youku episode search with no native result, TVMaze
+may receive the series name to find an exact matching original Chinese title;
+that title is then searched on Youku. HTTP searches do not send the bot's saved
+cookies or authorization to those services. yt-dlp's native searches use its
+existing domain-scoped cookie and proxy settings. Results are checked against
+the requested site's video/post URLs, but may be outdated, incomplete, unrelated
+or not downloadable. A site's original language may work better; `S01E01` is
+only a search hint, not an episode guarantee.
+Search and downloads can fail because of rate limits, sign-in, location, deleted
+videos, network blocks, DRM or site changes. Search is not a filter for explicit
+material hosted on general-purpose sites.
+
+Downloads still use the existing yt-dlp pipeline, not separate extractors;
+`.bili`, `.daily`, `.xhs`, and `.nico` are aliases. `.dl` remains available for
+other supported links. Use individual public video/post URLs; the bot does not
+intentionally download whole playlists. Dashboard command switches apply to
+individual commands, not whole websites: turning off `.bilibili` for members
+does not stop `.dl` accepting a Bilibili URL.
 
 For a YouTube access check, the owner can run `.ytdl update` and then
 `.ytdl test <video link>`. The test checks metadata or URL resolution only; it is
