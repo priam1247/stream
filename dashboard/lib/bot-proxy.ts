@@ -3,7 +3,6 @@ import {
   getBotCommandById,
   getBotConnectionConfig,
   getBotHeartbeat,
-  getFailoverStatus,
   getStoredWhatsAppUser,
   setFastPollWindow,
 } from './storage';
@@ -64,25 +63,19 @@ export async function getResolvedBotTarget(): Promise<{
   isInsecureHttp: boolean;
   token: string;
   syncToken: string;
-  hasXsSyncToken: boolean;
-  hasBotkeepSyncToken: boolean;
   botEnabledForMembers: boolean;
   rawUrl: string;
 }> {
-  const [cfg, failover] = await Promise.all([getBotConnectionConfig(), getFailoverStatus()]);
-  // Failover uses only the signed shared queue. A stale direct Botkeep URL
-  // could otherwise bypass the lease and pair or modify the wrong peer.
-  const parsed = parseAndValidateBotUrl(failover.enabled ? '' : cfg.botApiUrl);
+  const cfg = await getBotConnectionConfig();
+  const parsed = parseAndValidateBotUrl(cfg.botApiUrl);
   return {
     baseUrl: parsed.baseUrl,
     hostLabel: parsed.hostLabel,
     isInsecureHttp: Boolean(parsed.isInsecureHttp),
-    token: failover.enabled ? '' : cfg.botAdminToken,
+    token: cfg.botAdminToken,
     syncToken: cfg.botSyncToken,
-    hasXsSyncToken: Boolean(cfg.botXsSyncToken),
-    hasBotkeepSyncToken: Boolean(cfg.botBotkeepSyncToken),
     botEnabledForMembers: cfg.botEnabledForMembers,
-    rawUrl: failover.enabled ? '' : cfg.botApiUrl,
+    rawUrl: cfg.botApiUrl,
   };
 }
 
@@ -124,12 +117,10 @@ export async function fetchLiveBotStatus(customTarget?: {
   error?: string;
 }> {
   if (!customTarget) {
-    const [hb, failover] = await Promise.all([getBotHeartbeat(), getFailoverStatus()]);
+    const hb = await getBotHeartbeat();
     if (hb) {
       const ageSec = Math.max(0, Math.floor((Date.now() - hb.lastSeenAt) / 1000));
-      const ownsCurrentLease = !failover.enabled || Boolean(failover.activeRole &&
-        hb.failover?.role === failover.activeRole && hb.failover?.epoch === failover.epoch);
-      if (ageSec <= HEARTBEAT_FRESH_SECONDS && ownsCurrentLease) {
+      if (ageSec <= HEARTBEAT_FRESH_SECONDS) {
         return {
           reachable: true,
           connected: typeof hb.connected === 'boolean' ? hb.connected : null,
@@ -233,6 +224,7 @@ async function probeDirectBotStatus(target: {
         Authorization: `Bearer ${target.token}`,
       },
       cache: 'no-store',
+      redirect: 'error',
       signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
     });
     const latencyMs = Date.now() - startedAt;
@@ -293,6 +285,7 @@ export async function syncNumberToLiveBot(
         },
         body: JSON.stringify({ number, label, enabled, pairAllowed }),
         cache: 'no-store',
+        redirect: 'error',
         signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
       });
       if (response.ok) return 'accepted';
@@ -316,6 +309,7 @@ export async function removeNumberFromLiveBot(number: string): Promise<void> {
         Authorization: `Bearer ${token}`,
       },
       cache: 'no-store',
+      redirect: 'error',
       signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
     });
   } catch {
@@ -441,6 +435,7 @@ export async function requestLiveBotPairingCode(
         },
         body: JSON.stringify({ number }),
         cache: 'no-store',
+        redirect: 'error',
         signal: AbortSignal.timeout(PAIR_TIMEOUT_MS),
       });
       const data = await res.json().catch(() => ({}));
@@ -492,7 +487,7 @@ export async function requestLiveBotUnlink(number: string, sessionId: string, ow
   try {
     const res = await fetch(`${baseUrl}/admin/api/unlink`, {
       method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ number, sessionId }), cache: 'no-store', signal: AbortSignal.timeout(12_000),
+      body: JSON.stringify({ number, sessionId }), cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(12_000),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, status: res.status, error: serviceText(String(data?.error || 'Could not unlink this number.')) };

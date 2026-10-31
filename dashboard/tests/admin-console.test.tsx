@@ -200,100 +200,17 @@ describe('owner control room', () => {
     fireEvent.click(within(pages).getByRole('button', { name: 'Sync' }));
     const token = screen.getByLabelText('BOT_SYNC_TOKEN') as HTMLInputElement;
     fireEvent.change(token, { target: { value: 'draft sync token' } });
-    expect(screen.queryByLabelText('PANEL_URL')).toBeNull();
+    expect(screen.queryByLabelText('Botkeep server ID')).toBeNull();
     fireEvent.click(within(pages).getByRole('button', { name: 'Hosting' }));
-    expect(screen.getByLabelText('PANEL_URL')).toBeTruthy();
+    expect(screen.getByLabelText('Botkeep server ID')).toBeTruthy();
+    expect(screen.getByLabelText('Botkeep Developer API key')).toBeTruthy();
+    expect(screen.queryByLabelText('PANEL_URL')).toBeNull();
     expect(screen.queryByLabelText('BOT_SYNC_TOKEN')).toBeNull();
     fireEvent.click(within(pages).getByRole('button', { name: 'Sync' }));
     expect((screen.getByLabelText('BOT_SYNC_TOKEN') as HTMLInputElement).value).toBe('draft sync token');
     fireEvent.click(within(pages).getByRole('button', { name: 'Numbers' }));
     expect((screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' }) as HTMLInputElement).value).toBe('Mobile');
     expect(screen.getByText(/Pausing stops new requests, not approved numbers/)).toBeTruthy();
-  });
-
-  it('creates separate private sync credentials for the primary and backup', async () => {
-    const fetchMock = mockApi();
-    const original = fetchMock.getMockImplementation()!;
-    let saved: Record<string, unknown> | null = null;
-    fetchMock.mockImplementation(async (input, init) => {
-      if (String(input) === '/api/admin/settings') { saved = JSON.parse(String(init?.body)); return reply({ ok: true, probe: { reachable: false } }); }
-      return original(input, init);
-    });
-    render(<AdminConsole />);
-    await screen.findByRole('heading', { name: 'Overview' });
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Owner sections' })).getByRole('button', { name: 'WhatsApp' }));
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Sync' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Generate XS primary sync token' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Generate Botkeep backup sync token' }));
-    const xs = (screen.getByLabelText('XS primary sync token') as HTMLInputElement).value;
-    const backup = (screen.getByLabelText('Botkeep backup sync token') as HTMLInputElement).value;
-    expect(xs).toMatch(/^[a-f0-9]{64}$/); expect(backup).toMatch(/^[a-f0-9]{64}$/); expect(xs).not.toBe(backup);
-    fireEvent.click(screen.getByRole('button', { name: 'Save Sync' }));
-    await waitFor(() => expect(saved).toMatchObject({ botXsSyncToken: xs, botBotkeepSyncToken: backup }));
-  });
-
-  it('confirms a host-token change before interrupting coordinated hosts', async () => {
-    const fetchMock = mockApi();
-    const original = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation(async (input, init) => String(input) === '/api/admin/status'
-      ? reply({ ...overview, hasXsSyncToken: true, hasBotkeepSyncToken: true,
-        failover: { enabled: true, activeRole: 'xs', epoch: 1, issue: null, xs: null, botkeep: null } })
-      : original(input, init));
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    render(<AdminConsole />);
-    await screen.findByRole('heading', { name: 'Overview' });
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Owner sections' })).getByRole('button', { name: 'WhatsApp' }));
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Sync' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Generate XS primary sync token' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Save Sync' }));
-    expect(confirm).toHaveBeenCalledOnce();
-    expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/admin/settings')).toBe(false);
-  });
-
-  it('does not submit a stale direct URL when failover is active', async () => {
-    const fetchMock = mockApi();
-    const original = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation(async (input, init) => String(input) === '/api/admin/status'
-      ? reply({ ...overview, botApiUrl: 'https://old.example',
-        failover: { enabled: true, activeRole: 'xs', epoch: 1, issue: null, xs: null, botkeep: null } })
-      : original(input, init));
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
-    render(<AdminConsole />);
-    await screen.findByRole('heading', { name: 'Overview' });
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'Owner sections' })).getByRole('button', { name: 'WhatsApp' }));
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Sync' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Generate XS primary sync token' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Save Sync' }));
-    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/admin/settings')).toBe(true));
-    const call = fetchMock.mock.calls.find(([url]) => String(url) === '/api/admin/settings')!;
-    const body = JSON.parse(String((call[1] as RequestInit).body));
-    expect(body.botApiUrl).toBe('');
-    expect(body).not.toHaveProperty('botAdminToken');
-  });
-
-  it('shows XS as primary and Botkeep as standby from their individual heartbeats', async () => {
-    const fetchMock = mockApi();
-    const original = fetchMock.getMockImplementation()!;
-    let issue: 'shared-session' | null = null;
-    fetchMock.mockImplementation(async (input, init) => String(input) === '/api/admin/status'
-      ? reply({ ...overview, failover: { enabled: true, activeRole: 'xs', epoch: 1, issue,
-        xs: { lastSeenAt: Date.now(), connected: true, version: '2.2.0' },
-        botkeep: { lastSeenAt: Date.now(), connected: true, version: '2.2.0' } } })
-      : original(input, init));
-    render(<AdminConsole />);
-    const mainNav = await screen.findByRole('navigation', { name: 'Owner sections' });
-    fireEvent.click(within(mainNav).getByRole('button', { name: 'WhatsApp' }));
-    fireEvent.click(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Status' }));
-    const hosts = screen.getByRole('region', { name: 'WhatsApp hosts' });
-    expect(within(hosts).getByText('XS Systems · Primary')).toBeTruthy();
-    expect(within(hosts).getByText('Botkeep · Backup')).toBeTruthy();
-    expect(within(hosts).getByText('Active')).toBeTruthy();
-    expect(within(hosts).getByText('Standby')).toBeTruthy();
-    expect(within(hosts).getAllByText(/Device ready/)).toHaveLength(2);
-    issue = 'shared-session';
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-    await waitFor(() => expect(within(hosts).getByText('Needs attention')).toBeTruthy());
-    expect(within(hosts).getByRole('alert').textContent).toContain('same session');
   });
 
   it('keeps activity filters and sends a number-sync alert to the numbers page', async () => {

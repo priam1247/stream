@@ -126,17 +126,11 @@ export function AdminConsole() {
   const [botUrlInput, setBotUrlInput] = useState('');
   const [botTokenInput, setBotTokenInput] = useState('');
   const [botSyncTokenInput, setBotSyncTokenInput] = useState('');
-  const [xsSyncTokenInput, setXsSyncTokenInput] = useState('');
-  const [botkeepSyncTokenInput, setBotkeepSyncTokenInput] = useState('');
-  const [xsTokenChanged, setXsTokenChanged] = useState(false);
-  const [botkeepTokenChanged, setBotkeepTokenChanged] = useState(false);
-  const [visibleHostToken, setVisibleHostToken] = useState<'xs' | 'botkeep' | null>(null);
   const [showBotToken, setShowBotToken] = useState(false);
   const [savingBot, setSavingBot] = useState(false);
 
-  // Hydrodactyl / Pterodactyl Panel Control state
-  const [panelUrlInput, setPanelUrlInput] = useState('https://panel.xsystemshosting.com');
-  const [panelServerIdInput, setPanelServerIdInput] = useState('381c9516');
+  // Optional Botkeep Developer API controls
+  const [panelServerIdInput, setPanelServerIdInput] = useState('');
   const [panelKeyInput, setPanelKeyInput] = useState('');
   const [showPanelKey, setShowPanelKey] = useState(false);
   const [savingPanel, setSavingPanel] = useState(false);
@@ -177,11 +171,6 @@ export function AdminConsole() {
           setBotUrlInput(json.botApiUrl || '');
           setBotTokenInput(json.hasBotToken ? '••••••••' : '');
           setBotSyncTokenInput(json.hasBotSyncToken ? '••••••••' : '');
-          setXsSyncTokenInput(json.hasXsSyncToken ? '••••••••' : '');
-          setBotkeepSyncTokenInput(json.hasBotkeepSyncToken ? '••••••••' : '');
-          setXsTokenChanged(false);
-          setBotkeepTokenChanged(false);
-          setPanelUrlInput(json.panelUrl || 'https://panel.xsystemshosting.com');
           setPanelServerIdInput(json.panelServerId || '');
           setPanelKeyInput(json.hasPanelApiKey ? '••••••••' : '');
         }
@@ -399,45 +388,22 @@ export function AdminConsole() {
     }
   };
 
-  const generateHostToken = (role: 'xs' | 'botkeep') => {
-    try {
-      const bytes = window.crypto.getRandomValues(new Uint8Array(32));
-      const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-      if (role === 'xs') { setXsSyncTokenInput(token); setXsTokenChanged(true); }
-      else { setBotkeepSyncTokenInput(token); setBotkeepTokenChanged(true); }
-      setNotice({ text: 'Token created. Copy it privately to its matching host, then save.' });
-    } catch {
-      setNotice({ text: 'Unable to create a secure token in this browser.', bad: true });
-    }
-  };
-
-  const copyHostToken = async (token: string) => {
-    if (!token || token === '••••••••') return;
-    try { await navigator.clipboard.writeText(token); setNotice({ text: 'Token copied. Paste it only into its matching host.' }); }
-    catch { setNotice({ text: 'Copy failed. Show the token and copy it manually.', bad: true }); }
-  };
-
   const handleSaveBotConfig = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (data.failover?.enabled && (xsTokenChanged || botkeepTokenChanged) &&
-        !window.confirm('Changing a host token pauses that host until its matching setting is updated. Continue?')) return;
     setSavingBot(true);
     try {
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({
-          botApiUrl: data.failover?.enabled ? '' : botUrlInput.trim(),
-          ...(data.failover?.enabled ? {} : { botAdminToken: botTokenInput.trim() }),
+          bridgeTarget: 'botkeep',
+          botApiUrl: botUrlInput.trim(),
+          botAdminToken: botTokenInput.trim(),
           botSyncToken: botSyncTokenInput.trim(),
-          ...(xsTokenChanged ? { botXsSyncToken: xsSyncTokenInput.trim() } : {}),
-          ...(botkeepTokenChanged ? { botBotkeepSyncToken: botkeepSyncTokenInput.trim() } : {}),
         }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || 'Failed to save sync settings');
-      setXsTokenChanged(false);
-      setBotkeepTokenChanged(false);
 
       await loadOverview(true, false);
       if (json.probe?.reachable) {
@@ -562,37 +528,31 @@ export function AdminConsole() {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({
-          action: 'save_and_discover',
-          panelUrl: panelUrlInput.trim(),
+          action: 'save',
           panelServerId: panelServerIdInput.trim(),
           panelApiKey: panelKeyInput.trim(),
         }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || 'Could not save panel settings');
+      if (!res.ok) throw new Error(json?.error || 'Could not save Botkeep settings');
       if (json.panelServerId) setPanelServerIdInput(json.panelServerId);
       if (json.hasPanelApiKey) setPanelKeyInput('••••••••');
       await loadOverview(true, false);
       void loadPanelStatus();
 
-      if (json.discoveryOk) {
-        const names = (json.servers || [])
-          .map((s: { name: string; id: string }) => `${s.name} (${s.id})`)
-          .join(', ');
+      if (json.verified) {
+        setNotice({ text: 'Saved. Botkeep responded; check server status for its state.' });
+      } else if (json.verificationError) {
         setNotice({
-          text: `Panel verified: ${names || json.panelServerId || 'OK'}`,
-        });
-      } else if (json.discoveryError) {
-        setNotice({
-          text: `Saved (${json.discoveryError})`,
+          text: `Saved (${json.verificationError})`,
           bad: true,
         });
       } else {
-        setNotice({ text: 'Panel saved.' });
+        setNotice({ text: 'Botkeep settings saved.' });
       }
     } catch (err) {
       setNotice({
-        text: err instanceof Error ? err.message : 'Failed to save panel settings',
+        text: err instanceof Error ? err.message : 'Failed to save Botkeep settings',
         bad: true,
       });
     } finally {
@@ -601,13 +561,14 @@ export function AdminConsole() {
   };
 
   const handlePanelPower = async (signal: 'restart' | 'start' | 'stop') => {
-    if (!window.confirm(`${signal[0].toUpperCase()}${signal.slice(1)} the WhatsApp server? This affects the WhatsApp service, not Scribd.`)) return;
+    const target = data.panelServerId ? ` Botkeep server: ${data.panelServerId}.` : '';
+    if (!window.confirm(`${signal[0].toUpperCase()}${signal.slice(1)} the WhatsApp service?${target} This does not affect Scribd.`)) return;
     setSendingPower(signal);
     try {
       const res = await fetch('/api/admin/panel', {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ action: 'power', signal }),
+        body: JSON.stringify({ action: 'power', signal, serverId: data.panelServerId || '' }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || `Could not ${signal} the service`);
@@ -821,36 +782,13 @@ export function AdminConsole() {
                 <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
                   <h2 className="text-sm font-bold text-slate-900 sm:text-base">Service status</h2>
                   <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">XS hosting panel</p><p className="mt-1 text-sm font-semibold capitalize text-slate-800">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p>{panelStatus?.error && <p className="mt-1 break-words text-[11px] text-slate-500">{panelStatus.error}</p>}</div>
+                    <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Botkeep server</p><p className="mt-1 text-sm font-semibold capitalize text-slate-800">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p>{panelStatus?.error && <p className="mt-1 break-words text-[11px] text-slate-500">{panelStatus.error}</p>}</div>
                     <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Service bridge</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-slate-500">{overviewError ? 'Last check failed' : overviewCheckedAt == null ? 'Awaiting first check' : data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
                     <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">WhatsApp</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p></div>
                   </div>
                   {overviewError && <p role="alert" className="mt-3 text-xs text-rose-700">Status could not be refreshed. Check Sync settings.</p>}
                   {!overviewError && data.botVersion && <p className="mt-3 break-all text-xs text-slate-500">Reported version {data.botVersion}</p>}
                   {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-amber-700">{serviceText(data.botError)} Check the service process and Sync settings.</p>}
-                </section>
-                <section aria-label="WhatsApp hosts" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <h2 className="text-sm font-bold text-slate-900 sm:text-base">WhatsApp hosts</h2>
-                    <span className="text-[11px] font-medium text-slate-500">XS preferred · Botkeep fallback</span>
-                  </div>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {(['xs', 'botkeep'] as const).map((role) => {
-                      const node = data.failover?.[role];
-                      const age = node ? Math.max(0, Math.floor((Date.now() - node.lastSeenAt) / 1000)) : null;
-                      const fresh = age != null && age <= 25;
-                      const state = overviewError ? 'Unknown' : !data.failover?.enabled ? 'Awaiting setup'
-                        : !node ? 'Waiting for check-in' : !fresh ? 'Not reporting'
-                        : role === 'botkeep' && data.failover.issue ? 'Needs attention'
-                        : data.failover.activeRole === role ? 'Active' : 'Standby';
-                      return <div key={role} className="rounded-xl bg-slate-50 p-3">
-                        <div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold text-slate-800">{role === 'xs' ? 'XS Systems · Primary' : 'Botkeep · Backup'}</p><span className={`text-xs font-semibold ${state === 'Active' ? 'text-teal-700' : 'text-slate-600'}`}>{state}</span></div>
-                        <p className="mt-1 text-[11px] text-slate-500">{node && !overviewError ? `${age != null ? `Last seen ${age}s ago` : 'No heartbeat'} · ${fresh ? node.connected ? 'Device ready' : 'Device not ready' : 'Connection unknown'}` : 'No failover heartbeat yet'}</p>
-                      </div>;
-                    })}
-                  </div>
-                  {data.failover?.issue && <p role="alert" className="mt-3 text-xs leading-5 text-rose-700">{data.failover.issue === 'shared-session' ? 'Both hosts are using the same session. Stop the backup and link it as a separate device.' : 'The backup is linked to a different WhatsApp number.'}</p>}
-                  <p className="mt-3 text-[11px] leading-4 text-slate-500">The backup needs its own linked WhatsApp device. Accounts linked only on one host cannot move automatically.</p>
                 </section>
                 {/* Live Server Analytics: Commands, Successful Downloads, Failed, Uptime + RAM/Disk/Queues */}
                 <LiveAnalytics
@@ -908,7 +846,7 @@ export function AdminConsole() {
                   </button>
                 </div>
 
-                <p className="w-full text-[11px] leading-5 text-slate-500">Panel power targets XS. If panel access is unavailable, restart may reconnect the active host instead.</p>
+                <p className="w-full text-[11px] leading-5 text-slate-500">Power targets the selected Botkeep server and requires the optional Developer API settings.</p>
                 {lastRestartEvent && <p className="w-full text-[11px] text-slate-500">Last restart request: {new Date(lastRestartEvent.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
               </section>
             )}
@@ -1139,7 +1077,6 @@ export function AdminConsole() {
                     >
                       BOT_SYNC_TOKEN
                     </label>
-                    <p className="mb-1 text-[11px] text-slate-500">Single-host mode only</p>
                     <div className="relative">
                       <input
                         id="admin-bot-sync-token"
@@ -1164,37 +1101,13 @@ export function AdminConsole() {
                     </div>
                   </div>
 
-                  <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                    <p className="text-xs font-semibold text-slate-700">Two-host failover</p>
-                    <p className="text-xs leading-5 text-slate-500">Use a different private token for each host. The single-host token above cannot authorize either one. Changing a saved token pauses that host until updated.</p>
-                    {([
-                      { role: 'xs' as const, label: 'XS primary sync token', value: xsSyncTokenInput, setValue: setXsSyncTokenInput, setChanged: setXsTokenChanged },
-                      { role: 'botkeep' as const, label: 'Botkeep backup sync token', value: botkeepSyncTokenInput, setValue: setBotkeepSyncTokenInput, setChanged: setBotkeepTokenChanged },
-                    ]).map(({ role, label, value, setValue, setChanged }) => (
-                      <div key={role} className="min-w-0">
-                        <label htmlFor={`admin-${role}-sync-token`} className="mb-1 block text-[11px] font-semibold text-slate-600">{label}</label>
-                        <div className="flex gap-1.5">
-                          <input id={`admin-${role}-sync-token`} type={visibleHostToken === role ? 'text' : 'password'} autoComplete="new-password" maxLength={512}
-                            value={value} disabled={savingBot} onChange={(e) => { setValue(e.target.value); setChanged(true); }}
-                            placeholder="Not configured" className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none" />
-                          <button type="button" aria-label={`${visibleHostToken === role ? 'Hide' : 'Show'} ${label}`} onClick={() => setVisibleHostToken((current) => current === role ? null : role)}
-                            className="rounded-xl border border-slate-300 bg-white px-2 text-slate-500">{visibleHostToken === role ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button>
-                          <button type="button" disabled={savingBot} aria-label={`Generate ${label}`} onClick={() => generateHostToken(role)}
-                            className="rounded-xl border border-slate-300 bg-white px-2.5 text-xs font-semibold text-slate-700 disabled:opacity-50">Generate</button>
-                          <button type="button" disabled={savingBot || !value || value === '••••••••'} aria-label={`Copy ${label}`} onClick={() => void copyHostToken(value)}
-                            className="rounded-xl border border-slate-300 bg-white px-2.5 text-xs font-semibold text-slate-700 disabled:opacity-50">Copy</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {data.failover?.enabled ? <p className="text-xs leading-5 text-slate-500">Failover uses signed outbound sync on both hosts; direct connections are disabled.</p> : <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                     <div className="min-w-0">
                       <label
                         htmlFor="admin-bot-url"
                         className="mb-1 block font-mono text-[11px] font-semibold text-slate-600"
                       >
-                        INBOUND_URL (optional)
+                        Botkeep inbound URL (optional)
                       </label>
                       <input
                         id="admin-bot-url"
@@ -1211,7 +1124,7 @@ export function AdminConsole() {
                         htmlFor="admin-bot-token"
                         className="mb-1 block font-mono text-[11px] font-semibold text-slate-600"
                       >
-                        ADMIN_DASHBOARD_TOKEN
+                          Botkeep bridge token
                       </label>
                       <input
                         id="admin-bot-token"
@@ -1222,7 +1135,7 @@ export function AdminConsole() {
                         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
                       />
                     </div>
-                  </div>}
+                  </div>
 
                   <button
                     type="submit"
@@ -1238,7 +1151,7 @@ export function AdminConsole() {
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="flex items-center gap-2 text-sm font-bold text-slate-900">
                     <Power className="h-4 w-4 text-teal-600" />
-                    Panel API
+                    Botkeep server controls
                   </h2>
                   <span
                     className={`rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase ${
@@ -1252,40 +1165,12 @@ export function AdminConsole() {
                 </div>
 
                 <form onSubmit={handleSavePanel} className="mt-3.5 space-y-3">
-                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-[1.3fr_0.7fr]">
-                    <div className="min-w-0">
-                      <label
-                        htmlFor="admin-panel-url"
-                        className="mb-1 block font-mono text-[11px] font-semibold text-slate-600"
-                      >
-                        PANEL_URL
-                      </label>
-                      <input
-                        id="admin-panel-url"
-                        type="url"
-                        value={panelUrlInput}
-                        onChange={(e) => setPanelUrlInput(e.target.value)}
-                        placeholder="https://panel.xsystemshosting.com"
-                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
-                      />
-                    </div>
-
-                    <div className="min-w-0">
-                      <label
-                        htmlFor="admin-panel-sid"
-                        className="mb-1 block font-mono text-[11px] font-semibold text-slate-600"
-                      >
-                        SERVER_ID
-                      </label>
-                      <input
-                        id="admin-panel-sid"
-                        type="text"
-                        value={panelServerIdInput}
-                        onChange={(e) => setPanelServerIdInput(e.target.value)}
-                        placeholder="Auto"
-                        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
-                      />
-                    </div>
+                  <p className="text-xs leading-5 text-slate-500">Optional: use a Botkeep Developer API key with workload read and power access. Server status and power controls need both fields.</p>
+                  <div className="min-w-0">
+                    <label htmlFor="admin-panel-sid" className="mb-1 block text-[11px] font-semibold text-slate-600">Botkeep server ID</label>
+                    <input id="admin-panel-sid" type="text" value={panelServerIdInput}
+                      onChange={(e) => setPanelServerIdInput(e.target.value)} placeholder="Server ID from Botkeep"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none" />
                   </div>
 
                   <div className="min-w-0">
@@ -1293,7 +1178,7 @@ export function AdminConsole() {
                       htmlFor="admin-panel-key"
                       className="mb-1 block font-mono text-[11px] font-semibold text-slate-600"
                     >
-                      PANEL_API_KEY (hydro_ / ptlc_)
+                      Botkeep Developer API key
                     </label>
                     <div className="relative">
                       <input
@@ -1324,7 +1209,7 @@ export function AdminConsole() {
                     disabled={savingPanel}
                     className="inline-flex h-[38px] w-full items-center justify-center rounded-xl border border-teal-600 bg-teal-50 px-4 text-xs font-semibold text-teal-800 transition hover:bg-teal-100 disabled:opacity-60 sm:w-auto"
                   >
-                    {savingPanel ? 'Verifying…' : 'Verify & Save Panel'}
+                    {savingPanel ? 'Verifying…' : 'Save Botkeep'}
                   </button>
                 </form>
               </section>}

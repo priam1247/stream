@@ -5,7 +5,7 @@ import {
   getClientIp,
   recordRateLimitHit,
 } from '@/lib/rate-limit';
-import { computeWhitelistSnapshot, getFailoverStatus } from '@/lib/storage';
+import { computeWhitelistSnapshot } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,16 +31,8 @@ export async function GET(req: NextRequest) {
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
-  if (auth.credentialRole === 'legacy' && (await getFailoverStatus()).enabled) {
-    return NextResponse.json({ error: 'This dashboard requires host-specific sync credentials.' }, { status: 403 });
-  }
 
   const snapshot = await computeWhitelistSnapshot();
-  // Do not return a legacy snapshot if failover was activated while the
-  // multi-query whitelist was being assembled.
-  if (auth.credentialRole === 'legacy' && (await getFailoverStatus()).enabled) {
-    return NextResponse.json({ error: 'This dashboard requires host-specific sync credentials.' }, { status: 403 });
-  }
   const etag = `"${snapshot.version}"`;
   const ifNoneMatch = req.headers.get('if-none-match')?.trim();
 

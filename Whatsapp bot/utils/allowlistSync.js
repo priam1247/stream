@@ -1,6 +1,6 @@
 /**
  * Compatibility wrapper for `utils/dashboardSync.js`.
- * Kept in-tree so existing imports and SFTP deployments continue working cleanly.
+ * Kept in-tree for existing imports and manually updated installations.
  */
 
 'use strict';

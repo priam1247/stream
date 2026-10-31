@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_SCRIBD_WEB_URL } from './scribd-config';
+import { BOTKEEP_API_BASE } from './botkeep-config';
 import {
   ActivityEvent,
   ApprovedUser,
@@ -11,7 +12,6 @@ import {
   MemberRecord,
   PanelConnectionConfig,
   ScribdConnectionConfig,
-  WhatsAppFailoverStatus,
 } from './types';
 
 export interface StoredPortalAccount {
@@ -70,10 +70,6 @@ declare global {
   var __zafarD1SchemaV6Promise: Promise<boolean> | undefined;
   // eslint-disable-next-line no-var
   var __zafarD1UnreachableInDev: boolean | undefined;
-  // eslint-disable-next-line no-var
-  var __zafarFailoverSchemaReady: boolean | undefined;
-  // eslint-disable-next-line no-var
-  var __zafarFailoverSchemaPromise: Promise<boolean> | undefined;
 }
 
 function getD1Config() {
@@ -84,20 +80,15 @@ function getD1Config() {
   return { accountId, databaseId, apiToken };
 }
 
-// An unreachable shared database may already contain a lease. Never silently
-// switch a coordinated dashboard to uncoordinated disk storage. Developers can
-// explicitly opt into isolated single-host disk mode for offline local work.
-function mayUseStandaloneDisk(): boolean {
-  return !getD1Config() || (process.env.NODE_ENV !== 'production' &&
-    globalThis.__zafarD1UnreachableInDev === true && process.env.ZAFAR_DEV_STANDALONE_FALLBACK === '1');
-}
-
 async function queryD1<T = Record<string, unknown>>(
   sql: string,
   params: (string | number | null)[] = [],
 ): Promise<T[] | null> {
   const cfg = getD1Config();
-  if (!cfg || globalThis.__zafarD1UnreachableInDev) return null;
+  if (!cfg) return null;
+  const isolatedDev = process.env.NODE_ENV !== 'production' && process.env.ZAFAR_DEV_STANDALONE_FALLBACK === '1';
+  if (globalThis.__zafarD1UnreachableInDev && isolatedDev) return null;
+  if (!isolatedDev) globalThis.__zafarD1UnreachableInDev = false;
 
   const url = `https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/d1/database/${cfg.databaseId}/query`;
   try {
@@ -119,7 +110,7 @@ async function queryD1<T = Record<string, unknown>>(
     }
     return (body.result?.[0]?.results as T[]) || [];
   } catch (err) {
-    if (process.env.NODE_ENV !== 'production') {
+    if (isolatedDev) {
       globalThis.__zafarD1UnreachableInDev = true;
       return null;
     }
@@ -129,7 +120,12 @@ async function queryD1<T = Record<string, unknown>>(
 
 async function ensureD1Tables(): Promise<boolean> {
   const cfg = getD1Config();
-  if (!cfg || globalThis.__zafarD1UnreachableInDev) return false;
+  if (!cfg) return false;
+  if (globalThis.__zafarD1UnreachableInDev) {
+    if (process.env.NODE_ENV !== 'production' && process.env.ZAFAR_DEV_STANDALONE_FALLBACK === '1') return false;
+    globalThis.__zafarD1UnreachableInDev = false;
+    globalThis.__zafarD1SchemaV6Ready = false;
+  }
   if (globalThis.__zafarD1SchemaV6Ready) return true;
   if (globalThis.__zafarD1SchemaV6Promise) return globalThis.__zafarD1SchemaV6Promise;
   const pending = initializeD1Tables();
@@ -139,31 +135,6 @@ async function ensureD1Tables(): Promise<boolean> {
   } finally {
     if (globalThis.__zafarD1SchemaV6Promise === pending) globalThis.__zafarD1SchemaV6Promise = undefined;
   }
-}
-
-// Separate migration marker so an already-warm V6 dashboard still creates the
-// new coordination tables after a code update. Concurrent cold starts coalesce.
-async function ensureFailoverTables(): Promise<boolean> {
-  if (!await ensureD1Tables()) return false;
-  if (globalThis.__zafarFailoverSchemaReady) return true;
-  if (globalThis.__zafarFailoverSchemaPromise) return globalThis.__zafarFailoverSchemaPromise;
-  const pending = (async () => {
-    const lease = await queryD1(`CREATE TABLE IF NOT EXISTS portal_bot_failover (
-      id TEXT PRIMARY KEY, owner_role TEXT NOT NULL, owner_instance TEXT NOT NULL,
-      expires_at INTEGER NOT NULL, epoch INTEGER NOT NULL
-    )`);
-    const nodes = await queryD1(`CREATE TABLE IF NOT EXISTS portal_bot_failover_nodes (
-      role TEXT PRIMARY KEY, instance TEXT NOT NULL, last_seen_at INTEGER NOT NULL,
-      connected INTEGER, version TEXT NOT NULL DEFAULT '', account_hash TEXT NOT NULL DEFAULT '',
-      device_fingerprint TEXT NOT NULL DEFAULT ''
-    )`);
-    if (lease === null || nodes === null) return false;
-    globalThis.__zafarFailoverSchemaReady = true;
-    return true;
-  })();
-  globalThis.__zafarFailoverSchemaPromise = pending;
-  try { return await pending; }
-  finally { if (globalThis.__zafarFailoverSchemaPromise === pending) globalThis.__zafarFailoverSchemaPromise = undefined; }
 }
 
 async function initializeD1Tables(): Promise<boolean> {
@@ -753,39 +724,39 @@ export async function listAllMembers(
 // ============================================================================
 
 export async function getBotConnectionConfig(): Promise<BotConnectionConfig> {
-  const envUrl = process.env.BOT_API_URL?.trim() || '';
-  const envToken = process.env.ADMIN_DASHBOARD_TOKEN?.trim() || '';
+  // Direct bridge settings are intentionally isolated from older hosts. The
+  // existing outbound sync token remains usable by the current installation.
+  const envUrl = process.env.BOTKEEP_BOT_API_URL?.trim() || '';
+  const envToken = process.env.BOTKEEP_BOT_ADMIN_TOKEN?.trim() || '';
   const envSyncToken = process.env.BOT_SYNC_TOKEN?.trim() || '';
-  const envXsToken = process.env.BOT_XS_SYNC_TOKEN?.trim() || '';
-  const envBotkeepToken = process.env.BOT_BOTKEEP_SYNC_TOKEN?.trim() || '';
+  const envLegacyAdmin = process.env.ADMIN_DASHBOARD_TOKEN?.trim() || '';
+  const envBotkeepSync = process.env.BOT_BOTKEEP_SYNC_TOKEN?.trim() || '';
 
   if (await ensureD1Tables()) {
-    const rows =
-      (await queryD1(`SELECT key, value, updated_at FROM portal_settings`)) || [];
-    const map = new Map<string, string>();
-    let updatedAt: string | undefined;
-    for (const r of rows) {
-      map.set(String(r.key), String(r.value));
-      if (r.updated_at) updatedAt = String(r.updated_at);
+    const rows = await queryD1(`SELECT key, value, updated_at FROM portal_settings WHERE key IN
+      ('botkeep_bot_api_url', 'botkeep_bot_admin_token', 'bot_sync_token', 'bot_admin_token', 'bot_botkeep_sync_token', 'bot_enabled_for_members')`);
+    if (rows !== null) {
+      const map = new Map<string, string>();
+      let updatedAt: string | undefined;
+      for (const r of rows) {
+        map.set(String(r.key), String(r.value));
+        if (r.updated_at) updatedAt = String(r.updated_at);
+      }
+      return {
+        botApiUrl: (map.has('botkeep_bot_api_url') ? map.get('botkeep_bot_api_url')! : envUrl).trim(),
+        botAdminToken: (map.has('botkeep_bot_admin_token') ? map.get('botkeep_bot_admin_token')! : envToken).trim(),
+        botSyncToken: (map.get('bot_sync_token') || envSyncToken || map.get('bot_admin_token') || envLegacyAdmin || map.get('bot_botkeep_sync_token') || envBotkeepSync).trim(),
+        botEnabledForMembers: map.get('bot_enabled_for_members') !== '0',
+        updatedAt,
+      };
     }
-    return {
-      botApiUrl: (map.get('bot_api_url') || envUrl).trim(),
-      botAdminToken: (map.get('bot_admin_token') || envToken).trim(),
-      botSyncToken: (map.get('bot_sync_token') || envSyncToken).trim(),
-      botXsSyncToken: (map.has('bot_xs_sync_token') ? map.get('bot_xs_sync_token')! : envXsToken).trim(),
-      botBotkeepSyncToken: (map.has('bot_botkeep_sync_token') ? map.get('bot_botkeep_sync_token')! : envBotkeepToken).trim(),
-      botEnabledForMembers: map.get('bot_enabled_for_members') !== '0',
-      updatedAt,
-    };
   }
 
   const store = readDiskStore();
   return {
-    botApiUrl: (store.settings.bot_api_url || envUrl).trim(),
-    botAdminToken: (store.settings.bot_admin_token || envToken).trim(),
-    botSyncToken: (store.settings.bot_sync_token || envSyncToken).trim(),
-    botXsSyncToken: (Object.hasOwn(store.settings, 'bot_xs_sync_token') ? store.settings.bot_xs_sync_token : envXsToken).trim(),
-    botBotkeepSyncToken: (Object.hasOwn(store.settings, 'bot_botkeep_sync_token') ? store.settings.bot_botkeep_sync_token : envBotkeepToken).trim(),
+    botApiUrl: (Object.hasOwn(store.settings, 'botkeep_bot_api_url') ? store.settings.botkeep_bot_api_url : envUrl).trim(),
+    botAdminToken: (Object.hasOwn(store.settings, 'botkeep_bot_admin_token') ? store.settings.botkeep_bot_admin_token : envToken).trim(),
+    botSyncToken: (store.settings.bot_sync_token || envSyncToken || store.settings.bot_admin_token || envLegacyAdmin || store.settings.bot_botkeep_sync_token || envBotkeepSync).trim(),
     botEnabledForMembers: store.settings.bot_enabled_for_members !== '0',
     updatedAt: store.settings.updated_at,
   };
@@ -795,8 +766,6 @@ export async function saveBotConnectionConfig(patch: {
   botApiUrl?: string;
   botAdminToken?: string;
   botSyncToken?: string;
-  botXsSyncToken?: string;
-  botBotkeepSyncToken?: string;
   botEnabledForMembers?: boolean;
 }): Promise<BotConnectionConfig> {
   const current = await getBotConnectionConfig();
@@ -810,34 +779,18 @@ export async function saveBotConnectionConfig(patch: {
     typeof patch.botSyncToken === 'string'
       ? patch.botSyncToken.trim()
       : current.botSyncToken;
-  const nextXsToken = typeof patch.botXsSyncToken === 'string' ? patch.botXsSyncToken.trim() : current.botXsSyncToken;
-  const nextBotkeepToken = typeof patch.botBotkeepSyncToken === 'string' ? patch.botBotkeepSyncToken.trim() : current.botBotkeepSyncToken;
-  if ([patch.botAdminToken, patch.botSyncToken, patch.botXsSyncToken, patch.botBotkeepSyncToken].some((value) => typeof value === 'string')) {
-    const legacy = [nextToken, nextSyncToken, process.env.ADMIN_DASHBOARD_TOKEN?.trim() || '', process.env.BOT_SYNC_TOKEN?.trim() || ''].filter(Boolean);
-    if ([nextXsToken, nextBotkeepToken].some((token) => token && (token.length < 32 || token.length > 512))) {
-      throw Object.assign(new Error('Each failover token must be between 32 and 512 characters.'), { code: 'INVALID_BOT_CREDENTIALS' });
-    }
-    if ((nextXsToken && (nextXsToken === nextBotkeepToken || legacy.includes(nextXsToken))) ||
-        (nextBotkeepToken && legacy.includes(nextBotkeepToken))) {
-      throw Object.assign(new Error('XS, Botkeep and single-host tokens must all be different.'), { code: 'INVALID_BOT_CREDENTIALS' });
-    }
-  }
   const nextEnabled =
     typeof patch.botEnabledForMembers === 'boolean'
       ? patch.botEnabledForMembers
       : current.botEnabledForMembers;
   const now = new Date().toISOString();
-  // Write only fields actually supplied, so an unrelated member-switch request
-  // cannot restore a stale credential. Save multiple changes atomically.
   const entries: [string, string][] = [];
-  if (typeof patch.botApiUrl === 'string') entries.push(['bot_api_url', nextUrl]);
-  if (typeof patch.botAdminToken === 'string') entries.push(['bot_admin_token', nextToken]);
+  if (typeof patch.botApiUrl === 'string') entries.push(['botkeep_bot_api_url', nextUrl]);
+  if (typeof patch.botAdminToken === 'string') entries.push(['botkeep_bot_admin_token', nextToken]);
   if (typeof patch.botSyncToken === 'string') entries.push(['bot_sync_token', nextSyncToken]);
-  if (typeof patch.botXsSyncToken === 'string') entries.push(['bot_xs_sync_token', nextXsToken]);
-  if (typeof patch.botBotkeepSyncToken === 'string') entries.push(['bot_botkeep_sync_token', nextBotkeepToken]);
   if (typeof patch.botEnabledForMembers === 'boolean') entries.push(['bot_enabled_for_members', nextEnabled ? '1' : '0']);
   const result = { botApiUrl: nextUrl, botAdminToken: nextToken, botSyncToken: nextSyncToken,
-    botXsSyncToken: nextXsToken, botBotkeepSyncToken: nextBotkeepToken, botEnabledForMembers: nextEnabled, updatedAt: now };
+    botEnabledForMembers: nextEnabled, updatedAt: now };
 
   if (await ensureD1Tables()) {
     if (!entries.length) return result;
@@ -935,6 +888,23 @@ export async function saveStoredWhatsAppUser(number: string, label: string, adde
   else store.whatsappUsers.unshift({ number, label, enabled: true, addedBy: cleanOwner, addedAt: now, approval: 'approved', claimId: crypto.randomUUID() });
   writeDiskStore(store);
   return store.whatsappUsers.map((user) => localNumber(store, user));
+}
+
+/** Import a local owner allowlist entry without replacing an existing member. */
+export async function importLocalWhatsAppUser(number: string, label: string, addedBy: string): Promise<boolean> {
+  const now = new Date().toISOString();
+  const owner = addedBy.trim().toLowerCase();
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(`INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at, approval_status, claim_id)
+      VALUES (?, ?, 1, ?, ?, 'approved', ?) ON CONFLICT(number) DO NOTHING RETURNING number`,
+      [number, label, owner, now, crypto.randomUUID()]);
+    if (rows !== null) return rows.length > 0;
+  }
+  const store = readDiskStore();
+  if (store.whatsappUsers.some((user) => user.number === number)) return false;
+  store.whatsappUsers.unshift({ number, label, enabled: true, addedBy: owner, addedAt: now, approval: 'approved', claimId: crypto.randomUUID() });
+  writeDiskStore(store);
+  return true;
 }
 
 /** Claim a new number as pending; a member cannot re-enable or transfer it. */
@@ -1104,19 +1074,13 @@ export async function deleteWhatsAppUserIfOwned(number: string, ownerEmail: stri
 // Bot Heartbeat, Versioned Whitelist, Command Queue & Panel Config
 // ============================================================================
 
-const DEFAULT_PANEL_URL = 'https://panel.xsystemshosting.com';
-const DEFAULT_XS_SERVER_ID = '381c9516';
-
 async function getSettingValue(key: string): Promise<string | null> {
   if (await ensureD1Tables()) {
     const rows = await queryD1(
       `SELECT value FROM portal_settings WHERE key = ? LIMIT 1`,
       [key],
     );
-    if (rows && rows.length > 0 && rows[0].value != null) {
-      return String(rows[0].value);
-    }
-    return null;
+    if (rows !== null) return rows.length > 0 && rows[0].value != null ? String(rows[0].value) : null;
   }
   const store = readDiskStore();
   return store.settings[key] ?? null;
@@ -1125,13 +1089,13 @@ async function getSettingValue(key: string): Promise<string | null> {
 async function setSettingValue(key: string, value: string): Promise<void> {
   const now = new Date().toISOString();
   if (await ensureD1Tables()) {
-    await queryD1(
+    const rows = await queryD1(
       `INSERT INTO portal_settings (key, value, updated_at)
        VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       [key, value, now],
     );
-    return;
+    if (rows !== null) return;
   }
   const store = readDiskStore();
   store.settings[key] = value;
@@ -1242,23 +1206,21 @@ function mapSessionBackup(row: Record<string, unknown>): SessionBackupRecord {
   return { slot: String(row.slot), generation: String(row.generation), claimToken: String(row.claim_token || ''), revision: Number(row.revision), ciphertext: String(row.ciphertext || ''), revoked: Boolean(Number(row.revoked)), updatedAt: Number(row.updated_at) };
 }
 /** Session recovery is deliberately unavailable on the ephemeral disk fallback. */
-async function requireSessionBackupStorage(legacy: boolean): Promise<void> {
-  if (!(await (legacy ? ensureFailoverTables() : ensureD1Tables()))) throw new Error('Recovery storage is unavailable.');
+async function requireSessionBackupStorage(): Promise<void> {
+  if (!(await ensureD1Tables())) throw new Error('Recovery storage is unavailable.');
 }
 function requireBackupRows<T>(rows: T[] | null): T[] {
   if (rows === null) throw new Error('Recovery storage is unavailable.');
   return rows;
 }
-export async function listSessionBackupMetadata(after = '', legacy = false): Promise<Omit<SessionBackupRecord, 'ciphertext'>[]> {
-  await requireSessionBackupStorage(legacy);
-  const guard = legacy ? ` AND ${NO_FAILOVER_LEASE}` : '';
-  const rows = requireBackupRows(await queryD1(`SELECT slot, generation, claim_token, revision, revoked, updated_at FROM portal_session_backups WHERE slot > ?${guard} ORDER BY slot LIMIT 100`, [after]));
+export async function listSessionBackupMetadata(after = ''): Promise<Omit<SessionBackupRecord, 'ciphertext'>[]> {
+  await requireSessionBackupStorage();
+  const rows = requireBackupRows(await queryD1(`SELECT slot, generation, claim_token, revision, revoked, updated_at FROM portal_session_backups WHERE slot > ? ORDER BY slot LIMIT 100`, [after]));
   return rows.map((row) => { const { ciphertext: _ciphertext, ...rest } = mapSessionBackup(row); return rest; });
 }
-export async function getSessionBackup(slot: string, legacy = false): Promise<SessionBackupRecord | null> {
-  await requireSessionBackupStorage(legacy);
-  const guard = legacy ? ` AND ${NO_FAILOVER_LEASE}` : '';
-  const rows = requireBackupRows(await queryD1(`SELECT * FROM portal_session_backups WHERE slot = ?${guard} LIMIT 1`, [slot]));
+export async function getSessionBackup(slot: string): Promise<SessionBackupRecord | null> {
+  await requireSessionBackupStorage();
+  const rows = requireBackupRows(await queryD1(`SELECT * FROM portal_session_backups WHERE slot = ? LIMIT 1`, [slot]));
   return rows.length ? mapSessionBackup(rows[0]) : null;
 }
 /** Portal ownership data used to recheck a backup write in the same SQL statement. */
@@ -1283,25 +1245,23 @@ function backupEligibility(slot: string, identity?: SessionBackupClaim | null): 
     params: [slot.slice(7), identity.key, identity.owner] };
 }
 /** Read the backup only if its ownership is still current at the SQL snapshot. */
-export async function getEligibleSessionBackup(slot: string, claimToken: string, identity?: SessionBackupClaim | null, legacy = false): Promise<SessionBackupRecord | null> {
-  await requireSessionBackupStorage(legacy);
+export async function getEligibleSessionBackup(slot: string, claimToken: string, identity?: SessionBackupClaim | null): Promise<SessionBackupRecord | null> {
+  await requireSessionBackupStorage();
   const check = backupEligibility(slot, identity);
-  const guard = legacy ? ` AND ${NO_FAILOVER_LEASE}` : '';
-  const rows = requireBackupRows(await queryD1(`SELECT * FROM portal_session_backups WHERE slot = ? AND claim_token = ? AND revoked = 0 AND ${check.sql}${guard} LIMIT 1`,
+  const rows = requireBackupRows(await queryD1(`SELECT * FROM portal_session_backups WHERE slot = ? AND claim_token = ? AND revoked = 0 AND ${check.sql} LIMIT 1`,
     [slot, claimToken, ...check.params]));
   return rows.length ? mapSessionBackup(rows[0]) : null;
 }
-/** Compare-and-swap and check the current claim and mode in the same SQL statement. */
-export async function putSessionBackup(slot: string, generation: string, claimToken: string, ciphertext: string, expected: number, identity?: SessionBackupClaim | null, legacy = false): Promise<number | null> {
-  await requireSessionBackupStorage(legacy);
+/** Compare-and-swap and check the current claim atomically, not in a prior request. */
+export async function putSessionBackup(slot: string, generation: string, claimToken: string, ciphertext: string, expected: number, identity?: SessionBackupClaim | null): Promise<number | null> {
+  await requireSessionBackupStorage();
   const check = backupEligibility(slot, identity);
-  const guard = legacy ? ` AND ${NO_FAILOVER_LEASE}` : '';
   const rows = expected === 0
     ? await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at)
-        SELECT ?, ?, ?, 1, ?, 0, ? WHERE ${check.sql}${guard} ON CONFLICT(slot) DO NOTHING RETURNING revision`,
+        SELECT ?, ?, ?, 1, ?, 0, ? WHERE ${check.sql} ON CONFLICT(slot) DO NOTHING RETURNING revision`,
       [slot, generation, claimToken, ciphertext, Date.now(), ...check.params])
     : await queryD1(`UPDATE portal_session_backups SET generation = ?, claim_token = ?, revision = revision + 1, ciphertext = ?, revoked = 0, updated_at = ?
-        WHERE slot = ? AND revision = ? AND (revoked = 0 OR generation != ?) AND ${check.sql}${guard} RETURNING revision`,
+        WHERE slot = ? AND revision = ? AND (revoked = 0 OR generation != ?) AND ${check.sql} RETURNING revision`,
       [generation, claimToken, ciphertext, Date.now(), slot, expected, generation, ...check.params]);
   const result = requireBackupRows(rows);
   return result.length ? Number(result[0].revision) : null;
@@ -1312,125 +1272,78 @@ async function revokeBackupForClaim(slot: string, claimToken: string): Promise<v
   await queryD1(`UPDATE portal_session_backups SET revision = revision + 1, ciphertext = '', revoked = 1, updated_at = ?
     WHERE slot = ? AND claim_token = ?`, [Date.now(), slot, claimToken]);
 }
-export async function revokeSessionBackup(slot: string, generation?: string, legacy = false): Promise<boolean> {
-  await requireSessionBackupStorage(legacy);
-  // An old single-host request cannot race the first failover lease. A delayed
-  // logout can also never revoke a newer generation of the same session.
-  const guard = legacy ? NO_FAILOVER_LEASE : '1 = 1';
-  const rows = await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at)
-    SELECT ?, ?, '', 1, '', 1, ? WHERE ${guard}
-    ON CONFLICT(slot) DO UPDATE SET revision = portal_session_backups.revision + 1, ciphertext = '', revoked = 1, updated_at = excluded.updated_at
-    ${generation ? 'WHERE portal_session_backups.generation = excluded.generation' : ''} RETURNING slot`, [slot, generation || '', Date.now()]);
-  if (rows === null) throw new Error('Recovery storage is unavailable.');
-  if (!legacy || rows.length) return true;
-  // A generation mismatch is a safe no-op; distinguish it from a mode change.
-  return !(await getFailoverStatus()).enabled;
+export async function revokeSessionBackup(slot: string, generation?: string): Promise<void> {
+  await requireSessionBackupStorage();
+  // When a generation is supplied, a delayed logout cannot revoke a newer link.
+  if (generation) {
+    requireBackupRows(await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at) VALUES (?, ?, '', 1, '', 1, ?)
+      ON CONFLICT(slot) DO UPDATE SET revision = portal_session_backups.revision + 1, ciphertext = '', revoked = 1, updated_at = excluded.updated_at
+      WHERE portal_session_backups.generation = excluded.generation`, [slot, generation, Date.now()]));
+  } else {
+    requireBackupRows(await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at) VALUES (?, '', '', 1, '', 1, ?)
+      ON CONFLICT(slot) DO UPDATE SET revision = portal_session_backups.revision + 1, ciphertext = '', revoked = 1, updated_at = excluded.updated_at`, [slot, Date.now()]));
+  }
 }
 
+/** Botkeep credentials have a separate namespace; older panel settings are never used. */
 export async function getPanelConnectionConfig(): Promise<PanelConnectionConfig> {
-  // XS settings are separate from legacy panel_* values. A saved Botkeep key
-  // must never be forwarded to XS, and the old server ID must not be powered.
-  // Environment credentials are accepted only when they explicitly identify
-  // this XS server and panel; otherwise the owner enters the XS key privately.
-  const envMatchesXs = (process.env.PANEL_URL || '').trim().replace(/\/+$/, '') === DEFAULT_PANEL_URL &&
-    [DEFAULT_XS_SERVER_ID, '381c9516-ac72-4b42-a4e3-e16bb7f9f4a0'].includes((process.env.PANEL_SERVER_ID || '').trim());
-  const envKey = envMatchesXs ? (process.env.PANEL_API_KEY || '').trim() : '';
-  const resolve = (map: Map<string, string>, updatedAt?: string): PanelConnectionConfig => {
-    const panelUrl = (map.has('xs_panel_url') ? map.get('xs_panel_url')! : DEFAULT_PANEL_URL).trim() || DEFAULT_PANEL_URL;
-    const panelServerId = (map.has('xs_panel_server_id') ? map.get('xs_panel_server_id')! : DEFAULT_XS_SERVER_ID).trim();
-    const mayUseEnvKey = panelUrl.replace(/\/+$/, '') === DEFAULT_PANEL_URL &&
-      [DEFAULT_XS_SERVER_ID, '381c9516-ac72-4b42-a4e3-e16bb7f9f4a0'].includes(panelServerId);
-    return { panelUrl, panelServerId, panelApiKey: (map.has('xs_panel_api_key') ? map.get('xs_panel_api_key')! : mayUseEnvKey ? envKey : '').trim(), updatedAt };
-  };
+  const envId = (process.env.BOTKEEP_WORKLOAD_ID || '').trim();
+  const envKey = (process.env.BOTKEEP_API_KEY || '').trim();
   if (await ensureD1Tables()) {
-    const rows = (await queryD1(`SELECT key, value, updated_at FROM portal_settings
-      WHERE key IN ('xs_panel_url', 'xs_panel_server_id', 'xs_panel_api_key')`)) || [];
-    const map = new Map<string, string>();
-    let updatedAt: string | undefined;
-    for (const row of rows) {
-      map.set(String(row.key), String(row.value));
-      if (row.updated_at) updatedAt = String(row.updated_at);
+    const rows = await queryD1(`SELECT key, value, updated_at FROM portal_settings
+      WHERE key IN ('botkeep_workload_id', 'botkeep_api_key')`);
+    if (rows !== null) {
+      const map = new Map(rows.map((row) => [String(row.key), String(row.value)]));
+      return {
+        panelUrl: BOTKEEP_API_BASE,
+        panelServerId: (map.has('botkeep_workload_id') ? map.get('botkeep_workload_id')! : envId).trim(),
+        panelApiKey: (map.has('botkeep_api_key') ? map.get('botkeep_api_key')! : envKey).trim(),
+        updatedAt: rows.find((row) => row.updated_at)?.updated_at as string | undefined,
+      };
     }
-    return resolve(map, updatedAt);
   }
   const store = readDiskStore();
-  return resolve(new Map(Object.entries(store.settings)), store.settings.xs_panel_updated_at);
+  return {
+    panelUrl: BOTKEEP_API_BASE,
+    panelServerId: (Object.hasOwn(store.settings, 'botkeep_workload_id') ? store.settings.botkeep_workload_id : envId).trim(),
+    panelApiKey: (Object.hasOwn(store.settings, 'botkeep_api_key') ? store.settings.botkeep_api_key : envKey).trim(),
+    updatedAt: store.settings.botkeep_updated_at,
+  };
 }
 
 export async function savePanelConnectionConfig(patch: {
-  panelUrl?: string;
   panelServerId?: string;
   panelApiKey?: string;
 }): Promise<PanelConnectionConfig> {
   const current = await getPanelConnectionConfig();
-  const nextUrl =
-    typeof patch.panelUrl === 'string'
-      ? patch.panelUrl.trim() || DEFAULT_PANEL_URL
-      : current.panelUrl;
-  const nextServerId =
-    typeof patch.panelServerId === 'string'
-      ? patch.panelServerId.trim()
-      : current.panelServerId;
-  // Changing the panel URL never forwards the previous host's API key.
-  const nextApiKey =
-    typeof patch.panelApiKey === 'string'
-      ? patch.panelApiKey.trim()
-      : nextUrl === current.panelUrl ? current.panelApiKey : '';
+  const nextId = typeof patch.panelServerId === 'string' ? patch.panelServerId.trim() : current.panelServerId;
+  const nextKey = typeof patch.panelApiKey === 'string' ? patch.panelApiKey.trim() : current.panelApiKey;
   const now = new Date().toISOString();
-
+  const entries: [string, string][] = [];
+  if (typeof patch.panelServerId === 'string') entries.push(['botkeep_workload_id', nextId]);
+  if (typeof patch.panelApiKey === 'string') entries.push(['botkeep_api_key', nextKey]);
+  const result = { panelUrl: BOTKEEP_API_BASE, panelServerId: nextId, panelApiKey: nextKey, updatedAt: now };
   if (await ensureD1Tables()) {
-    const entries: [string, string][] = [
-      ['xs_panel_url', nextUrl],
-      ['xs_panel_server_id', nextServerId],
-      ['xs_panel_api_key', nextApiKey],
-    ];
-    for (const [k, v] of entries) {
-      await queryD1(
-        `INSERT INTO portal_settings (key, value, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-        [k, v, now],
-      );
-    }
-    return {
-      panelUrl: nextUrl,
-      panelServerId: nextServerId,
-      panelApiKey: nextApiKey,
-      updatedAt: now,
-    };
+    if (!entries.length) return result;
+    const rows = await queryD1(`INSERT INTO portal_settings (key, value, updated_at)
+      VALUES ${entries.map(() => '(?, ?, ?)').join(', ')}
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      entries.flatMap(([key, value]) => [key, value, now]));
+    if (rows !== null) return result;
   }
-
   const store = readDiskStore();
-  store.settings.xs_panel_url = nextUrl;
-  store.settings.xs_panel_server_id = nextServerId;
-  store.settings.xs_panel_api_key = nextApiKey;
-  store.settings.xs_panel_updated_at = now;
-  writeDiskStore(store);
-
-  return {
-    panelUrl: nextUrl,
-    panelServerId: nextServerId,
-    panelApiKey: nextApiKey,
-    updatedAt: now,
-  };
+  for (const [key, value] of entries) store.settings[key] = value;
+  if (entries.length) { store.settings.botkeep_updated_at = now; writeDiskStore(store); }
+  return result;
 }
 
-export async function saveBotHeartbeat(hb: BotHeartbeatRecord, fence?: FailoverFence): Promise<void> {
-  if (await ensureFailoverTables()) {
-    const guard = fence ? CURRENT_FAILOVER_FENCE : NO_FAILOVER_LEASE;
-    const values: (string | number)[] = [JSON.stringify(hb), new Date().toISOString()];
-    if (fence) values.push(fence.role, fence.instance, fence.epoch);
-    const rows = await queryD1(`INSERT INTO portal_settings (key, value, updated_at)
-      SELECT 'bot_heartbeat_json', ?, ? WHERE ${guard}
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at RETURNING key`, values);
-    if (rows !== null) return;
-  }
-  if (fence || !mayUseStandaloneDisk()) throw new Error('Failover storage is unavailable.');
-  await setSettingValue('bot_heartbeat_json', JSON.stringify(hb));
+export async function saveBotHeartbeat(hb: BotHeartbeatRecord): Promise<void> {
+  await setSettingValue('botkeep_heartbeat_json', JSON.stringify(hb));
 }
 
 export async function getBotHeartbeat(): Promise<BotHeartbeatRecord | null> {
-  const raw = await getSettingValue('bot_heartbeat_json');
+  // A previous host's recent heartbeat must not be shown as Botkeep's state.
+  const raw = await getSettingValue('botkeep_heartbeat_json');
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
@@ -1484,119 +1397,6 @@ export async function computeWhitelistSnapshot(): Promise<{
   };
 }
 
-export type FailoverRole = 'xs' | 'botkeep';
-export interface FailoverIdentity { role: FailoverRole; instance: string }
-export interface FailoverFence extends FailoverIdentity { epoch: number }
-export interface FailoverLease extends FailoverIdentity {
-  granted: boolean;
-  epoch?: number;
-  ttlMs?: number;
-}
-export type FailoverStatus = WhatsAppFailoverStatus;
-
-const FAILOVER_TTL_MS = 30_000;
-const XS_ABSENCE_MS = 15_000;
-// The database clock makes each conditional lease operation atomic across
-// dashboard instances. The bot also stops serving before this TTL elapses.
-const D1_NOW_MS = `(CAST(strftime('%s', 'now') AS INTEGER) * 1000)`;
-const CURRENT_FAILOVER_FENCE = `EXISTS (SELECT 1 FROM portal_bot_failover
-  WHERE id = 'whatsapp' AND owner_role = ? AND owner_instance = ? AND epoch = ? AND expires_at > ${D1_NOW_MS})`;
-const NO_FAILOVER_LEASE = `NOT EXISTS (SELECT 1 FROM portal_bot_failover WHERE id = 'whatsapp')`;
-
-/** A shared, expiring lease; never fall back to the local disk for coordination. */
-export async function claimFailoverLease(identity: FailoverIdentity, state: {
-  connected: boolean; version?: string; accountNumber: string; deviceFingerprint: string;
-}): Promise<FailoverLease> {
-  if (!['xs', 'botkeep'].includes(identity.role) || !/^[a-f0-9]{32}$/.test(identity.instance)) throw new Error('Invalid failover identity.');
-  if (!await ensureFailoverTables()) throw new Error('Failover requires the shared Cloudflare D1 database.');
-  const account = /^\d{7,15}$/.test(state.accountNumber) ? crypto.createHash('sha256').update(state.accountNumber).digest('hex') : '';
-  const device = /^[a-f0-9]{64}$/.test(state.deviceFingerprint) ? state.deviceFingerprint : '';
-  const ready = state.connected && Boolean(account && device);
-  const initialized = await queryD1(`INSERT INTO portal_bot_failover (id, owner_role, owner_instance, expires_at, epoch)
-    VALUES ('whatsapp', '', '', 0, 0) ON CONFLICT(id) DO NOTHING`);
-  if (initialized === null) throw new Error('Failover storage is unavailable.');
-  const seen = await queryD1(`INSERT INTO portal_bot_failover_nodes
-    (role, instance, last_seen_at, connected, version, account_hash, device_fingerprint)
-    VALUES (?, ?, ${D1_NOW_MS}, ?, ?, ?, ?)
-    ON CONFLICT(role) DO UPDATE SET instance = excluded.instance, last_seen_at = excluded.last_seen_at,
-      connected = excluded.connected, version = excluded.version,
-      account_hash = CASE WHEN excluded.account_hash != '' THEN excluded.account_hash ELSE portal_bot_failover_nodes.account_hash END,
-      device_fingerprint = CASE WHEN excluded.device_fingerprint != '' THEN excluded.device_fingerprint ELSE portal_bot_failover_nodes.device_fingerprint END`,
-    [identity.role, identity.instance, ready ? 1 : 0, (state.version || '').slice(0, 80), account, device]);
-  if (seen === null) throw new Error('Failover storage is unavailable.');
-
-  // A backup is eligible only after XS has checked in at least once and has
-  // subsequently disappeared or lost its WhatsApp connection. When XS returns,
-  // backup renewal stops, but XS cannot preempt the still-live old lease.
-  const rows = await queryD1<{ epoch: number }>(`UPDATE portal_bot_failover SET
-    epoch = CASE WHEN owner_role = ? AND owner_instance = ? AND expires_at > ${D1_NOW_MS} THEN epoch ELSE epoch + 1 END,
-    owner_role = ?, owner_instance = ?, expires_at = ${D1_NOW_MS} + ?
-    WHERE id = 'whatsapp' AND ? = 1
-      AND (expires_at <= ${D1_NOW_MS} OR (owner_role = ? AND owner_instance = ? AND expires_at > ${D1_NOW_MS}))
-      AND (? = 'xs' OR EXISTS (SELECT 1 FROM portal_bot_failover_nodes
-        WHERE role = 'xs' AND account_hash = ? AND length(device_fingerprint) = 64 AND device_fingerprint != ?
-          AND (last_seen_at <= ${D1_NOW_MS} - ? OR connected = 0)))
-    RETURNING epoch`, [identity.role, identity.instance, identity.role, identity.instance, FAILOVER_TTL_MS,
-      ready ? 1 : 0, identity.role, identity.instance, identity.role, account, device, XS_ABSENCE_MS]);
-  if (rows === null) throw new Error('Failover storage is unavailable.');
-  return rows.length ? { ...identity, granted: true, epoch: Number(rows[0].epoch), ttlMs: FAILOVER_TTL_MS }
-    : { ...identity, granted: false };
-}
-
-/** Only administrators receive this status; missing heartbeats are not inferred as connected. */
-export async function getFailoverStatus(): Promise<FailoverStatus> {
-  const empty: FailoverStatus = { enabled: false, activeRole: null, epoch: null, issue: null, xs: null, botkeep: null };
-  if (!await ensureFailoverTables()) {
-    if (!mayUseStandaloneDisk()) throw new Error('Failover status is unavailable while D1 is unreachable.');
-    return empty;
-  }
-  const leases = await queryD1<{ owner_role: string; expires_at: number; now_ms: number; epoch: number }>(
-    `SELECT owner_role, expires_at, epoch, ${D1_NOW_MS} AS now_ms FROM portal_bot_failover WHERE id = 'whatsapp'`);
-  if (leases === null) {
-    if (mayUseStandaloneDisk()) return empty;
-    throw new Error('Failover status is unavailable while D1 is unreachable.');
-  }
-  if (!leases.length) return empty;
-  const nodes = await queryD1<{ role: string; last_seen_at: number; connected: number | null; version: string; account_hash: string; device_fingerprint: string }>(
-    'SELECT role, last_seen_at, connected, version, account_hash, device_fingerprint FROM portal_bot_failover_nodes');
-  if (nodes === null) {
-    if (mayUseStandaloneDisk()) return empty;
-    throw new Error('Failover storage is unavailable.');
-  }
-  for (const row of nodes) {
-    if (row.role === 'xs' || row.role === 'botkeep') empty[row.role] = {
-      lastSeenAt: Number(row.last_seen_at), connected: row.connected === null ? null : Boolean(row.connected), version: row.version || '',
-    };
-  }
-  const primary = nodes.find((node) => node.role === 'xs');
-  const backup = nodes.find((node) => node.role === 'botkeep');
-  const issue = primary?.account_hash && backup?.account_hash && primary.device_fingerprint && backup.device_fingerprint
-    ? primary.account_hash !== backup.account_hash ? 'different-account'
-      : primary.device_fingerprint === backup.device_fingerprint ? 'shared-session' : null
-    : null;
-  const lease = leases[0];
-  const owner = lease.owner_role;
-  const activeRole = Number(lease.expires_at) > Number(lease.now_ms) && (owner === 'xs' || owner === 'botkeep') ? owner : null;
-  return { ...empty, enabled: true, activeRole, issue, epoch: activeRole ? Number(lease.epoch) : null };
-}
-
-/** Import without replacing a dashboard member; atomically check the current mode/lease. */
-export async function importLocalUserForLease(number: string, label: string, addedBy: string, fence?: FailoverFence): Promise<boolean> {
-  if (await ensureFailoverTables()) {
-    const guard = fence ? CURRENT_FAILOVER_FENCE : NO_FAILOVER_LEASE;
-    const params: (string | number)[] = [number, label, addedBy.trim().toLowerCase(), new Date().toISOString(), crypto.randomUUID()];
-    if (fence) params.push(fence.role, fence.instance, fence.epoch);
-    const rows = await queryD1(`INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at, approval_status, claim_id)
-      SELECT ?, ?, 1, ?, ?, 'approved', ? WHERE ${guard}
-      ON CONFLICT(number) DO NOTHING RETURNING number`, params);
-    if (rows !== null) return rows.length > 0;
-  }
-  if (fence || !mayUseStandaloneDisk()) throw new Error('Failover storage is unavailable.');
-  if (await getStoredWhatsAppUser(number)) return false;
-  await saveStoredWhatsAppUser(number, label, addedBy);
-  return true;
-}
-
 function mapD1BotCommand(row: Record<string, unknown>): BotCommandRecord {
   let payload: Record<string, unknown> = {};
   let result: Record<string, unknown> | null = null;
@@ -1626,7 +1426,7 @@ function mapD1BotCommand(row: Record<string, unknown>): BotCommandRecord {
 }
 
 export async function enqueueBotCommand(params: {
-  type: BotCommandRecord['type'];
+  type: Extract<BotCommandRecord['type'], 'pair' | 'unlink'>;
   payload: Record<string, unknown>;
   requestedBy?: string;
   ttlMs?: number;
@@ -1713,26 +1513,22 @@ export async function saveCompletedPairResult(params: {
   writeDiskStore(store);
 }
 
-export async function claimPendingBotCommands(fence?: FailoverFence): Promise<BotCommandRecord[]> {
+export async function claimPendingBotCommands(): Promise<BotCommandRecord[]> {
   const now = Date.now();
 
-  if (await ensureFailoverTables()) {
-    // Selection and claiming must be a single database operation: two
-    // simultaneous polls must never receive the same command. Legacy polls
-    // also fail atomically if failover became enabled during their request.
-    const guard = fence ? CURRENT_FAILOVER_FENCE : NO_FAILOVER_LEASE;
+  if (await ensureD1Tables()) {
+    // Claim once under overlapping polls. Never dispatch old queued power
+    // requests to a service that may still have a previous hosting target.
     const rows = await queryD1(`UPDATE portal_bot_commands SET status = 'claimed'
       WHERE id IN (SELECT id FROM portal_bot_commands WHERE status = 'pending' AND expires_at >= ?
-        ORDER BY created_at ASC LIMIT 10) AND status = 'pending' AND ${guard} RETURNING *`,
-      fence ? [now, fence.role, fence.instance, fence.epoch] : [now]);
+        AND type IN ('pair', 'unlink') ORDER BY created_at ASC LIMIT 10) AND status = 'pending' RETURNING *`, [now]);
     if (rows !== null) return rows.map(mapD1BotCommand);
   }
-  if (fence || !mayUseStandaloneDisk()) throw new Error('Failover requires the shared Cloudflare D1 database.');
 
   const store = readDiskStore();
   const claimed: BotCommandRecord[] = [];
   for (const c of store.botCommands) {
-    if (c.status === 'pending' && c.expiresAt >= now) {
+    if (c.status === 'pending' && c.expiresAt >= now && (c.type === 'pair' || c.type === 'unlink')) {
       c.status = 'claimed';
       claimed.push({ ...c });
     }
@@ -1746,7 +1542,7 @@ export async function completeBotCommand(params: {
   ok: boolean;
   result?: Record<string, unknown>;
   error?: string;
-}, fence?: FailoverFence): Promise<void> {
+}): Promise<void> {
   const status: BotCommandRecord['status'] = params.ok ? 'completed' : 'failed';
   // Record receipt on the dashboard clock once. It is a fixed upper bound for
   // checking a service-provided issuance timestamp on subsequent polls.
@@ -1754,18 +1550,15 @@ export async function completeBotCommand(params: {
   const resultJson = result ? JSON.stringify(result) : null;
   const errorText = params.error ? String(params.error).slice(0, 400) : null;
 
-  if (await ensureFailoverTables()) {
-    const guard = fence ? CURRENT_FAILOVER_FENCE : NO_FAILOVER_LEASE;
-    const rows = await queryD1(
+  if (await ensureD1Tables()) {
+    await queryD1(
       `UPDATE portal_bot_commands
        SET status = ?, result_json = ?, error_text = ?
-       WHERE id = ? AND status IN ('pending', 'claimed') AND ${guard}`,
-      fence ? [status, resultJson, errorText, params.id, fence.role, fence.instance, fence.epoch]
-        : [status, resultJson, errorText, params.id],
+       WHERE id = ? AND status IN ('pending', 'claimed')`,
+      [status, resultJson, errorText, params.id],
     );
-    if (rows !== null) return;
+    return;
   }
-  if (fence || !mayUseStandaloneDisk()) throw new Error('Failover requires the shared Cloudflare D1 database.');
 
   const store = readDiskStore();
   const found = store.botCommands.find((c) => c.id === params.id);
@@ -1849,6 +1642,7 @@ export async function listRecentActivity(limit = 100): Promise<ActivityEvent[]> 
 // ---------------------------------------------------------------------------
 // Retained for compatibility with existing stored settings. The defaults here
 // must not diverge from the current web-service address.
+export const DEFAULT_SCRIBD_SEARCH_URL = 'http://node6.botkeep.cloud:45009';
 export const DEFAULT_SCRIBD_PANEL_URL = DEFAULT_SCRIBD_WEB_URL;
 
 export async function getScribdConnectionConfig(): Promise<ScribdConnectionConfig> {

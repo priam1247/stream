@@ -9,8 +9,8 @@
  *     `expiry_date`) are saved atomically to `database/yt_auth.json`.
  *   • Unlike browser `cookies.txt` (which expire or rotate whenever a browser
  *     session changes), OAuth2 refresh tokens renew automatically on use via
- *     `credentials-update` and survive SFTP deploys (`database/*.json` is
- *     never overwritten by deploy-panel.yml).
+ *     `credentials-update`. Keep `database/*.json` private and preserve it
+ *     when updating the service; repository CI does not overwrite it.
  */
 
 const fs = require('fs');

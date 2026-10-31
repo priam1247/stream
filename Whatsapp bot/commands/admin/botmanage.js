@@ -1,5 +1,4 @@
 const config = require('../../config');
-const { panelRestart } = require('../../utils/panelClient');
 const telemetry = require('../../utils/telemetry');
 
 const BOT_START = Date.now();
@@ -52,20 +51,14 @@ module.exports = [
     name: 'restart',
     aliases: ['reboot'],
     category: 'admin',
-    description: 'Restart service',
+    description: 'Reload code and reconnect WhatsApp',
     usage: '.restart',
     ownerOnly: true,
     async execute(sock, msg, args, extra) {
       if (restarting) return extra.reply('⏳ Restart in progress.');
       restarting = true;
       await react(sock, msg, '🔄');
-      await extra.reply('🔄 Restarting…');
-
-      const result = await panelRestart();
-      if (result.ok) {
-        setTimeout(() => { restarting = false; }, 60000).unref();
-        return;
-      }
+      await extra.reply('🔄 Reloading and reconnecting…');
 
       const { reloadRuntime } = require('../../utils/hotReload');
       try { reloadRuntime(); } catch (_) {}

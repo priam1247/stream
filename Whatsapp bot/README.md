@@ -130,7 +130,7 @@ Whatsapp bot/
 
 `database/`, `session/`, `temp/`, `secrets/`, and related files are created at
 runtime and are not included in Git. The dashboard (`../dashboard/`) and Scribd
-server (`../working scribd/`) are separate projects.
+server (`../scribd/`) are separate projects.
 
 ## Quick start
 
@@ -229,8 +229,8 @@ host. The service attempts recovery before creating fresh local sessions. Never
 run two instances with the same WhatsApp sessions. Keep a separate secure local
 backup and be prepared to relink if WhatsApp has revoked the device or recovery
 fails. Legacy session manifests without an ownership claim bind once to the
-current portal claim; their earlier ownership cannot be proven. No inbound Botkeep port is needed. The legacy XS SFTP workflow will not
-upload on a push; manual use now requires explicit destination confirmation.
+current portal claim; their earlier ownership cannot be proven. No inbound Botkeep port is needed. Repository CI does not upload or restart
+the service.
 
 Members' command switches are controlled under **WhatsApp → Commands**. The
 service enforces canonical commands, their aliases, and outstanding selections;
@@ -255,7 +255,7 @@ For a panel that uses the server root as the application directory, upload the
 **contents** of `Whatsapp bot/` (including `.npmrc` and `.env.example`) to that
 root, set your private environment values, install dependencies with `npm ci`,
 and start with `npm start` (or `node --expose-gc index.js`). The panel root then
-is the bot's working directory. Do not upload `dashboard/` or `working scribd/`
+is the bot's working directory. Do not upload `dashboard/` or `scribd/`
 to the bot server unless you intend to run those separate services there.
 
 If the host instead clones the whole repository, set its working/root directory
@@ -263,66 +263,24 @@ to `Whatsapp bot` or use `cd "Whatsapp bot" && npm start`. On platforms that
 honor a `Procfile`, point the project root to that folder so it finds the bot's
 `Procfile` and package files.
 
-### XS primary with Botkeep standby
+### One Botkeep server
 
-Failover is **not enabled merely by merging the code**. It requires the updated
-bot on both hosts, the updated dashboard, durable Cloudflare D1 and a different
-private sync token for each host. The XS panel URL and server ID remain the
-configured defaults. Get the SFTP hostname, port, username, allocation and
-password privately from the hosting panel rather than putting them in this
-file. The XS panel API key must also be supplied privately by the owner. The
-dashboard keeps legacy panel settings separately and does not send an old
-Botkeep key to XS.
+Run only one WhatsApp service using these sessions. The bot synchronizes with
+the dashboard through its outbound HTTPS connection; set `DASHBOARD_URL` and
+its matching private `BOT_SYNC_TOKEN`. The optional `SESSION_BACKUP_KEY` is a
+stable private recovery key: retain it if encrypted recovery is enabled. The
+bot's `.restart` reloads code and reconnects locally; dashboard server-power
+controls require the separately configured Botkeep Developer API.
 
-1. Stop any **old-version** Botkeep bot before enabling failover. A legacy bot
-   cannot obey the lease and could otherwise reply at the same time as XS. Do
-   not copy a WhatsApp `session/` directory between hosts.
-2. Update each host with the contents of `Whatsapp bot/` and the dashboard with
-   the matching dashboard code. Preserve the connected XS `session/`, `.env`
-   and `database/` files. The separate `botkeep-deploy` branch is not changed
-   by this repository's primary deployment.
-3. In **WhatsApp → Sync**, generate and save separate XS and Botkeep tokens.
-   Copy each one privately into `BOT_SYNC_TOKEN` on its matching host before
-   leaving the page; saved tokens cannot be revealed again. They must differ
-   from each other and from the older single-host sync/admin tokens;
-   never share the XS token with Botkeep or post either token in chat. Set
-   `DASHBOARD_URL=https://dashboard-ij71.vercel.app` on both. Set
-   `WHATSAPP_FAILOVER_ROLE=xs` on XS and `WHATSAPP_FAILOVER_ROLE=botkeep` on
-   Botkeep. Set `ADMIN_API_ENABLED=false` on both. Leave `SESSION_BACKUP_KEY`
-   empty on Botkeep; encrypted recovery slots currently belong to XS only.
-   **Upgrade warning:** a coordinated bot using the old shared token is rejected
-   by the updated dashboard and stops serving when its lease expires. Configure
-   its own token and update its code before starting it again; existing sessions
-   and `.env` files must be preserved. Single-host mode still uses the old token.
-4. Start XS first and wait for its WhatsApp connection and dashboard check-in.
-   Start Botkeep with the same pairing number and link it as a **separate**
-   WhatsApp device. Keep its local session on persistent storage. A digest of
-   the public device identity and a hash of the number are compared so a copied
-   session or a different WhatsApp account cannot take over. The owner dashboard
-   **WhatsApp → Status** shows both hosts and their reported states.
-5. Only after both are updated, linked and reporting, test a controlled XS stop
-   and restart. Botkeep can take the lease after XS stops reporting; XS regains
-   priority after the prior lease expires. Handover normally takes tens of
-   seconds, not instantaneously. If D1 or dashboard access is lost, a node stops
-   serving rather than guessing that it is safe to take over. Keep all host and
-   dashboard clocks synchronized; large clock jumps can undermine lease timing.
-
-The pair number independently linked on both hosts can fail over. Additional
-member accounts link only on the active host; their sessions are not replicated
-or automatically linked on the other host. A standby host without that member's
-own linked session cannot serve that member. In-flight operations/downloads are
-not migrated, messages may be missed during a handover, and exactly-once
-execution is not guaranteed. A live primary/standby test is still required.
-Bot-side panel power is disabled in failover mode to avoid targeting the wrong
-host; its restart command reconnects locally. The dashboard's XS panel controls
-need an XS API key entered privately.
-
-To return to single-host mode, first stop **both** bot processes. With a D1
-backup, remove only the `whatsapp` row from `portal_bot_failover`, clear
-`WHATSAPP_FAILOVER_ROLE` on the one host to use, and start that host alone.
-Never clear the lease while either coordinated host is running; this could allow
-an older uncoordinated process to reply at the same time. Session backups and
-member data are separate tables and must not be deleted for this change.
+If Botkeep still runs an older coordinated bot, stop that process before
+updating it to the current code. Preserve its `.env`, session and database, then
+configure the dashboard's current single-host sync token to match the bot before
+starting it. The previous coordination code cannot operate against a dashboard
+that no longer grants leases. The owner manages the separate `botkeep-deploy`
+branch and this repository does not update it automatically. Until that app is
+updated, its old `.restart` command may still use a previous panel target; avoid
+using it. Don't start a second copy of a WhatsApp session while the existing
+process is running.
 
 ### Existing sessions and data
 
@@ -337,33 +295,18 @@ are recorded with absolute paths. To resume those jobs after a move, preserve th
 job database and their media files at the same absolute paths; otherwise request
 the affected downloads again. Other temporary files need not be moved.
 
-If an existing panel already runs the bot with its files at the panel root, the
-SFTP workflow described below continues uploading the **contents** there, so its
-existing state stays in the same place. By contrast, a checkout that previously
-ran from the repository root must move its private runtime files into the new
-`Whatsapp bot/` directory before starting from there.
+### Repository checks
 
-### Optional GitHub Actions deployment
-
-GitHub requires workflows under the repository-level `.github/workflows/`, so
-`deploy-panel.yml` remains there and tests the bot and dashboard. Pushes and PR
-merges **do not upload or restart a server**. A legacy SFTP upload runs only when
-manually dispatched with explicit confirmation after verifying its destination;
-its secrets may still point at an old host. The workflow does not upload the
-dashboard, Scribd server, Git metadata or untracked runtime files, does not use
-`--delete`, and excludes session and database state from overwrites.
-
-Before any manual dispatch, verify that `PANEL_SFTP_*`, `PANEL_URL`,
-`PANEL_SERVER_ID`, and `PANEL_API_KEY` identify the intended server. The old
-option to upload `.git` for a panel-root `git pull` is unavailable. Existing
-Git metadata on a panel is not updated by this workflow.
+GitHub Actions runs validation only. It does not upload files, restart the bot,
+or alter the Botkeep deployment. Update the server manually or by the owner's
+existing Botkeep deployment process, taking care to preserve private state.
 
 ## Dashboard and Scribd
 
 The dashboard is a separate Next.js application. See
 [`dashboard/README.md`](../dashboard/README.md) for deployment, authentication,
 and bot synchronization. The separate Scribd service is documented in
-[`working scribd/README.md`](../working%20scribd/README.md); the bot does not
+[`scribd/README.md`](../scribd/README.md); the bot does not
 start it.
 
 ## License

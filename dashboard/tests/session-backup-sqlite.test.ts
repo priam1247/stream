@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { deleteWhatsAppUserIfOwned, getEligibleSessionBackup, getSessionBackup, listSessionBackupMetadata, putSessionBackup, revokeSessionBackup, sessionBackupClaim } from '../lib/storage';
+import { deleteWhatsAppUserIfOwned, getEligibleSessionBackup, getSessionBackup, putSessionBackup, revokeSessionBackup, sessionBackupClaim } from '../lib/storage';
 
 let db: DatabaseSync;
 let afterDelete: (() => void) | null;
@@ -28,7 +28,7 @@ beforeEach(() => {
     } catch (error) { return Response.json({ success: false, errors: [{ message: (error as Error).message }] }, { status: 400 }); }
   }));
 });
-afterEach(() => { db.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); globalThis.__zafarD1SchemaV6Ready = undefined; globalThis.__zafarD1SchemaV6Promise = undefined; globalThis.__zafarD1UnreachableInDev = undefined; globalThis.__zafarFailoverSchemaReady = undefined; globalThis.__zafarFailoverSchemaPromise = undefined; });
+afterEach(() => { db.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); globalThis.__zafarD1SchemaV6Ready = undefined; globalThis.__zafarD1SchemaV6Promise = undefined; globalThis.__zafarD1UnreachableInDev = undefined; });
 function owner(email: string, claim: string, date: string) {
   db.prepare(`INSERT OR REPLACE INTO portal_whatsapp_access VALUES (?, 'Member', 1, ?, ?, 'approved', ?)`).run(number, email, date, claim);
 }
@@ -50,26 +50,6 @@ describe('backup SQL against a local SQLite D1 stand-in', () => {
     expect(await putSessionBackup(slot, gen3, two.token, 'new-link', 2, two.identity)).toBeNull();
     expect(await putSessionBackup(slot, gen3, two.token, 'new-link', 3, two.identity)).toBe(4);
   });
-  it('atomically fences legacy recovery reads and writes when failover is activated', async () => {
-    expect(await putSessionBackup('primary', gen1, 'primary', 'encrypted', 0, null, true)).toBe(1);
-    expect(await listSessionBackupMetadata('', true)).toHaveLength(1);
-    expect(await getEligibleSessionBackup('primary', 'primary', null, true)).toMatchObject({ ciphertext: 'encrypted' });
-    // Simulates activation after the route's initial legacy-mode check, before
-    // its recovery operation executes on D1.
-    db.prepare(`INSERT INTO portal_bot_failover VALUES ('whatsapp', 'xs', ?, 9999999999, 1)`).run('a'.repeat(32));
-    expect(await listSessionBackupMetadata('', true)).toEqual([]);
-    expect(await getSessionBackup('primary', true)).toBeNull();
-    expect(await getEligibleSessionBackup('primary', 'primary', null, true)).toBeNull();
-    expect(await putSessionBackup('primary', gen1, 'primary', 'stale', 1, null, true)).toBeNull();
-    owner('one@example.com', 'claim-one', '2026-01-01');
-    expect(await putSessionBackup(slot, gen1, one.token, 'stale', 0, one.identity, true)).toBeNull();
-    expect(await revokeSessionBackup('primary', gen1, true)).toBe(false);
-    expect(await getSessionBackup('primary')).toMatchObject({ ciphertext: 'encrypted', revoked: false, revision: 1 });
-    // The distinct XS credential still restores and updates its own recovery slot.
-    expect(await getEligibleSessionBackup('primary', 'primary')).toMatchObject({ ciphertext: 'encrypted' });
-    expect(await putSessionBackup('primary', gen1, 'primary', 'current', 1)).toBe(2);
-  });
-
   it('does not revoke a new claim when an old deletion finishes late', async () => {
     owner('two@example.com', 'claim-two', '2026-01-02');
     expect(await putSessionBackup(slot, gen2, two.token, 'old', 0, two.identity)).toBe(1);
