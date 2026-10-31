@@ -125,12 +125,30 @@ const { probeMedia } = require(path.join(REPO, 'utils/mediaTransfer'));
 
       const dest = path.join(outDir, 'Test.Movie.720p.mp4');
 
-      const got = await engineDl.hlsToFile(`${baseUrl}/master.m3u8`, dest, null, {
-        headers: { Referer: 'https://vixsrc.to/' },
-        maxHeight: 720,
-      });
+      // The engine deliberately hides tier-one errors when it falls back.
+      // Capture the error in this local-only fixture so CI failures explain
+      // why the real binary was not used, without changing fallback behavior.
+      const movieHost = require(path.join(REPO, 'utils/movieHost'));
+      const originalHlsDownload = movieHost.hlsDownload;
+      let hostFailure = '';
+      movieHost.hlsDownload = async (...args) => {
+        try { return await originalHlsDownload(...args); }
+        catch (err) {
+          hostFailure = [err.code, err.message, err.stderr].filter(Boolean).join(' | ').slice(-2000);
+          throw err;
+        }
+      };
+      let got;
+      try {
+        got = await engineDl.hlsToFile(`${baseUrl}/master.m3u8`, dest, null, {
+          headers: { Referer: 'https://vixsrc.to/' },
+          maxHeight: 720,
+        });
+      } finally {
+        movieHost.hlsDownload = originalHlsDownload;
+      }
 
-      assert.strictEqual(got.engine, 'nm3u8dl-re', `expected nm3u8dl-re engine, got: ${got.engine}`);
+      assert.strictEqual(got.engine, 'nm3u8dl-re', `expected nm3u8dl-re engine, got: ${got.engine}; tier-one error: ${hostFailure || 'none captured'}`);
       assert.strictEqual(got.file, dest);
       assert.ok(!hits.some((u) => u.startsWith('/v1080/')), `1080p stream was fetched despite maxHeight=720: ${hits}`);
       assert.ok(hits.some((u) => u.startsWith('/v720/')), '720p video stream was not fetched');

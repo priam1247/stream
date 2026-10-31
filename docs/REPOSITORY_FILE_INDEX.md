@@ -3683,6 +3683,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — Live smoke test of the HLS/DASH download helper.
   - **References:**
+    - [`Whatsapp bot/utils/movieHost.js`](../Whatsapp%20bot/utils/movieHost.js) — computed bot-root path and test-only instrumentation.
     - [`Whatsapp bot/engine/media/download.js`](../Whatsapp%20bot/engine/media/download.js) — computed bot-root path.
     - [`Whatsapp bot/utils/ffmpeg.js`](../Whatsapp%20bot/utils/ffmpeg.js) — computed bot-root path.
     - [`Whatsapp bot/utils/mediaTransfer.js`](../Whatsapp%20bot/utils/mediaTransfer.js) — computed bot-root path.
@@ -4094,6 +4095,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — lazy import.
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require, lazy import.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — computed bot-root path and test-only instrumentation.
     - [`Whatsapp bot/commands/media/movie.js`](../Whatsapp%20bot/commands/media/movie.js) — require.
     - [`Whatsapp bot/commands/media/series.js`](../Whatsapp%20bot/commands/media/series.js) — require.
     - [`Whatsapp bot/engine/host.js`](../Whatsapp%20bot/engine/host.js) — lazy import.
