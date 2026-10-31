@@ -12,10 +12,14 @@ const crypto = require('node:crypto');
 const Module = require('node:module');
 const { Readable } = require('node:stream');
 const { spawnSync } = require('node:child_process');
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
 
-const ROOT = path.resolve(__dirname, '..');
+clearHostConfig();
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'media-regression-'));
+const ROOT = createBotFixture(TMP);
+const botRequire = Module.createRequire(path.join(ROOT, 'scripts', 'test-media-downloads.js'));
 process.chdir(TMP);
+botRequire('../utils/telemetry')._resetForTests(null);
 process.env.YT_AUTH_FILE = path.join(TMP, 'oauth.json');
 process.env.FAKE_YTDLP = '1';
 const bin = path.join(TMP, 'bin', 'yt-dlp');
@@ -565,4 +569,203 @@ case "$url" in */SHA2-256SUMS) cp "$ASSETS/sums" "$out";; */yt-dlp) cp "$ASSETS/
     assert.match(line, /--proto-redir =https/);
     assert.doesNotMatch(line, /(?:^|\s)(?:-k|--insecure)(?:\s|$)/);
   }
+});
+
+test('YouTube login times out before a device code and ignores late success', async (t) => {
+  const { EventEmitter } = require('node:events');
+  const ytAuth = botRequire('../utils/ytAuth');
+  const authFile = process.env.YT_AUTH_FILE;
+  t.after(() => { ytAuth._setInnertubeFactoryForTest(null); fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true }); });
+  fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true });
+  const session = new EventEmitter();
+  session.signIn = () => new Promise(() => {});
+  ytAuth._setInnertubeFactoryForTest(async () => ({ session }));
+  let guard;
+  try {
+    await assert.rejects(Promise.race([
+      ytAuth.startYtLogin({ timeoutMs: 25 }),
+      new Promise((_, reject) => { guard = setTimeout(() => reject(new Error('login did not time out')), 500); }),
+    ]), (err) => err.code === 'LOGIN_TIMEOUT');
+    session.emit('auth', { credentials: { refresh_token: 'dummy-late-token' } });
+    assert.equal(fs.existsSync(authFile), false, 'a late authorization cannot restore credentials after timeout');
+  } finally { clearTimeout(guard); }
+});
+
+test('YouTube OAuth clear removes both the active file and its backup', (t) => {
+  const ytAuth = botRequire('../utils/ytAuth');
+  const authFile = process.env.YT_AUTH_FILE;
+  t.after(() => { fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true }); });
+  ytAuth.saveYtCreds({ refresh_token: 'dummy-token-to-clear' });
+  assert.equal(fs.existsSync(authFile), true);
+  assert.equal(fs.existsSync(`${authFile}.bak`), true);
+  fs.writeFileSync(`${authFile}.corrupt`, 'dummy-corrupt-token');
+  assert.equal(ytAuth.clearYtCreds(), true);
+  assert.equal(fs.existsSync(authFile), false);
+  assert.equal(fs.existsSync(`${authFile}.bak`), false, 'a cleared OAuth token must not remain in the backup');
+  assert.equal(fs.existsSync(`${authFile}.corrupt`), false, 'a cleared OAuth token must not remain in a recovery copy');
+});
+
+test('turning YouTube OAuth off cancels a pending device login and ignores late authorization', async (t) => {
+  const { EventEmitter } = require('node:events');
+  const ytAuth = botRequire('../utils/ytAuth');
+  const command = botRequire('../commands/admin/ytlogin');
+  const authFile = process.env.YT_AUTH_FILE;
+  t.after(() => { ytAuth._setInnertubeFactoryForTest(null); fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true }); });
+  fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true });
+  const session = new EventEmitter(); let ready;
+  const codeReady = new Promise((resolve) => { ready = resolve; });
+  session.signIn = async () => { session.emit('auth-pending', { user_code: 'DUMMY', expires_in: 30 }); };
+  ytAuth._setInnertubeFactoryForTest(async () => ({ session }));
+  const extra = { reply: async () => {}, status: async () => { ready(); return { update: async () => {} }; } };
+  const pending = command.execute({}, {}, [], extra);
+  await codeReady;
+  await command.execute({}, {}, ['off'], extra);
+  session.emit('auth', { credentials: { refresh_token: 'dummy-late-token' } });
+  await pending;
+  assert.equal(fs.existsSync(authFile), false, 'cancelled login must not recreate OAuth credentials');
+  assert.equal(fs.existsSync(`${authFile}.bak`), false);
+});
+
+test('OAuth refresh persists, but an old client cannot recreate credentials after clear', async (t) => {
+  const { EventEmitter } = require('node:events');
+  const ytAuth = botRequire('../utils/ytAuth'); const authFile = process.env.YT_AUTH_FILE;
+  t.after(() => { fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true }); });
+  ytAuth.saveYtCreds({ refresh_token: 'dummy-old-token' });
+  const fake = makeInnertubeDeps(); const create = fake.deps.yt.Innertube.create;
+  fake.deps.yt.Innertube.create = async (opts) => {
+    const client = await create(opts);
+    const { on: _ignoredOn, ...rest } = client.session;
+    client.session = Object.assign(new EventEmitter(), rest, { signIn: async () => {} });
+    return client;
+  };
+  it._test.installDeps(fake.deps);
+  const client = await it._test.getClient('TV', ytAuth.getYtCreds());
+  client.session.emit('update-credentials', { credentials: { refresh_token: 'dummy-old-token', access_token: 'dummy-fresh-access' } });
+  assert.equal(ytAuth.getYtCreds().access_token, 'dummy-fresh-access', 'youtubei refresh events must persist the new token');
+  ytAuth.clearYtCreds();
+  client.session.emit('update-credentials', { credentials: { refresh_token: 'dummy-refreshed-token' } });
+  assert.equal(fs.existsSync(authFile), false, 'a stale client must not recreate a cleared token');
+  assert.equal(fs.existsSync(`${authFile}.bak`), false);
+});
+
+test('an OAuth client still starting when credentials are cleared is not signed in or cached', async (t) => {
+  const { EventEmitter } = require('node:events');
+  const ytAuth = botRequire('../utils/ytAuth'); const authFile = process.env.YT_AUTH_FILE;
+  t.after(() => { fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true }); });
+  ytAuth.saveYtCreds({ refresh_token: 'dummy-old-token' });
+  const fake = makeInnertubeDeps(); const create = fake.deps.yt.Innertube.create;
+  let release; let signIns = 0;
+  const ready = new Promise((resolve) => { release = resolve; });
+  t.after(() => release());
+  fake.deps.yt.Innertube.create = async (opts) => {
+    await ready;
+    const client = await create(opts);
+    const { on: _ignoredOn, ...rest } = client.session;
+    client.session = Object.assign(new EventEmitter(), rest, { signIn: async () => { signIns += 1; } });
+    return client;
+  };
+  it._test.installDeps(fake.deps);
+  const creating = it._test.getClient('TV', ytAuth.getYtCreds());
+  await new Promise((resolve) => setImmediate(resolve));
+  ytAuth.clearYtCreds(); release();
+  await assert.rejects(creating, /credential|auth/i);
+  assert.equal(signIns, 0);
+});
+
+test('a runtime reload preserves a pending YouTube login so off still cancels it', async (t) => {
+  const { EventEmitter } = require('node:events');
+  const ytAuth = botRequire('../utils/ytAuth');
+  const oldCommand = botRequire('../commands/admin/ytlogin');
+  const authFile = process.env.YT_AUTH_FILE;
+  t.after(() => { ytAuth._setInnertubeFactoryForTest(null); fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true }); });
+  fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true });
+  const session = new EventEmitter(); let ready;
+  const codeReady = new Promise((resolve) => { ready = resolve; });
+  session.signIn = async () => { session.emit('auth-pending', { user_code: 'DUMMY', expires_in: 30 }); };
+  ytAuth._setInnertubeFactoryForTest(async () => ({ session }));
+  const messages = [];
+  const extra = { reply: async (text) => { messages.push(text); }, status: async () => { ready(); return { update: async () => {} }; } };
+  const pending = oldCommand.execute({}, {}, [], extra);
+  await codeReady;
+  botRequire('../utils/hotReload').reloadRuntime();
+  const reloadedAuth = botRequire('../utils/ytAuth');
+  const reloadedCommand = botRequire('../commands/admin/ytlogin');
+  await reloadedCommand.execute({}, {}, [], extra);
+  assert.ok(messages.some((message) => /already waiting/i.test(message)), 'reload must not allow a second login');
+  await reloadedCommand.execute({}, {}, ['off'], extra);
+  session.emit('auth', { credentials: { refresh_token: 'dummy-late-token' } });
+  await pending;
+  assert.equal(reloadedAuth, ytAuth, 'auth state must survive runtime reload');
+  assert.equal(fs.existsSync(authFile), false, 'logout after a reload must cancel the original pending login');
+});
+
+test('corrupt credential JSON does not expose file contents through recovery logs or errors', (t) => {
+  const { readJsonSafe } = botRequire('../utils/jsonStore');
+  const target = path.join(TMP, 'invalid-sensitive.json');
+  const warnings = []; const originalWarn = console.warn;
+  t.after(() => { console.warn = originalWarn; fs.rmSync(target, { force: true }); fs.rmSync(`${target}.bak`, { force: true }); fs.rmSync(`${target}.corrupt`, { force: true }); });
+  fs.writeFileSync(target, 'secret-fixture-value-not-json');
+  fs.writeFileSync(`${target}.bak`, '{}');
+  console.warn = (...args) => warnings.push(args.join(' '));
+  assert.equal(readJsonSafe(target).recovered, true);
+  assert.doesNotMatch(warnings.join('\n'), /secret-fix/, 'recovery log must not quote corrupt file contents');
+  fs.writeFileSync(target, 'secret-fixture-value-not-json');
+  fs.writeFileSync(`${target}.bak`, 'also-corrupt');
+  const result = readJsonSafe(target);
+  assert.equal(result.ok, false);
+  assert.doesNotMatch(result.error.message, /secret-fix/, 'returned parse errors must not quote corrupt file contents');
+});
+
+test('YouTube login also times out during client creation and never starts a late client', async (t) => {
+  const { EventEmitter } = require('node:events');
+  const ytAuth = botRequire('../utils/ytAuth');
+  let release; let signIns = 0; let guard;
+  const creation = new Promise((resolve) => { release = resolve; });
+  t.after(() => { release({ session: new EventEmitter() }); ytAuth._setInnertubeFactoryForTest(null); clearTimeout(guard); });
+  ytAuth._setInnertubeFactoryForTest(() => creation);
+  await assert.rejects(Promise.race([
+    ytAuth.startYtLogin({ timeoutMs: 25 }),
+    new Promise((_, reject) => { guard = setTimeout(() => reject(new Error('client creation did not time out')), 500); }),
+  ]), (err) => err.code === 'LOGIN_TIMEOUT');
+  const session = new EventEmitter(); session.signIn = () => { signIns += 1; };
+  release({ session });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(signIns, 0);
+  assert.equal(ytAuth.isLoginPending(), false);
+});
+
+test('OAuth refresh from an earlier account cannot overwrite a newly linked account', async (t) => {
+  const { EventEmitter } = require('node:events');
+  const ytAuth = botRequire('../utils/ytAuth'); const authFile = process.env.YT_AUTH_FILE;
+  t.after(() => { fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true }); });
+  ytAuth.saveYtCreds({ refresh_token: 'dummy-first-account' });
+  const fake = makeInnertubeDeps(); const create = fake.deps.yt.Innertube.create;
+  fake.deps.yt.Innertube.create = async (opts) => {
+    const client = await create(opts);
+    const { on: _ignoredOn, ...rest } = client.session;
+    client.session = Object.assign(new EventEmitter(), rest, { signIn: async () => {} });
+    return client;
+  };
+  it._test.installDeps(fake.deps);
+  const oldClient = await it._test.getClient('TV', ytAuth.getYtCreds());
+  ytAuth.saveYtCreds({ refresh_token: 'dummy-second-account' });
+  oldClient.session.emit('update-credentials', { credentials: { refresh_token: 'dummy-first-account', access_token: 'dummy-stale' } });
+  assert.equal(ytAuth.getYtCreds().refresh_token, 'dummy-second-account');
+  assert.equal(ytAuth.getYtCreds().access_token, undefined);
+  const newClient = await it._test.getClient('TV', ytAuth.getYtCreds());
+  assert.notEqual(newClient, oldClient);
+});
+
+test('YouTube OAuth clear reports a failure if a local recovery copy cannot be removed', (t) => {
+  const ytAuth = botRequire('../utils/ytAuth'); const authFile = process.env.YT_AUTH_FILE;
+  const originalUnlink = fs.unlinkSync;
+  t.after(() => { fs.unlinkSync = originalUnlink; fs.rmSync(authFile, { force: true }); fs.rmSync(`${authFile}.bak`, { force: true }); });
+  ytAuth.saveYtCreds({ refresh_token: 'dummy-clear-failure' });
+  fs.unlinkSync = (name, ...args) => {
+    if (name === `${authFile}.bak`) throw Object.assign(new Error('blocked'), { code: 'EACCES' });
+    return originalUnlink(name, ...args);
+  };
+  assert.throws(() => ytAuth.clearYtCreds(), { code: 'YT_AUTH_CLEAR_FAILED' });
+  assert.equal(fs.existsSync(authFile), false);
+  assert.equal(fs.existsSync(`${authFile}.bak`), true, 'the operation must not claim full success');
 });

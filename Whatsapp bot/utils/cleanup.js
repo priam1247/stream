@@ -220,17 +220,8 @@ function stopCleanup() {
   }
 }
 
-// Handle process termination gracefully
-process.on('SIGINT', () => {
-  stopCleanup();
-  process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-  stopCleanup();
-  process.exit(0);
-});
-
+// The application entry point owns signal handling so session writes and
+// encrypted recovery can finish before the process exits.
 module.exports = {
   thresholdFor,
   ageOf,

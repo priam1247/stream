@@ -2,7 +2,6 @@ const config = require('../../config');
 const telemetry = require('../../utils/telemetry');
 
 const BOT_START = Date.now();
-let restarting = false;
 
 function uptime(ms) {
   const s = Math.floor(ms / 1000), m = Math.floor(s / 60),
@@ -55,19 +54,28 @@ module.exports = [
     usage: '.restart',
     ownerOnly: true,
     async execute(sock, msg, args, extra) {
-      if (restarting) return extra.reply('⏳ Restart in progress.');
-      restarting = true;
-      await react(sock, msg, '🔄');
-      await extra.reply('🔄 Reloading and reconnecting…');
-
-      const { reloadRuntime } = require('../../utils/hotReload');
-      try { reloadRuntime(); } catch (_) {}
-
-      await extra.reply('♻️ Reloaded code & reconnecting…');
-      setTimeout(() => {
-        restarting = false;
-        try { sock.end(new Error('restart requested')); } catch (_) {}
-      }, 1000);
+      const hotReload = require('../../utils/hotReload');
+      if (!hotReload.beginRestart()) return extra.reply('⏳ Restart in progress.');
+      let reconnectScheduled = false;
+      try {
+        await react(sock, msg, '🔄');
+        // A failed acknowledgement must not leave the restart stuck or prevent
+        // reconnecting a socket that is already having trouble sending.
+        try { await extra.reply('🔄 Reloading and reconnecting…'); } catch { /* best effort */ }
+        hotReload.reloadRuntime();
+        try { await extra.reply('♻️ Reloaded code & reconnecting…'); } catch { /* best effort */ }
+        setTimeout(() => {
+          try {
+            const ended = sock.end(new Error('restart requested'));
+            if (ended && typeof ended.catch === 'function') ended.catch(() => {});
+          } catch { /* already closed */ }
+          finally { hotReload.finishRestart(); }
+        }, 1000);
+        reconnectScheduled = true;
+      } finally {
+        // Reload failures must not make every later restart report "in progress".
+        if (!reconnectScheduled) hotReload.finishRestart();
+      }
     },
   },
 

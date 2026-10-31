@@ -13,10 +13,10 @@
 
 'use strict';
 
-const { redactSecrets } = require('./safeLog');
+const { redactSecrets, redactArg, safeText } = require('./safeLog');
 
 const LEVELS = { debug: 20, info: 30, warn: 40, error: 50 };
-const LEVEL = LEVELS[String(process.env.LOG_LEVEL || 'info').toLowerCase()] || LEVELS.info;
+let threshold = LEVELS[String(process.env.LOG_LEVEL || 'info').toLowerCase()] || LEVELS.info;
 
 const COLORS = process.stdout.isTTY && !process.env.NO_COLOR
   ? { debug: '\x1b[90m', info: '\x1b[36m', warn: '\x1b[33m', error: '\x1b[31m', dim: '\x1b[2m', reset: '\x1b[0m' }
@@ -27,19 +27,13 @@ const stamp = () => {
   return `${d.toTimeString().slice(0, 8)}.${String(d.getMilliseconds()).padStart(3, '0')}`;
 };
 
-const render = (v) => {
-  if (v instanceof Error) return v.message;
-  if (typeof v === 'object' && v !== null) {
-    try { return JSON.stringify(v); } catch { return String(v); }
-  }
-  return String(v);
-};
+const render = (v) => safeText(v);
 
 /** Trim to one line and redact credentials so panel logs never leak secrets. */
 const oneLine = (s) => redactSecrets(String(s)).replace(/\s*\n\s*/g, ' ⏎ ').slice(0, 500);
 
 function emit(level, tag, parts) {
-  if (LEVELS[level] < LEVEL) return;
+  if (LEVELS[level] < threshold) return;
   const line =
     `${COLORS.dim}${stamp()}${COLORS.reset}  ` +
     `${COLORS[level]}${level.toUpperCase().padEnd(5)}${COLORS.reset}  ` +
@@ -55,7 +49,7 @@ function createLogger(tag) {
     info: (...a) => emit('info', tag, a),
     warn: (...a) => emit('warn', tag, a),
     error: (...a) => emit('error', tag, a),
-    raw: (...a) => console.log(...a),
+    raw: (...a) => console.log(...a.map(redactArg)),
   };
 }
 
@@ -65,14 +59,14 @@ function banner(lines = []) {
   const bar = '─'.repeat(width);
   console.log(`\n┌${bar}┐`);
   for (const raw of lines) {
-    const text = String(raw);
+    const text = redactSecrets(String(raw));
     console.log(`│  ${text}${' '.repeat(Math.max(0, width - text.length - 2))}│`);
   }
   console.log(`└${bar}┘\n`);
 }
 
 /** Section header for multi-step work (commands, tests). */
-const section = (tag, text) => emit('info', tag, `── ${text} ──`);
+const section = (tag, text) => emit('info', tag, [`── ${text} ──`]);
 
 module.exports = createLogger;
 module.exports.createLogger = createLogger;
@@ -80,5 +74,9 @@ module.exports.banner = banner;
 module.exports.section = section;
 module.exports.LEVELS = LEVELS;
 module.exports.setLevel = (name) => {
-  if (LEVELS[String(name).toLowerCase()]) process.env.LOG_LEVEL = name;
+  const normalized = String(name).toLowerCase();
+  if (LEVELS[normalized]) {
+    threshold = LEVELS[normalized];
+    process.env.LOG_LEVEL = normalized;
+  }
 };

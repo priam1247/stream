@@ -40,5 +40,10 @@
   "optionalDependencies": {
     "@sparticuz/chromium": "153.0.0",
     "webtorrent": "^3.0.21"
+  },
+  "overrides": {
+    "redstar": {
+      "minimatch": "^3.1.5"
+    }
   }
 }

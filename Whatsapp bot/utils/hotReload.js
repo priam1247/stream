@@ -28,6 +28,7 @@ const PRESERVED_UTILS = new Set([
   'sessionManager.js',
   'memberCommandPolicy.js',
   'sessionBackup.js',
+  'ytAuth.js',
   'accessControl.js',
   'reconnect.js',
   'safeLog.js',
@@ -37,6 +38,19 @@ const PRESERVED_UTILS = new Set([
 ]);
 
 const listeners = new Set();
+// This module survives hot reload, so concurrent .restart commands cannot
+// bypass the guard when the command modules are reloaded from disk.
+let restartInProgress = false;
+
+function beginRestart() {
+  if (restartInProgress) return false;
+  restartInProgress = true;
+  return true;
+}
+
+function finishRestart() {
+  restartInProgress = false;
+}
 
 function onReload(fn) {
   if (typeof fn === 'function') listeners.add(fn);
@@ -91,6 +105,8 @@ function reloadRuntime() {
 }
 
 module.exports = {
+  beginRestart,
+  finishRestart,
   onReload,
   reloadRuntime,
 };

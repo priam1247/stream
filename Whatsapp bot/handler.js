@@ -150,7 +150,7 @@ async function handleSelection(sock, msg, body, { from, sender, senderIds, quote
       await picked.entry.run(sock, msg, buildExtra(sock, msg, { from, sender, senderIds, commandName: originatingName }), picked.item);
     } catch (e) {
       telemetry.recordFailure('selection');
-      console.error('Error running selection:', e.message);
+      console.error('Error running selection:', e?.message || e);
       try {
         await sock.sendMessage(
           from,
@@ -237,7 +237,7 @@ const handleMessage = async (sock, msg) => {
     if (!mayReply) return;
 
     // Don't send error messages for rate limit errors
-    if (error.message && error.message.includes('rate-overlimit')) {
+    if (error?.message?.includes('rate-overlimit')) {
       console.warn('⚠️ Rate limit reached. Skipping error message.');
       return;
     }
@@ -250,7 +250,7 @@ const handleMessage = async (sock, msg) => {
         text: safeErrorMessage(error, { isOwner: isOwner(senderIds, sock.__sessionDir) }),
       }, { quoted: msg });
     } catch (e) {
-      if (!e.message || !e.message.includes('rate-overlimit')) {
+      if (!e?.message?.includes('rate-overlimit')) {
         console.error('Error sending error message:', e);
       }
     }

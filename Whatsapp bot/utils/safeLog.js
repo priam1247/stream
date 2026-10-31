@@ -12,17 +12,25 @@
 function redactSecrets(input) {
   let s = String(input ?? '');
   if (!s) return s;
-  // Authorization: Bearer <token>
-  s = s.replace(/\b(Bearer\s+)[A-Za-z0-9._~+|/-]{8,}/gi, '$1[REDACTED]');
+  // Authorization credentials can be bearer tokens or Basic auth.
+  s = s.replace(/\b((?:Bearer|Basic)\s+)[A-Za-z0-9._~+|/=-]{8,}/gi, '$1[REDACTED]');
   // Pterodactyl & Hydrodactyl client / application keys (ptlc_, ptla_, hydro_)
   s = s.replace(/\b(ptl[ca]_|hydro_)[A-Za-z0-9]{6,}/g, '$1[REDACTED]');
   // Sanctum / Drime tokens like 58989|qn4Jom8Cnusc...
   s = s.replace(/\b\d+\|[A-Za-z0-9]{24,}\b/g, '[REDACTED_TOKEN]');
   // URL user:password@host credentials (proxies, SFTP, etc.)
   s = s.replace(/\b((?:https?|socks5h?|sftp):\/\/[^:/@\s]+):([^@\s]+)@/gi, '$1:***@');
-  // Query-string or key=value API keys (?api_key=..., &apikey=..., token=...)
+  // A cookie header can contain multiple semicolon-separated secrets.
+  s = s.replace(/(\b(?:set-)?cookie\s*:\s*)[^\r\n]*/gi, '$1[REDACTED]');
+  // Query strings, structured error messages, and logfmt-style assignments.
   s = s.replace(/((?:[?&]|\b)(?:api_?key|access_token|token)=)[^&\s"']+/gi, '$1[REDACTED]');
+  s = s.replace(/(["']?(?:api[_-]?key|x[_-]?(?:bot|admin)[_-]?token|access[_-]?token|refresh[_-]?token|password|passwd|secret|token|cookie|set-cookie)["']?\s*[:=]\s*)(["']?)([^\s,;&"'{}]+)\2/gi, '$1$2[REDACTED]$2');
   return s;
+}
+
+function isSensitiveKey(key) {
+  const normalized = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+  return /(?:authorization|apikey|password|passwd|secret|privatekey|backupkey|encryptionkey|signingkey|cookies?|token)$/.test(normalized);
 }
 
 function maskUrlCredentials(url) {
@@ -40,9 +48,8 @@ function safeText(value) {
   try {
     const seen = new WeakSet();
     const json = JSON.stringify(value, (key, val) => {
-      if (typeof key === 'string' && /^(authorization|api_?key|apitoken|token|password|secret|cookie|cookies)$/i.test(key) && val) {
-        return '[REDACTED]';
-      }
+      if (key && isSensitiveKey(key)) return '[REDACTED]';
+      if (typeof val === 'string') return redactSecrets(val);
       if (typeof val === 'bigint') return val.toString();
       if (typeof val === 'function') return '[Function]';
       if (typeof val === 'object' && val !== null) {
@@ -60,15 +67,15 @@ function safeText(value) {
 function redactArg(arg) {
   if (typeof arg === 'string') return redactSecrets(arg);
   if (arg instanceof Error) {
-    const msg = redactSecrets(arg.message || '');
-    if (msg !== arg.message) {
-      const clean = new Error(msg);
-      clean.name = arg.name;
-      if (arg.code) clean.code = arg.code;
-      return clean;
-    }
-    return arg;
+    // HTTP errors often carry request headers and credentials as own properties.
+    // Keep a sanitized stack and code, never the original error's metadata.
+    const clean = new Error(redactSecrets(arg.message || ''));
+    clean.name = redactSecrets(arg.name || 'Error');
+    if (arg.stack) clean.stack = redactSecrets(String(arg.stack));
+    if (typeof arg.code === 'string' || typeof arg.code === 'number') clean.code = redactSecrets(String(arg.code));
+    return clean;
   }
+  if (arg && typeof arg === 'object') return safeText(arg);
   return arg;
 }
 

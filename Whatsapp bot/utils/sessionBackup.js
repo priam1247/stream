@@ -94,8 +94,8 @@ function createSessionBackup(opts = {}) {
   let status = key ? 'starting' : 'disabled';
   let lastBackupAt = null;
   const revisions = new Map(); const remote = new Map(); const conflicts = new Set(); const failures = new Set();
-  const pending = new Map(); const retryTimers = new Map(); const locks = new Map(); const stoppedGenerations = new Set();
-  let stopped = false;
+  const pending = new Map(); const retryTimers = new Map(); const locks = new Map(); const uploadDirs = new Map(); const stoppedGenerations = new Set();
+  let stopped = false; let stopping = false; let stopPromise = null;
   if (key && (!baseUrl.startsWith('https://') || !token)) throw new Error('Session recovery requires HTTPS dashboard sync and a service token.');
   const validRevocation = (item) => item && (item.slot === 'primary' || /^linked:\d{7,15}$/.test(item.slot)) && ATTEMPT_RE.test(item.generation || '');
   const stateRead = readJsonSafe(statePath, { defaultValue: { version: 1, slots: {} }, validate: (v) => v && v.version === 1 && v.slots && typeof v.slots === 'object' && !Array.isArray(v.slots) &&
@@ -212,14 +212,14 @@ function createSessionBackup(opts = {}) {
     log.info(conflicts.size ? 'Session recovery preserved local files; a backup conflict needs review.' : 'Encrypted session recovery is ready.');
   }
   function schedule(dir) {
-    if (!key || stopped) return;
+    if (!key || stopped || stopping) return;
     const desc = descriptor(dir); if (!desc || stoppedGenerations.has(`${desc.slot}:${desc.generation}`)) return;
     if (pending.has(desc.slot)) return;
     const timer = setTimeout(() => { pending.delete(desc.slot); void snapshot(desc).catch(() => { failures.add(desc.slot); status = 'error'; log.warn('Encrypted session backup could not be saved; local sessions were preserved.'); schedule(dir); }); }, Math.max(100, Number(opts.delayMs) || 15000));
-    timer.unref?.(); pending.set(desc.slot, timer);
+    timer.unref?.(); pending.set(desc.slot, { timer, dir: desc.dir });
   }
   async function snapshot(desc) {
-    return locked(`upload:${desc.slot}`, async () => {
+    const upload = locked(`upload:${desc.slot}`, async () => {
     if (conflicts.has(desc.slot) || stoppedGenerations.has(`${desc.slot}:${desc.generation}`)) { status = 'conflict'; return; }
     const prior = remote.get(desc.slot);
     if (prior?.revoked && prior.generation === desc.generation) return;
@@ -232,7 +232,7 @@ function createSessionBackup(opts = {}) {
       }
       return { version: 1, slot: desc.slot, generation: desc.generation, files: collectFiles(desc.dir) };
     });
-    if (!payload || stopped) return;
+    if (!payload || stopped || stoppedGenerations.has(`${desc.slot}:${desc.generation}`)) return;
     let creds;
     try { creds = JSON.parse(payload.files['creds.json'] || '{}'); } catch { throw new Error('Local session credentials are invalid.'); }
     if (!creds.registered) return; // A new, not-yet-linked socket has nothing to back up.
@@ -245,6 +245,9 @@ function createSessionBackup(opts = {}) {
     failures.delete(desc.slot);
     lastBackupAt = Date.now(); status = conflicts.size ? 'conflict' : 'ready';
     });
+    uploadDirs.set(upload, desc.dir);
+    void upload.then(() => uploadDirs.delete(upload), () => uploadDirs.delete(upload));
+    return upload;
   }
   async function flushRevocation(slot, generation) {
     await request({ action: 'revoke', slot, generation });
@@ -265,7 +268,7 @@ function createSessionBackup(opts = {}) {
     if (!validRevocation({ slot, generation })) { failures.add('revocation:unknown'); status = 'error'; log.warn('The revoked session generation could not be identified for recovery.'); return; }
     const id = `${slot}:${generation}`;
     stoppedGenerations.add(id);
-    if (pending.has(slot)) { clearTimeout(pending.get(slot)); pending.delete(slot); }
+    if (pending.has(slot)) { clearTimeout(pending.get(slot).timer); pending.delete(slot); }
     if (!localState.revocations.some((item) => item.slot === slot && item.generation === generation)) {
       localState.revocations.push({ slot, generation });
       try { persist(); } catch { status = 'error'; log.warn('Could not persist the recovery revocation queue. Check disk space.'); }
@@ -277,19 +280,42 @@ function createSessionBackup(opts = {}) {
         if (retryTimers.has(id)) { clearTimeout(retryTimers.get(id)); retryTimers.delete(id); }
       } catch {
         failures.add(`revoke:${id}`); status = 'error'; log.warn('Session revocation could not yet be synchronized to encrypted recovery; retrying.');
-        if (!stopped && !retryTimers.has(id)) {
+        if (!stopped && !stopping && !retryTimers.has(id)) {
           const timer = setTimeout(() => { retryTimers.delete(id); void revoke(slot, generation); }, 30000);
           timer.unref?.(); retryTimers.set(id, timer);
         }
       }
     });
   }
-  async function stop() {
-    stopped = true;
-    for (const timer of pending.values()) clearTimeout(timer);
+  async function stop({ flush = false } = {}) {
+    if (stopPromise) return stopPromise;
+    stopping = true;
+    const dirtyDirs = new Set([...pending.values()].map((item) => item.dir));
+    for (const dir of uploadDirs.values()) dirtyDirs.add(dir);
+    // Auth writes can finish after stop starts. Remember their directories so
+    // the final snapshot includes those writes even though scheduling is closed.
+    for (const id of locks.keys()) if (path.isAbsolute(id)) dirtyDirs.add(id);
+    for (const item of pending.values()) clearTimeout(item.timer);
     for (const timer of retryTimers.values()) clearTimeout(timer);
     pending.clear(); retryTimers.clear();
-    await Promise.allSettled([...locks.values()]);
+    if (!flush || !key) stopped = true;
+    stopPromise = (async () => {
+      if (flush && key) {
+        await Promise.allSettled([...locks.values()]);
+        const descriptors = [...dirtyDirs].map(descriptor).filter(Boolean);
+        const results = await Promise.allSettled(descriptors.map((desc) => snapshot(desc)));
+        for (let i = 0; i < results.length; i++) {
+          if (results[i].status === 'rejected') {
+            failures.add(descriptors[i].slot);
+            status = 'error';
+            log.warn('Final encrypted session backup could not be saved; local sessions were preserved.');
+          }
+        }
+      }
+      stopped = true;
+      await Promise.allSettled([...locks.values()]);
+    })();
+    return stopPromise;
   }
   async function wrapAuth(loadAuthState, dir) {
     const auth = await loadAuthState(dir);

@@ -8,9 +8,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { createRequire } = require('node:module');
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
 
+clearHostConfig();
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-search-handler-'));
+const BOT = createBotFixture(TMP);
+const botRequire = createRequire(path.join(BOT, 'scripts', 'test-provider-search-handler.js'));
 process.chdir(TMP);
+botRequire('../utils/telemetry')._resetForTests(null);
 process.env.OWNER_NUMBER = '15550000001';
 process.env.ADMIN_NUMBERS = '15550000002';
 process.env.PREFIX = '.';
@@ -18,14 +24,14 @@ process.env.SEARCH_RESULTS = '2';
 process.env.SEARCH_TTL_MINUTES = '2';
 process.env.QUEUE_MIN_FREE_MB = '0';
 
-const database = require('../database');
+const database = botRequire('../database');
 database.getBotState = () => true;
-const pipeline = require('../utils/mediaPipeline');
-const config = require('../config');
-const providerSearch = require('../utils/providerSearch');
-const selections = require('../utils/selections');
-const jobQueue = require('../utils/jobQueue');
-const policy = require('../utils/memberCommandPolicy');
+const pipeline = botRequire('../utils/mediaPipeline');
+const config = botRequire('../config');
+const providerSearch = botRequire('../utils/providerSearch');
+const selections = botRequire('../utils/selections');
+const jobQueue = botRequire('../utils/jobQueue');
+const policy = botRequire('../utils/memberCommandPolicy');
 const originalPolicy = policy.isUnavailable;
 const downloads = [];
 const searches = [];
@@ -59,7 +65,7 @@ providerSearch.searchProvider = async (site, query, opts) => {
   ] };
 };
 policy.isUnavailable = (name) => disabled.has(name);
-const handler = require('../handler');
+const handler = botRequire('../handler');
 
 function socket(id = 'linked:one', number = '15550001111') {
   return {

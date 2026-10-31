@@ -228,10 +228,32 @@ async function generatePoToken(identifier, customFetch, { cache = true, coldStar
 
 const _clientCache = new Map();
 let _cookieFingerprint = null;
-ytAuth.onAuthChange(() => { _clientCache.clear(); _poCache.clear(); });
+let _clientCacheGeneration = ytAuth.authGeneration();
+ytAuth.onAuthChange(() => { _clientCache.clear(); _poCache.clear(); }, 'innertube-client-cache');
 
 async function getClient(clientType = 'WEB', oauthCreds = null) {
+  const currentGeneration = ytAuth.authGeneration();
+  // A previous module instance may still be finishing work after hot reload.
+  // Check its cache lazily as well as clearing the current instance eagerly.
+  if (_clientCacheGeneration !== currentGeneration) {
+    _clientCache.clear();
+    _poCache.clear();
+    _clientCacheGeneration = currentGeneration;
+  }
+  const generation = oauthCreds ? currentGeneration : null;
+  let credentialKey = oauthCreds?.refresh_token ? 'refresh_token' : 'access_token';
+  let credentialValue = oauthCreds?.[credentialKey];
+  const credentialsCurrent = () => {
+    if (!oauthCreds) return true;
+    const current = ytAuth.getYtCreds();
+    return generation === ytAuth.authGeneration() && Boolean(credentialValue) && current?.[credentialKey] === credentialValue;
+  };
+  const requireCurrentCredentials = () => {
+    if (!credentialsCurrent()) throw Object.assign(new Error('YouTube OAuth credentials changed during client startup.'), { code: 'YT_AUTH_CHANGED' });
+  };
+  requireCurrentCredentials();
   const { yt } = await loadDeps();
+  requireCurrentCredentials();
   const cookie = oauthCreds ? undefined : readYoutubeCookieHeader();
   const fingerprint = cookie ? crypto.createHash('sha256').update(cookie).digest('hex') : '';
   if (!oauthCreds && fingerprint !== _cookieFingerprint) {
@@ -253,10 +275,19 @@ async function getClient(clientType = 'WEB', oauthCreds = null) {
   });
 
   if (oauthCreds) {
-    client.session.on('credentials-update', ({ credentials }) => {
-      try { ytAuth.saveYtCreds(credentials, { notify: false }); } catch { /* ignore */ }
+    requireCurrentCredentials();
+    // youtubei.js emits update-credentials when it refreshes a token. An old
+    // in-flight client must not recreate credentials after logout or relinking.
+    client.session.on('update-credentials', ({ credentials } = {}) => {
+      if (!credentialsCurrent()) return;
+      try {
+        const saved = ytAuth.saveYtCreds(credentials, { notify: false });
+        credentialKey = saved.refresh_token ? 'refresh_token' : 'access_token';
+        credentialValue = saved[credentialKey];
+      } catch { /* ignore invalid refreshes or storage errors */ }
     });
     await client.session.signIn(oauthCreds);
+    requireCurrentCredentials();
   }
 
   // A cookie replacement may have happened while create() was awaiting I/O.

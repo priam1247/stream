@@ -5,7 +5,17 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { startDashboardSync } = require('../utils/dashboardSync');
+const { createRequire } = require('node:module');
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
+
+clearHostConfig();
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-bridge-source-'));
+const BOT = createBotFixture(TMP);
+const botRequire = createRequire(path.join(BOT, 'scripts', 'test-bridge.js'));
+process.chdir(TMP);
+botRequire('../utils/telemetry')._resetForTests(null);
+const { startDashboardSync } = botRequire('../utils/dashboardSync');
+test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 

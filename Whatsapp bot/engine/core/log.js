@@ -10,6 +10,9 @@
  * the Pterodactyl console.
  */
 
+import safeLog from '../../utils/safeLog.js';
+
+const { redactSecrets, safeText } = safeLog;
 const LEVELS = { debug: 20, info: 30, warn: 40, error: 50 };
 const levelName = String(process.env.LOG_LEVEL || (process.env.QUIET ? 'warn' : 'info')).toLowerCase();
 let threshold = LEVELS[levelName] || LEVELS.info;
@@ -23,15 +26,9 @@ const stamp = () => {
   return `${d.toTimeString().slice(0, 8)}.${String(d.getMilliseconds()).padStart(3, '0')}`;
 };
 
-const render = (v) => {
-  if (v instanceof Error) return v.message;
-  if (typeof v === 'object' && v !== null) {
-    try { return JSON.stringify(v); } catch { return String(v); }
-  }
-  return String(v);
-};
+const render = (v) => safeText(v);
 
-const oneLine = (s) => String(s).replace(/\s*\n\s*/g, ' ⏎ ').slice(0, 500);
+const oneLine = (s) => redactSecrets(String(s)).replace(/\s*\n\s*/g, ' ⏎ ').slice(0, 500);
 
 function emit(level, tag, parts) {
   if (LEVELS[level] < threshold) return;

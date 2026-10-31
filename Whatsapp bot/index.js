@@ -35,8 +35,8 @@ process.env.NODE_ENV = process.env.NODE_ENV || 'production';
 
 const { formatArgs, redactArg } = require('./utils/safeLog');
 const { initializeTempSystem } = require('./utils/tempManager');
-const { startCleanup } = require('./utils/cleanup');
-const { startDiskGuard } = require('./utils/diskGuard');
+const { startCleanup, stopCleanup } = require('./utils/cleanup');
+const { startDiskGuard, stopDiskGuard } = require('./utils/diskGuard');
 initializeTempSystem();
 let cleanupSafe = false;
 try {
@@ -270,7 +270,7 @@ async function startService() {
 // (with ADMIN_API_ENABLED=false so no open port is needed). The bot pushes live
 // heartbeats, pulls versioned whitelist deltas, and picks up pairing requests.
 const { startSessionServices } = require('./utils/serviceStartup');
-await startSessionServices(sessions, async function startDashboardBridge() {
+const bridge = await startSessionServices(sessions, async function startDashboardBridge() {
   let sync; let api;
   try {
   const admin = config.admin || {};
@@ -319,6 +319,7 @@ await startSessionServices(sessions, async function startDashboardBridge() {
     if (api) await api.stop().catch(() => {});
     throw error;
   }
+  return { sync, api };
 }, () => backup.stop());
 
 try { require('./utils/logger').banner([
@@ -350,18 +351,46 @@ try { require('./utils/logger').banner([
   } catch (error) { console.warn('Media helper startup warning:', error.message); }
 })();
 
+return { sessions, backup, ...bridge };
 }
-function retryServiceStart() {
-  startService().catch((err) => {
-    console.error('Session recovery/startup unavailable; local files were preserved. Check the backup key, dashboard and durable storage.', err.message);
-    setTimeout(retryServiceStart, 30000);
-  });
+
+const { createServiceLifecycle, stopSessionServices } = require('./utils/serviceStartup');
+const lifecycle = createServiceLifecycle({
+  start: startService,
+  stop: stopSessionServices,
+  onError: (err) => console.error('Session recovery/startup unavailable; local files were preserved. Check the backup key, dashboard and durable storage.', err?.message || err),
+});
+
+// Give accepted credential writes and encrypted backups a chance to finish on a
+// normal panel stop. A hard kill or the timeout can still interrupt the backup;
+// the local session files are never deleted.
+let shutdownRequested = false;
+function shutdown(signal) {
+  if (shutdownRequested) return;
+  shutdownRequested = true;
+  console.log(`Stopping WhatsApp service (${signal}).`);
+  stopCleanup();
+  stopDiskGuard();
+  let finished = false;
+  let timer;
+  const finish = (timedOut = false) => {
+    if (finished) return;
+    finished = true;
+    if (timer) clearTimeout(timer);
+    if (timedOut) console.warn('Shutdown timed out; encrypted recovery may not have the latest changes. Local files were preserved.');
+    try { require('./utils/telemetry').flushNow(); } catch { /* non-fatal */ }
+    process.exit(0);
+  };
+  timer = setTimeout(() => finish(true), 20_000);
+  void lifecycle.shutdown().catch((err) => console.warn('WhatsApp shutdown was incomplete:', err?.message || err)).finally(() => finish());
 }
-retryServiceStart();
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+void lifecycle.start();
 // Handle process termination
 process.on('uncaughtException', (err) => {
   // Handle ENOSPC errors gracefully without crashing
-  if (err.code === 'ENOSPC' || err.errno === -28 || err.message?.includes('no space left on device')) {
+  if (err?.code === 'ENOSPC' || err?.errno === -28 || err?.message?.includes('no space left on device')) {
     console.error('⚠️ ENOSPC Error: No space left on device. Attempting cleanup...');
     if (cleanupSafe) {
       const { cleanupOldFiles } = require('./utils/cleanup');
@@ -376,7 +405,7 @@ process.on('uncaughtException', (err) => {
 });
 process.on('unhandledRejection', (err) => {
   // Handle ENOSPC errors gracefully
-  if (err.code === 'ENOSPC' || err.errno === -28 || err.message?.includes('no space left on device')) {
+  if (err?.code === 'ENOSPC' || err?.errno === -28 || err?.message?.includes('no space left on device')) {
     console.warn('⚠️ ENOSPC Error in promise: No space left on device. Attempting cleanup...');
     if (cleanupSafe) {
       const { cleanupOldFiles } = require('./utils/cleanup');
@@ -389,7 +418,7 @@ process.on('unhandledRejection', (err) => {
   }
 
   // Don't spam console with rate limit errors
-  if (err.message && err.message.includes('rate-overlimit')) {
+  if (err?.message?.includes('rate-overlimit')) {
     console.warn('⚠️ Rate limit reached. Please slow down your requests.');
     return;
   }

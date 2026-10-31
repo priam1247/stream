@@ -3,8 +3,6 @@
 const ytAuth = require('../../utils/ytAuth');
 const config = require('../../config');
 
-let _pendingLogin = null;
-
 module.exports = {
   name: 'ytlogin',
   aliases: ['ytauth', 'ytoauth'],
@@ -30,12 +28,12 @@ module.exports = {
       return extra.reply(`Usage: ${P}ytlogin | ${P}ytlogin status | ${P}ytlogin off`);
     }
 
-    if (_pendingLogin) {
+    if (ytAuth.isLoginPending()) {
       return extra.reply('⏳ A YouTube login code is already waiting for approval.');
     }
 
     let promptHandle = null;
-    _pendingLogin = (async () => {
+    return (async () => {
       try {
         await ytAuth.startYtLogin({
           onCode: async ({ verificationUrl, userCode }) => {
@@ -53,15 +51,15 @@ module.exports = {
           await extra.reply('✅ YouTube account linked.');
         }
       } catch (err) {
+        if (err?.code === 'LOGIN_CANCELLED') {
+          if (promptHandle) await promptHandle.update('YouTube login cancelled.');
+          return;
+        }
         console.error('[ytlogin] login failed:', err?.message);
         const line = '❌ YouTube login failed. Please try again.';
         if (promptHandle) await promptHandle.update(line);
         else await extra.reply(line);
-      } finally {
-        _pendingLogin = null;
       }
     })();
-
-    return _pendingLogin;
   },
 };
