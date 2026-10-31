@@ -35,7 +35,9 @@ dashboard environment secret. The bot initiates the connection; no inbound bot
 port is needed. Keep `SESSION_BACKUP_KEY` unchanged if encrypted recovery is in
 use. Old saved single-host sync credentials remain supported; a saved Botkeep
 role token is used only when no single-host token or legacy admin token exists.
-The owner can explicitly save the matching token if needed.
+The owner can explicitly save the matching token if needed. Sync and recovery
+requests must include the timestamped HMAC signature and nonce used by the
+Botkeep client; bearer-only clients must be updated.
 
 An optional direct bot bridge can be enabled separately on Botkeep. Enter its
 HTTPS address and token under **WhatsApp → Sync**, or set

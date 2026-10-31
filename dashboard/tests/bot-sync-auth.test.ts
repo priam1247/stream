@@ -18,8 +18,9 @@ beforeEach(() => { state.cfg = { botApiUrl: '', botAdminToken: 'bridge-secret-12
 afterEach(() => { vi.unstubAllEnvs(); globalThis.__zafarBotReplayNonces?.clear(); });
 
 describe('single-service sync authentication', () => {
-  it('keeps supported legacy bearer requests and validates signed requests', async () => {
-    expect(await verifyBotSyncRequest(request(state.cfg.botSyncToken, { signed: false }), body)).toMatchObject({ ok: true });
+  it('requires signed requests and validates both supported credentials', async () => {
+    expect(await verifyBotSyncRequest(request(state.cfg.botSyncToken, { signed: false }), body)).toMatchObject({ ok: false, status: 401 });
+    expect(await verifyBotSyncRequest(request(state.cfg.botAdminToken, { signed: false }), body)).toMatchObject({ ok: false, status: 401 });
     expect(await verifyBotSyncRequest(request(state.cfg.botSyncToken), body)).toMatchObject({ ok: true });
     expect(await verifyBotSyncRequest(request(state.cfg.botAdminToken), body)).toMatchObject({ ok: true });
     expect(await verifyBotSyncRequest(request('wrong'), body)).toMatchObject({ ok: false, status: 401 });

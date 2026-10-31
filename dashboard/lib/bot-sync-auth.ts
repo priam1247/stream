@@ -74,36 +74,40 @@ export async function verifyBotSyncRequest(
   const nonceHeader = req.headers.get('x-bot-nonce')?.trim();
   const sigHeader = req.headers.get('x-bot-signature')?.trim();
 
-  // Signed requests enforce timestamp freshness + one-time nonce + HMAC-SHA256
-  if (tsHeader || nonceHeader || sigHeader) {
-    const ts = Number(tsHeader);
-    if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > MAX_CLOCK_SKEW_MS) {
-      return {
-        ok: false,
-        status: 401,
-        error: 'Service request timestamp outside allowed 5-minute window.',
-      };
-    }
-    if (!nonceHeader || nonceHeader.length < 8) {
-      return {
-        ok: false,
-        status: 409,
-        error: 'Duplicate or invalid service request nonce (replay blocked).',
-      };
-    }
-    const expectedSig =
-      'sha256=' +
-      crypto
-        .createHmac('sha256', matchedSecret)
-        .update(`${tsHeader}.${nonceHeader}.${rawBody}`)
-        .digest('hex');
-    if (!sigHeader || !timingSafeStr(sigHeader, expectedSig)) {
-      return { ok: false, status: 401, error: 'Invalid service HMAC signature.' };
-    }
-    // An invalid signature must not consume a valid request's nonce.
-    if (!consumeNonce(nonceHeader)) {
-      return { ok: false, status: 409, error: 'Duplicate or invalid service request nonce (replay blocked).' };
-    }
+  // All supported Botkeep clients sign their sync traffic. Never weaken a
+  // previously host-bound credential to bearer-only during migration.
+  if (!tsHeader || !nonceHeader || !sigHeader) {
+    return { ok: false, status: 401, error: 'Signed service request required.' };
+  }
+
+  // Signed requests enforce timestamp freshness + one-time nonce + HMAC-SHA256.
+  const ts = Number(tsHeader);
+  if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > MAX_CLOCK_SKEW_MS) {
+    return {
+      ok: false,
+      status: 401,
+      error: 'Service request timestamp outside allowed 5-minute window.',
+    };
+  }
+  if (nonceHeader.length < 8) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Duplicate or invalid service request nonce (replay blocked).',
+    };
+  }
+  const expectedSig =
+    'sha256=' +
+    crypto
+      .createHmac('sha256', matchedSecret)
+      .update(`${tsHeader}.${nonceHeader}.${rawBody}`)
+      .digest('hex');
+  if (!timingSafeStr(sigHeader, expectedSig)) {
+    return { ok: false, status: 401, error: 'Invalid service HMAC signature.' };
+  }
+  // An invalid signature must not consume a valid request's nonce.
+  if (!consumeNonce(nonceHeader)) {
+    return { ok: false, status: 409, error: 'Duplicate or invalid service request nonce (replay blocked).' };
   }
 
   return { ok: true, status: 200 };
