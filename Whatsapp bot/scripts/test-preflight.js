@@ -321,6 +321,29 @@ test('explicit multi-episode ranges remain selectable from debrid and torrent pa
   }
 });
 
+test('backwards and implausibly wide ranges only select their first episode in packs', async () => {
+  const { pickEpisodeFile } = await import(pathToFileURL(path.join(ROOT, 'engine/core/tv.js')).href);
+  const { pickTorrentFile } = await import(pathToFileURL(path.join(ROOT, 'engine/media/torrent.js')).href);
+  for (const [name, first, requested] of [
+    ['Show.S01E02E53.mkv', 2, 3], ['Show.1x02-53.mkv', 2, 3],
+    ['Show.S01E02-E720.mkv', 2, 3], ['Show.1x02-720.mkv', 2, 3],
+    ['Show.S01E10E02.mkv', 10, 2], ['Show.1x10-02.mkv', 10, 2],
+  ]) {
+    const rightName = `Show.S01E${String(requested).padStart(2, '0')}.mkv`;
+    const wrong = { path: name };
+    const right = { path: rightName };
+    assert.equal(pickEpisodeFile([wrong, right], 1, requested), right, name);
+    assert.equal(pickEpisodeFile([wrong], 1, requested), null, name);
+    assert.equal(pickEpisodeFile([wrong], 1, first), wrong, name);
+
+    const wrongTorrent = { name, length: 120 * 1024 * 1024 };
+    const rightTorrent = { name: rightName, length: 100 * 1024 * 1024 };
+    assert.equal(pickTorrentFile([wrongTorrent, rightTorrent], { season: 1, episode: requested, fileIdx: 0 }), rightTorrent, name);
+    assert.equal(pickTorrentFile([wrongTorrent], { season: 1, episode: requested }), null, name);
+    assert.equal(pickTorrentFile([wrongTorrent], { season: 1, episode: first }), wrongTorrent, name);
+  }
+});
+
 for (const padded of [true, false]) {
   test(`native HLS decrypts every sequence with its own IV (${padded ? 'padded' : 'unpadded'} segments)`, async () => {
     const { downloadHlsNative } = await import(pathToFileURL(path.join(ROOT, 'engine/media/hls.js')).href);
