@@ -129,29 +129,21 @@ The browser talks to the dashboard's `/api/scribd/*` routes, and the dashboard
 calls the web service server-to-server. The web service token is not sent to the
 browser.
 
-### Server address and optional token
+### Server address and token
 
-The dashboard defaults to the Scribd server at `http://toby.hidencloud.com:24702`.
-That address is plain HTTP: token, searches and document data are **not encrypted**
-and may be read or altered in transit. This selected origin is allowed without an
-extra switch; the dashboard will not send its token to a different public HTTP host
-or port. Set `SCRIBD_WEB_TOKEN` in the deployment's server-side environment, keep it
-private and rotate it if exposed. An existing `SCRIBD_WEB_URL` overrides the
-built-in address; remove or update a stale override.
+The dashboard uses the built-in HTTPS proxy `https://troy.hidenplay.net`. No address
+entry is needed, and `SCRIBD_WEB_URL` is ignored, including an old HTTP value. If the
+service moves, change the address in `lib/scribd-config.ts` and deploy the dashboard
+again. The existing server-side `SCRIBD_WEB_TOKEN` is still used.
 
-For a secure connection, set up an HTTPS reverse proxy and set `SCRIBD_WEB_URL` to
-its HTTPS address. The service must be running and reachable; deploying the
-dashboard does not start `scribd_web.py`. A successful health check alone does not
-verify the token, search, or downloads.
+The service must be running and reachable; deploying the dashboard does not start
+`scribd_web.py`. The public `/health` endpoint should return `ok`; `/api/job` should
+return a job list, or HTTP 401 if a token is required. A successful health check
+alone does not verify the token, search, or downloads.
 
-If the service moves, set the optional server-side `SCRIBD_WEB_URL` in the dashboard
-deployment (for example, Vercel's environment settings) and redeploy. An existing
-value pointing to the retired panel must be removed or updated: it overrides the
-built-in address. Likewise, update or remove any old `SCRIBD_WEB_TOKEN` to match
-the new server. Use the host's public IP or HTTPS domain and allocated port, not
-the `0.0.0.0` bind address printed by the server. The public `/health` endpoint
-should return `ok`; `/api/job` should return a job list, or HTTP 401 if a token is
-required.
+HTTPS protects the dashboard's connection to the reverse proxy. The proxy may
+forward to the service over HTTP, and the direct service port may still be public;
+protect that hop and restrict direct access where the host permits it.
 
 `SCRIBD_WEB_TOKEN` is the same token configured on the running service via
 `--token` or `WEB_TOKEN`. With the default `auto` setting, the service keeps it

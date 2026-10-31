@@ -26,6 +26,6 @@ export async function PATCH(req: NextRequest) {
   if ('response' in gate) return gate.response;
 
   return NextResponse.json({
-    error: 'The Scribd connection uses its built-in address or server environment variables; saved panel settings are no longer used.',
+    error: 'The Scribd connection uses its built-in address and server-side token; saved panel settings are no longer used.',
   }, { status: 409 });
 }
