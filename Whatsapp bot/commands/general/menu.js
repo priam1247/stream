@@ -26,6 +26,11 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
         [`${p}dl <url>`, 'any URL'],
         [`${p}tiktok ${p}x ${p}pinterest`, 'social'],
         [`${p}instagram ${p}fb`, 'social'],
+        [`${p}bilibili ${p}vimeo ${p}dailymotion`, 'video sites'],
+        [`${p}reddit ${p}twitch ${p}rumble`, 'video sites'],
+        [`${p}odysee ${p}weibo ${p}douyin`, 'video sites'],
+        [`${p}acfun ${p}youku ${p}vk`, 'video sites'],
+        [`${p}xhs ${p}niconico`, 'video sites'],
         [`${p}spotify <url|title>`, 'Spotify MP3'],
         [`${p}sticker ${p}viewonce`, 'reply tools'],
       ],
@@ -79,6 +84,7 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
 
 const SECTION_ALIASES = {
   movie: 'media', movies: 'media', song: 'media', ytv: 'media', dl: 'media',
+  bilibili: 'media', bili: 'media', vimeo: 'media', reddit: 'media', twitch: 'media',
   paper: 'papers', papers: 'papers',
   engine: 'engine', sources: 'engine', status: 'engine',
   admin: 'admin', all: null, help: null,

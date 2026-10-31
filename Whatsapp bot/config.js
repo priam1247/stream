@@ -62,16 +62,14 @@ module.exports = {
   },
 
   // ─── yt-dlp / YouTube (used by .song and .ytv) ────────────────────────────
-  // Hosting IPs are what trigger YouTube's "confirm you're not a bot" wall.
-  // Cookies fix it: export a cookies.txt from a logged-in browser and drop it
-  // in the bot folder (or paste its contents / base64 into `cookies`, or set
-  // YOUTUBE_COOKIES in the environment).
+  // YouTube may challenge hosting IPs. An up-to-date downloader and the owner's
+  // own browser cookies can help, but cannot guarantee access. Treat a cookies
+  // file like a password; keep it private and never commit it to the repository.
   ytdlp: {
     cookiesFile: env.YOUTUBE_COOKIES_FILE || '', // path to cookies.txt
     cookies: env.YOUTUBE_COOKIES || '',          // raw Netscape text, base64, or JSON export
     proxy: env.YTDLP_PROXY || '',                // e.g. http://user:pass@host:port
     ipv4: true,                                  // force IPv4 (IPv6 egress is often blocked)
-    noCheckCertificates: true,                   // many free hosts ship an outdated CA bundle
     updateOnBotCheck: true,                      // self-update yt-dlp once per run after a bot-check
     fragments: Number(env.YTDLP_FRAGMENTS || 4),
     autoUpdateHours: Number(env.YTDLP_AUTO_UPDATE_HOURS ?? 24),

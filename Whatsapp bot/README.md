@@ -16,8 +16,11 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .countpapers [course-code]             Count papers in the vault
 .song <name-or-YouTube-link>           ID3-tagged MP3 via yt-dlp + Cobalt/Gifted fallbacks
 .ytv <name-or-YouTube-link> [quality]  Download YouTube MP4 with silent-audio verification
-.dl <URL> [audio|video] [quality]      Universal downloader (~1,000 sites, streamed to disk)
+.dl <URL> [audio|video] [quality]      Generic yt-dlp downloader (streamed to disk)
 .tiktok <URL>  .x <URL>  .pinterest <URL>  .instagram <URL>  .fb <URL>
+.bilibili <URL>  .vimeo <URL>  .dailymotion <URL>  .reddit <URL>  .twitch <URL>
+.rumble <URL>  .odysee <URL>  .weibo <URL>  .douyin <URL>  .acfun <URL>
+.youku <URL>  .vk <URL>  .xiaohongshu <URL>  .niconico <URL>
 .spotify <Spotify URL or artist - title>
 .sticker (reply to media)              512x512 WebP sticker
 .viewonce (reply to view-once media)   Unwrap view-once photo/video/audio (from the session owner)
@@ -25,6 +28,38 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 ```
 
 Interactive title and quality choices use a tap selector or a prefixed numbered reply, such as `.1`, `.2` or `.cancel`. Poll votes and replies without the prefix are ignored.
+
+### Video sites and YouTube troubleshooting
+
+The site commands are shortcuts to the existing yt-dlp pipeline, not separate
+extractors; `.bili`, `.daily`, `.xhs`, and `.nico` are aliases. `.dl` remains available
+for other supported links. Use individual public video/post URLs; the bot does
+not intentionally download whole playlists. Availability depends on the
+installed yt-dlp version, the provider, location, account permissions, and the
+server's network. Sign-in, regional restrictions, deleted videos, live streams,
+DRM and provider changes can prevent a download. The shortcuts do not guarantee
+access to a site or filter all explicit material hosted on general-purpose sites.
+Dashboard command switches apply to individual commands, not whole websites:
+turning off `.bilibili` for members does not stop `.dl` accepting a Bilibili URL.
+
+For a YouTube access check, the owner can run `.ytdl update` and then
+`.ytdl test <video link>`. The test checks metadata or URL resolution only; it is
+not a successful media download. Try `.ytv <video link>` or `.song <video link>`
+to check an actual download from the deployed host. The bot uses Node and the
+installed or official yt-dlp EJS component where supported. A fresh export of
+the owner's own Netscape `cookies.txt` may help: upload it privately to the host
+and set `YOUTUBE_COOKIES_FILE`, or attach it to the owner-only `.cookies set`
+command in a private chat. Cookies can expire, and even valid cookies cannot
+guarantee that YouTube will accept a hosting IP. Treat the file as a password;
+never commit it or send it to support or anyone else. Inline cookies take priority over
+`.cookies set`, which takes priority over `YOUTUBE_COOKIES_FILE`. Check `.ytdl`
+for the active source if a different file is being used. For export guidance see
+the [yt-dlp FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp).
+
+If local methods fail, the existing remote fallbacks may receive the video URL;
+their availability is independent of the bot. TLS certificates are verified:
+if verification fails, fix the host's clock or CA store instead of disabling
+verification. Run `.ytdl` for the installed version and supported runtime flags.
 
 ## Background link jobs
 
@@ -72,6 +107,7 @@ cd "Whatsapp bot"
 cp .env.example .env   # configure privately, or use your host's startup variables
 npm ci
 npm run selftest       # offline checks; no WhatsApp connection
+npm run test:media     # offline YouTube, cookie, installer, and shortcut tests
 npm run test:jobs      # offline background-job tests
 npm run test:sessions  # offline pairing, permissions, and delivery tests
 npm start

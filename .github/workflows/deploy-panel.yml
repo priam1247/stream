@@ -51,14 +51,36 @@ jobs:
       - name: Test bot deployment safeguards
         run: node --test .github/tests/deploy-bot-gate.test.cjs
 
-      - name: Install bot dependencies & run offline selftest
+      - name: Install bot dependencies
+        working-directory: Whatsapp bot
+        run: npm ci
+
+      - name: Bot offline selftest
+        working-directory: Whatsapp bot
+        run: npm run selftest
+
+      - name: Media regression tests
+        working-directory: Whatsapp bot
+        run: npm run test:media
+
+      - name: Background job tests
+        working-directory: Whatsapp bot
+        run: npm run test:jobs
+
+      - name: Session and routing tests
+        working-directory: Whatsapp bot
+        run: npm run test:sessions
+
+      - name: Offline provider URL recognition
         working-directory: Whatsapp bot
         run: |
-          npm ci
-          npm run selftest
-          npm run test:jobs
-          npm run test:sessions
-          node scripts/test-nm3u8dl-live.js
+          python3 -m venv "$RUNNER_TEMP/yt-extractors"
+          "$RUNNER_TEMP/yt-extractors/bin/python" -m pip install 'yt-dlp==2026.10.26'
+          "$RUNNER_TEMP/yt-extractors/bin/python" scripts/test-media-extractors.py
+
+      - name: Live HLS downloader smoke test
+        working-directory: Whatsapp bot
+        run: node scripts/test-nm3u8dl-live.js
 
       - name: Verify standalone dashboard typecheck & build
         working-directory: dashboard

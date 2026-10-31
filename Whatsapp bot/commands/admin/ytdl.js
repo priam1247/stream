@@ -17,6 +17,8 @@ async function status() {
     `ffmpeg: ${diag.ffmpeg || 'MISSING'}`,
     `OAuth: ${oauth}`,
     `Cookies: ${ck}`,
+    `Node runtime flag: ${diag.minimalArgs ? 'disabled in compatibility mode' : (diag.capabilities.jsRuntimes ? 'enabled' : 'not supported by this yt-dlp')}`,
+    `EJS remote option: ${diag.minimalArgs ? 'disabled in compatibility mode' : (diag.capabilities.remoteComponents ? 'enabled if needed' : 'not supported by this yt-dlp')}`,
     `Proxy: ${diag.proxy || 'none'}`,
   ];
   if (diag.invalidProxy) {
@@ -86,19 +88,19 @@ module.exports = {
         const s = await extra.status('🔎 Probing…');
         try {
           const info = await YT.getInfo(url, { timeout: 45000 });
-          return s.update(`✅ yt-dlp OK — ${info.title || '?'}\nyt-dlp ${YT.version()} · ffmpeg ${ffmpeg.version() || 'missing'}`);
+          return s.update(`✅ yt-dlp metadata OK — ${info.title || '?'}\nDownload not tested · yt-dlp ${YT.version()} · ffmpeg ${ffmpeg.version() || 'missing'}`);
         } catch (e) {
           if (isYt) {
             try {
               const itInfo = await ytInnertube.getVideoInfo(url);
               if (itInfo?.title) {
-                return s.update(`✅ Innertube OK — ${itInfo.title}\n(yt-dlp: ${YT.displayCode(YT.classify(e).code)})`);
+                return s.update(`✅ Innertube metadata OK — ${itInfo.title}\nDownload not tested · yt-dlp: ${YT.displayCode(YT.classify(e).code)}`);
               }
             } catch { /* fall through */ }
             try {
               const hit = await providers.resolveMedia(url, { kind: 'audio', timeoutMs: 35000 });
               if (hit?.url) {
-                return s.update(`✅ Remote (${hit.provider}) OK — ${hit.title || 'stream ready'}\n(yt-dlp: ${YT.displayCode(YT.classify(e).code)})`);
+                return s.update(`✅ Remote (${hit.provider}) resolved — ${hit.title || 'link found'}\nDownload not tested · yt-dlp: ${YT.displayCode(YT.classify(e).code)}`);
               }
             } catch { /* fall through */ }
           }

@@ -1,6 +1,6 @@
 # Complete repository file and connection index
 
-This snapshot lists **all 342 repository files**: the 340 files present at baseline commit `4e0771f` plus the two map documents.
+This snapshot lists **all 346 repository files**: the 342 tracked files at commit `f3c77ac` plus four new media and dashboard tests.
 The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, complete tree, runtime flows, route list, and scope.
 
 ## How to read an entry
@@ -86,6 +86,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — GitHub Actions test/build workflow and explicitly confirmed manual-only legacy SFTP upload.
   - **References:**
+    - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — invoked via npm test:media.
+    - [`Whatsapp bot/scripts/test-media-extractors.py`](../Whatsapp%20bot/scripts/test-media-extractors.py) — test invocation.
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — invoked via npm test:media.
     - [`.github/scripts/check-bot-freshness.sh`](../.github/scripts/check-bot-freshness.sh) — explicit relationship, file path mentioned.
     - [`.github/scripts/check-panel-config.sh`](../.github/scripts/check-panel-config.sh) — explicit relationship, file path mentioned.
     - [`.github/scripts/restart-panel.sh`](../.github/scripts/restart-panel.sh) — explicit relationship, file path mentioned.
@@ -175,6 +178,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`vitest.config.ts`](../dashboard/vitest.config.ts) — Vitest setup, jsdom default, @ alias, and test-file discovery.
   - **References:**
+    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — test discovery.
     - [`dashboard/tests/admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — test discovery.
     - [`dashboard/tests/admin-route-authorization.test.ts`](../dashboard/tests/admin-route-authorization.test.ts) — test discovery.
     - [`dashboard/tests/auth-screen.test.tsx`](../dashboard/tests/auth-screen.test.tsx) — test discovery.
@@ -914,6 +918,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
     - [`dashboard/lib/client-session.ts`](../dashboard/lib/client-session.ts) — import.
   - **Referenced by:**
+    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — import.
     - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — import.
   - **Outside modules:** `lucide-react`, `react`.
 
@@ -1579,6 +1584,13 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
   - **Outside modules:** `vitest`.
+
+- [`member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — Tests the admin command controls, alias search and canonical Bilibili switch.
+  - **References:**
+    - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — import.
+  - **Referenced by:**
+    - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
+  - **Outside modules:** `@testing-library/react`, `vitest`.
 
 - [`member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — Vitest regression tests for member features security; see direct references below for the exercised modules.
   - **References:**
@@ -2408,6 +2420,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`config.js`](../Whatsapp%20bot/config.js) — Loads bot configuration, defaults, environment values, and feature settings.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — computed bot-root path.
     - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — file path mentioned.
     - [`Whatsapp bot/.env.example`](../Whatsapp%20bot/.env.example) — explicit relationship.
     - [`Whatsapp bot/commands/admin/botmanage.js`](../Whatsapp%20bot/commands/admin/botmanage.js) — require.
@@ -2515,6 +2528,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`package.json`](../Whatsapp%20bot/package.json) — CommonJS bot package, dependencies, startup, and test scripts.
   - **References:**
+    - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — npm test:media script.
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — npm test:media script.
     - [`Whatsapp bot/index.js`](../Whatsapp%20bot/index.js) — explicit relationship, file name mentioned.
     - [`Whatsapp bot/package-lock.json`](../Whatsapp%20bot/package-lock.json) — npm lockfile.
     - [`Whatsapp bot/scripts/install-ytdlp.sh`](../Whatsapp%20bot/scripts/install-ytdlp.sh) — explicit relationship.
@@ -2630,6 +2645,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
     - [`Whatsapp bot/utils/userErrors.js`](../Whatsapp%20bot/utils/userErrors.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — computed bot-root path.
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
 
 - [`paper.js`](../Whatsapp%20bot/commands/general/paper.js) — Searches, counts, refreshes, and sends exam papers.
@@ -2726,6 +2742,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — computed bot-root path.
     - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
 
@@ -3526,6 +3543,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`install-ytdlp.sh`](../Whatsapp%20bot/scripts/install-ytdlp.sh) — Installs or updates yt-dlp for the bot.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — isolated installer fixture.
     - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
 
 - [`selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — Broad offline bot and media-engine self-test.
@@ -3621,6 +3639,35 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — explicit relationship.
   - **Outside modules:** `node:assert/strict`, `node:child_process`, `node:fs`, `node:os`, `node:path`, `node:sqlite`, `node:test`.
+
+- [`test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — Offline synthetic tests for YouTube clients, token binding, cookie safety, retry, stream cleanup and both installer paths.
+  - **References:**
+    - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — computed bot-root path.
+    - [`Whatsapp bot/scripts/install-ytdlp.sh`](../Whatsapp%20bot/scripts/install-ytdlp.sh) — copied into an isolated installer fixture.
+    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — computed bot-root path and test-only instrumentation.
+    - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — test-only instrumentation.
+  - **Referenced by:**
+    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — invoked via npm test:media.
+    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm test:media script.
+  - **Outside modules:** `axios`, `node:assert/strict`, `node:child_process`, `node:crypto`, `node:fs`, `node:module`, `node:os`, `node:path`, `node:stream`, `node:test`, `youtubei.js`.
+  - **Dynamic loading observed:** `import`, `require`.
+
+- [`test-media-extractors.py`](../Whatsapp%20bot/scripts/test-media-extractors.py) — Checks offline URL-pattern recognition for the named providers using an installed yt-dlp; it does not download videos.
+  - **References:** none detected in this snapshot.
+  - **Referenced by:**
+    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — direct test invocation with pinned yt-dlp.
+  - **Outside modules:** `sys`, `unittest`, `yt_dlp`, `yt_dlp.extractor`.
+
+- [`test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — Tests shortcut dispatch, aliases, quality options, quoted URLs and menu discovery with a stubbed pipeline.
+  - **References:**
+    - [`Whatsapp bot/commands/general/menu.js`](../Whatsapp%20bot/commands/general/menu.js) — computed bot-root path.
+    - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — computed bot-root path.
+    - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — computed bot-root path and stubbed downloader.
+  - **Referenced by:**
+    - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — invoked via npm test:media.
+    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm test:media script.
+  - **Outside modules:** `node:assert/strict`, `node:fs`, `node:os`, `node:path`, `node:test`.
+  - **Dynamic loading observed:** `require`.
 
 - [`test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — Live smoke test of the HLS/DASH download helper.
   - **References:**
@@ -3924,6 +3971,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — Shared URL-download and WhatsApp delivery pipeline.
   - **References:**
+    - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — require.
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
     - [`Whatsapp bot/utils/diskSpace.js`](../Whatsapp%20bot/utils/diskSpace.js) — require.
     - [`Whatsapp bot/utils/downloadProviders.js`](../Whatsapp%20bot/utils/downloadProviders.js) — require.
@@ -3935,6 +3983,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/userErrors.js`](../Whatsapp%20bot/utils/userErrors.js) — require.
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — computed bot-root path.
     - [`Whatsapp bot/commands/media/dl.js`](../Whatsapp%20bot/commands/media/dl.js) — require.
     - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
     - [`Whatsapp bot/commands/media/spotify.js`](../Whatsapp%20bot/commands/media/spotify.js) — require.
@@ -4196,6 +4245,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/safeLog.js`](../Whatsapp%20bot/utils/safeLog.js) — require.
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — test-only instrumentation and computed bot-root path.
     - [`Whatsapp bot/commands/admin/cookies.js`](../Whatsapp%20bot/commands/admin/cookies.js) — require.
     - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — require.
     - [`Whatsapp bot/commands/media/dl.js`](../Whatsapp%20bot/commands/media/dl.js) — require.
@@ -4210,7 +4260,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/providerRouter.js`](../Whatsapp%20bot/utils/providerRouter.js) — require.
     - [`Whatsapp bot/utils/youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — require.
     - [`Whatsapp bot/utils/ytInnertube.js`](../Whatsapp%20bot/utils/ytInnertube.js) — require.
-  - **Outside modules:** `axios`, `child_process`, `fs`, `https`, `os`, `path`, `util`.
+  - **Outside modules:** `axios`, `child_process`, `crypto`, `fs`, `https`, `os`, `path`, `stream`, `stream/promises`, `util`.
 
 - [`youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — Shared YouTube search and fallback selection.
   - **References:**
@@ -4248,9 +4298,11 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
     - [`Whatsapp bot/utils/ytAuth.js`](../Whatsapp%20bot/utils/ytAuth.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — test-only instrumentation.
+    - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
     - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — require.
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
     - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — computed bot-root path.
     - [`Whatsapp bot/utils/youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — require.
-  - **Outside modules:** `bgutils-js`, `child_process`, `fs`, `googlevideo/sabr-stream`, `googlevideo/utils`, `jsdom`, `path`, `youtubei.js`.
+  - **Outside modules:** `bgutils-js`, `child_process`, `crypto`, `fs`, `googlevideo/sabr-stream`, `googlevideo/utils`, `jsdom`, `path`, `stream`, `stream/promises`, `youtubei.js`.

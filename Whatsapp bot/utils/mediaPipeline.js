@@ -6,7 +6,8 @@
  * commands learned applies here too:
  *
  *   engine 1 — yt-dlp (site-aware, cookie/proxy aware, streaming to disk)
- *   engine 2 — remote providers (Gifted / cobalt) when yt-dlp cannot do it
+ *   engine 2 — local Innertube fallback for YouTube URLs
+ *   engine 3 — existing remote providers when the earlier engines cannot do it
  *   then     — sniff the real container and send it the way WhatsApp can play it
  *
  * Supported inputs: any URL yt-dlp understands (~1000 sites) plus whatever the
@@ -17,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const YT = require('./youtubedl');
+const ytInnertube = require('./ytInnertube');
 const settings = require('./mediaSettings');
 const providers = require('./downloadProviders');
 const jobQueue = require('./jobQueue');
@@ -166,38 +168,71 @@ async function downloadAndSend(sock, msg, extra, {
         file = direct;
         via = 'direct link';
       } else {
-        const remoteWorthTrying = ['BOT_CHECK', 'NO_YTDLP', 'NO_FORMATS', 'FFMPEG_MISSING', 'UNKNOWN',
-          'NETWORK', 'RATE_LIMIT', 'PO_TOKEN', 'AGE_RESTRICTED', 'GEO_BLOCK', 'BAD_ARGS'];
-        const remoteAllowed = settings.get('remoteFallback', true) !== false;
+        const fallbackWorthTrying = ['BOT_CHECK', 'NO_YTDLP', 'NO_FORMATS', 'FFMPEG_MISSING', 'UNKNOWN',
+          'NETWORK', 'RATE_LIMIT', 'PO_TOKEN', 'AGE_RESTRICTED', 'GEO_BLOCK', 'BAD_ARGS', 'PROXY_ERROR'];
 
-        if (!remoteAllowed || !remoteWorthTrying.includes(info.code)) {
-          ytErr.attempts = attempts;
-          throw ytErr;
+        // .dl should get the same local YouTube fallback as .song/.ytv. Never
+        // send a non-YouTube URL to this engine, and keep all existing size and
+        // duration checks before delivering its result.
+        if (YT.isYouTubeUrl(url) && kind !== 'image' && fallbackWorthTrying.includes(info.code) && ytInnertube.isEnabled()) {
+          await react('🔄');
+          try {
+            const options = {
+              outBase, height, maxMB: kind === 'audio' ? MAX_AUDIO_MB : MAX_VIDEO_MB,
+              maxSeconds: kind === 'video' ? MAX_MINUTES * 60 : 0,
+              timeoutMs: Math.min(120000, Math.max(15000, deadlineAt - Date.now())),
+              onAttempt: (name, err) => attempts.push({ engine: name, code: err?.code || 'FAILED' }),
+            };
+            const hit = kind === 'audio'
+              ? await ytInnertube.downloadAudio(url, options)
+              : await ytInnertube.downloadVideo(url, options);
+            file = hit.file;
+            files.push(file);
+            if (kind === 'video' && MAX_MINUTES && hit.metadata?.duration > MAX_MINUTES * 60) {
+              throw Object.assign(new Error('media exceeds duration limit'), { code: 'TOO_LONG' });
+            }
+            via = hit.authenticated ? 'innertube (oauth)' : 'innertube';
+            title = title || hit.metadata?.title || '';
+            author = author || hit.metadata?.author || '';
+          } catch (itErr) {
+            if (['TOO_BIG', 'TOO_LONG'].includes(itErr.code)) throw itErr;
+            file = null;
+            attempts.push({ engine: 'innertube', code: itErr.code || 'FAILED' });
+            console.warn('[media] Innertube fallback failed:', itErr.message);
+          }
         }
 
-        await react('🔄');
-        let remoteHit;
-        try {
-          remoteHit = await providers.resolveMedia(url, {
-            kind, quality: height, timeoutMs: 20000,
-            onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
+        if (!file) {
+          const remoteAllowed = settings.get('remoteFallback', true) !== false;
+          if (!remoteAllowed || !fallbackWorthTrying.includes(info.code)) {
+            ytErr.attempts = attempts;
+            throw ytErr;
+          }
+
+          await react('🔄');
+          let remoteHit;
+          try {
+            remoteHit = await providers.resolveMedia(url, {
+              kind, quality: height, timeoutMs: 20000,
+              onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
+            });
+          } catch (providerErr) {
+            console.warn('[media] backup sources failed:', providerErr.message);
+            ytErr.attempts = attempts;
+            throw ytErr;
+          }
+
+          via = remoteHit.provider;
+          const dest = path.join(getTempDir(), `${stamp}_remote.${remoteHit.ext || (kind === 'audio' ? 'mp3' : 'mp4')}`);
+          const got = await downloadToFile(remoteHit.url, dest, {
+            maxBytes: (kind === 'audio' ? MAX_AUDIO_MB : MAX_VIDEO_MB) * 1024 * 1024,
+            headers: remoteHit.headers,
           });
-        } catch (providerErr) {
-          console.warn('[media] backup sources failed:', providerErr.message);
-          ytErr.attempts = attempts;
-          throw ytErr;
+          files.push(dest);
+          file = dest;
+          title = title || remoteHit.title;
+          console.log(`[media] downloaded via ${via} (${got.sniff.kind}/${got.sniff.ext})`);
         }
-
-        via = remoteHit.provider;
-        const dest = path.join(getTempDir(), `${stamp}_remote.${remoteHit.ext || (kind === 'audio' ? 'mp3' : 'mp4')}`);
-        const got = await downloadToFile(remoteHit.url, dest, {
-          maxBytes: (kind === 'audio' ? MAX_AUDIO_MB : MAX_VIDEO_MB) * 1024 * 1024,
-          headers: remoteHit.headers,
-        });
-        files.push(dest);
-        file = dest;
-        title = title || remoteHit.title;
-        console.log(`[media] downloaded via ${via} (${got.sniff.kind}/${got.sniff.ext})`);
       }
     }
 
@@ -295,7 +330,7 @@ async function downloadAndSend(sock, msg, extra, {
     } else {
       const isOwner = Boolean(extra?.isOwner);
       const tail = isOwner ? YT.attemptsSummary(merged) : '';
-      const lines = String(YT.friendlyError(err, { isOwner }) + tail).split('\n').filter(Boolean);
+      const lines = String(YT.friendlyError(err, { isOwner, isYouTube: YT.isYouTubeUrl(url) }) + tail).split('\n').filter(Boolean);
       await say(lines.slice(0, 2).join('\n'));
     }
     await react('❌');

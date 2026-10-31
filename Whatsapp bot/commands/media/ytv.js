@@ -207,6 +207,7 @@ const execute = async (sock, msg, args, extra) => {
             height: requestedHeight,
             outBase,
             maxMB: MAX_VIDEO_MB,
+            maxSeconds: MAX_MINUTES * 60,
             timeoutMs: 180000,
             onAttempt: (name, err) => {
               attempts.push({ engine: name, code: err?.code || 'FAILED' });
@@ -218,6 +219,7 @@ const execute = async (sock, msg, args, extra) => {
           title = title || itRes.metadata?.title || '';
           author = author || itRes.metadata?.author || '';
         } catch (itErr) {
+          if (itErr.code === 'TOO_LONG') throw itErr;
           log.warn(`innertube video failed · ${itErr.message}`);
           attempts.push({ engine: 'innertube', code: itErr.code || 'FAILED' });
         }

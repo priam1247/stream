@@ -59,13 +59,21 @@ module.exports = {
         }
 
         const { count } = YT.setCookies(raw);
+        const active = YT.cookieInfo();
         await react('✅');
-        return status.update(`✅ Stored ${count} cookies.`);
+        if (active.source !== 'managed (.cookies set)') {
+          return status.update(`✅ Stored ${count} cookies, but ${active.source} still takes priority. Remove the configured inline cookies to use this file.`);
+        }
+        return status.update(`✅ Stored ${count} cookies. Keep the file private; authentication is not guaranteed.`);
       }
 
       if (sub === 'clear' || sub === 'remove' || sub === 'delete') {
         const removed = YT.clearCookies();
+        const remaining = YT.cookieInfo();
         await react(removed ? '🗑️' : '⚠️');
+        if (remaining.source) {
+          return extra.reply(`Local cookies ${removed ? 'removed' : 'not found'}, but ${remaining.source} is still active. Remove it in the host configuration or file.`);
+        }
         return extra.reply(removed ? '🗑️ Cookies cleared.' : '⚠️ No cookies stored.');
       }
 
@@ -76,7 +84,7 @@ module.exports = {
         try {
           const info = await YT.getInfo(url, { timeout: 60000 });
           await react('✅');
-          return status.update(`✅ OK — ${info.title || url}`);
+          return status.update(`✅ Metadata retrieved — ${info.title || url}\nCookie authentication and downloading were not verified.`);
         } catch (e) {
           const info = YT.classify(e);
           await react('❌');
