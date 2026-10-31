@@ -157,7 +157,12 @@ function requestOptions(timeout = HTTP_TIMEOUT) {
     maxRedirects: 0, // do not forward a query to a redirect chosen by a third party
     responseType: 'text',
     transformResponse: [(body) => body],
-    headers: { 'User-Agent': UA, 'Accept': 'application/json, text/html, application/xml;q=0.9, */*;q=0.5' },
+    // Do not inherit account credentials if another module changes Axios defaults.
+    auth: null,
+    headers: {
+      'User-Agent': UA, 'Accept': 'application/json, text/html, application/xml;q=0.9, */*;q=0.5',
+      Authorization: undefined, Cookie: undefined,
+    },
     validateStatus: (status) => status === 200,
   };
 }
@@ -418,6 +423,17 @@ async function searchBrave(site, query) {
   return parseBrave(await getText('https://search.brave.com/search', { q: indexQuery(site, query), source: 'web' }));
 }
 
+// Firecrawl's public keyless search is explicitly offered for programmatic use
+// but is subject to per-IP request/credit caps. Request links only, not scraping.
+async function searchFirecrawl(site, query, limit) {
+  const body = parseJson(await postJson('https://api.firecrawl.dev/v2/search', {
+    query, includeDomains: PROVIDERS[site].domains, limit: Math.min(20, limit * 3),
+    sources: ['web'], timeout: 9000,
+  }));
+  if (body?.success !== true || !Array.isArray(body?.data?.web)) throw new Error('Firecrawl search unavailable');
+  return body.data.web.map((item) => ({ url: item.url, title: item.title }));
+}
+
 /**
  * Returns { results, status, source }. Search results are discovery hints, not
  * a promise that a video is public, playable, non-DRM, or an exact match.
@@ -451,13 +467,15 @@ async function searchProvider(site, query, { limit = 5 } = {}) {
       if (found) return found;
       const localizedQuery = `${localized} 第${episode.number}集`;
       const index = await attempt('duckduckgo', () => searchDuck(site, localizedQuery))
-        || await attempt('brave', () => searchBrave(site, localizedQuery));
+        || await attempt('brave', () => searchBrave(site, localizedQuery))
+        || await attempt('firecrawl', () => searchFirecrawl(site, localizedQuery, n));
       if (index) return index;
     }
   }
 
   const index = await attempt('duckduckgo', () => searchDuck(site, q))
-    || await attempt('brave', () => searchBrave(site, q));
+    || await attempt('brave', () => searchBrave(site, q))
+    || await attempt('firecrawl', () => searchFirecrawl(site, q, n));
   return index || { results: [], status: completed ? 'empty' : 'unavailable', source: '' };
 }
 

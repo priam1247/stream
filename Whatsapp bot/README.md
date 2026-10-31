@@ -52,15 +52,16 @@ search title. Direct links still accept the older `audio` and `480` options.
 
 Bilibili, Youku, AcFun, Reddit, Rumble and Odysee first try public site search;
 Dailymotion and Niconico first try yt-dlp's site search. All 14 can fall back to
-DuckDuckGo and Brave Search with a site filter. These third parties receive the
-search words. For an English Youku episode search with no native result, TVMaze
-may receive the series name to find an exact matching original Chinese title;
-that title is then searched on Youku. HTTP searches do not send the bot's saved
-cookies or authorization to those services. yt-dlp's native searches use its
-existing domain-scoped cookie and proxy settings. Results are checked against
-the requested site's video/post URLs, but may be outdated, incomplete, unrelated
-or not downloadable. A site's original language may work better; `S01E01` is
-only a search hint, not an episode guarantee.
+DuckDuckGo, Brave Search and the Firecrawl keyless search API with a site filter.
+Those services receive the search words. Firecrawl's free access is capped per
+IP and may rate-limit requests. For an English Youku episode search with no
+usable native result, TVMaze may receive the series name to find an exact matching
+original Chinese title; that title is then searched on Youku. HTTP searches do not
+send the bot's saved cookies or authorization to those services. yt-dlp's native
+searches use its existing domain-scoped cookie and proxy settings. Results are
+checked against the requested site's video/post URLs, but may be outdated,
+incomplete, unrelated or not downloadable. A site's original language may work
+better; `S01E01` is only a search hint, not an episode guarantee.
 Search and downloads can fail because of rate limits, sign-in, location, deleted
 videos, network blocks, DRM or site changes. Search is not a filter for explicit
 material hosted on general-purpose sites.

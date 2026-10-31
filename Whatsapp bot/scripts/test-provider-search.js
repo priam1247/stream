@@ -108,6 +108,29 @@ test('URL acceptance rejects spoofed hosts, credentials, ports, non-video paths 
   assert.equal(search.normalizeSiteUrl('niconico', 'https://www.nicovideo.jp/search/sm9'), null);
 });
 
+test('HTTP search suppresses inherited Axios authorization and account cookies', async () => {
+  const old = { adapter: axios.defaults.adapter, auth: axios.defaults.auth,
+    authorization: axios.defaults.headers.common.Authorization, cookie: axios.defaults.headers.common.Cookie };
+  axios.get = originals.get;
+  axios.defaults.auth = { username: 'fixture', password: 'fixture' };
+  axios.defaults.headers.common.Authorization = 'fixture';
+  axios.defaults.headers.common.Cookie = 'fixture';
+  axios.defaults.adapter = async (config) => {
+    assert.equal(config.auth, null);
+    assert.equal(config.headers.has('Authorization'), false);
+    assert.equal(config.headers.has('Cookie'), false);
+    return { status: 200, data: duck([{ url: examples.vimeo, title: 'Public result' }]), headers: {}, config };
+  };
+  try {
+    assert.equal((await search.searchProvider('vimeo', 'title')).source, 'duckduckgo');
+  } finally {
+    axios.defaults.adapter = old.adapter;
+    if (old.auth === undefined) delete axios.defaults.auth; else axios.defaults.auth = old.auth;
+    if (old.authorization === undefined) delete axios.defaults.headers.common.Authorization; else axios.defaults.headers.common.Authorization = old.authorization;
+    if (old.cookie === undefined) delete axios.defaults.headers.common.Cookie; else axios.defaults.headers.common.Cookie = old.cookie;
+  }
+});
+
 test('DuckDuckGo unwraps exactly one encoding layer and ignores bad destinations', () => {
   const target = 'https://www.xiaohongshu.com/explore/123456789012345678901234?token=a%25b';
   const rows = search.parseDuck(duck([{ url: target, title: '<em>Result</em>' }]));
@@ -134,6 +157,45 @@ test('Brave fallback parses result markup and does not trust its site filter', a
   assert.deepEqual(found.results.map((r) => r.url), [examples.youku]);
   assert.throws(() => search.parseBrave('<html><body>challenge</body></html>'), /unavailable/);
   assert.equal(search.parseBrave(`<main id="results"><a href="${examples.youku}">Alternative markup</a></main>`)[0].url, examples.youku);
+});
+
+test('Firecrawl keyless fallback is domain-filtered, bounded and validates every returned URL', async () => {
+  axios.get = async () => { throw new Error('other sources offline'); };
+  axios.post = async (endpoint, body, opts) => {
+    assert.equal(endpoint, 'https://api.firecrawl.dev/v2/search');
+    assert.deepEqual(body.includeDomains, ['douyin.com']);
+    assert.deepEqual(body.sources, ['web']);
+    assert.equal(body.query, 'cat');
+    assert.equal(body.limit, 9);
+    assert.equal(body.timeout, 9000);
+    assert.equal(opts.maxRedirects, 0);
+    assert.equal(opts.timeout, 10000);
+    assert.equal(opts.headers.Cookie, undefined);
+    assert.equal(opts.headers.Authorization, undefined);
+    assert.equal(opts.auth, null);
+    return success({ success: true, data: { web: [
+      { url: examples.vimeo, title: 'Wrong site' },
+      { url: 'https://www.douyin.com/search/cat', title: 'Not a video' },
+      { url: examples.douyin, title: 'A Douyin video' },
+      { url: examples.douyin, title: 'Duplicate' },
+    ] } });
+  };
+  const found = await search.searchProvider('douyin', 'cat', { limit: 3 });
+  assert.equal(found.source, 'firecrawl');
+  assert.deepEqual(found.results.map((r) => r.url), [examples.douyin]);
+});
+
+test('Firecrawl errors, changed schemas and rate limits remain bounded failures', async () => {
+  for (const response of [
+    success({ success: false }),
+    success({ success: true, data: {} }),
+    { status: 429, data: 'rate limited' },
+    success('x'.repeat(1024 * 1024 + 1)),
+  ]) {
+    axios.get = denied;
+    axios.post = async () => response;
+    assert.equal((await search.searchProvider('vimeo', 'title')).status, 'unavailable');
+  }
 });
 
 test('empty, unavailable, invalid, HTTP challenges and oversized bodies have distinct bounded outcomes', async () => {
