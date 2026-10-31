@@ -11,8 +11,12 @@ function getFailoverRole(env, admin) {
   if (actualServer && ((role === 'xs' && actualServer !== xsServer) || (role === 'botkeep' && actualServer === xsServer))) {
     throw new Error('Failover role does not match this hosting server UUID.');
   }
-  if (!String(admin?.syncToken || '').trim() || !String(admin?.dashboardUrl || '').trim()) {
-    throw new Error('Failover requires DASHBOARD_URL and the shared dashboard sync token.');
+  const token = String(admin?.syncToken || '').trim();
+  if (!token || !String(admin?.dashboardUrl || '').trim()) {
+    throw new Error('Failover requires DASHBOARD_URL and this host’s private dashboard sync token.');
+  }
+  if (token.length < 32 || token.length > 512) {
+    throw new Error('A host-specific failover sync token must be between 32 and 512 characters.');
   }
   try {
     if (new URL(admin.dashboardUrl).protocol !== 'https:') throw new Error('HTTPS required');

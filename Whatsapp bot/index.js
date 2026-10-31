@@ -294,8 +294,8 @@ await startSessionServices(sessions, async function startDashboardBridge() {
     failover,
     getStatus: () => ({ ...sessions.status(), ...(failover ? { primaryDeviceFingerprint: sessions.primaryDeviceFingerprint() } : {}) }),
     getBackupStatus: () => backup.status(),
-    requestPairing: (number) => sessions.requestPair(number),
-    unlinkAccount: (number, sessionId) => sessions.unlinkAccount(number, sessionId),
+    requestPairing: (number, options) => sessions.requestPair(number, options),
+    unlinkAccount: (number, sessionId, options) => sessions.unlinkAccount(number, sessionId, options),
     onWhitelistChanged: () => sessions.refreshPermissions(),
     onPermissionsReady: () => { if (!permissionsSynced) { permissionsSynced = true; sessions.refreshPermissions(); } },
     requestRestart: async () => {

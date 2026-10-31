@@ -122,6 +122,9 @@ function startDashboardSync(opts = {}) {
   const wlFile = opts.wlFile || WL_FILE;
   const commandPolicy = opts.commandPolicy || memberCommandPolicy;
   const failover = opts.failover || null;
+  const setTimer = opts.setTimer || setTimeout;
+  const clearTimer = opts.clearTimer || clearTimeout;
+  const timeoutSignal = opts.timeoutSignal || ((ms) => AbortSignal.timeout(ms));
 
   const baseUrl = String(opts.dashboardUrl ?? env.DASHBOARD_URL ?? '')
     .trim()
@@ -154,12 +157,15 @@ function startDashboardSync(opts = {}) {
 
   const scheduleNext = (ms) => {
     if (stopped || opts.manualOnly) return;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
+    if (timer) clearTimer(timer);
+    timer = setTimer(() => {
       void runSyncTick();
     }, ms);
     if (timer && typeof timer.unref === 'function') timer.unref();
   };
+  // Several attempts must fit inside the 28s local lease, even if each fetch
+  // times out. Single-host installations retain their existing backoff.
+  const retryDelay = () => failover ? 3_000 : Math.min(60_000, defaultIntervalMs * Math.pow(1.6, consecutiveFailures));
 
   async function executeCommand(cmd) {
     if (!cmd || typeof cmd.id !== 'string') return;
@@ -184,7 +190,7 @@ function startDashboardSync(opts = {}) {
         if (typeof opts.requestPairing !== 'function') {
           throw new Error('Linking is not available on this service.');
         }
-        const res = await opts.requestPairing(number);
+        const res = await opts.requestPairing(number, { canExecute: stillOwnsCommand });
         reportResult({
           id: cmd.id,
           ok: true,
@@ -214,7 +220,7 @@ function startDashboardSync(opts = {}) {
           String(user.number) === number && String(user.addedBy || '').toLowerCase() === owner && user.backupClaim === expectedClaim);
         if (!authorized) throw new Error('This number no longer belongs to that account.');
         if (typeof opts.unlinkAccount !== 'function') throw new Error('Unlinking is not available on this service.');
-        const result = await opts.unlinkAccount(number, sessionId);
+        const result = await opts.unlinkAccount(number, sessionId, { canExecute: stillOwnsCommand });
         reportResult({ id: cmd.id, ok: true, result });
         return;
       }
@@ -307,7 +313,7 @@ function startDashboardSync(opts = {}) {
         whitelistVersion: lastWhitelistVersion,
         commandPolicyVersion: commandPolicy.version(),
         ...(failoverReport ? { failover: { ...failoverReport, primaryConnected: status.primaryConnected === true,
-          deviceFingerprint: status.primaryDeviceFingerprint || '' } } : {}),
+          accountNumber: status.primaryNumber || '', deviceFingerprint: status.primaryDeviceFingerprint || '' } } : {}),
         ...(typeof opts.getBackupStatus === 'function' ? { sessionBackup: opts.getBackupStatus() } : {}),
         ...(localUsers.length ? { localUsers } : {}),
         completedResults: batchResults,
@@ -322,7 +328,7 @@ function startDashboardSync(opts = {}) {
         method: 'POST',
         headers,
         body: bodyText,
-        signal: AbortSignal.timeout(10_000),
+        signal: timeoutSignal(failover ? 5_000 : 10_000),
       });
 
       if (!res.ok) {
@@ -331,7 +337,7 @@ function startDashboardSync(opts = {}) {
           pendingResults.unshift(...batchResults);
         }
         consecutiveFailures++;
-        const backoff = Math.min(60_000, defaultIntervalMs * Math.pow(1.6, consecutiveFailures));
+        const backoff = retryDelay();
         if (consecutiveFailures === 1 || consecutiveFailures % 10 === 0) {
           log.warn(`Dashboard sync answered HTTP ${res.status}; retrying in ${Math.round(backoff / 1000)}s`);
         }
@@ -387,7 +393,7 @@ function startDashboardSync(opts = {}) {
       } else {
         const nextMs = Math.max(
           2_000,
-          Math.min(60_000, Number(data.nextPollMs) || defaultIntervalMs),
+          Math.min(failover ? 5_000 : 60_000, Number(data.nextPollMs) || defaultIntervalMs),
         );
         scheduleNext(nextMs);
       }
@@ -396,7 +402,7 @@ function startDashboardSync(opts = {}) {
     } catch (err) {
       if (batchResults.length) pendingResults.unshift(...batchResults);
       consecutiveFailures++;
-      const backoff = Math.min(60_000, defaultIntervalMs * Math.pow(1.6, consecutiveFailures));
+      const backoff = retryDelay();
       if (consecutiveFailures === 1 || consecutiveFailures % 12 === 0) {
         log.warn(`Dashboard sync unreachable (${err.message || err}); retrying in ${Math.round(backoff / 1000)}s`);
       }
@@ -413,7 +419,7 @@ function startDashboardSync(opts = {}) {
     stop() {
       stopped = true;
       failover?.revoke();
-      if (timer) clearTimeout(timer);
+      if (timer) clearTimer(timer);
       timer = null;
     },
   };

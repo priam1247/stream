@@ -72,6 +72,8 @@ export interface BotConnectionConfig {
   botApiUrl: string;
   botAdminToken: string;
   botSyncToken: string;
+  botXsSyncToken: string;
+  botBotkeepSyncToken: string;
   botEnabledForMembers: boolean;
   updatedAt?: string;
 }
@@ -159,6 +161,8 @@ export interface AdminOverviewPayload {
   botApiUrl: string;
   hasBotToken: boolean;
   hasBotSyncToken?: boolean;
+  hasXsSyncToken?: boolean;
+  hasBotkeepSyncToken?: boolean;
   botEnabledForMembers: boolean;
   storageEngine: 'bot-live' | 'cloudflare-d1' | 'persistent-db';
   connectionMode?: 'heartbeat' | 'direct' | 'unconfigured';

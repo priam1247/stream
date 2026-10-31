@@ -210,3 +210,106 @@ test('a slow command that finishes after lease revocation cannot report an old p
   await sync.syncNow();
   assert.deepEqual(bodies[2].completedResults, []);
 });
+
+test('the bridge supplies an epoch-bound ownership check to pairing and unlink operations', async (t) => {
+  const { createFailoverLease } = require('../utils/failoverLease');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-bridge-epoch-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const lease = createFailoverLease('xs', { instance: 'a'.repeat(32) });
+  let pairGuard, unlinkGuard, calls = 0;
+  const sync = startDashboardSync({
+    dashboardUrl: 'https://dashboard.example', token: 'test-token', manualOnly: true,
+    wlFile: path.join(root, 'whitelist.json'), failover: lease,
+    requestPairing: async (_number, options) => { pairGuard = options?.canExecute; return { code: 'SAFE' }; },
+    unlinkAccount: async (_number, _session, options) => { unlinkGuard = options?.canExecute; return {}; },
+    fetchImpl: async () => ({ ok: true, json: async () => ({
+      failover: ++calls === 1 ? { granted: true, role: 'xs', instance: 'a'.repeat(32), epoch: 1, ttlMs: 30_000 }
+        : { granted: true, role: 'xs', instance: 'a'.repeat(32), epoch: 2, ttlMs: 30_000 },
+      whitelistChanged: calls === 1, whitelistVersion: '0123456789abcdef',
+      users: [{ number: '15550001111', enabled: true, addedBy: 'member@example.com', claimId: 'claim-one' }],
+      commands: calls === 1 ? [
+        { id: 'pair', type: 'pair', payload: { number: '15550001111' } },
+        { id: 'unlink', type: 'unlink', payload: { number: '15550001111', sessionId: 'b'.repeat(24), owner: 'member@example.com', claimKey: 'claim-one' } },
+      ] : [],
+    }) }),
+  });
+  t.after(() => sync.stop());
+  await sync.syncNow(); await flush();
+  assert.equal(typeof pairGuard, 'function');
+  assert.equal(typeof unlinkGuard, 'function');
+  assert.equal(pairGuard(), true);
+  assert.equal(unlinkGuard(), true);
+  await sync.syncNow();
+  assert.equal(lease.canServe(), true);
+  assert.equal(pairGuard(), false, 'a new epoch must not authorize an old pairing command');
+  assert.equal(unlinkGuard(), false, 'a new epoch must not authorize an old unlink command');
+});
+
+test('failover retries transient errors within the lease and bounds poll and request times', async (t) => {
+  const { createFailoverLease } = require('../utils/failoverLease');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-bridge-retry-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const lease = createFailoverLease('xs', { instance: 'a'.repeat(32) });
+  const scheduled = [], timeouts = [];
+  let calls = 0;
+  const sync = startDashboardSync({
+    dashboardUrl: 'https://dashboard.example', token: 'test-token', failover: lease, wlFile: path.join(root, 'whitelist.json'),
+    setTimer: (_callback, ms) => { scheduled.push(ms); return { unref() {} }; },
+    clearTimer: () => {}, timeoutSignal: (ms) => { timeouts.push(ms); return new AbortController().signal; },
+    fetchImpl: async () => {
+      if (++calls === 1) throw new Error('temporary timeout');
+      if (calls === 2) return { ok: false, status: 503 };
+      return { ok: true, json: async () => ({ nextPollMs: 60_000, failover: { granted: true, role: 'xs', instance: 'a'.repeat(32), epoch: 1, ttlMs: 30_000 }, commands: [] }) };
+    },
+  });
+  t.after(() => sync.stop());
+  assert.equal(scheduled.at(-1), 250);
+  await sync.syncNow(); assert.equal(scheduled.at(-1), 3_000);
+  await sync.syncNow(); assert.equal(scheduled.at(-1), 3_000);
+  await sync.syncNow(); assert.equal(scheduled.at(-1), 5_000);
+  assert.deepEqual(timeouts, [5_000, 5_000, 5_000]);
+});
+
+test('heartbeat preserves aggregate status but sends the primary number in the failover identity', async (t) => {
+  const { createFailoverLease } = require('../utils/failoverLease');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-bridge-primary-number-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let body;
+  const sync = startDashboardSync({ dashboardUrl: 'https://dashboard.example', token: 'test-token', manualOnly: true,
+    wlFile: path.join(root, 'whitelist.json'), failover: createFailoverLease('xs'),
+    getStatus: () => ({ connected: true, botNumber: '15550001111', primaryConnected: false, primaryNumber: '15550009999' }),
+    fetchImpl: async (_url, init) => { body = JSON.parse(init.body); return { ok: true, json: async () => ({ failover: { granted: false } }) }; },
+  });
+  t.after(() => sync.stop());
+  await sync.syncNow();
+  assert.equal(body.botNumber, '15550001111');
+  assert.equal(body.failover.accountNumber, '15550009999');
+  assert.equal(body.failover.primaryConnected, false);
+});
+
+test('one five-second timeout and the short retry leave time to renew an active lease', async (t) => {
+  const { createFailoverLease } = require('../utils/failoverLease');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-bridge-one-timeout-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let clock = 0, calls = 0, delayMs = 0;
+  const lease = createFailoverLease('xs', { instance: 'a'.repeat(32), monotonicNow: () => clock, wallNow: () => 1_000_000 + clock });
+  const grant = { granted: true, role: 'xs', instance: 'a'.repeat(32), epoch: 1, ttlMs: 30_000 };
+  assert.equal(lease.accept(grant, lease.startRequest()), true);
+  const sync = startDashboardSync({ dashboardUrl: 'https://dashboard.example', token: 'test-token', failover: lease,
+    wlFile: path.join(root, 'whitelist.json'), setTimer: (_fn, ms) => { delayMs = ms; return { unref() {} }; },
+    clearTimer: () => {}, timeoutSignal: () => new AbortController().signal,
+    fetchImpl: async () => { if (++calls === 1) { clock += 5_000; throw new Error('timeout'); }
+      return { ok: true, json: async () => ({ failover: grant, commands: [] }) }; },
+  });
+  t.after(() => sync.stop());
+  clock = 5_000; // ordinary next poll after the previous grant
+  await sync.syncNow();
+  assert.equal(delayMs, 3_000);
+  assert.equal(lease.canServe(), true);
+  clock += delayMs;
+  const result = await sync.syncNow();
+  assert.equal(result.ok, true);
+  assert.equal(lease.canServe(), true);
+  clock = 29_000; // past the original lease's deadline, but before the renewal's
+  assert.equal(lease.canServe(), true);
+});

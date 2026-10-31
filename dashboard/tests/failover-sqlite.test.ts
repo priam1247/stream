@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   claimFailoverLease, claimPendingBotCommands, completeBotCommand,
-  getFailoverStatus, getPanelConnectionConfig, importLocalUserForLease, saveBotHeartbeat, savePanelConnectionConfig,
+  getBotConnectionConfig, getFailoverStatus, getPanelConnectionConfig, importLocalUserForLease, saveBotConnectionConfig, saveBotHeartbeat, savePanelConnectionConfig,
 } from '../lib/storage';
 
 let db: DatabaseSync;
@@ -80,6 +80,42 @@ describe('XS primary panel settings', () => {
     expect(db.prepare("SELECT value FROM portal_settings WHERE key = 'panel_api_key'").get()).toMatchObject({ value: 'old-private-key' });
     await savePanelConnectionConfig({ panelUrl: 'https://another-panel.example' });
     expect(await getPanelConnectionConfig()).toMatchObject({ panelUrl: 'https://another-panel.example', panelApiKey: '' });
+  });
+});
+
+describe('role-bound sync settings', () => {
+  it('saves distinct private host tokens without replacing the legacy single-host token', async () => {
+    const xsToken = 'x'.repeat(40); const backupToken = 'b'.repeat(40); const legacy = 'old-single-host-token';
+    await saveBotConnectionConfig({ botSyncToken: legacy, botXsSyncToken: xsToken, botBotkeepSyncToken: backupToken });
+    expect(await getBotConnectionConfig()).toMatchObject({ botSyncToken: legacy, botXsSyncToken: xsToken, botBotkeepSyncToken: backupToken });
+    await saveBotConnectionConfig({ botEnabledForMembers: false });
+    expect(await getBotConnectionConfig()).toMatchObject({ botSyncToken: legacy, botXsSyncToken: xsToken, botBotkeepSyncToken: backupToken, botEnabledForMembers: false });
+  });
+
+  it('can explicitly clear a host token even if the environment supplies a default', async () => {
+    vi.stubEnv('BOT_XS_SYNC_TOKEN', 'x'.repeat(40));
+    expect((await getBotConnectionConfig()).botXsSyncToken).toBe('x'.repeat(40));
+    await saveBotConnectionConfig({ botXsSyncToken: '' });
+    expect((await getBotConnectionConfig()).botXsSyncToken).toBe('');
+  });
+
+  it('does not overwrite a host token when independent settings are saved concurrently', async () => {
+    await Promise.all([
+      saveBotConnectionConfig({ botXsSyncToken: 'x'.repeat(40) }),
+      saveBotConnectionConfig({ botBotkeepSyncToken: 'b'.repeat(40) }),
+      saveBotConnectionConfig({ botEnabledForMembers: false }),
+    ]);
+    expect(await getBotConnectionConfig()).toMatchObject({ botXsSyncToken: 'x'.repeat(40), botBotkeepSyncToken: 'b'.repeat(40), botEnabledForMembers: false });
+  });
+
+  it('rejects short, overlapping, and environment-derived legacy credentials', async () => {
+    const token = 'a'.repeat(40);
+    await expect(saveBotConnectionConfig({ botXsSyncToken: 'short' })).rejects.toThrow(/32/);
+    await expect(saveBotConnectionConfig({ botXsSyncToken: token, botBotkeepSyncToken: token })).rejects.toThrow(/different/);
+    await expect(saveBotConnectionConfig({ botSyncToken: token, botXsSyncToken: token })).rejects.toThrow(/different/);
+    vi.stubEnv('ADMIN_DASHBOARD_TOKEN', token);
+    await expect(saveBotConnectionConfig({ botBotkeepSyncToken: token })).rejects.toThrow(/different/);
+    expect((await getBotConnectionConfig()).botXsSyncToken).toBe('');
   });
 });
 

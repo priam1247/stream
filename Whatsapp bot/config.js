@@ -159,9 +159,9 @@ module.exports = {
   pairNumber: env.PAIR_NUMBER || '',
 
   // ─── Dashboard control API ───────────────────────────────────────────────
-  // The web dashboard (Cloudflare Pages app) links to this bot with a URL and
-  // a shared token. The bot then serves /admin/api/{status,users,pair} from
-  // this port, and optionally pulls the member whitelist from the dashboard.
+  // The dashboard can use an outbound sync or, in single-host mode, a direct
+  // administrative API. Coordinated XS/Botkeep failover uses distinct host
+  // sync tokens and disables the direct API.
   //
   //   ADMIN_DASHBOARD_TOKEN  same value saved in the dashboard's Admin Console
   //   ADMIN_API_PORT         port to listen on inside the panel (default 3000)

@@ -211,6 +211,66 @@ describe('owner control room', () => {
     expect(screen.getByText(/Pausing stops new requests, not approved numbers/)).toBeTruthy();
   });
 
+  it('creates separate private sync credentials for the primary and backup', async () => {
+    const fetchMock = mockApi();
+    const original = fetchMock.getMockImplementation()!;
+    let saved: Record<string, unknown> | null = null;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/api/admin/settings') { saved = JSON.parse(String(init?.body)); return reply({ ok: true, probe: { reachable: false } }); }
+      return original(input, init);
+    });
+    render(<AdminConsole />);
+    await screen.findByRole('heading', { name: 'Overview' });
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Owner sections' })).getByRole('button', { name: 'WhatsApp' }));
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Sync' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Generate XS primary sync token' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Generate Botkeep backup sync token' }));
+    const xs = (screen.getByLabelText('XS primary sync token') as HTMLInputElement).value;
+    const backup = (screen.getByLabelText('Botkeep backup sync token') as HTMLInputElement).value;
+    expect(xs).toMatch(/^[a-f0-9]{64}$/); expect(backup).toMatch(/^[a-f0-9]{64}$/); expect(xs).not.toBe(backup);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Sync' }));
+    await waitFor(() => expect(saved).toMatchObject({ botXsSyncToken: xs, botBotkeepSyncToken: backup }));
+  });
+
+  it('confirms a host-token change before interrupting coordinated hosts', async () => {
+    const fetchMock = mockApi();
+    const original = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => String(input) === '/api/admin/status'
+      ? reply({ ...overview, hasXsSyncToken: true, hasBotkeepSyncToken: true,
+        failover: { enabled: true, activeRole: 'xs', epoch: 1, issue: null, xs: null, botkeep: null } })
+      : original(input, init));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<AdminConsole />);
+    await screen.findByRole('heading', { name: 'Overview' });
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Owner sections' })).getByRole('button', { name: 'WhatsApp' }));
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Sync' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Generate XS primary sync token' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Sync' }));
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/admin/settings')).toBe(false);
+  });
+
+  it('does not submit a stale direct URL when failover is active', async () => {
+    const fetchMock = mockApi();
+    const original = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) => String(input) === '/api/admin/status'
+      ? reply({ ...overview, botApiUrl: 'https://old.example',
+        failover: { enabled: true, activeRole: 'xs', epoch: 1, issue: null, xs: null, botkeep: null } })
+      : original(input, init));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<AdminConsole />);
+    await screen.findByRole('heading', { name: 'Overview' });
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Owner sections' })).getByRole('button', { name: 'WhatsApp' }));
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Sync' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Generate XS primary sync token' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Sync' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url) === '/api/admin/settings')).toBe(true));
+    const call = fetchMock.mock.calls.find(([url]) => String(url) === '/api/admin/settings')!;
+    const body = JSON.parse(String((call[1] as RequestInit).body));
+    expect(body.botApiUrl).toBe('');
+    expect(body).not.toHaveProperty('botAdminToken');
+  });
+
   it('shows XS as primary and Botkeep as standby from their individual heartbeats', async () => {
     const fetchMock = mockApi();
     const original = fetchMock.getMockImplementation()!;

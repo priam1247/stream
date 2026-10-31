@@ -69,6 +69,9 @@ export async function POST(req: NextRequest) {
     if ((raw.role !== 'xs' && raw.role !== 'botkeep') || typeof raw.instance !== 'string' || !/^[a-f0-9]{32}$/.test(raw.instance)) {
       return NextResponse.json({ error: 'Invalid failover identity.' }, { status: 400 });
     }
+    if (auth.credentialRole !== raw.role) {
+      return NextResponse.json({ error: 'This service credential is not authorized for that host role.' }, { status: 403 });
+    }
     // The generic sync endpoint retains bearer-only compatibility for legacy
     // single-node installations; failover messages must always be signed.
     if (!req.headers.get('x-bot-timestamp') || !req.headers.get('x-bot-nonce') || !req.headers.get('x-bot-signature')) {
@@ -80,16 +83,21 @@ export async function POST(req: NextRequest) {
       // Fail over the owner's primary pairing device, not merely any one of
       // the optional linked member sessions that happen to remain online.
       lease = await claimFailoverLease(identity, { connected: raw.primaryConnected === true,
-        accountNumber: typeof body.botNumber === 'string' ? body.botNumber.replace(/\D/g, '') : '',
+        accountNumber: typeof raw.accountNumber === 'string' && /^\d{7,15}$/.test(raw.accountNumber) ? raw.accountNumber : '',
         deviceFingerprint: typeof raw.deviceFingerprint === 'string' ? raw.deviceFingerprint : '',
         version: typeof body.version === 'string' ? body.version : '' });
     } catch {
       return NextResponse.json({ error: 'Shared failover storage is unavailable.' }, { status: 503 });
     }
     if (lease.granted && lease.epoch) fence = { ...identity, epoch: lease.epoch };
-  } else if ((await getFailoverStatus()).enabled) {
-    // Old versions cannot be trusted to stop serving after a lease expires.
-    return NextResponse.json({ error: 'This dashboard requires the updated failover service.' }, { status: 409 });
+  } else {
+    if (auth.credentialRole !== 'legacy') {
+      return NextResponse.json({ error: 'Host credentials require a failover identity.' }, { status: 403 });
+    }
+    if ((await getFailoverStatus()).enabled) {
+      // Old versions cannot be trusted to stop serving after a lease expires.
+      return NextResponse.json({ error: 'This dashboard requires the updated failover service.' }, { status: 409 });
+    }
   }
   const mayServe = !lease || Boolean(fence);
 

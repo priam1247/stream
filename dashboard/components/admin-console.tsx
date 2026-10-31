@@ -126,6 +126,11 @@ export function AdminConsole() {
   const [botUrlInput, setBotUrlInput] = useState('');
   const [botTokenInput, setBotTokenInput] = useState('');
   const [botSyncTokenInput, setBotSyncTokenInput] = useState('');
+  const [xsSyncTokenInput, setXsSyncTokenInput] = useState('');
+  const [botkeepSyncTokenInput, setBotkeepSyncTokenInput] = useState('');
+  const [xsTokenChanged, setXsTokenChanged] = useState(false);
+  const [botkeepTokenChanged, setBotkeepTokenChanged] = useState(false);
+  const [visibleHostToken, setVisibleHostToken] = useState<'xs' | 'botkeep' | null>(null);
   const [showBotToken, setShowBotToken] = useState(false);
   const [savingBot, setSavingBot] = useState(false);
 
@@ -172,6 +177,10 @@ export function AdminConsole() {
           setBotUrlInput(json.botApiUrl || '');
           setBotTokenInput(json.hasBotToken ? '••••••••' : '');
           setBotSyncTokenInput(json.hasBotSyncToken ? '••••••••' : '');
+          setXsSyncTokenInput(json.hasXsSyncToken ? '••••••••' : '');
+          setBotkeepSyncTokenInput(json.hasBotkeepSyncToken ? '••••••••' : '');
+          setXsTokenChanged(false);
+          setBotkeepTokenChanged(false);
           setPanelUrlInput(json.panelUrl || 'https://panel.xsystemshosting.com');
           setPanelServerIdInput(json.panelServerId || '');
           setPanelKeyInput(json.hasPanelApiKey ? '••••••••' : '');
@@ -390,21 +399,45 @@ export function AdminConsole() {
     }
   };
 
+  const generateHostToken = (role: 'xs' | 'botkeep') => {
+    try {
+      const bytes = window.crypto.getRandomValues(new Uint8Array(32));
+      const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+      if (role === 'xs') { setXsSyncTokenInput(token); setXsTokenChanged(true); }
+      else { setBotkeepSyncTokenInput(token); setBotkeepTokenChanged(true); }
+      setNotice({ text: 'Token created. Copy it privately to its matching host, then save.' });
+    } catch {
+      setNotice({ text: 'Unable to create a secure token in this browser.', bad: true });
+    }
+  };
+
+  const copyHostToken = async (token: string) => {
+    if (!token || token === '••••••••') return;
+    try { await navigator.clipboard.writeText(token); setNotice({ text: 'Token copied. Paste it only into its matching host.' }); }
+    catch { setNotice({ text: 'Copy failed. Show the token and copy it manually.', bad: true }); }
+  };
+
   const handleSaveBotConfig = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (data.failover?.enabled && (xsTokenChanged || botkeepTokenChanged) &&
+        !window.confirm('Changing a host token pauses that host until its matching setting is updated. Continue?')) return;
     setSavingBot(true);
     try {
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({
-          botApiUrl: botUrlInput.trim(),
-          botAdminToken: botTokenInput.trim(),
+          botApiUrl: data.failover?.enabled ? '' : botUrlInput.trim(),
+          ...(data.failover?.enabled ? {} : { botAdminToken: botTokenInput.trim() }),
           botSyncToken: botSyncTokenInput.trim(),
+          ...(xsTokenChanged ? { botXsSyncToken: xsSyncTokenInput.trim() } : {}),
+          ...(botkeepTokenChanged ? { botBotkeepSyncToken: botkeepSyncTokenInput.trim() } : {}),
         }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || 'Failed to save sync settings');
+      setXsTokenChanged(false);
+      setBotkeepTokenChanged(false);
 
       await loadOverview(true, false);
       if (json.probe?.reachable) {
@@ -1106,6 +1139,7 @@ export function AdminConsole() {
                     >
                       BOT_SYNC_TOKEN
                     </label>
+                    <p className="mb-1 text-[11px] text-slate-500">Single-host mode only</p>
                     <div className="relative">
                       <input
                         id="admin-bot-sync-token"
@@ -1128,6 +1162,30 @@ export function AdminConsole() {
                         )}
                       </button>
                     </div>
+                  </div>
+
+                  <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-xs font-semibold text-slate-700">Two-host failover</p>
+                    <p className="text-xs leading-5 text-slate-500">Use a different private token for each host. The single-host token above cannot authorize either one. Changing a saved token pauses that host until updated.</p>
+                    {([
+                      { role: 'xs' as const, label: 'XS primary sync token', value: xsSyncTokenInput, setValue: setXsSyncTokenInput, setChanged: setXsTokenChanged },
+                      { role: 'botkeep' as const, label: 'Botkeep backup sync token', value: botkeepSyncTokenInput, setValue: setBotkeepSyncTokenInput, setChanged: setBotkeepTokenChanged },
+                    ]).map(({ role, label, value, setValue, setChanged }) => (
+                      <div key={role} className="min-w-0">
+                        <label htmlFor={`admin-${role}-sync-token`} className="mb-1 block text-[11px] font-semibold text-slate-600">{label}</label>
+                        <div className="flex gap-1.5">
+                          <input id={`admin-${role}-sync-token`} type={visibleHostToken === role ? 'text' : 'password'} autoComplete="new-password" maxLength={512}
+                            value={value} disabled={savingBot} onChange={(e) => { setValue(e.target.value); setChanged(true); }}
+                            placeholder="Not configured" className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none" />
+                          <button type="button" aria-label={`${visibleHostToken === role ? 'Hide' : 'Show'} ${label}`} onClick={() => setVisibleHostToken((current) => current === role ? null : role)}
+                            className="rounded-xl border border-slate-300 bg-white px-2 text-slate-500">{visibleHostToken === role ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button>
+                          <button type="button" disabled={savingBot} aria-label={`Generate ${label}`} onClick={() => generateHostToken(role)}
+                            className="rounded-xl border border-slate-300 bg-white px-2.5 text-xs font-semibold text-slate-700 disabled:opacity-50">Generate</button>
+                          <button type="button" disabled={savingBot || !value || value === '••••••••'} aria-label={`Copy ${label}`} onClick={() => void copyHostToken(value)}
+                            className="rounded-xl border border-slate-300 bg-white px-2.5 text-xs font-semibold text-slate-700 disabled:opacity-50">Copy</button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
 
                   {data.failover?.enabled ? <p className="text-xs leading-5 text-slate-500">Failover uses signed outbound sync on both hosts; direct connections are disabled.</p> : <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
