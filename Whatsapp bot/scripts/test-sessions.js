@@ -558,3 +558,85 @@ test('a socket end that hangs does not indefinitely block shutdown of other sess
   assert.equal(primary.ended, true);
   release();
 });
+
+test('a post-pair disconnect keeps Node alive until the WhatsApp reconnect runs', (t) => {
+  const { spawnSync } = require('node:child_process');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-reconnect-liveness-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = `
+    const { EventEmitter } = require('node:events');
+    const { createSessionManager } = require(${JSON.stringify(require.resolve('../utils/sessionManager'))});
+    let sockets = 0;
+    const manager = createSessionManager({
+      sessionDir: process.argv[1],
+      pairNumber: '12345678901',
+      loadAuthState: async () => ({ state: { creds: { registered: false } }, saveCreds: async () => {} }),
+      getVersion: async () => [2, 0, 0],
+      makeSocket: () => {
+        const sock = { ev: new EventEmitter(), requestPairingCode: async () => 'fixture-code', end: async () => {} };
+        if (++sockets === 1) setImmediate(() => {
+          sock.ev.emit('connection.update', { qr: 'fixture-ready' });
+          setImmediate(() => sock.ev.emit('connection.update', {
+            connection: 'close', lastDisconnect: { error: { message: 'private-disconnect-fixture', output: { statusCode: 515 } } },
+          }));
+        });
+        else setImmediate(async () => { console.log('reconnected'); await manager.stop(); });
+        return sock;
+      },
+      onConsoleCode: () => console.log('pairing-code-issued'),
+      reconnectBaseMs: 30, reconnectMaxMs: 30, loggedOutCode: 401,
+      log: { warn: (msg) => console.log(msg), error: (msg) => console.error(msg) },
+    });
+    manager.start().catch((error) => { console.error(error.message); process.exitCode = 1; });
+  `;
+  const child = spawnSync(process.execPath, ['-e', source, root], {
+    cwd: root, env: { PATH: process.env.PATH, HOME: root }, encoding: 'utf8', timeout: 3000,
+  });
+  assert.ifError(child.error);
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /pairing-code-issued/);
+  assert.match(child.stdout, /status 515.*retrying/i);
+  assert.doesNotMatch(child.stdout + child.stderr, /private-disconnect-fixture|fixture-code/);
+  assert.match(child.stdout, /reconnected/, 'Node exited cleanly before the scheduled retry ran');
+});
+
+test('stopping a pending reconnect releases its process handle', (t) => {
+  const { spawnSync } = require('node:child_process');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-reconnect-stop-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = `
+    const { createReconnector } = require(${JSON.stringify(require.resolve('../utils/reconnect'))});
+    const reconnect = createReconnector({ start: () => console.log('unexpected retry'), baseMs: 60000 });
+    reconnect.schedule();
+    reconnect.stop();
+    console.log('stopped');
+  `;
+  const child = spawnSync(process.execPath, ['-e', source], {
+    cwd: root, env: { PATH: process.env.PATH, HOME: root }, encoding: 'utf8', timeout: 2000,
+  });
+  assert.ifError(child.error);
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /stopped/);
+  assert.doesNotMatch(child.stdout, /unexpected retry/);
+});
+
+test('disconnect diagnostics omit raw errors and coalesce duplicate retry notices', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-disconnect-log-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const warnings = [];
+  const fx = fixture(root, {
+    reconnectBaseMs: 500, reconnectMaxMs: 500,
+    log: { warn: (message) => warnings.push(message), error() {}, log() {} },
+  });
+  t.after(() => fx.manager.stop());
+  await fx.manager.start();
+  const socket = fx.created[0];
+  const update = { connection: 'close', lastDisconnect: { error: {
+    message: 'private-disconnect-fixture', output: { statusCode: 'private-status-fixture' },
+  } } };
+  socket.ev.emit('connection.update', update);
+  socket.ev.emit('connection.update', update);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /status unknown.*retrying in 500ms/i);
+  assert.doesNotMatch(warnings[0], /private-disconnect-fixture|private-status-fixture/);
+});

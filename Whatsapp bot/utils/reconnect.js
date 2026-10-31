@@ -68,7 +68,8 @@ function createReconnector({
         if (!stopped) schedule();
       }
     }, delayMs);
-    timer?.unref?.();
+    // A pending reconnect is essential work. Keep Node alive until it fires;
+    // reset() and stop() cancel the timer during normal shutdown.
     return delayMs;
   };
 

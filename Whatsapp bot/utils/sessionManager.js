@@ -277,7 +277,12 @@ function createSessionManager(opts) {
             settlePair(entry, Object.assign(new Error('WhatsApp logged out. Request a new linking code.'), { statusCode: 409 }));
             log.warn('A WhatsApp session was logged out. Its credentials were preserved.');
           } else {
-            entry.reconnector.schedule();
+            const delay = entry.reconnector.schedule();
+            if (delay !== false) {
+              const code = Number.isInteger(statusCode) ? statusCode : 'unknown';
+              // Do not log the raw disconnect object: it can contain session details.
+              log.warn(`WhatsApp connection closed (status ${code}); retrying in ${delay}ms.`);
+            }
           }
           notify();
         }

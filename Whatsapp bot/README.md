@@ -76,19 +76,26 @@ whole playlists. Dashboard command switches apply to
 individual commands, not whole websites: turning off `.bilibili` for members
 does not stop `.dl` accepting a Bilibili URL.
 
-For a YouTube access check, the owner can run `.ytdl update` and then
-`.ytdl test <video link>`. The test checks metadata or URL resolution only; it is
-not a successful media download. Try `.ytv <video link>` or `.song <video link>`
-to check an actual download from the deployed host. The bot uses Node and the
-installed or official yt-dlp EJS component where supported. A fresh export of
+For a YouTube access check, use `.ytdl` to see the installed version and whether
+OAuth or cookies are configured; `.ytdl update` can update an old binary.
+`.ytdl test <video link>` checks metadata or URL resolution only, not a media
+download. Try `.ytv <video link>` or `.song <video link>` to check an actual
+download from the deployed host. A successful update or metadata test does not
+mean YouTube will accept a download. The bot uses Node and the installed or
+official yt-dlp EJS component where supported.
+
+The owner can try `.ytlogin` in their own private WhatsApp chat and follow its
+device-authorization prompt. OAuth is used by the local Innertube fallback, not
+by yt-dlp, and login or playback may still fail. Alternatively, a fresh export of
 the owner's own Netscape `cookies.txt` may help: upload it privately to the host
 and set `YOUTUBE_COOKIES_FILE`, or attach it to the owner-only `.cookies set`
-command in a private chat. Cookies can expire, and even valid cookies cannot
-guarantee that YouTube will accept a hosting IP. Treat the file as a password;
-never commit it or send it to support or anyone else. Inline cookies take priority over
-`.cookies set`, which takes priority over `YOUTUBE_COOKIES_FILE`. Check `.ytdl`
-for the active source if a different file is being used. For export guidance see
-the [yt-dlp FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp).
+command in the owner's private chat. Cookies can expire, and even valid cookies
+cannot guarantee that YouTube will accept a hosting IP. Treat the file as a
+password; never commit it or send it to support or anyone else. Inline cookies
+take priority over `.cookies set`, which takes priority over
+`YOUTUBE_COOKIES_FILE`. Check `.ytdl` for the active source if a different file
+is being used. For export guidance see the
+[yt-dlp FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp).
 
 If local methods fail, the existing remote fallbacks may receive the video URL;
 their availability is independent of the bot. TLS certificates are verified:
@@ -109,7 +116,7 @@ RCLONE_PATH=bot/uploads    folder inside that remote
 DRM-protected services are not supported.
 
 Owner/admin commands (hidden from non-owners in `.menu` and error hints):
-`.status` (alias `.update`), `.restart`, `.broadcast`, `.on`, `.off`, `.allow`, `.disallow`, `.listusers`, `.cookies`, `.ytdl` (`status` | `update` | `repair` | `proxy` | `test`), and `.refreshpapers`.
+`.status` (alias `.update`), `.restart`, `.broadcast`, `.on`, `.off`, `.allow`, `.disallow`, `.listusers`, `.cookies`, `.ytlogin`, `.ytdl` (`status` | `update` | `repair` | `proxy` | `test`), and `.refreshpapers`.
 
 ## Bot folder layout
 
@@ -159,6 +166,12 @@ Optionally run `npm run ytdlp:install` on a host that needs yt-dlp installed.
 The entry point uses this folder as its working directory, including when it is
 started from another directory. Do not commit or share `.env` or session files.
 
+For the past-paper vault, a Drime `401` means the service rejected authentication;
+check `DRIME_API_TOKEN` and `DRIME_BASE_URL` in private host settings, then use
+owner-only `.refreshpapers` to retry. A `403` instead calls for checking folder,
+workspace and token permissions. Never paste the token into chat or support logs.
+A saved vault snapshot can be stale while refresh is failing.
+
 For HLS streams, N_m3u8DL-RE or ffmpeg is recommended. The pure-Node fallback
 handles completed, supported playlists only; it refuses separate audio,
 byte-range/changing-map streams and oversized playlists or segments rather than
@@ -178,6 +191,9 @@ enter the code. A code being issued does not mean that linking is complete;
 check the individual connection status after entering it. Existing linked
 accounts are not replaced by the request. By default, up to 20 additional
 accounts can be linked; adjust `MAX_LINKED_ACCOUNTS` if necessary (maximum 100).
+Temporary pairing codes are sensitive; do not share them or post unredacted logs.
+The service logs a numeric disconnect status and retry delay without session
+contents. A logged-out session needs a new link rather than automatic retries.
 
 Each additional account has independent credentials under
 `<SESSION_NAME>/linked/`. Keep the entire session directory on persistent,
@@ -195,9 +211,13 @@ files are ignored, but a custom directory can contain additional private files.
 
 ## Encrypted session recovery
 
-Session files are sensitive credentials. Recovery is optional and **does not**
-guarantee WhatsApp will keep accepting a device. For Vercel, configure the portal's
-Cloudflare D1 variables first and confirm the administrator status reports D1.
+Session files are sensitive credentials. When encrypted recovery is disabled,
+the bot does not upload or restore snapshots; do not assume there is a current
+dashboard backup. Preserve the entire local session directory and a separate
+secure backup before changing hosts or files. Recovery is optional and **does
+not** guarantee WhatsApp will keep accepting a device. For Vercel, configure
+the portal's Cloudflare D1 variables first and confirm the administrator status
+reports D1.
 Update the dashboard and the bot together. In the bot host's private Environment,
 set the existing `DASHBOARD_URL`, `BOT_SYNC_TOKEN`, and `SESSION_BACKUP_KEY`.
 Generate the key privately once, for example:

@@ -1304,3 +1304,68 @@ test('aggregate error redaction caps total work even for wide repeated graphs', 
   assert.match(output, /truncated/i);
   assert.ok(output.length < 100_000, 'repeated branches must not expand exponentially');
 });
+
+test('Drime sends one Bearer prefix and gives safe, owner-only authentication guidance', async (t) => {
+  const config = botRequire('../config');
+  const originalDrime = { ...config.drime };
+  const oldError = console.error;
+  const logged = [];
+  console.error = (...args) => logged.push(args.map(String).join(' '));
+  let responseStatus = 401;
+  const requests = [];
+  const secret = 'private-fixture-drime-token';
+  const server = http.createServer((req, res) => {
+    requests.push(req.headers.authorization);
+    res.writeHead(responseStatus, { 'content-type': 'application/json' });
+    // A server can echo the rejected value; logs and messages must not expose it.
+    res.end(JSON.stringify({ message: `rejected ${secret}` }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    console.error = oldError;
+    Object.assign(config.drime, originalDrime);
+    await new Promise((resolve) => server.close(resolve));
+  });
+  Object.assign(config.drime, {
+    baseUrl: `http://127.0.0.1:${server.address().port}`,
+    apiToken: `  Bearer ${secret}  `,
+    papersFolderId: '1', papersFolderHash: 'test', workspaceId: '0',
+  });
+  const [paper, count, refresh] = botRequire('../commands/general/paper');
+  const sock = { sendMessage: async () => ({}) };
+  const msg = { key: { remoteJid: 'test@s.whatsapp.net' } };
+  const execute = async (command, isOwner, args = []) => {
+    const replies = [];
+    await command.execute(sock, msg, args, {
+      from: msg.key.remoteJid, isOwner,
+      status: async () => ({ update: async (text) => replies.push(text) }),
+      reply: async (text) => replies.push(text),
+    });
+    return replies.join('\n');
+  };
+
+  const ownerCount = await execute(count, true);
+  const memberCount = await execute(count, false);
+  const ownerRefresh = await execute(refresh, true);
+  const ownerPaper = await execute(paper, true, ['COMP']);
+  const memberPaper = await execute(paper, false, ['COMP']);
+  assert.equal(requests.length, 5);
+  assert.ok(requests.every((header) => header === `Bearer ${secret}`), 'authorization must not contain a doubled prefix or outer whitespace');
+  for (const text of [ownerCount, ownerRefresh, ownerPaper]) assert.match(text, /authentication.*DRIME_API_TOKEN/i);
+  for (const text of [memberCount, memberPaper]) assert.doesNotMatch(text, /DRIME_API_TOKEN|DRIME_BASE_URL|authentication/i);
+  assert.doesNotMatch(logged.join('\n') + ownerCount + memberCount + ownerRefresh + ownerPaper + memberPaper, /private-fixture-drime-token/);
+
+  config.drime.apiToken = secret; // A bare token remains supported.
+  responseStatus = 403;
+  const forbidden = await execute(count, true);
+  assert.equal(requests.at(-1), `Bearer ${secret}`);
+  assert.match(forbidden, /permission|access/i, '403 must not be described as an expired token');
+  responseStatus = 500;
+  await execute(count, true);
+  assert.doesNotMatch(forbidden + logged.join('\n'), /private-fixture-drime-token/);
+
+  config.drime.apiToken = '  Bearer  ';
+  const beforeEmpty = requests.length;
+  assert.match(await execute(count, true), /not configured/i);
+  assert.equal(requests.length, beforeEmpty, 'an empty Bearer value must not be sent');
+});

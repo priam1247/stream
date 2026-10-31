@@ -135,16 +135,19 @@ for (const [signal, failBackup] of [['SIGTERM', false], ['SIGINT', false], ['SIG
         if (parent?.filename.endsWith('/index.js') && Object.hasOwn(fake, request)) return fake[request];
         return original.apply(this, arguments);
       };
-      setInterval(() => {}, 10000);
     `);
     const child = spawn(process.execPath, ['--require', path.join(dir, 'preload.cjs'), path.join(dir, 'index.js')], {
       cwd: dir, env: { PATH: process.env.PATH, HOME: dir, NODE_ENV: 'production', TEST_MARKER: marker, ...(failBackup ? { TEST_FAIL_BACKUP: failBackup } : {}) },
     });
     t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); fs.rmSync(dir, { recursive: true, force: true }); });
-    let output = ''; let signalled = false;
+    let output = ''; let signalled = false; let signalTimer;
     child.stdout.on('data', (data) => {
       output += data;
-      if (!signalled && output.includes('SERVICE_READY')) { signalled = true; child.kill(signal); }
+      // All fake sockets and dashboard components are deliberately idle: the
+      // real entry point must remain available even with no external handles.
+      if (!signalTimer && output.includes('SERVICE_READY')) {
+        signalTimer = setTimeout(() => { signalled = child.kill(signal); }, 100);
+      }
     });
     child.stderr.on('data', (data) => { output += data; });
     const result = await new Promise((resolve, reject) => {
@@ -152,7 +155,8 @@ for (const [signal, failBackup] of [['SIGTERM', false], ['SIGINT', false], ['SIG
       child.once('error', (err) => { clearTimeout(timer); reject(err); });
       child.once('exit', (code, exitSignal) => { clearTimeout(timer); resolve({ code, exitSignal }); });
     });
-    assert.equal(signalled, true, output);
+    clearTimeout(signalTimer);
+    assert.equal(signalled, true, `service exited before ${signal} could be sent: ${output}`);
     assert.deepEqual(result, { code: 0, exitSignal: null });
     assert.doesNotMatch(output, /Cannot read properties of undefined/);
     if (failBackup) {
