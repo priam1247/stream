@@ -1243,3 +1243,64 @@ test('offline bot fixture copies source without copying private runtime data', (
     assert.equal(fs.readFileSync(path.join(source, relative), 'utf8'), 'PRIVATE', `${relative} must stay untouched`);
   }
 });
+
+test('redacted error logs retain safe aggregate causes and statuses without request metadata', () => {
+  const util = require('node:util');
+  const { redactArg, safeText } = botRequire('../utils/safeLog');
+  const leaf = Object.assign(new Error('disk denied token=secret-cause-fixture'), {
+    code: 'EACCES', status: 403, statusCode: 503,
+    config: { headers: { Authorization: 'Bearer secret-request-fixture' }, password: 'secret-password-fixture' },
+  });
+  const objectCause = { message: 'filesystem refused token=secret-object-fixture', code: 'EIO', statusCode: 507, request: { password: 'secret-object-request' } };
+  objectCause.cause = objectCause;
+  leaf.cause = objectCause;
+  const wrapped = new Error('backup shutdown failed', { cause: leaf });
+  const circular = new Error('self-referencing'); circular.cause = circular;
+  const aggregate = new AggregateError([wrapped, circular], 'services did not stop');
+  const sanitized = redactArg(aggregate);
+  assert.ok(sanitized instanceof AggregateError);
+  assert.equal(sanitized.errors[0].message, 'backup shutdown failed');
+  assert.equal(sanitized.errors[0].cause.code, 'EACCES');
+  assert.equal(sanitized.errors[0].cause.status, 403);
+  assert.equal(sanitized.errors[0].cause.statusCode, 503);
+  assert.equal(sanitized.errors[0].cause.config, undefined, 'arbitrary request metadata must not be copied');
+  assert.equal(sanitized.errors[0].cause.cause.code, 'EIO');
+  assert.equal(sanitized.errors[0].cause.cause.statusCode, 507);
+  assert.equal(sanitized.errors[0].cause.cause.request, undefined);
+  assert.match(String(sanitized.errors[0].cause.cause.cause), /circular/i);
+  assert.match(String(sanitized.errors[1].cause), /circular/i);
+  const lines = []; const originalError = console.error;
+  try {
+    console.error = (...args) => lines.push(util.format(...args));
+    botRequire('../utils/logger')('error-test').warn(aggregate);
+  } finally { console.error = originalError; }
+  const output = `${util.inspect(sanitized, { depth: 8 })}\n${safeText(aggregate)}\n${lines.join('\n')}`;
+  assert.match(lines.join('\n'), /disk denied/);
+  assert.match(lines.join('\n'), /statusCode=503/);
+  assert.match(output, /backup shutdown failed/);
+  assert.match(output, /disk denied/);
+  for (const secret of ['secret-cause-fixture', 'secret-request-fixture', 'secret-password-fixture', 'secret-object-fixture', 'secret-object-request']) {
+    assert.equal(output.includes(secret), false, `logged secret: ${secret}`);
+  }
+});
+
+test('redacted error causes are bounded even when very deeply nested', () => {
+  const { redactArg } = botRequire('../utils/safeLog');
+  const root = new Error('root'); let node = root;
+  for (let i = 0; i < 200; i++) { node.cause = new Error(`cause-${i}`); node = node.cause; }
+  const safe = redactArg(root);
+  let depth = 0; let value = safe;
+  while (value instanceof Error && value.cause) { depth++; value = value.cause; }
+  assert.ok(depth > 0 && depth <= 12);
+  assert.match(String(value), /truncat|depth/i);
+});
+
+test('aggregate error redaction caps total work even for wide repeated graphs', () => {
+  const { redactArg, safeText } = botRequire('../utils/safeLog');
+  let graph = new Error('leaf');
+  for (let i = 0; i < 7; i++) graph = new AggregateError(Array(20).fill(graph), `level-${i}`);
+  const result = redactArg(graph);
+  const output = safeText(result);
+  assert.match(output, /truncated/i);
+  assert.ok(output.length < 100_000, 'repeated branches must not expand exponentially');
+});

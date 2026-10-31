@@ -769,3 +769,32 @@ test('YouTube OAuth clear reports a failure if a local recovery copy cannot be r
   assert.equal(fs.existsSync(authFile), false);
   assert.equal(fs.existsSync(`${authFile}.bak`), true, 'the operation must not claim full success');
 });
+
+test('ytlogin off tells the owner when local credential cleanup is incomplete', async (t) => {
+  const authFile = path.join(TMP, 'yt-clear-denied', 'tokens.json');
+  process.env.YT_AUTH_FILE = authFile;
+  t.after(() => { delete process.env.YT_AUTH_FILE; });
+  const authStore = botRequire('../utils/ytAuth');
+  const command = botRequire('../commands/admin/ytlogin');
+  authStore.saveYtCreds({ refresh_token: 'oauth-cleanup-secret-fixture' });
+  authStore.saveYtCreds({ refresh_token: 'oauth-cleanup-secret-fixture' });
+  const originalUnlink = fs.unlinkSync;
+  const denied = `${authFile}.bak`;
+  const replies = [];
+  fs.unlinkSync = (target, ...args) => {
+    if (target === denied) throw Object.assign(new Error(`permission denied for ${target}`), { code: 'EACCES' });
+    return originalUnlink(target, ...args);
+  };
+  try {
+    await command.execute(null, null, ['off'], { reply: async (text) => { replies.push(text); } });
+  } finally { fs.unlinkSync = originalUnlink; }
+  assert.equal(fs.existsSync(authFile), false, 'successfully removed copies should stay removed');
+  assert.equal(fs.existsSync(denied), true, 'failed copy must not be reported as cleared');
+  assert.equal(replies.length, 1);
+  assert.match(replies[0], /incomplete|could not|failed/i);
+  assert.match(replies[0], /credential|saved|local/i);
+  assert.match(replies[0], /retry|permissions|administrator/i);
+  assert.doesNotMatch(replies[0], /oauth-cleanup-secret-fixture/);
+  assert.equal(replies[0].includes(authFile), false, 'do not disclose server paths to chat');
+  assert.doesNotMatch(replies[0], /OAuth cleared\./i);
+});

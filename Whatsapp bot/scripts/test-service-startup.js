@@ -88,8 +88,8 @@ test('importing cleanup does not take over process signal handling', () => {
   assert.equal(process.listenerCount('SIGINT'), before.int);
 });
 
-for (const signal of ['SIGTERM', 'SIGINT']) {
-  test(`the bot entry point handles ${signal} and flushes session recovery`, async (t) => {
+for (const [signal, failBackup] of [['SIGTERM', false], ['SIGINT', false], ['SIGTERM', true]]) {
+  test(`the bot entry point handles ${signal} and flushes session recovery${failBackup ? ' while reporting a failure' : ''}`, async (t) => {
     const fs = require('node:fs');
     const os = require('node:os');
     const path = require('node:path');
@@ -121,8 +121,8 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
         './utils/jid': { isSystemJid() { return false; } },
         './utils/sessionManager': { createSessionManager: () => ({ start: async () => { mark('sessions-start'); }, stop: async () => { mark('sessions-stop-start'); await new Promise((r) => setTimeout(r, 20)); mark('sessions-stop-done'); }, status: () => ({}) }) },
         './utils/accessControl': { readWL: () => ({ users: [] }) },
-        './utils/sessionBackup': { createSessionBackup: () => ({ restore: async () => {}, wrapAuth() {}, status: () => ({}), stop: async (opts) => { mark('backup-flush:' + opts?.flush); } }) },
-        './utils/dashboardSync': { startDashboardSync: () => ({ enabled: true, stop() { mark('sync-stop'); } }), triggerImmediateSync() {} },
+        './utils/sessionBackup': { createSessionBackup: () => ({ restore: async () => {}, wrapAuth() {}, status: () => ({}), stop: async (opts) => { mark('backup-flush:' + opts?.flush); if (process.env.TEST_FAIL_BACKUP) throw new AggregateError([new Error('snapshot failed', { cause: new Error('storage failure token=secret-shutdown-fixture', { cause: new Error('disk denied') }) })], 'backup flush failed'); } }) },
+        './utils/dashboardSync': { startDashboardSync: () => ({ enabled: true, stop() { mark('sync-stop'); if (process.env.TEST_FAIL_BACKUP) throw new Error('closing session token=secret-filter-fixture'); } }), triggerImmediateSync() {} },
         './utils/adminApi': { startAdminApi: () => { setImmediate(() => { process.emit('unhandledRejection', undefined); process.stdout.write('SERVICE_READY\\n'); }); return { stop: async () => { mark('api-stop'); } }; } },
         './utils/logger': logger,
         './utils/youtubedl': { scheduleAutoUpdate() {}, healthCheck: async () => null, startWatchdog() {} },
@@ -138,7 +138,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
       setInterval(() => {}, 10000);
     `);
     const child = spawn(process.execPath, ['--require', path.join(dir, 'preload.cjs'), path.join(dir, 'index.js')], {
-      cwd: dir, env: { PATH: process.env.PATH, HOME: dir, NODE_ENV: 'production', TEST_MARKER: marker },
+      cwd: dir, env: { PATH: process.env.PATH, HOME: dir, NODE_ENV: 'production', TEST_MARKER: marker, ...(failBackup ? { TEST_FAIL_BACKUP: '1' } : {}) },
     });
     t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); fs.rmSync(dir, { recursive: true, force: true }); });
     let output = ''; let signalled = false;
@@ -155,7 +155,32 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
     assert.equal(signalled, true, output);
     assert.deepEqual(result, { code: 0, exitSignal: null });
     assert.doesNotMatch(output, /Cannot read properties of undefined/);
+    if (failBackup) {
+      assert.match(output, /WhatsApp shutdown was incomplete/i);
+      assert.match(output, /backup shutdown failed/i);
+      assert.match(output, /snapshot failed/i);
+      assert.match(output, /storage failure/i);
+      assert.match(output, /disk denied/i);
+      assert.doesNotMatch(output, /secret-shutdown-fixture|secret-filter-fixture/);
+    }
     const events = fs.readFileSync(marker, 'utf8').trim().split('\n');
     assert.deepEqual(events, ['sessions-start', 'cleanup', 'disk', 'sync-stop', 'api-stop', 'sessions-stop-start', 'sessions-stop-done', 'backup-flush:true', 'telemetry']);
   });
 }
+
+test('shutdown errors identify each failing component and preserve their causes', async () => {
+  const { safeText } = require('../utils/safeLog');
+  const result = await stopSessionServices({
+    sync: { stop: () => { throw new Error('sync offline token=secret-sync-fixture'); } },
+    api: { stop: async () => { throw new Error('API socket close'); } },
+    sessions: { stop: async () => { throw new Error('WhatsApp socket close'); } },
+    backup: { stop: async () => { throw new Error('recovery write failed'); } },
+  }).then(() => null, (error) => error);
+  assert.ok(result instanceof AggregateError);
+  const labels = result.errors.map((error) => error.message).sort();
+  assert.deepEqual(labels, ['Dashboard API shutdown failed', 'Dashboard sync shutdown failed', 'Session backup shutdown failed', 'WhatsApp sessions shutdown failed'].sort());
+  for (const error of result.errors) assert.ok(error.cause instanceof Error);
+  const output = safeText(result);
+  for (const detail of ['sync offline', 'API socket close', 'WhatsApp socket close', 'recovery write failed']) assert.ok(output.includes(detail));
+  assert.doesNotMatch(output, /secret-sync-fixture/);
+});

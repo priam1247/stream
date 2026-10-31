@@ -223,9 +223,16 @@ claims are excluded, and confirmed unlink clears the corresponding ciphertext.
 If a revocation cannot reach the portal, recovery status reports an error and the
 bot persists the revocation locally and retries; do not move hosts until it has
 synchronized. If that host is lost before the revocation reaches D1, the remote
-backup may still be stale; WhatsApp ultimately decides whether it can reconnect. A crash immediately
-following a credential change or a failed/offline sync can leave the last snapshot
-stale. The encrypted payload is limited to 1 MB; oversize sessions report failure.
+backup may still be stale; WhatsApp ultimately decides whether it can reconnect.
+
+If shutdown interrupts a requested unlink, its WhatsApp outcome is unknown. The
+bot retains local credentials and conservatively queues a recovery revocation for
+that session generation so a late logout cannot restore it. Even if the logout
+ultimately fails, that generation must be relinked to enable encrypted recovery
+again. If the portal is unreachable, keep the original host and let its queued
+revocation synchronize before moving or restoring a session. A crash, hard kill,
+or failed/offline sync can still leave the remote snapshot stale. The encrypted
+payload is limited to 1 MB; oversize sessions report failure.
 
 For a move, stop the old instance only after a recent successful snapshot, and
 start **one** updated instance with the same key and private sync token on the new

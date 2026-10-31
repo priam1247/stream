@@ -33,6 +33,9 @@ function createSessionManager(opts) {
   const pairTimeoutMs = Math.max(1, Number(opts.pairTimeoutMs) || 40_000);
   const codeLifetimeMs = Math.max(1, Number(opts.codeLifetimeMs) || 60_000);
   const pendingLifetimeMs = Math.max(codeLifetimeMs, Number(opts.pendingLifetimeMs) || 120_000);
+  // Leave most of the 20-second process shutdown budget for encrypted backup.
+  const unlinkShutdownTimeoutMs = Math.max(1, Math.min(8000, Number(opts.unlinkShutdownTimeoutMs) || 2000));
+  const retirementShutdownTimeoutMs = Math.max(1, Math.min(8000, Number(opts.retirementShutdownTimeoutMs) || 2000));
   const log = opts.log || console;
   const allowed = (number) => {
     try {
@@ -447,11 +450,14 @@ function createSessionManager(opts) {
 
   function unlinkAccount(rawNumber, expectedSessionId) {
     if (stopped) return Promise.reject(Object.assign(new Error('WhatsApp service is stopping.'), { statusCode: 503 }));
-    const key = `${String(rawNumber || '').replace(/\D/g, '')}:${String(expectedSessionId || '')}`;
-    if (unlinks.has(key)) return unlinks.get(key);
+    const number = String(rawNumber || '').replace(/\D/g, '');
+    const attempt = String(expectedSessionId || '');
+    const key = `${number}:${attempt}`;
+    if (unlinks.has(key)) return unlinks.get(key).operation;
     const operation = doUnlinkAccount(rawNumber, expectedSessionId);
-    unlinks.set(key, operation);
-    const forget = () => { if (unlinks.get(key) === operation) unlinks.delete(key); };
+    const item = { number, attempt, operation };
+    unlinks.set(key, item);
+    const forget = () => { if (unlinks.get(key) === item) unlinks.delete(key); };
     void operation.then(forget, forget);
     return operation;
   }
@@ -489,14 +495,45 @@ function createSessionManager(opts) {
     }));
   }
 
+  async function settleWithin(operations, timeoutMs) {
+    if (!operations.length) return [];
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.allSettled(operations),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+
   function stop() {
     if (stopPromise) return stopPromise;
     stopped = true;
     stopPromise = (async () => {
-      // A logout already sent to WhatsApp must settle and record its recovery
-      // revocation before sockets close and the backup controller is flushed.
-      await Promise.allSettled([...unlinks.values()]);
-      await Promise.all([...entries.values()].map((entry) => retire(entry, 'Service stopped')));
+      const errors = [];
+      // Stop accepting new unlinks, but give accepted ones a short chance to
+      // finish normally before retiring sockets and flushing recovery.
+      const completed = await settleWithin([...unlinks.values()].map((item) => item.operation), unlinkShutdownTimeoutMs);
+      if (!completed) {
+        // The server may process logout even if its reply never arrives. Queue a
+        // generation-scoped recovery revocation before backup stops so a late
+        // success cannot resurrect that session. Local credentials are retained;
+        // the unlink itself remains pending and is never reported as successful.
+        for (const { number, attempt } of unlinks.values()) {
+          // This attempt may have been replaced while logout was in flight.
+          // A generation-scoped revocation is safe even after replacement.
+          if (!NUMBER_RE.test(number) || !ATTEMPT_RE.test(attempt)) continue;
+          try { opts.onRevoked?.(`linked:${number}`, attempt); }
+          catch { log.warn('Could not queue recovery revocation for an incomplete WhatsApp unlink.'); }
+        }
+        errors.push(new Error('WhatsApp unlink did not finish before shutdown; its outcome is unknown and recovery revocation was requested. Local credentials were preserved.'));
+      }
+      // Baileys socket.end() is asynchronous too; a stuck close must not consume
+      // the entire process budget and prevent other sessions from backing up.
+      const retired = await settleWithin([...entries.values()].map((entry) => retire(entry, 'Service stopping')), retirementShutdownTimeoutMs);
+      if (!retired) errors.push(new Error('A WhatsApp socket or credential write did not finish before shutdown.'));
+      else for (const result of retired) if (result.status === 'rejected') errors.push(new Error('A WhatsApp session could not be retired.', { cause: result.reason }));
+      if (errors.length) throw new AggregateError(errors, 'WhatsApp session shutdown was incomplete.');
     })();
     return stopPromise;
   }

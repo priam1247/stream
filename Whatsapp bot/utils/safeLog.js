@@ -44,7 +44,7 @@ function safeText(value) {
   if (value === null || value === undefined) return String(value);
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   if (typeof value === 'bigint') return value.toString();
-  if (value instanceof Error) return redactSecrets(`${value.name}: ${value.message}`);
+  if (value instanceof Error) return summarizeError(redactArg(value));
   try {
     const seen = new WeakSet();
     const json = JSON.stringify(value, (key, val) => {
@@ -64,19 +64,79 @@ function safeText(value) {
   }
 }
 
+// Error objects may carry entire HTTP requests. Only copy diagnostics we can
+// safely redact; in particular, never retain config, headers, or response data.
+const MAX_ERROR_DEPTH = 8;
+const MAX_AGGREGATE_ERRORS = 20;
+const MAX_ERROR_NODES = 100;
 function redactArg(arg) {
-  if (typeof arg === 'string') return redactSecrets(arg);
-  if (arg instanceof Error) {
-    // HTTP errors often carry request headers and credentials as own properties.
-    // Keep a sanitized stack and code, never the original error's metadata.
-    const clean = new Error(redactSecrets(arg.message || ''));
-    clean.name = redactSecrets(arg.name || 'Error');
-    if (arg.stack) clean.stack = redactSecrets(String(arg.stack));
-    if (typeof arg.code === 'string' || typeof arg.code === 'number') clean.code = redactSecrets(String(arg.code));
-    return clean;
-  }
-  if (arg && typeof arg === 'object') return safeText(arg);
-  return arg;
+  const seen = new WeakSet();
+  let remaining = MAX_ERROR_NODES;
+  const cleanValue = (value, depth) => {
+    if (typeof value === 'string') return redactSecrets(value);
+    if (value instanceof Error) {
+      if (depth >= MAX_ERROR_DEPTH) return '[Error cause depth truncated]';
+      if (seen.has(value)) return '[Circular error]';
+      if (remaining-- <= 0) return '[Error chain truncated]';
+      seen.add(value);
+      try {
+        const aggregate = value instanceof AggregateError;
+        const clean = aggregate ? new AggregateError([], redactSecrets(value.message || '')) : new Error(redactSecrets(value.message || ''));
+        clean.name = redactSecrets(value.name || 'Error');
+        if (value.stack) clean.stack = redactSecrets(String(value.stack));
+        if (typeof value.code === 'string') clean.code = redactSecrets(value.code);
+        else if (typeof value.code === 'number' && Number.isFinite(value.code)) clean.code = value.code;
+        for (const name of ['status', 'statusCode']) {
+          if (typeof value[name] === 'number' && Number.isFinite(value[name])) clean[name] = value[name];
+        }
+        if ('cause' in value) clean.cause = cleanValue(value.cause, depth + 1);
+        if (aggregate && Array.isArray(value.errors)) {
+          clean.errors = value.errors.slice(0, MAX_AGGREGATE_ERRORS).map((error) => cleanValue(error, depth + 1));
+          if (value.errors.length > MAX_AGGREGATE_ERRORS) clean.errors.push('[Additional errors omitted]');
+        }
+        return clean;
+      } catch {
+        return '[Unprintable error]';
+      } finally { seen.delete(value); }
+    }
+    if (value && typeof value === 'object') {
+      if (!depth) return safeText(value);
+      if (depth >= MAX_ERROR_DEPTH) return '[Error cause depth truncated]';
+      if (seen.has(value)) return '[Circular error]';
+      if (remaining-- <= 0) return '[Error chain truncated]';
+      // Some libraries reject with a plain object instead of Error. Retain only
+      // its safe diagnostic fields, never request or response metadata.
+      seen.add(value);
+      try {
+        const clean = {};
+        if (typeof value.message === 'string') clean.message = redactSecrets(value.message);
+        if (typeof value.code === 'string') clean.code = redactSecrets(value.code);
+        else if (typeof value.code === 'number' && Number.isFinite(value.code)) clean.code = value.code;
+        for (const name of ['status', 'statusCode']) {
+          if (typeof value[name] === 'number' && Number.isFinite(value[name])) clean[name] = value[name];
+        }
+        if ('cause' in value) clean.cause = cleanValue(value.cause, depth + 1);
+        return Object.keys(clean).length ? clean : '[Non-error cause omitted]';
+      } catch { return '[Unprintable cause]'; }
+      finally { seen.delete(value); }
+    }
+    return value;
+  };
+  return cleanValue(arg, 0);
+}
+
+// The subsystem logger renders to one line rather than using console's Error
+// inspector. Include the same sanitized chain there without copying stacks.
+function summarizeError(value) {
+  if (!(value instanceof Error)) return safeText(value);
+  const details = [];
+  if (value.code !== undefined) details.push(`code=${value.code}`);
+  if (value.status !== undefined) details.push(`status=${value.status}`);
+  if (value.statusCode !== undefined) details.push(`statusCode=${value.statusCode}`);
+  const parts = [`${value.name}: ${value.message}${details.length ? ` (${details.join(', ')})` : ''}`];
+  if (Array.isArray(value.errors) && value.errors.length) parts.push(`errors: [${value.errors.map(summarizeError).join('; ')}]`);
+  if ('cause' in value && value.cause != null) parts.push(`caused by: ${summarizeError(value.cause)}`);
+  return parts.join('; ');
 }
 
 /** All arguments flattened into one lowercase string (used for noise filtering). */
