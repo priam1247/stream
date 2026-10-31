@@ -237,3 +237,269 @@ test('a revocation arriving during a credential write prevents the waiting backu
   assert.equal(service.rows.get(desc.slot).revoked, true, 'a stale upload must not restore a revoked session');
   await backup.stop({ flush: true });
 });
+
+test('a credential write accepted during the final upload is included before backup stop returns', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-late-creds-'));
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  t.after(() => { release(); fs.rmSync(tmp, { recursive: true, force: true }); });
+  let announce; const started = new Promise((resolve) => { announce = resolve; });
+  const base = server(); let puts = 0;
+  const service = { fetch: async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.action === 'put' && body.slot === 'primary' && ++puts === 1) { announce(); await gate; }
+    return base.fetch(url, opts);
+  } };
+  const local = putLocal(tmp); const backup = controller(tmp, service); await backup.restore();
+  const auth = await backup.wrapAuth(async () => ({ state: { keys: { set: async () => {} } }, saveCreds: async () => {
+    fs.writeFileSync(path.join(local.root, 'creds.json'), creds.replace('PRIVATE_SESSION_DATA', 'LATE_CREDENTIAL_FIXTURE'));
+  } }), local.root);
+  const stopping = backup.stop({ flush: true });
+  await started;
+  await auth.saveCreds();
+  release(); await stopping;
+  const row = base.rows.get('primary');
+  const payload = open(row.ciphertext, key, 'primary', row.generation);
+  assert.match(payload.files['creds.json'], /LATE_CREDENTIAL_FIXTURE/);
+  assert.equal(puts, 2, 'the changed session must be uploaded again');
+});
+
+test('a late key write for a different slot is drained even after that slot finished uploading', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-late-keys-'));
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  t.after(() => { release(); fs.rmSync(tmp, { recursive: true, force: true }); });
+  let primaryStarted, linkedSaved, linkedResaved;
+  const primaryInFlight = new Promise((resolve) => { primaryStarted = resolve; });
+  const linkedUploaded = new Promise((resolve) => { linkedSaved = resolve; });
+  const linkedReuploaded = new Promise((resolve) => { linkedResaved = resolve; });
+  const base = server(); let linkedPuts = 0;
+  const service = { fetch: async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.action === 'put' && body.slot === 'primary') { primaryStarted(); await gate; }
+    const result = await base.fetch(url, opts);
+    if (body.action === 'put' && body.slot === `linked:${number}`) { linkedPuts++; linkedSaved(); if (linkedPuts === 2) linkedResaved(); }
+    return result;
+  } };
+  const local = putLocal(tmp); const backup = controller(tmp, service); await backup.restore();
+  const load = async () => ({ state: { keys: { set: async () => {} } }, saveCreds: async () => {} });
+  await backup.wrapAuth(load, local.root);
+  const auth = await backup.wrapAuth(async () => ({ state: { keys: { set: async () => {
+    fs.writeFileSync(path.join(local.dir, 'session-123.json'), JSON.stringify({ testKey: 'LATE_KEY_FIXTURE' }));
+  } } }, saveCreds: async () => {} }), local.dir);
+  const stopping = backup.stop({ flush: true });
+  await Promise.all([primaryInFlight, linkedUploaded]);
+  await auth.state.keys.set({});
+  let timeout;
+  const progressed = await Promise.race([linkedReuploaded.then(() => true), new Promise((resolve) => { timeout = setTimeout(() => resolve(false), 1500); })]);
+  clearTimeout(timeout);
+  if (!progressed) { release(); await stopping; }
+  assert.equal(progressed, true, 'a slow upload in one slot must not block a late write from another slot');
+  release(); await stopping;
+  const row = base.rows.get(`linked:${number}`);
+  const payload = open(row.ciphertext, key, row.slot, row.generation);
+  assert.match(payload.files['session-123.json'], /LATE_KEY_FIXTURE/);
+  assert.equal(linkedPuts, 2);
+});
+
+test('a timed-out unlink revokes only that recovery generation while other sessions flush', async (t) => {
+  const { EventEmitter } = require('node:events');
+  const { createSessionManager } = botRequire('../utils/sessionManager');
+  const { stopSessionServices } = botRequire('../utils/serviceStartup');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-unlink-timeout-'));
+  let releaseLogout; const logoutGate = new Promise((resolve) => { releaseLogout = resolve; });
+  let releaseRevoke; const revokeGate = new Promise((resolve) => { releaseRevoke = resolve; });
+  t.after(() => { releaseLogout(); releaseRevoke(); fs.rmSync(tmp, { recursive: true, force: true }); });
+  let primarySaved; const primaryUploaded = new Promise((resolve) => { primarySaved = resolve; });
+  const base = server();
+  const service = { fetch: async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.action === 'revoke') await revokeGate;
+    const response = await base.fetch(url, opts);
+    if (body.action === 'put' && body.slot === 'primary') primarySaved();
+    return response;
+  } };
+  const local = putLocal(tmp); const backup = controller(tmp, service); await backup.restore();
+  const sockets = [];
+  const manager = createSessionManager({
+    sessionDir: local.root,
+    unlinkShutdownTimeoutMs: 20, retirementShutdownTimeoutMs: 20,
+    isAllowed: () => true,
+    loadAuthState: (dir) => backup.wrapAuth(async () => ({
+      state: { creds: JSON.parse(fs.readFileSync(path.join(dir, 'creds.json'), 'utf8')), keys: { set: async () => {} } },
+      saveCreds: async () => {},
+    }), dir),
+    getVersion: async () => [2, 0, 0],
+    makeSocket: ({ auth }) => {
+      const sock = { ev: new EventEmitter(), auth, user: auth.creds.me,
+        end: async () => {}, logout: async () => { await logoutGate; }, sendMessage: async () => ({}) };
+      sockets.push(sock); return sock;
+    },
+    onRevoked: (slot, generation) => { void backup.revoke(slot, generation); },
+    log: quiet,
+  });
+  await manager.start();
+  for (const sock of sockets) sock.ev.emit('connection.update', { connection: 'open' });
+  assert.equal(sockets.length, 2);
+  let unlinkSettled = false;
+  const unlinking = manager.unlinkAccount(number, attempt).then((value) => { unlinkSettled = true; return value; });
+  const stopping = stopSessionServices({ sessions: manager, backup }).then(() => null, (error) => error);
+  // A slow revocation must not serialize an unrelated primary backup behind it.
+  let timeout;
+  const primaryFlushed = await Promise.race([primaryUploaded.then(() => true), new Promise((resolve) => { timeout = setTimeout(() => resolve(false), 1500); })]);
+  clearTimeout(timeout);
+  if (!primaryFlushed) { releaseLogout(); releaseRevoke(); await Promise.allSettled([unlinking, stopping]); }
+  assert.equal(primaryFlushed, true, 'other sessions should flush while revocation is in flight');
+  assert.equal(unlinkSettled, false, 'an unknown logout outcome is not success');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(local.root, 'linked', 'accounts.json'))).accounts[number].state, 'active');
+  assert.equal(fs.existsSync(path.join(local.dir, 'creds.json')), true, 'local credentials remain untouched');
+  releaseRevoke();
+  assert.ok(await stopping instanceof AggregateError, 'the timeout is reported even though backup still flushes');
+  assert.equal(base.rows.get(`linked:${number}`).generation, attempt);
+  assert.equal(base.rows.get(`linked:${number}`).revoked, true);
+  assert.equal(base.rows.get('primary').revoked, false);
+  releaseLogout();
+  assert.equal((await unlinking).unlinked, true, 'only an actual late logout may report success');
+  assert.equal(base.rows.get(`linked:${number}`).revoked, true, 'a late success cannot resurrect recovery');
+  const replacement = controller(path.join(tmp, 'replacement'), base); await replacement.restore();
+  assert.equal(fs.existsSync(path.join(tmp, 'replacement', 'session', 'creds.json')), true);
+  assert.equal(fs.existsSync(path.join(tmp, 'replacement', 'session', 'linked', number)), false);
+  await replacement.stop();
+});
+
+test('a failed late logout stays unconfirmed and an offline recovery revocation remains queued', async (t) => {
+  const { EventEmitter } = require('node:events');
+  const { createSessionManager } = botRequire('../utils/sessionManager');
+  const { stopSessionServices } = botRequire('../utils/serviceStartup');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-uncertain-'));
+  let release; const logoutGate = new Promise((resolve) => { release = resolve; });
+  t.after(() => { release(); fs.rmSync(tmp, { recursive: true, force: true }); });
+  let offline = false;
+  const base = server();
+  const flaky = { fetch: async (...args) => {
+    const body = JSON.parse(args[1].body);
+    if (offline && body.action === 'revoke') return Response.json({ error: 'offline' }, { status: 503 });
+    return base.fetch(...args);
+  } };
+  const local = putLocal(tmp); const backup = controller(tmp, flaky); await backup.restore();
+  await backup._snapshot({ slot: `linked:${number}`, generation: attempt, dir: local.dir, number });
+  offline = true;
+  const sockets = [];
+  const manager = createSessionManager({
+    sessionDir: local.root, isAllowed: () => true, unlinkShutdownTimeoutMs: 20, retirementShutdownTimeoutMs: 20,
+    loadAuthState: (dir) => backup.wrapAuth(async () => ({
+      state: { creds: JSON.parse(fs.readFileSync(path.join(dir, 'creds.json'), 'utf8')), keys: { set: async () => {} } },
+      saveCreds: async () => {},
+    }), dir),
+    getVersion: async () => [2, 0, 0],
+    makeSocket: ({ auth }) => {
+      const sock = { ev: new EventEmitter(), auth, user: auth.creds.me, end: async () => {},
+        logout: async () => { await logoutGate; throw new Error('late logout failure'); }, sendMessage: async () => ({}) };
+      sockets.push(sock); return sock;
+    },
+    onRevoked: (slot, generation) => { void backup.revoke(slot, generation); }, log: quiet,
+  });
+  await manager.start();
+  for (const sock of sockets) sock.ev.emit('connection.update', { connection: 'open' });
+  const unlinking = manager.unlinkAccount(number, attempt).then(() => null, (error) => error);
+  await assert.rejects(stopSessionServices({ sessions: manager, backup }), AggregateError);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, 'state.json'))).revocations, [{ slot: `linked:${number}`, generation: attempt }]);
+  assert.equal(backup.status().state, 'error');
+  assert.equal(base.rows.get(`linked:${number}`).revoked, false, 'an offline remote cannot be claimed as revoked');
+  assert.equal(base.rows.get('primary').revoked, false, 'other sessions still flush');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(local.root, 'linked', 'accounts.json'))).accounts[number].state, 'active');
+  release();
+  assert.match((await unlinking).message, /late logout failure/);
+  assert.equal(fs.existsSync(path.join(local.dir, 'creds.json')), true);
+  offline = false;
+  const restarted = controller(tmp, flaky); await restarted.restore();
+  assert.equal(base.rows.get(`linked:${number}`).revoked, true, 'the original host must flush the queued revocation on restart');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, 'state.json'))).revocations, []);
+  assert.equal(fs.existsSync(path.join(local.dir, 'creds.json')), true, 'retrying the revocation never deletes local credentials');
+  await restarted.stop();
+});
+
+test('a local credential write after the final backup boundary is preserved and warned about', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-after-stop-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const base = server(); const local = putLocal(tmp); const warnings = [];
+  const backup = createSessionBackup({ sessionDir: local.root, statePath: path.join(tmp, 'state.json'),
+    dashboardUrl: 'https://example.test', token: 'test-token', key: keyText, fetchImpl: base.fetch,
+    log: { info() {}, error() {}, warn: (message) => warnings.push(message) } });
+  await backup.restore();
+  const auth = await backup.wrapAuth(async () => ({ state: { keys: { set: async () => {} } }, saveCreds: async () => {
+    fs.writeFileSync(path.join(local.root, 'creds.json'), creds.replace('PRIVATE_SESSION_DATA', 'AFTER_STOP_FIXTURE'));
+  } }), local.root);
+  await backup.stop({ flush: true });
+  await auth.saveCreds();
+  assert.match(fs.readFileSync(path.join(local.root, 'creds.json'), 'utf8'), /AFTER_STOP_FIXTURE/);
+  assert.equal(backup.status().state, 'error');
+  assert.ok(warnings.some((warning) => /after recovery stopped/i.test(warning)));
+  const row = base.rows.get('primary');
+  assert.doesNotMatch(open(row.ciphertext, key, row.slot, row.generation).files['creds.json'], /AFTER_STOP_FIXTURE/);
+});
+
+test('a final snapshot never uploads changed primary credentials under the previous generation', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-generation-race-'));
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  t.after(() => { release(); fs.rmSync(tmp, { recursive: true, force: true }); });
+  const local = putLocal(tmp); const base = server(); const attemptedGenerations = [];
+  const service = { fetch: async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.action === 'put' && body.slot === 'primary') attemptedGenerations.push(body.generation);
+    return base.fetch(url, opts);
+  } };
+  const backup = controller(tmp, service); await backup.restore();
+  const updated = JSON.parse(creds); updated.registrationId = 98765;
+  const auth = await backup.wrapAuth(async () => ({ state: { keys: { set: async () => {} } }, saveCreds: async () => {
+    await gate; fs.writeFileSync(path.join(local.root, 'creds.json'), JSON.stringify(updated));
+  } }), local.root);
+  const writing = auth.saveCreds();
+  const stopping = backup.stop({ flush: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  release(); await writing; await stopping;
+  const newGeneration = crypto.createHash('sha256').update(JSON.stringify([updated.registrationId, updated.me.id, null])).digest('hex').slice(0, 24);
+  assert.deepEqual(attemptedGenerations, [newGeneration]);
+  assert.equal(base.rows.get('primary').generation, newGeneration);
+});
+
+test('a failed final encrypted snapshot reports its cause after preserving local files', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-stop-failure-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const base = server();
+  const service = { fetch: async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.action === 'put') return Response.json({ error: 'offline' }, { status: 503 });
+    return base.fetch(url, opts);
+  } };
+  const local = putLocal(tmp); const backup = controller(tmp, service); await backup.restore();
+  backup.schedule(local.root);
+  const error = await backup.stop({ flush: true }).then(() => null, (err) => err);
+  assert.ok(error instanceof AggregateError, 'shutdown diagnostics must include failed final snapshots');
+  assert.equal(error.errors[0].cause.statusCode, 503);
+  assert.equal(backup.status().state, 'error');
+  assert.equal(fs.readFileSync(path.join(local.root, 'creds.json'), 'utf8'), creds);
+});
+
+test('a later successful snapshot clears an earlier final-flush failure', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-final-retry-'));
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  let announce; const started = new Promise((resolve) => { announce = resolve; });
+  t.after(() => { release(); fs.rmSync(tmp, { recursive: true, force: true }); });
+  const local = putLocal(tmp); const base = server(); let puts = 0;
+  const service = { fetch: async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.action === 'put' && body.slot === 'primary' && ++puts === 1) {
+      announce(); await gate; return Response.json({ error: 'offline' }, { status: 503 });
+    }
+    return base.fetch(url, opts);
+  } };
+  const backup = controller(tmp, service); await backup.restore();
+  const auth = await backup.wrapAuth(async () => ({ state: { keys: { set: async () => {} } }, saveCreds: async () => {
+    fs.writeFileSync(path.join(local.root, 'creds.json'), creds.replace('PRIVATE_SESSION_DATA', 'RETRY_FIXTURE'));
+  } }), local.root);
+  const stopping = backup.stop({ flush: true });
+  await started; await auth.saveCreds(); release(); await stopping;
+  assert.equal(puts, 2);
+  assert.equal(backup.status().state, 'ready');
+  const row = base.rows.get('primary');
+  assert.match(open(row.ciphertext, key, row.slot, row.generation).files['creds.json'], /RETRY_FIXTURE/);
+});

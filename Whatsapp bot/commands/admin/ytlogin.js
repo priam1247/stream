@@ -2,6 +2,7 @@
 
 const ytAuth = require('../../utils/ytAuth');
 const config = require('../../config');
+const log = require('../../utils/logger')('ytlogin');
 
 module.exports = {
   name: 'ytlogin',
@@ -20,7 +21,14 @@ module.exports = {
     }
 
     if (['off', 'logout', 'clear', 'delete', 'remove'].includes(sub)) {
-      ytAuth.clearYtCreds();
+      try { ytAuth.clearYtCreds(); }
+      catch (err) {
+        if (err?.code !== 'YT_AUTH_CLEAR_FAILED') throw err;
+        // Do not send paths, credential contents, or the raw filesystem error to chat.
+        const code = typeof err.cause?.code === 'string' && /^[A-Z][A-Z0-9_]{1,31}$/.test(err.cause.code) ? err.cause.code : 'unknown';
+        log.warn('YouTube OAuth cleanup incomplete; local credential copies may remain. Filesystem code:', code);
+        return extra.reply(`YouTube OAuth cleanup is incomplete; some local credentials may remain. Check server file permissions and retry ${P}ytlogin off, or contact the server administrator.`);
+      }
       return extra.reply('🔐 YouTube OAuth cleared.');
     }
 

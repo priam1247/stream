@@ -17,12 +17,13 @@ async function startSessionServices(sessions, startBridge, cleanup) {
 // encrypted recovery copy from being flushed. The caller bounds shutdown time.
 async function stopSessionServices({ sessions, sync, api, backup } = {}) {
   const errors = [];
-  try { sync?.stop(); } catch (err) { errors.push(err); }
+  const failed = (component, err) => errors.push(new Error(`${component} shutdown failed`, { cause: err }));
+  try { sync?.stop(); } catch (err) { failed('Dashboard sync', err); }
   let apiStopped = Promise.resolve();
-  try { apiStopped = Promise.resolve(api?.stop()).catch((err) => { errors.push(err); }); }
-  catch (err) { errors.push(err); }
-  try { await sessions?.stop(); } catch (err) { errors.push(err); }
-  try { await backup?.stop({ flush: true }); } catch (err) { errors.push(err); }
+  try { apiStopped = Promise.resolve(api?.stop()).catch((err) => { failed('Dashboard API', err); }); }
+  catch (err) { failed('Dashboard API', err); }
+  try { await sessions?.stop(); } catch (err) { failed('WhatsApp sessions', err); }
+  try { await backup?.stop({ flush: true }); } catch (err) { failed('Session backup', err); }
   await apiStopped;
   if (errors.length) throw new AggregateError(errors, 'Some WhatsApp services could not stop cleanly.');
 }

@@ -498,3 +498,63 @@ test('duplicate unlink requests for the same generation share one WhatsApp logou
   release();
   assert.deepEqual(await first, await second);
 });
+
+test('a hung unlink is bounded during shutdown and its generation is quarantined without claiming success', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-unlink-stop-timeout-'));
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  const revoked = [];
+  t.after(() => { release(); fs.rmSync(root, { recursive: true, force: true }); });
+  const fx = fixture(root, {
+    unlinkShutdownTimeoutMs: 20,
+    retirementShutdownTimeoutMs: 20,
+    onRevoked: (slot, generation) => revoked.push({ slot, generation }),
+  });
+  await fx.manager.start();
+  const primary = fx.created[0];
+  const { sock } = await request(fx, '265991111111');
+  open(sock, '265991111111');
+  const { sessionId } = fx.manager.status().accounts.find((a) => a.number === '265991111111');
+  sock.logout = async () => { await gate; };
+  let unlinkSettled = false;
+  const unlinking = fx.manager.unlinkAccount('265991111111', sessionId).then((value) => { unlinkSettled = true; return value; });
+  const stopping = fx.manager.stop().then(() => ({ error: null }), (error) => ({ error }));
+  let timeout;
+  const result = await Promise.race([stopping, new Promise((resolve) => { timeout = setTimeout(() => resolve('timeout'), 1500); })]);
+  clearTimeout(timeout);
+  if (result === 'timeout') { release(); await Promise.allSettled([unlinking, stopping]); }
+  assert.notEqual(result, 'timeout', 'a blocked WhatsApp logout must not prevent other sessions from closing');
+  assert.ok(result.error, 'the incomplete unlink must be visible to shutdown diagnostics');
+  assert.match(require('node:util').inspect(result.error, { depth: 5 }), /unlink/i);
+  assert.equal(unlinkSettled, false, 'an unresolved logout must not be reported as successful');
+  assert.equal(primary.ended, true, 'unrelated sessions can still close');
+  assert.deepEqual(revoked, [{ slot: 'linked:265991111111', generation: sessionId }]);
+  assert.equal(fs.existsSync(path.join(root, 'linked', '265991111111', sessionId, 'creds.json')), true);
+  release();
+  assert.equal((await unlinking).unlinked, true, 'a real late success can complete normally');
+});
+
+test('a socket end that hangs does not indefinitely block shutdown of other sessions', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-end-stop-timeout-'));
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  t.after(() => { release(); fs.rmSync(root, { recursive: true, force: true }); });
+  const fx = fixture(root, { retirementShutdownTimeoutMs: 20 });
+  await fx.manager.start();
+  const primary = fx.created[0];
+  const { sock } = await request(fx, '265991111111');
+  open(sock, '265991111111');
+  sock.end = async () => { await gate; };
+  const { stopSessionServices } = require('../utils/serviceStartup');
+  let backupFlushed = false;
+  const stopping = stopSessionServices({ sessions: fx.manager, backup: { stop: async (opts) => {
+    assert.deepEqual(opts, { flush: true }); backupFlushed = true;
+  } } }).then(() => ({ error: null }), (error) => ({ error }));
+  let timeout;
+  const result = await Promise.race([stopping, new Promise((resolve) => { timeout = setTimeout(() => resolve('timeout'), 1500); })]);
+  clearTimeout(timeout);
+  if (result === 'timeout') { release(); await stopping; }
+  assert.notEqual(result, 'timeout', 'a blocked socket close must not prevent recovery flush');
+  assert.ok(result.error, 'the incomplete socket close must be reported');
+  assert.equal(backupFlushed, true, 'the lifecycle must still flush encrypted recovery');
+  assert.equal(primary.ended, true);
+  release();
+});

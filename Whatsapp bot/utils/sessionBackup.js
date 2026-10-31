@@ -95,7 +95,10 @@ function createSessionBackup(opts = {}) {
   let lastBackupAt = null;
   const revisions = new Map(); const remote = new Map(); const conflicts = new Set(); const failures = new Set();
   const pending = new Map(); const retryTimers = new Map(); const locks = new Map(); const uploadDirs = new Map(); const stoppedGenerations = new Set();
-  let stopped = false; let stopping = false; let stopPromise = null;
+  const authWrites = new Map(); const shutdownDirty = new Set(); const finalSnapshots = new Map();
+  let stopped = false; let stopping = false; let stopPromise = null; let warnedAfterStop = false; let wakeShutdown = null;
+  const signalShutdown = () => { const wake = wakeShutdown; wakeShutdown = null; wake?.(); };
+  const markShutdownDirty = (dir) => { shutdownDirty.add(dir); signalShutdown(); };
   if (key && (!baseUrl.startsWith('https://') || !token)) throw new Error('Session recovery requires HTTPS dashboard sync and a service token.');
   const validRevocation = (item) => item && (item.slot === 'primary' || /^linked:\d{7,15}$/.test(item.slot)) && ATTEMPT_RE.test(item.generation || '');
   const stateRead = readJsonSafe(statePath, { defaultValue: { version: 1, slots: {} }, validate: (v) => v && v.version === 1 && v.slots && typeof v.slots === 'object' && !Array.isArray(v.slots) &&
@@ -137,7 +140,7 @@ function createSessionBackup(opts = {}) {
     const previous = locks.get(dir) || Promise.resolve();
     const next = previous.catch(() => {}).then(work);
     locks.set(dir, next);
-    next.finally(() => { if (locks.get(dir) === next) locks.delete(dir); }).catch(() => {});
+    next.finally(() => { if (locks.get(dir) === next) locks.delete(dir); signalShutdown(); }).catch(() => {});
     return next;
   }
   function installFiles(target, files) {
@@ -230,6 +233,10 @@ function createSessionBackup(opts = {}) {
         if (!record || record.attempt !== desc.generation || record.state !== 'active' || !/^[a-f0-9]{64}$/.test(record.claim || '')) return null;
         return { version: 1, slot: desc.slot, generation: desc.generation, claimToken: record.claim, linkedAt: record.linkedAt, files: collectFiles(desc.dir) };
       }
+      // The primary identity can change while an earlier write is still in
+      // flight. Never upload its new credentials under an old generation.
+      const current = descriptor(desc.dir);
+      if (!current || current.slot !== desc.slot || current.generation !== desc.generation) return null;
       return { version: 1, slot: desc.slot, generation: desc.generation, files: collectFiles(desc.dir) };
     });
     if (!payload || stopped || stoppedGenerations.has(`${desc.slot}:${desc.generation}`)) return;
@@ -290,39 +297,76 @@ function createSessionBackup(opts = {}) {
   async function stop({ flush = false } = {}) {
     if (stopPromise) return stopPromise;
     stopping = true;
-    const dirtyDirs = new Set([...pending.values()].map((item) => item.dir));
-    for (const dir of uploadDirs.values()) dirtyDirs.add(dir);
-    // Auth writes can finish after stop starts. Remember their directories so
-    // the final snapshot includes those writes even though scheduling is closed.
-    for (const id of locks.keys()) if (path.isAbsolute(id)) dirtyDirs.add(id);
+    for (const item of pending.values()) shutdownDirty.add(item.dir);
+    for (const dir of uploadDirs.values()) shutdownDirty.add(dir);
+    for (const dir of authWrites.values()) shutdownDirty.add(dir);
+    for (const id of locks.keys()) if (path.isAbsolute(id)) shutdownDirty.add(id);
     for (const item of pending.values()) clearTimeout(item.timer);
     for (const timer of retryTimers.values()) clearTimeout(timer);
     pending.clear(); retryTimers.clear();
     if (!flush || !key) stopped = true;
     stopPromise = (async () => {
       if (flush && key) {
-        await Promise.allSettled([...locks.values()]);
-        const descriptors = [...dirtyDirs].map(descriptor).filter(Boolean);
-        const results = await Promise.allSettled(descriptors.map((desc) => snapshot(desc)));
-        for (let i = 0; i < results.length; i++) {
-          if (results[i].status === 'rejected') {
-            failures.add(descriptors[i].slot);
-            status = 'error';
-            log.warn('Final encrypted session backup could not be saved; local sessions were preserved.');
+        const finalFailures = new Map();
+        // Keep accepting local writes until a synchronous, quiescent boundary.
+        // A slow upload or revocation must not block another slot's late write.
+        while (true) {
+          for (const dir of shutdownDirty) {
+            if (finalSnapshots.has(dir)) continue; // coalesce writes per directory
+            shutdownDirty.delete(dir);
+            const desc = descriptor(dir);
+            if (!desc) continue;
+            const snapshotDone = snapshot(desc).then(() => {
+              if (!failures.has(desc.slot)) finalFailures.delete(dir);
+            }, (err) => {
+              finalFailures.set(dir, new Error('Final encrypted session snapshot failed.', { cause: err }));
+              failures.add(desc.slot); status = 'error';
+              log.warn('Final encrypted session backup could not be saved; local sessions were preserved.');
+            });
+            finalSnapshots.set(dir, snapshotDone);
+            const forget = () => { if (finalSnapshots.get(dir) === snapshotDone) finalSnapshots.delete(dir); signalShutdown(); };
+            void snapshotDone.then(forget, forget);
           }
+          if (!shutdownDirty.size && !finalSnapshots.size && !locks.size && !authWrites.size) { stopped = true; break; }
+          // Each accepted write, completed lock, or completed snapshot wakes this
+          // loop; it need not wait for unrelated network requests to finish.
+          await new Promise((resolve) => { wakeShutdown = resolve; });
         }
+        if (finalFailures.size) throw new AggregateError([...finalFailures.values()], 'Encrypted session recovery did not flush completely.');
+      } else {
+        while (locks.size || authWrites.size) await Promise.allSettled([...locks.values(), ...authWrites.keys()]);
       }
-      stopped = true;
-      await Promise.allSettled([...locks.values()]);
     })();
     return stopPromise;
   }
+  function writeAuth(dir, work) {
+    if (stopped && key && !warnedAfterStop) {
+      warnedAfterStop = true; failures.add('late-write'); status = 'error';
+      log.warn('Credentials changed after recovery stopped; the local write is preserved but the backup may be stale.');
+    }
+    const write = locked(dir, work).then((result) => {
+      // A write accepted before or during stop can finish after an earlier
+      // snapshot. Requeue its directory even though normal scheduling is closed.
+      if (stopping && !stopped && key) markShutdownDirty(dir);
+      else schedule(dir);
+      return result;
+    }, (err) => {
+      // A failed write may have changed some local files before failing.
+      if (stopping && !stopped && key) markShutdownDirty(dir);
+      throw err;
+    });
+    authWrites.set(write, dir); signalShutdown();
+    const forget = () => { authWrites.delete(write); signalShutdown(); };
+    void write.then(forget, forget);
+    return write;
+  }
   async function wrapAuth(loadAuthState, dir) {
     const auth = await loadAuthState(dir);
+    const resolvedDir = path.resolve(dir);
     const set = auth.state.keys.set.bind(auth.state.keys); const save = auth.saveCreds.bind(auth);
-    auth.state.keys.set = (data) => locked(dir, () => set(data)).then((result) => { schedule(dir); return result; });
-    auth.saveCreds = () => locked(dir, () => save()).then((result) => { schedule(dir); return result; });
-    schedule(dir);
+    auth.state.keys.set = (data) => writeAuth(resolvedDir, () => set(data));
+    auth.saveCreds = () => writeAuth(resolvedDir, () => save());
+    schedule(resolvedDir);
     return auth;
   }
   function recoveryStatus() {

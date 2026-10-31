@@ -33,7 +33,7 @@ process.env.NODE_ENV = process.env.NODE_ENV || 'production';
 // The Scribd search + download panel is a separate server in `scribd/`.
 // This bot does not start it; the dashboard talks to it independently.
 
-const { formatArgs, redactArg } = require('./utils/safeLog');
+const { formatArgs, redactArg, safeText } = require('./utils/safeLog');
 const { initializeTempSystem } = require('./utils/tempManager');
 const { startCleanup, stopCleanup } = require('./utils/cleanup');
 const { startDiskGuard, stopDiskGuard } = require('./utils/diskGuard');
@@ -382,7 +382,13 @@ function shutdown(signal) {
     process.exit(0);
   };
   timer = setTimeout(() => finish(true), 20_000);
-  void lifecycle.shutdown().catch((err) => console.warn('WhatsApp shutdown was incomplete:', err?.message || err)).finally(() => finish());
+  void lifecycle.shutdown().catch((err) => {
+    console.warn('WhatsApp shutdown was incomplete.');
+    // Report each component separately: one noisy/sensitive socket error must
+    // not cause the console filter to suppress every other failure.
+    const failures = err instanceof AggregateError && Array.isArray(err.errors) ? err.errors : [err];
+    for (const failure of failures) console.warn('Shutdown detail:', safeText(failure));
+  }).finally(() => finish());
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
