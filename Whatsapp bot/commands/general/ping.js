@@ -18,7 +18,7 @@ module.exports = {
         edit: sent.key,
       });
     } catch (err) {
-      console.error('[ping] error:', err.message);
+      console.error('[ping] error:', err?.message || err);
       await extra.reply('❌ Could not measure latency right now.');
     }
   },

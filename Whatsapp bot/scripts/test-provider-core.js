@@ -17,9 +17,12 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
 
-const REPO = path.resolve(__dirname, '..');
+clearHostConfig();
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-core-'));
+const REPO = createBotFixture(TMP);
+process.chdir(TMP);
 
 process.env.JOBS_DB = path.join(TMP, 'jobs.sqlite');
 process.env.MEDIA_DIR = path.join(TMP, 'media');

@@ -384,3 +384,117 @@ test('a missing socket user still recognizes the saved primary identity', async 
   assert.equal(fx.manager.status().accounts[0].number, '265990000000');
   await assert.rejects(fx.manager.requestPair('265990000000'), /already linked/i);
 });
+
+test('stopping a session waits for credential writes already accepted by the socket', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-stop-creds-'));
+  let release;
+  const writeReady = new Promise((resolve) => { release = resolve; });
+  t.after(() => { release(); fs.rmSync(root, { recursive: true, force: true }); });
+  let didWrite = false;
+  const fx = fixture(root, {
+    loadAuthState: async () => ({
+      state: { creds: { registered: true, me: { id: '265990000000:1@s.whatsapp.net' } } },
+      saveCreds: async () => { await writeReady; didWrite = true; },
+    }),
+  });
+  await fx.manager.start();
+  fx.created[0].ev.emit('creds.update');
+  let stopped = false;
+  const stopping = fx.manager.stop().then(() => { stopped = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stopped, false, 'the process must not finish shutdown before the accepted credentials are saved');
+  release();
+  await stopping;
+  assert.equal(didWrite, true);
+});
+
+test('shutdown waits for an accepted unlink and its recovery revocation before retiring sockets', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-stop-unlink-'));
+  let release; const pending = new Promise((resolve) => { release = resolve; });
+  const revoked = [];
+  t.after(() => { release(); fs.rmSync(root, { recursive: true, force: true }); });
+  const fx = fixture(root, { onRevoked: (slot, generation) => revoked.push({ slot, generation }) });
+  await fx.manager.start();
+  const { sock } = await request(fx, '265991111111');
+  open(sock, '265991111111');
+  await waitFor(() => fx.manager.status().accounts.some((a) => a.number === '265991111111' && a.state === 'connected'));
+  const { sessionId } = fx.manager.status().accounts.find((a) => a.number === '265991111111');
+  sock.logout = async () => { await pending; sock.loggedOut = true; };
+  const unlinking = fx.manager.unlinkAccount('265991111111', sessionId);
+  let stopped = false;
+  const stopping = fx.manager.stop().then(() => { stopped = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stopped, false, 'shutdown must wait for an already accepted unlink');
+  assert.equal(sock.ended, false, 'do not close the socket before logout completes');
+  await assert.rejects(sock.sendMessage('chat', { text: 'stopped' }), /offline or paused/i);
+  sock.ev.emit('messages.upsert', { type: 'notify', messages: [message('stop-message')] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fx.messages.length, 0, 'shutdown must stop taking new messages');
+  await assert.rejects(fx.manager.unlinkAccount('265991111111', sessionId), { statusCode: 503 });
+  release();
+  await unlinking; await stopping;
+  assert.deepEqual(revoked, [{ slot: 'linked:265991111111', generation: sessionId }]);
+  assert.equal(sock.ended, true);
+});
+
+test('a pairing retry interrupted by shutdown cannot create a new session generation', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-stop-pair-'));
+  let release; const closing = new Promise((resolve) => { release = resolve; });
+  t.after(() => { release(); fs.rmSync(root, { recursive: true, force: true }); });
+  const fx = fixture(root);
+  await fx.manager.start();
+  const { sock } = await request(fx, '265991111111');
+  open(sock, '265991111111');
+  await waitFor(() => fx.manager.status().accounts.some((a) => a.number === '265991111111' && a.state === 'connected'));
+  const before = fx.manager.status().accounts.find((a) => a.number === '265991111111').sessionId;
+  sock.ev.emit('connection.update', { connection: 'close', lastDisconnect: { error: { output: { statusCode: 401 } } } });
+  sock.end = async () => { await closing; };
+  const pairing = fx.manager.requestPair('265991111111').catch((err) => err);
+  await new Promise((resolve) => setImmediate(resolve));
+  await fx.manager.stop();
+  release();
+  const error = await pairing;
+  assert.equal(error.statusCode, 503);
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'linked', 'accounts.json'), 'utf8'));
+  assert.equal(manifest.accounts['265991111111'].attempt, before, 'shutdown must not create a replacement generation');
+});
+
+test('a pairing retry rechecks approval after the previous socket closes', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-pair-recheck-'));
+  let release; const closing = new Promise((resolve) => { release = resolve; });
+  const fx = fixture(root);
+  t.after(async () => { release(); await fx.manager.stop(); fs.rmSync(root, { recursive: true, force: true }); });
+  await fx.manager.start();
+  const { sock } = await request(fx, '265991111111');
+  open(sock, '265991111111');
+  await waitFor(() => fx.manager.status().accounts.some((a) => a.number === '265991111111' && a.state === 'connected'));
+  const before = fx.manager.status().accounts.find((a) => a.number === '265991111111').sessionId;
+  sock.ev.emit('connection.update', { connection: 'close', lastDisconnect: { error: { output: { statusCode: 401 } } } });
+  sock.end = async () => { await closing; };
+  const pairing = fx.manager.requestPair('265991111111').catch((err) => err);
+  await new Promise((resolve) => setImmediate(resolve));
+  fx.approved.delete('265991111111'); release();
+  const error = await pairing;
+  assert.equal(error.statusCode, 403);
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'linked', 'accounts.json'), 'utf8'));
+  assert.equal(manifest.accounts['265991111111'].attempt, before);
+});
+
+test('duplicate unlink requests for the same generation share one WhatsApp logout', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-unlink-coalesce-'));
+  let release; const closing = new Promise((resolve) => { release = resolve; });
+  const fx = fixture(root);
+  t.after(async () => { release(); await fx.manager.stop(); fs.rmSync(root, { recursive: true, force: true }); });
+  await fx.manager.start();
+  const { sock } = await request(fx, '265991111111');
+  open(sock, '265991111111');
+  await waitFor(() => fx.manager.status().accounts.some((a) => a.number === '265991111111' && a.state === 'connected'));
+  const { sessionId } = fx.manager.status().accounts.find((a) => a.number === '265991111111');
+  let calls = 0;
+  sock.logout = async () => { calls += 1; await closing; };
+  const first = fx.manager.unlinkAccount('265991111111', sessionId);
+  const second = fx.manager.unlinkAccount('265991111111', sessionId);
+  assert.equal(calls, 1, 'only one logout request should be sent for a generation');
+  release();
+  assert.deepEqual(await first, await second);
+});

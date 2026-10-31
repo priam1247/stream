@@ -149,8 +149,12 @@ npm run test:sessions  # offline pairing, permissions, and delivery tests
 npm start
 ```
 
-Run the selftests in a fresh checkout, not against an existing live bot's state;
-some checks load modules that access the bot's runtime database directory.
+Offline tests use temporary source fixtures and synthetic data; they do not copy
+or modify the bot's `.env`, sessions, or runtime database. They still use the
+installed dependencies and can consume CPU and disk, so a separate checkout is
+recommended for testing rather than competing with a running bot. The optional
+real HLS smoke test also downloads a binary from GitHub.
+
 Optionally run `npm run ytdlp:install` on a host that needs yt-dlp installed.
 The entry point uses this folder as its working directory, including when it is
 started from another directory. Do not commit or share `.env` or session files.

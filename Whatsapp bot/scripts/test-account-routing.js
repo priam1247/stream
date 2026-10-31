@@ -5,8 +5,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { createRequire } = require('node:module');
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
 
+clearHostConfig();
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-routing-'));
+const BOT = createBotFixture(TMP);
+const botRequire = createRequire(path.join(BOT, 'scripts', 'test-account-routing.js'));
+process.chdir(TMP);
+botRequire('../utils/telemetry')._resetForTests(null);
 const first = path.join(TMP, 'first');
 const second = path.join(TMP, 'second');
 fs.mkdirSync(first); fs.mkdirSync(second);
@@ -19,15 +26,15 @@ process.env.ADMIN_NUMBERS = '15550000002';
 // Even an old cooldown setting must not throttle commands.
 process.env.COMMAND_COOLDOWN_MS = '60000';
 
-const access = require('../utils/accessControl');
+const access = botRequire('../utils/accessControl');
 access.readWL = () => ({ users: [{ number: '15550001111', enabled: true }] });
-const database = require('../database');
+const database = botRequire('../database');
 let switches = [];
 database.getBotState = () => true;
 database.setBotState = (value) => { switches.push(value); return true; };
-const handler = require('../handler');
-const selections = require('../utils/selections');
-const { jidVariants } = require('../utils/jid');
+const handler = botRequire('../handler');
+const selections = botRequire('../utils/selections');
+const { jidVariants } = botRequire('../utils/jid');
 
 test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
@@ -98,8 +105,8 @@ test('choices and quoted replies from the same chat do not cross account boundar
 });
 
 test('member maintenance policy covers aliases and outstanding selections, while owners can test', async () => {
-  const policy = require('../utils/memberCommandPolicy');
-  const file = path.join(__dirname, '..', 'database', 'member-command-policy.json');
+  const policy = botRequire('../utils/memberCommandPolicy');
+  const file = path.join(BOT, 'database', 'member-command-policy.json');
   const saved = [file, `${file}.bak`].map((name) => fs.existsSync(name) ? fs.readFileSync(name) : null);
   try {
     policy.apply(['ping'], policy.versionFor(['ping']));
@@ -133,19 +140,67 @@ test('member maintenance policy covers aliases and outstanding selections, while
 test('hot reload retains account sockets and delivery state while updating handlers', async () => {
   process.env.FAKE_YTDLP = '1';
   process.env.NM3U8DL_DISABLE_AUTOINSTALL = '1';
-  const policy = require('../utils/memberCommandPolicy');
-  const sockets = require('../utils/accountSockets');
-  const delivery = require('../utils/jobDelivery');
+  const policy = botRequire('../utils/memberCommandPolicy');
+  const sockets = botRequire('../utils/accountSockets');
+  const delivery = botRequire('../utils/jobDelivery');
   const sock = socket(second, 'linked:15550009999');
   sockets.setOnline(sock.__sessionId, sock);
-  const { reloadRuntime } = require('../utils/hotReload');
+  const { reloadRuntime } = botRequire('../utils/hotReload');
   const result = reloadRuntime();
   assert.ok(result.evicted > 0);
-  assert.strictEqual(require('../utils/accountSockets'), sockets);
-  assert.strictEqual(require('../utils/memberCommandPolicy'), policy);
-  assert.strictEqual(require('../utils/jobDelivery'), delivery);
+  assert.strictEqual(botRequire('../utils/accountSockets'), sockets);
+  assert.strictEqual(botRequire('../utils/memberCommandPolicy'), policy);
+  assert.strictEqual(botRequire('../utils/jobDelivery'), delivery);
   assert.strictEqual(sockets.getOnline(sock.__sessionId), sock);
   await result.handler.handleMessage(sock, msg('.ping', 'after-reload'));
   assert.match(sock.sent.map((m) => m.text || '').join(' '), /pong/i);
   sockets.setOffline(sock.__sessionId, sock);
+});
+
+test('restart survives failed acknowledgements and stays locked across a command reload', async (t) => {
+  const hotReload = botRequire('../utils/hotReload');
+  const modulePath = botRequire.resolve('../commands/admin/botmanage');
+  const originalReload = hotReload.reloadRuntime;
+  let reloads = 0, ended = 0;
+  hotReload.reloadRuntime = () => { reloads += 1; delete require.cache[modulePath]; return { ok: true }; };
+  t.after(() => { hotReload.reloadRuntime = originalReload; hotReload.finishRestart?.(); });
+  const sock = { sendMessage: async () => ({}), end: () => { ended += 1; } };
+  const message = { key: { remoteJid: 'chat@s.whatsapp.net' } };
+  const first = require(modulePath).find((command) => command.name === 'restart');
+  await first.execute(sock, message, [], { reply: async () => { throw new Error('temporary reply failure'); } });
+  const second = require(modulePath).find((command) => command.name === 'restart');
+  const replies = [];
+  await second.execute(sock, message, [], { reply: async (text) => { replies.push(text); } });
+  assert.equal(reloads, 1, 'a reload must not reset the in-progress guard');
+  assert.match(replies.join(' '), /restart in progress/i);
+  await new Promise((resolve) => setTimeout(resolve, 1150));
+  assert.equal(ended, 1);
+  assert.equal(hotReload.beginRestart(), true, 'the guard is released after reconnect is requested');
+  hotReload.finishRestart();
+});
+
+test('restart releases its guard if runtime reload fails', async (t) => {
+  const hotReload = botRequire('../utils/hotReload');
+  const originalReload = hotReload.reloadRuntime;
+  hotReload.reloadRuntime = () => { throw new Error('reload failed'); };
+  t.after(() => { hotReload.reloadRuntime = originalReload; hotReload.finishRestart?.(); });
+  const sock = { sendMessage: async () => ({}) };
+  const command = botRequire('../commands/admin/botmanage').find((item) => item.name === 'restart');
+  await assert.rejects(command.execute(sock, { key: { remoteJid: 'chat@s.whatsapp.net' } }, [], { reply: async () => {} }), /reload failed/);
+  assert.equal(hotReload.beginRestart(), true);
+  hotReload.finishRestart();
+});
+
+test('a non-Error rejection from WhatsApp is handled without crashing the message handler', async () => {
+  const member = socket(second, 'linked:15550009999');
+  let calls = 0;
+  member.sendMessage = async (_chat, content) => {
+    calls += 1;
+    if (calls === 1) throw null;
+    member.sent.push(content);
+    return { key: { id: 'recovery' } };
+  };
+  await assert.doesNotReject(handler.handleMessage(member, msg('.off', 'non-error-rejection')));
+  assert.equal(member.sent.length, 1);
+  assert.match(member.sent[0].text, /wrong|try again/i);
 });

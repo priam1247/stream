@@ -25,14 +25,17 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { pathToFileURL } = require('url');
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
 
-const REPO = path.resolve(__dirname, '..');
+clearHostConfig();
+const work = fs.mkdtempSync(path.join(os.tmpdir(), 'zafar-nm3u8-live-'));
+const REPO = createBotFixture(work);
+process.chdir(work);
 const nm3u8dl = require(path.join(REPO, 'utils/nm3u8dl'));
 const getFfmpeg = require(path.join(REPO, 'utils/ffmpeg'));
 const { probeMedia } = require(path.join(REPO, 'utils/mediaTransfer'));
 
 (async () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'zafar-nm3u8-live-'));
   const binPath = path.join(work, 'bin', 'N_m3u8DL-RE');
   process.env.NM3U8DL_BIN = binPath;
   nm3u8dl._resetForTests();

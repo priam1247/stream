@@ -12,7 +12,10 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
+const { createRequire } = require('node:module');
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
 
+clearHostConfig();
 // Keep the HTTP cap small in this isolated process so size-limit behavior can
 // be tested without downloading gigabytes. Lower the sample floor accordingly
 // so verification can exercise the same boundary.
@@ -23,8 +26,10 @@ process.env.MAX_PER_HOST = '4';
 process.env.REALDEBRID_API_KEY = '';
 process.env.DEBRID_API_KEY = '';
 process.env.ALLDEBRID_API_KEY = 'offline-test';
-const ROOT = path.resolve(__dirname, '..');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-preflight-'));
+const ROOT = createBotFixture(TMP);
+const botRequire = createRequire(path.join(ROOT, 'scripts', 'test-preflight.js'));
+process.chdir(TMP);
 const nm3u8dl = require(path.join(ROOT, 'utils/nm3u8dl'));
 
 test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
@@ -1153,5 +1158,88 @@ test('movie HTTP fallback respects cancellation during an in-flight response', a
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(dest, { force: true });
+  }
+});
+
+test('console and bot/engine loggers redact nested credentials and error metadata', async () => {
+  const util = require('node:util');
+  const { redactArg, safeText } = botRequire('../utils/safeLog');
+  const payload = {
+    note: 'visible detail',
+    apiKey: 'dummy-api-secret',
+    headers: { Authorization: 'Basic ZHVtbXk6c2VjcmV0', 'X-Bot-Token': 'dummy-bot-secret', Cookie: 'sid=dummy-cookie' },
+    nested: { refresh_token: 'dummy-refresh-secret' },
+  };
+  payload.self = payload;
+  const err = new Error('Remote request failed');
+  err.config = payload;
+  const captured = [util.inspect(redactArg(payload), { depth: 8 }), util.inspect(redactArg(err), { depth: 8 }), safeText(payload)];
+  const originalLog = console.log;
+  try {
+    console.log = (...args) => captured.push(util.format(...args));
+    botRequire('../utils/logger')('security-test').info(payload);
+    const { log } = await import(pathToFileURL(path.join(ROOT, 'engine/core/log.js')).href);
+    log.child('security-test').info(payload);
+  } finally { console.log = originalLog; }
+  const output = captured.join('\n');
+  for (const secret of ['dummy-api-secret', 'ZHVtbXk6c2VjcmV0', 'dummy-bot-secret', 'dummy-cookie', 'dummy-refresh-secret']) {
+    assert.equal(output.includes(secret), false, `log leaked ${secret}`);
+  }
+  assert.match(output, /visible detail/);
+});
+
+test('logger runtime levels and section headers work', () => {
+  const logger = botRequire('../utils/logger');
+  const before = process.env.LOG_LEVEL;
+  const lines = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  try {
+    console.log = (...args) => lines.push(args.join(' '));
+    console.error = (...args) => lines.push(args.join(' '));
+    logger.setLevel('error');
+    logger('test').info('should be hidden');
+    logger.setLevel('debug');
+    logger('test').debug('debug is visible');
+    logger.section('test', 'section is visible');
+  } finally {
+    logger.setLevel(before || 'info');
+    if (before === undefined) delete process.env.LOG_LEVEL;
+    console.log = originalLog;
+    console.error = originalError;
+  }
+  assert.equal(lines.some((line) => line.includes('should be hidden')), false);
+  assert.ok(lines.some((line) => line.includes('debug is visible')));
+  assert.ok(lines.some((line) => line.includes('section is visible')));
+});
+
+test('updated YouTube search dependencies retain their CommonJS and glob interfaces', async () => {
+  assert.equal(typeof require('yt-search'), 'function');
+  const glob = require('redstar');
+  const dir = fs.mkdtempSync(path.join(TMP, 'search-glob-'));
+  fs.writeFileSync(path.join(dir, 'included.js'), '');
+  fs.writeFileSync(path.join(dir, 'excluded.txt'), '');
+  const files = await new Promise((resolve, reject) => glob(path.join(dir, '*.js'), (err, found) => err ? reject(err) : resolve(found)));
+  assert.deepEqual(files.map((file) => path.basename(file)), ['included.js']);
+});
+
+test('offline bot fixture copies source without copying private runtime data', () => {
+  const { createBotFixture } = require('./test-sandbox');
+  const source = path.join(TMP, 'fixture-source'); const parent = path.join(TMP, 'fixture-parent');
+  for (const dir of ['commands', 'engine', 'utils', 'scripts', 'database', 'session', 'secrets']) fs.mkdirSync(path.join(source, dir), { recursive: true });
+  fs.mkdirSync(parent);
+  fs.writeFileSync(path.join(source, 'index.js'), 'module.exports = 1;');
+  fs.writeFileSync(path.join(source, 'package.json'), '{}');
+  fs.writeFileSync(path.join(source, 'utils', 'safe.js'), 'module.exports = 1;');
+  fs.writeFileSync(path.join(source, 'utils', 'creds.json'), 'PRIVATE');
+  fs.writeFileSync(path.join(source, 'database', 'whitelist.json'), 'PRIVATE');
+  fs.writeFileSync(path.join(source, 'session', 'creds.json'), 'PRIVATE');
+  fs.writeFileSync(path.join(source, 'secrets', 'rclone.conf'), 'PRIVATE');
+  fs.writeFileSync(path.join(source, '.env'), 'PRIVATE');
+  const root = createBotFixture(parent, source);
+  assert.equal(fs.readFileSync(path.join(root, 'utils', 'safe.js'), 'utf8'), 'module.exports = 1;');
+  for (const relative of ['.env', 'utils/creds.json', 'database/whitelist.json', 'session/creds.json', 'secrets/rclone.conf']) {
+    assert.equal(fs.existsSync(path.join(root, relative)), false, `${relative} must not enter test fixture`);
+    assert.equal(fs.readFileSync(path.join(source, relative), 'utf8'), 'PRIVATE', `${relative} must stay untouched`);
   }
 });

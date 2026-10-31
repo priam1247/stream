@@ -8,20 +8,25 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
+const { createRequire } = require('node:module');
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
 
-const ROOT = path.resolve(__dirname, '..');
+clearHostConfig();
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-delivery-'));
+const ROOT = createBotFixture(TMP);
+const botRequire = createRequire(path.join(ROOT, 'scripts', 'test-delivery.js'));
+process.chdir(TMP);
 process.env.JOBS_DB = path.join(TMP, 'jobs.sqlite');
 process.env.MEDIA_DIR = path.join(TMP, 'media');
 process.env.JOBS_MIN_FREE_MB = '0';
 process.env.INLINE_LIMIT = '104857600';
 fs.mkdirSync(process.env.MEDIA_DIR, { recursive: true });
 
-const jobs = require('../utils/persistentJobs');
-const sockets = require('../utils/accountSockets');
-const delivery = require('../utils/jobDelivery');
-const temp = require('../utils/tempManager');
-const cleanup = require('../utils/cleanup');
+const jobs = botRequire('../utils/persistentJobs');
+const sockets = botRequire('../utils/accountSockets');
+const delivery = botRequire('../utils/jobDelivery');
+const temp = botRequire('../utils/tempManager');
+const cleanup = botRequire('../utils/cleanup');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(predicate, ms = 2500) {
   const end = Date.now() + ms;

@@ -5,7 +5,16 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { createSessionBackup, seal, open, validatePayload } = require('../utils/sessionBackup');
+const { createRequire } = require('node:module');
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
+
+clearHostConfig();
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-source-'));
+const BOT = createBotFixture(TMP);
+const botRequire = createRequire(path.join(BOT, 'scripts', 'test-session-backup.js'));
+process.chdir(TMP);
+const { createSessionBackup, seal, open, validatePayload } = botRequire('../utils/sessionBackup');
+test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 const key = crypto.randomBytes(32);
 const keyText = key.toString('base64');
@@ -150,4 +159,81 @@ test('a delayed revocation does not clear newer local generation metadata', asyn
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, 'state.json'))).slots[slot], { generation: newer, revision: 7 });
   assert.equal(service.rows.get(slot).revoked, false);
   await backup.stop();
+});
+
+test('graceful backup stop flushes pending primary and linked snapshots', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-stop-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const service = server(); const local = putLocal(tmp);
+  const backup = controller(tmp, service);
+  await backup.restore();
+  backup.schedule(local.root);
+  backup.schedule(local.dir);
+  await backup.stop({ flush: true });
+  assert.equal(service.rows.size, 2, 'pending encrypted recovery data should not be dropped on clean shutdown');
+  const replacement = controller(path.join(tmp, 'replacement'), service);
+  await replacement.restore();
+  assert.equal(fs.readFileSync(path.join(tmp, 'replacement', 'session', 'creds.json'), 'utf8'), creds);
+  assert.equal(fs.readFileSync(path.join(tmp, 'replacement', 'session', 'linked', number, attempt, 'session-123.json'), 'utf8'), JSON.stringify({ testKey: 'PRIVATE_KEY' }));
+  await replacement.stop();
+});
+
+test('graceful backup stop waits for an in-flight credential write before snapshotting', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-write-stop-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const service = server(); const local = putLocal(tmp);
+  const backup = controller(tmp, service); await backup.restore();
+  let release;
+  const ready = new Promise((resolve) => { release = resolve; });
+  t.after(() => release());
+  const auth = await backup.wrapAuth(async () => ({ state: { keys: { set: async () => {} } }, saveCreds: async () => {
+    await ready;
+    fs.writeFileSync(path.join(local.root, 'creds.json'), creds.replace('PRIVATE_SESSION_DATA', 'LATEST_SESSION_DATA'));
+  } }), local.root);
+  const writing = auth.saveCreds();
+  const stopping = backup.stop({ flush: true });
+  release(); await writing; await stopping;
+  const replacement = controller(path.join(tmp, 'replacement'), service); await replacement.restore();
+  assert.match(fs.readFileSync(path.join(tmp, 'replacement', 'session', 'creds.json'), 'utf8'), /LATEST_SESSION_DATA/);
+  await replacement.stop();
+});
+
+test('graceful backup stop retries an in-flight upload that fails during shutdown', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-upload-stop-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const base = server(); let announce, release; let puts = 0;
+  const started = new Promise((resolve) => { announce = resolve; });
+  const ready = new Promise((resolve) => { release = resolve; });
+  t.after(() => release());
+  const flaky = { fetch: async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.action === 'put' && ++puts === 1) { announce(); await ready; return Response.json({ error: 'offline' }, { status: 503 }); }
+    return base.fetch(url, opts);
+  } };
+  const local = putLocal(tmp); const backup = controller(tmp, flaky); await backup.restore();
+  const upload = backup._snapshot({ slot: 'primary', generation: primaryGeneration(), dir: local.root }).catch(() => {});
+  await started;
+  const stopping = backup.stop({ flush: true });
+  release(); await upload; await stopping;
+  assert.equal(puts, 2);
+  assert.equal(base.rows.has('primary'), true);
+});
+
+test('a revocation arriving during a credential write prevents the waiting backup upload', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-backup-revoke-race-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const service = server(); const local = putLocal(tmp); const backup = controller(tmp, service); await backup.restore();
+  const desc = { slot: `linked:${number}`, generation: attempt, dir: local.dir, number };
+  await backup._snapshot(desc);
+  let release;
+  const ready = new Promise((resolve) => { release = resolve; });
+  t.after(() => release());
+  const auth = await backup.wrapAuth(async () => ({ state: { keys: { set: async () => ready } }, saveCreds: async () => {} }), local.dir);
+  const writing = auth.state.keys.set({});
+  const uploading = backup._snapshot(desc);
+  await new Promise((resolve) => setImmediate(resolve));
+  await backup.revoke(desc.slot, attempt);
+  release(); await writing; await uploading;
+  assert.equal(service.rows.get(desc.slot).revoked, true, 'a stale upload must not restore a revoked session');
+  await backup.stop({ flush: true });
 });

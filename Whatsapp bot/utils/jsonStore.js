@@ -73,7 +73,11 @@ function writeJsonAtomic(filePath, data, { spaces = 2, keepBackup = true } = {})
 function tryParseFile(filePath, validate) {
   const raw = fs.readFileSync(filePath, 'utf8');
   if (!raw.trim()) throw new Error('file is empty');
-  const parsed = JSON.parse(raw);
+  // Modern JSON.parse errors can quote the beginning of the invalid content,
+  // including tokens. Return a generic parse error to logs and all callers.
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch { throw Object.assign(new Error('Invalid JSON'), { code: 'INVALID_JSON' }); }
   if (typeof validate === 'function' && !validate(parsed)) {
     throw new Error('JSON structure failed validation');
   }

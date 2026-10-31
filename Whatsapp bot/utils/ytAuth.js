@@ -9,7 +9,7 @@
  *     `expiry_date`) are saved atomically to `database/yt_auth.json`.
  *   • Unlike browser `cookies.txt` (which expire or rotate whenever a browser
  *     session changes), OAuth2 refresh tokens renew automatically on use via
- *     `credentials-update`. Keep `database/*.json` private and preserve it
+ *     `update-credentials`. Keep `database/*.json` private and preserve it
  *     when updating the service; repository CI does not overwrite it.
  */
 
@@ -20,15 +20,20 @@ const { writeJsonAtomic, readJsonSafe } = require('./jsonStore');
 const DB_DIR = path.join(__dirname, '..', 'database');
 const AUTH_FILE = path.join(DB_DIR, 'yt_auth.json');
 
-const _listeners = new Set();
+const _listeners = new Map();
+let _generation = 0;
+let _cancelLogin = null;
 
-function onAuthChange(fn) {
-  if (typeof fn === 'function') _listeners.add(fn);
-  return () => _listeners.delete(fn);
+function onAuthChange(fn, key = Symbol('auth-listener')) {
+  if (typeof fn !== 'function') return () => {};
+  // A named listener can replace its previous hot-reloaded instance.
+  _listeners.set(key, fn);
+  return () => { if (_listeners.get(key) === fn) _listeners.delete(key); };
 }
 
 function notifyAuthChange() {
-  for (const fn of _listeners) {
+  _generation += 1;
+  for (const fn of _listeners.values()) {
     try { fn(); } catch { /* ignore */ }
   }
 }
@@ -70,15 +75,19 @@ function saveYtCreds(creds, { notify = true } = {}) {
 }
 
 function clearYtCreds() {
+  // This state survives command hot reloads, so logout always cancels the
+  // original pending login before it can write a late authorization.
+  _cancelLogin?.();
   const target = authFilePath();
-  let removed = false;
-  try {
-    if (fs.existsSync(target)) {
-      fs.unlinkSync(target);
-      removed = true;
-    }
-  } catch { /* ignore */ }
+  let removed = false; let failure = null;
+  // The atomic writer keeps a last-good copy containing the same OAuth secret.
+  // An explicit logout must remove those local copies or report a clear failure.
+  for (const file of [target, `${target}.bak`, `${target}.corrupt`]) {
+    try { fs.unlinkSync(file); removed = true; }
+    catch (err) { if (err?.code !== 'ENOENT') failure = err; }
+  }
   notifyAuthChange();
+  if (failure) throw Object.assign(new Error('Could not clear saved YouTube OAuth credentials.'), { code: 'YT_AUTH_CLEAR_FAILED', cause: failure });
   return removed;
 }
 
@@ -96,66 +105,73 @@ function _setInnertubeFactoryForTest(fn) {
 }
 
 /**
- * Start a Google TV OAuth2 device-code login session.
+ * Start a Google TV OAuth2 device-code login session. The initial deadline also
+ * covers client creation and code acquisition; cancellation ignores late events.
  *
- * @param {{ onCode?: (data: { verificationUrl: string, userCode: string, expiresIn: number }) => any, timeoutMs?: number }} [opts]
+ * @param {{ onCode?: (data: { verificationUrl: string, userCode: string, expiresIn: number }) => any, timeoutMs?: number, signal?: AbortSignal }} [opts]
  * @returns {Promise<object>} saved OAuth credentials
  */
-async function startYtLogin({ onCode, timeoutMs } = {}) {
-  let innertube;
-  if (_innertubeFactory) {
-    innertube = await _innertubeFactory();
-  } else {
-    const yt = await loadYoutubei();
-    innertube = await yt.Innertube.create({
-      cache: new yt.UniversalCache(false),
-      generate_session_locally: true,
-    });
-  }
-
+function startYtLogin({ onCode, timeoutMs, signal } = {}) {
+  if (_cancelLogin) return Promise.reject(Object.assign(new Error('YouTube login is already pending.'), { code: 'LOGIN_PENDING' }));
   return new Promise((resolve, reject) => {
-    let settled = false;
-    let timer = null;
+    let settled = false; let timer = null; let session = null;
+    const requestedTimeout = Number(timeoutMs);
+    const hasDeadline = Number.isFinite(requestedTimeout) && requestedTimeout > 0;
 
-    const finish = (fn, val) => {
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      session?.off?.('auth-pending', onPending);
+      session?.off?.('auth', onAuth);
+      session?.off?.('auth-error', onError);
+    };
+    const finish = (fn, value) => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
-      fn(val);
+      if (_cancelLogin === onAbort) _cancelLogin = null;
+      cleanup();
+      fn(value);
     };
-
-    innertube.session.once('auth-pending', (data) => {
-      const expiresSec = Math.max(30, Number(data?.expires_in) || 300);
-      const waitMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : (expiresSec + 10) * 1000;
-      timer = setTimeout(() => {
-        finish(reject, Object.assign(new Error('Login timed out — code expired. Run .ytlogin again.'), { code: 'LOGIN_TIMEOUT' }));
-      }, waitMs);
+    const armTimeout = (ms) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => finish(reject, Object.assign(new Error('YouTube login timed out. Run .ytlogin again.'), { code: 'LOGIN_TIMEOUT' })), ms);
       timer.unref?.();
-
+    };
+    const onAbort = () => finish(reject, Object.assign(new Error('YouTube login cancelled.'), { code: 'LOGIN_CANCELLED' }));
+    const onPending = (data) => {
+      if (settled) return;
+      const expiresSec = Math.max(30, Number(data?.expires_in) || 300);
+      if (!hasDeadline) armTimeout((expiresSec + 10) * 1000);
       const verificationUrl = String(data?.verification_url || 'https://www.google.com/device').trim();
       const userCode = String(data?.user_code || '').trim();
       if (typeof onCode === 'function') {
-        Promise.resolve(onCode({ verificationUrl, userCode, expiresIn: expiresSec })).catch(() => {});
+        void Promise.resolve().then(() => { if (!settled) return onCode({ verificationUrl, userCode, expiresIn: expiresSec }); }).catch(() => {});
       }
-    });
+    };
+    const onAuth = (data) => {
+      if (settled) return;
+      try { finish(resolve, saveYtCreds(data?.credentials)); }
+      catch (err) { finish(reject, err); }
+    };
+    const onError = (err) => finish(reject, err instanceof Error ? err : new Error(err?.message || 'YouTube OAuth failed'));
 
-    innertube.session.once('auth', ({ credentials }) => {
-      try {
-        const saved = saveYtCreds(credentials);
-        finish(resolve, saved);
-      } catch (err) {
-        finish(reject, err);
-      }
-    });
-
-    innertube.session.once('auth-error', (err) => {
-      const error = err instanceof Error ? err : new Error(err?.message || 'YouTube OAuth failed');
-      finish(reject, error);
-    });
-
-    Promise.resolve(innertube.session.signIn()).catch((err) => {
-      finish(reject, err instanceof Error ? err : new Error(String(err)));
-    });
+    _cancelLogin = onAbort;
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    armTimeout(hasDeadline ? requestedTimeout : 30_000);
+    void Promise.resolve().then(async () => {
+      const innertube = _innertubeFactory ? await _innertubeFactory() : await (async () => {
+        const yt = await loadYoutubei();
+        return yt.Innertube.create({ cache: new yt.UniversalCache(false), generate_session_locally: true });
+      })();
+      if (settled) return;
+      session = innertube?.session;
+      if (!session || typeof session.once !== 'function' || typeof session.signIn !== 'function') throw new Error('YouTube login is unavailable.');
+      session.once('auth-pending', onPending);
+      session.once('auth', onAuth);
+      session.once('auth-error', onError);
+      await session.signIn();
+    }).catch((err) => finish(reject, err instanceof Error ? err : new Error(String(err))));
   });
 }
 
@@ -166,6 +182,8 @@ module.exports = {
   saveYtCreds,
   clearYtCreds,
   onAuthChange,
+  authGeneration: () => _generation,
+  isLoginPending: () => Boolean(_cancelLogin),
   startYtLogin,
   _setInnertubeFactoryForTest,
 };

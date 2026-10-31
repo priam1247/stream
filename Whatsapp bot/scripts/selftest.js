@@ -23,10 +23,13 @@ const http = require('http');
 const assert = require('assert');
 
 // The bot is self-contained; its dashboard and GitHub workflow live one level
-// above it only when this is a full repository checkout.
-const REPO = path.join(__dirname, '..');
-const WORKSPACE = path.dirname(REPO);
+// above it only when this is a full repository checkout. Runtime modules are
+// loaded from an isolated source copy, never from the installed bot's data.
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
+const SOURCE_REPO = path.join(__dirname, '..');
+const WORKSPACE = path.dirname(SOURCE_REPO);
 const FULL_REPOSITORY = fs.existsSync(path.join(WORKSPACE, '.git'));
+clearHostConfig();
 
 // ─── tiny test harness ────────────────────────────────────────────────────────
 let passed = 0;
@@ -45,6 +48,7 @@ async function test(name, fn) {
 
 // ─── sandbox: cwd with a fake bin/yt-dlp ──────────────────────────────────────
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'zafar-selftest-'));
+const REPO = createBotFixture(sandbox, SOURCE_REPO);
 process.chdir(sandbox);                       // engine looks for ./bin/yt-dlp
 fs.mkdirSync(path.join(sandbox, 'bin'), { recursive: true });
 require(path.join(REPO, 'utils/telemetry.js'))._resetForTests(path.join(sandbox, 'telemetry.json'));
@@ -2402,7 +2406,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
         'commands/media/facebook.js',
         'engine/core/locker.js',
       ]) {
-        assert.strictEqual(fs.existsSync(path.join(REPO, removed)), false, `${removed} should be deleted`);
+        assert.strictEqual(fs.existsSync(path.join(SOURCE_REPO, removed)), false, `${removed} should be deleted`);
       }
       const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
       assert.ok(!pkg.dependencies?.['ruhend-scraper'], 'ruhend-scraper still in dependencies');

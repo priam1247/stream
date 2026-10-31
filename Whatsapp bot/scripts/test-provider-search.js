@@ -6,8 +6,20 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const axios = require('axios');
-const search = require('../utils/providerSearch');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { createRequire } = require('node:module');
+const { createBotFixture, clearHostConfig } = require('./test-sandbox');
+
+clearHostConfig();
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-search-'));
+const BOT = createBotFixture(TMP);
+const botRequire = createRequire(path.join(BOT, 'scripts', 'test-provider-search.js'));
+process.chdir(TMP);
+const axios = botRequire('axios');
+const search = botRequire('../utils/providerSearch');
+test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 const examples = {
   bilibili: 'https://www.bilibili.com/video/BV1xx411c7mD',

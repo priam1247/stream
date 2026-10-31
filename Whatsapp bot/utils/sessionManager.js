@@ -60,7 +60,9 @@ function createSessionManager(opts) {
 
   const entries = new Map();
   const flights = new Map();
+  const unlinks = new Map();
   let stopped = false;
+  let stopPromise = null;
   let started = false;
 
   function writeRecord(number, record) {
@@ -91,7 +93,7 @@ function createSessionManager(opts) {
       dir: number ? path.join(linkedRoot, number, attempt) : primaryDir,
       status: state, pairNumber, sock: null, auth: null, connected: false,
       stopped: false, starting: null, requestStarted: false, pairResult: null,
-      waiters: [], expiryTimer: null, seen: new Map(),
+      waiters: [], expiryTimer: null, seen: new Map(), credentialWrites: new Set(),
     };
     entry.reconnector = createReconnector({
       baseMs: opts.reconnectBaseMs || 3000,
@@ -145,6 +147,9 @@ function createSessionManager(opts) {
       sockets.setOffline(entry.id, old);
       try { await old.end(new Error(reason)); } catch { /* already closed */ }
     }
+    // A creds.update may have been accepted just before this socket stopped.
+    // Finish those writes before shutdown or replacing the session directory.
+    await Promise.allSettled([...entry.credentialWrites]);
     notify();
   }
 
@@ -212,7 +217,7 @@ function createSessionManager(opts) {
       sock.__sessionId = entry.id;
       sock.__sessionDir = entry.dir;
       sock.__accountNumber = entry.number;
-      sock.__canRespond = () => !entry.number || allowed(entry.number);
+      sock.__canRespond = () => !stopped && (!entry.number || allowed(entry.number));
       entry.sock = sock;
       // A long-running command can finish after approval is revoked or after
       // its socket is replaced. Recheck at send time as well as at dispatch.
@@ -228,13 +233,15 @@ function createSessionManager(opts) {
 
       sock.ev.on('creds.update', () => {
         if (entry.stopped || sock.__superseded || entry.sock !== sock) return;
-        Promise.resolve().then(() => auth.saveCreds()).then(() => {
+        const write = Promise.resolve().then(() => auth.saveCreds()).then(() => {
           if (entry.number && entry.auth?.creds?.registered && !entry.stopped) {
             mark(entry, 'active');
             if (entry.expiryTimer) clearTimeout(entry.expiryTimer);
             entry.expiryTimer = null;
           }
         }).catch((err) => log.error(`Could not save WhatsApp credentials: ${err?.message || err}`));
+        entry.credentialWrites.add(write);
+        void write.then(() => entry.credentialWrites.delete(write), () => entry.credentialWrites.delete(write));
       });
 
       sock.ev.on('connection.update', (update) => {
@@ -356,6 +363,10 @@ function createSessionManager(opts) {
       throw Object.assign(new Error('The linked-account limit has been reached.'), { statusCode: 409 });
     }
     if (old) await retire(old);
+    // Retirement can await socket or credential I/O. Shutdown or an approval
+    // change during that wait must not create a fresh generation afterwards.
+    if (stopped) throw Object.assign(new Error('WhatsApp service is stopping.'), { statusCode: 503 });
+    if (!canPair(number)) throw Object.assign(new Error('Approve and enable this number for linking.'), { statusCode: 403 });
 
     const attempt = crypto.randomBytes(12).toString('hex');
     // Baileys writes individual keys using the process umask. Restrict the
@@ -381,6 +392,7 @@ function createSessionManager(opts) {
   }
 
   function requestPair(rawNumber) {
+    if (stopped) return Promise.reject(Object.assign(new Error('WhatsApp service is stopping.'), { statusCode: 503 }));
     const number = String(rawNumber || '').replace(/\D/g, '');
     if (!NUMBER_RE.test(number)) return Promise.reject(Object.assign(new Error('Enter a valid international WhatsApp number.'), { statusCode: 400 }));
     if (flights.has(number)) return flights.get(number);
@@ -407,7 +419,7 @@ function createSessionManager(opts) {
 
   // Revoke only the explicitly identified additional session. An old queued
   // unlink must never disconnect a newer pairing or the legacy primary socket.
-  async function unlinkAccount(rawNumber, expectedSessionId) {
+  async function doUnlinkAccount(rawNumber, expectedSessionId) {
     const number = String(rawNumber || '').replace(/\D/g, '');
     const attempt = String(expectedSessionId || '');
     if (!NUMBER_RE.test(number) || !ATTEMPT_RE.test(attempt)) {
@@ -431,6 +443,17 @@ function createSessionManager(opts) {
     try { opts.onRevoked?.(`linked:${number}`, attempt); } catch { /* recovery retry is independent */ }
     await retire(entry, 'Session unlinked');
     return { number, sessionId: attempt, unlinked: true };
+  }
+
+  function unlinkAccount(rawNumber, expectedSessionId) {
+    if (stopped) return Promise.reject(Object.assign(new Error('WhatsApp service is stopping.'), { statusCode: 503 }));
+    const key = `${String(rawNumber || '').replace(/\D/g, '')}:${String(expectedSessionId || '')}`;
+    if (unlinks.has(key)) return unlinks.get(key);
+    const operation = doUnlinkAccount(rawNumber, expectedSessionId);
+    unlinks.set(key, operation);
+    const forget = () => { if (unlinks.get(key) === operation) unlinks.delete(key); };
+    void operation.then(forget, forget);
+    return operation;
   }
 
   function refreshPermissions() {
@@ -466,9 +489,16 @@ function createSessionManager(opts) {
     }));
   }
 
-  async function stop() {
+  function stop() {
+    if (stopPromise) return stopPromise;
     stopped = true;
-    await Promise.all([...entries.values()].map((entry) => retire(entry, 'Service stopped')));
+    stopPromise = (async () => {
+      // A logout already sent to WhatsApp must settle and record its recovery
+      // revocation before sockets close and the backup controller is flushed.
+      await Promise.allSettled([...unlinks.values()]);
+      await Promise.all([...entries.values()].map((entry) => retire(entry, 'Service stopped')));
+    })();
+    return stopPromise;
   }
 
   return { start, stop, requestPair, unlinkAccount, status, refreshPermissions, reconnectAll };
