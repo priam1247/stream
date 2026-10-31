@@ -131,7 +131,7 @@ export function AdminConsole() {
 
   // Hydrodactyl / Pterodactyl Panel Control state
   const [panelUrlInput, setPanelUrlInput] = useState('https://panel.xsystemshosting.com');
-  const [panelServerIdInput, setPanelServerIdInput] = useState('');
+  const [panelServerIdInput, setPanelServerIdInput] = useState('381c9516');
   const [panelKeyInput, setPanelKeyInput] = useState('');
   const [showPanelKey, setShowPanelKey] = useState(false);
   const [savingPanel, setSavingPanel] = useState(false);
@@ -788,13 +788,36 @@ export function AdminConsole() {
                 <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
                   <h2 className="text-sm font-bold text-slate-900 sm:text-base">Service status</h2>
                   <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Hosting server</p><p className="mt-1 text-sm font-semibold capitalize text-slate-800">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p>{panelStatus?.error && <p className="mt-1 break-words text-[11px] text-slate-500">{panelStatus.error}</p>}</div>
+                    <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">XS hosting panel</p><p className="mt-1 text-sm font-semibold capitalize text-slate-800">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p>{panelStatus?.error && <p className="mt-1 break-words text-[11px] text-slate-500">{panelStatus.error}</p>}</div>
                     <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Service bridge</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-slate-500">{overviewError ? 'Last check failed' : overviewCheckedAt == null ? 'Awaiting first check' : data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
                     <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">WhatsApp</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p></div>
                   </div>
                   {overviewError && <p role="alert" className="mt-3 text-xs text-rose-700">Status could not be refreshed. Check Sync settings.</p>}
                   {!overviewError && data.botVersion && <p className="mt-3 break-all text-xs text-slate-500">Reported version {data.botVersion}</p>}
                   {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-amber-700">{serviceText(data.botError)} Check the service process and Sync settings.</p>}
+                </section>
+                <section aria-label="WhatsApp hosts" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <h2 className="text-sm font-bold text-slate-900 sm:text-base">WhatsApp hosts</h2>
+                    <span className="text-[11px] font-medium text-slate-500">XS preferred · Botkeep fallback</span>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {(['xs', 'botkeep'] as const).map((role) => {
+                      const node = data.failover?.[role];
+                      const age = node ? Math.max(0, Math.floor((Date.now() - node.lastSeenAt) / 1000)) : null;
+                      const fresh = age != null && age <= 25;
+                      const state = overviewError ? 'Unknown' : !data.failover?.enabled ? 'Awaiting setup'
+                        : !node ? 'Waiting for check-in' : !fresh ? 'Not reporting'
+                        : role === 'botkeep' && data.failover.issue ? 'Needs attention'
+                        : data.failover.activeRole === role ? 'Active' : 'Standby';
+                      return <div key={role} className="rounded-xl bg-slate-50 p-3">
+                        <div className="flex items-center justify-between gap-2"><p className="text-xs font-semibold text-slate-800">{role === 'xs' ? 'XS Systems · Primary' : 'Botkeep · Backup'}</p><span className={`text-xs font-semibold ${state === 'Active' ? 'text-teal-700' : 'text-slate-600'}`}>{state}</span></div>
+                        <p className="mt-1 text-[11px] text-slate-500">{node && !overviewError ? `${age != null ? `Last seen ${age}s ago` : 'No heartbeat'} · ${fresh ? node.connected ? 'Device ready' : 'Device not ready' : 'Connection unknown'}` : 'No failover heartbeat yet'}</p>
+                      </div>;
+                    })}
+                  </div>
+                  {data.failover?.issue && <p role="alert" className="mt-3 text-xs leading-5 text-rose-700">{data.failover.issue === 'shared-session' ? 'Both hosts are using the same session. Stop the backup and link it as a separate device.' : 'The backup is linked to a different WhatsApp number.'}</p>}
+                  <p className="mt-3 text-[11px] leading-4 text-slate-500">The backup needs its own linked WhatsApp device. Accounts linked only on one host cannot move automatically.</p>
                 </section>
                 {/* Live Server Analytics: Commands, Successful Downloads, Failed, Uptime + RAM/Disk/Queues */}
                 <LiveAnalytics
@@ -852,7 +875,7 @@ export function AdminConsole() {
                   </button>
                 </div>
 
-                <p className="w-full text-[11px] leading-5 text-slate-500">Power targets the configured server; restart may be queued to the service.</p>
+                <p className="w-full text-[11px] leading-5 text-slate-500">Panel power targets XS. If panel access is unavailable, restart may reconnect the active host instead.</p>
                 {lastRestartEvent && <p className="w-full text-[11px] text-slate-500">Last restart request: {new Date(lastRestartEvent.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
               </section>
             )}
@@ -1107,7 +1130,7 @@ export function AdminConsole() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  {data.failover?.enabled ? <p className="text-xs leading-5 text-slate-500">Failover uses signed outbound sync on both hosts; direct connections are disabled.</p> : <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                     <div className="min-w-0">
                       <label
                         htmlFor="admin-bot-url"
@@ -1141,7 +1164,7 @@ export function AdminConsole() {
                         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
                       />
                     </div>
-                  </div>
+                  </div>}
 
                   <button
                     type="submit"

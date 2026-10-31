@@ -263,6 +263,62 @@ to `Whatsapp bot` or use `cd "Whatsapp bot" && npm start`. On platforms that
 honor a `Procfile`, point the project root to that folder so it finds the bot's
 `Procfile` and package files.
 
+### XS primary with Botkeep standby
+
+Failover is **not enabled merely by merging the code**. It requires the updated
+bot on both hosts, the updated dashboard, durable Cloudflare D1 and the same
+private dashboard sync token on both hosts. The known XS panel defaults are
+`https://panel.xsystemshosting.com`, server `381c9516` (full UUID
+`381c9516-ac72-4b42-a4e3-e16bb7f9f4a0`). XS SFTP is
+`eu2-node.xsystemshosting.com:2022`, user `qaqa2004_024192.381c9516`; its
+password and the XS panel API key must be supplied privately by the owner. The
+allocated service address is `195.123.189.57:25794`. These are not sync secrets.
+The dashboard keeps legacy panel settings separately and does not send an old
+Botkeep key to XS.
+
+1. Stop any **old-version** Botkeep bot before enabling failover. A legacy bot
+   cannot obey the lease and could otherwise reply at the same time as XS. Do
+   not copy a WhatsApp `session/` directory between hosts.
+2. Update each host with the contents of `Whatsapp bot/` and the dashboard with
+   the matching dashboard code. Preserve the connected XS `session/`, `.env`
+   and `database/` files. The separate `botkeep-deploy` branch is not changed
+   by this repository's primary deployment.
+3. In **WhatsApp → Sync** on the dashboard, save one long random sync token.
+   Privately set that same `BOT_SYNC_TOKEN` on each bot; do not post it in chat.
+   Set `DASHBOARD_URL=https://dashboard-ij71.vercel.app` on both. Set
+   `WHATSAPP_FAILOVER_ROLE=xs` on XS and `WHATSAPP_FAILOVER_ROLE=botkeep` on
+   Botkeep. Set `ADMIN_API_ENABLED=false` on both. Leave `SESSION_BACKUP_KEY`
+   empty on Botkeep; encrypted recovery slots currently belong to XS only.
+4. Start XS first and wait for its WhatsApp connection and dashboard check-in.
+   Start Botkeep with the same pairing number and link it as a **separate**
+   WhatsApp device. Keep its local session on persistent storage. A digest of
+   the public device identity and a hash of the number are compared so a copied
+   session or a different WhatsApp account cannot take over. The owner dashboard
+   **WhatsApp → Status** shows both hosts and their reported states.
+5. Only after both are updated, linked and reporting, test a controlled XS stop
+   and restart. Botkeep can take the lease after XS stops reporting; XS regains
+   priority after the prior lease expires. Handover normally takes tens of
+   seconds, not instantaneously. If D1 or dashboard access is lost, a node stops
+   serving rather than guessing that it is safe to take over. Keep all host and
+   dashboard clocks synchronized; large clock jumps can undermine lease timing.
+
+The pair number independently linked on both hosts can fail over. Additional
+member accounts link only on the active host; their sessions are not replicated
+or automatically linked on the other host. A standby host without that member's
+own linked session cannot serve that member. In-flight operations/downloads are
+not migrated, messages may be missed during a handover, and exactly-once
+execution is not guaranteed. A live primary/standby test is still required.
+Bot-side panel power is disabled in failover mode to avoid targeting the wrong
+host; its restart command reconnects locally. The dashboard's XS panel controls
+need an XS API key entered privately.
+
+To return to single-host mode, first stop **both** bot processes. With a D1
+backup, remove only the `whatsapp` row from `portal_bot_failover`, clear
+`WHATSAPP_FAILOVER_ROLE` on the one host to use, and start that host alone.
+Never clear the lease while either coordinated host is running; this could allow
+an older uncoordinated process to reply at the same time. Session backups and
+member data are separate tables and must not be deleted for this change.
+
 ### Existing sessions and data
 
 The reorganization does not copy files from a remote server. If moving an existing
@@ -285,19 +341,17 @@ ran from the repository root must move its private runtime files into the new
 ### Optional GitHub Actions deployment
 
 GitHub requires workflows under the repository-level `.github/workflows/`, so
-`deploy-panel.yml` remains there. It tests the bot and builds the dashboard, then,
-if SFTP secrets are configured, uploads a clean archive of the committed bot
-folder to the configured panel root and requests a restart. It does not upload the
-dashboard, Scribd server, Git metadata, or untracked runtime files; it never uses
-`--delete` and excludes existing session and database state from overwrites.
+`deploy-panel.yml` remains there and tests the bot and dashboard. Pushes and PR
+merges **do not upload or restart a server**. A legacy SFTP upload runs only when
+manually dispatched with explicit confirmation after verifying its destination;
+its secrets may still point at an old host. The workflow does not upload the
+dashboard, Scribd server, Git metadata or untracked runtime files, does not use
+`--delete`, and excludes session and database state from overwrites.
 
-Before enabling or merging changes, check that the configured `PANEL_SFTP_*`,
-`PANEL_URL`, `PANEL_SERVER_ID`, and `PANEL_API_KEY` refer to the intended new
-server. Missing SFTP secrets skip the upload. The previous option to upload `.git`
-for a panel-root `git pull` is no longer available: the repository now has a
-nested bot folder, while the panel upload is flat. Use the workflow or deploy the
-bot folder's contents from a separate repository checkout instead. Existing Git
-metadata on a panel is not updated by this workflow.
+Before any manual dispatch, verify that `PANEL_SFTP_*`, `PANEL_URL`,
+`PANEL_SERVER_ID`, and `PANEL_API_KEY` identify the intended server. The old
+option to upload `.git` for a panel-root `git pull` is unavailable. Existing
+Git metadata on a panel is not updated by this workflow.
 
 ## Dashboard and Scribd
 

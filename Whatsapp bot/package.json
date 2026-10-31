@@ -11,7 +11,7 @@
     "test:preflight": "node --test scripts/test-preflight.js",
     "test:media": "node --test scripts/test-media-downloads.js scripts/test-media-shortcuts.js scripts/test-provider-search.js scripts/test-provider-search-handler.js",
     "test:jobs": "node --test scripts/test-provider-core.js",
-    "test:sessions": "node --test scripts/test-sessions.js scripts/test-account-routing.js scripts/test-bridge.js scripts/test-delivery.js scripts/test-session-backup.js scripts/test-service-startup.js"
+    "test:sessions": "node --test scripts/test-sessions.js scripts/test-account-routing.js scripts/test-bridge.js scripts/test-delivery.js scripts/test-session-backup.js scripts/test-service-startup.js scripts/test-failover.js"
   },
   "keywords": [
     "whatsapp bot",

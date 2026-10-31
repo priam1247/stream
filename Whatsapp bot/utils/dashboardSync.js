@@ -121,6 +121,7 @@ function startDashboardSync(opts = {}) {
   const fetchImpl = opts.fetchImpl || fetch;
   const wlFile = opts.wlFile || WL_FILE;
   const commandPolicy = opts.commandPolicy || memberCommandPolicy;
+  const failover = opts.failover || null;
 
   const baseUrl = String(opts.dashboardUrl ?? env.DASHBOARD_URL ?? '')
     .trim()
@@ -162,6 +163,10 @@ function startDashboardSync(opts = {}) {
 
   async function executeCommand(cmd) {
     if (!cmd || typeof cmd.id !== 'string') return;
+    const commandEpoch = failover ? failover.report().epoch : 0;
+    if (failover && !commandEpoch) return;
+    const stillOwnsCommand = () => !failover || (failover.canServe() && failover.report().epoch === commandEpoch);
+    const reportResult = (result) => { if (stillOwnsCommand()) pendingResults.push(result); };
     try {
       if (cmd.type === 'pair') {
         const number = cleanDigits(cmd.payload?.number);
@@ -180,7 +185,7 @@ function startDashboardSync(opts = {}) {
           throw new Error('Linking is not available on this service.');
         }
         const res = await opts.requestPairing(number);
-        pendingResults.push({
+        reportResult({
           id: cmd.id,
           ok: true,
           result: {
@@ -210,17 +215,18 @@ function startDashboardSync(opts = {}) {
         if (!authorized) throw new Error('This number no longer belongs to that account.');
         if (typeof opts.unlinkAccount !== 'function') throw new Error('Unlinking is not available on this service.');
         const result = await opts.unlinkAccount(number, sessionId);
-        pendingResults.push({ id: cmd.id, ok: true, result });
+        reportResult({ id: cmd.id, ok: true, result });
         return;
       }
 
       if (cmd.type === 'restart') {
-        pendingResults.push({
+        reportResult({
           id: cmd.id,
           ok: true,
           result: { restarting: true },
         });
         setTimeout(async () => {
+          if (!stillOwnsCommand()) return;
           const panelRes = await panelRestart();
           if (!panelRes.ok && typeof opts.requestRestart === 'function') {
             await opts.requestRestart();
@@ -229,13 +235,13 @@ function startDashboardSync(opts = {}) {
         return;
       }
 
-      pendingResults.push({
+      reportResult({
         id: cmd.id,
         ok: false,
         error: `Unsupported command type: ${String(cmd.type)}`,
       });
     } catch (err) {
-      pendingResults.push({
+      reportResult({
         id: cmd.id,
         ok: false,
         error: err?.message || 'Command failed on the service',
@@ -280,6 +286,8 @@ function startDashboardSync(opts = {}) {
       }
 
       const localUsers = collectUnsyncedLocalUsers(wlFile);
+      if (failover && !failover.canServe()) pendingResults.length = 0;
+      const failoverReport = failover?.report();
       batchResults = pendingResults.splice(0, pendingResults.length);
       const bodyObj = {
         connected: Boolean(status.connected),
@@ -298,6 +306,8 @@ function startDashboardSync(opts = {}) {
         diskBudgetMB,
         whitelistVersion: lastWhitelistVersion,
         commandPolicyVersion: commandPolicy.version(),
+        ...(failoverReport ? { failover: { ...failoverReport, primaryConnected: status.primaryConnected === true,
+          deviceFingerprint: status.primaryDeviceFingerprint || '' } } : {}),
         ...(typeof opts.getBackupStatus === 'function' ? { sessionBackup: opts.getBackupStatus() } : {}),
         ...(localUsers.length ? { localUsers } : {}),
         completedResults: batchResults,
@@ -307,6 +317,7 @@ function startDashboardSync(opts = {}) {
       const urlPath = '/api/bot/sync';
 
       const headers = buildSignedHeaders(token, 'POST', urlPath, bodyText);
+      const leaseRequest = failover?.startRequest();
       const res = await fetchImpl(`${baseUrl}${urlPath}`, {
         method: 'POST',
         headers,
@@ -315,7 +326,10 @@ function startDashboardSync(opts = {}) {
       });
 
       if (!res.ok) {
-        if (batchResults.length) pendingResults.unshift(...batchResults);
+        if (failover && [401, 403, 409].includes(res.status)) failover.revoke();
+        if (batchResults.length && (!failover || (failover.canServe() && failover.report().epoch === failoverReport.epoch))) {
+          pendingResults.unshift(...batchResults);
+        }
         consecutiveFailures++;
         const backoff = Math.min(60_000, defaultIntervalMs * Math.pow(1.6, consecutiveFailures));
         if (consecutiveFailures === 1 || consecutiveFailures % 10 === 0) {
@@ -329,6 +343,9 @@ function startDashboardSync(opts = {}) {
       const data = await res.json().catch(() => ({}));
       if (stopped) return { ok: false, stopped: true };
       consecutiveFailures = 0;
+      // A missing, late, denied or mismatched response immediately fences this
+      // node. The standby may still receive the current permission snapshots.
+      const mayExecute = failover ? failover.accept(data.failover, leaseRequest) : true;
 
       let policyConfirmed = false;
       if (Array.isArray(data.disabledMemberCommands) && typeof data.commandPolicyVersion === 'string') {
@@ -351,7 +368,7 @@ function startDashboardSync(opts = {}) {
         try { opts.onPermissionsReady?.(); } catch { /* non-fatal */ }
       }
 
-      const commands = Array.isArray(data.commands) ? data.commands : [];
+      const commands = mayExecute && Array.isArray(data.commands) ? data.commands : [];
       // A slow linking handshake must not block heartbeats or another account's
       // code. Report each result as soon as it is available.
       for (const cmd of commands) {
@@ -395,6 +412,7 @@ function startDashboardSync(opts = {}) {
     syncNow: () => runSyncTick(),
     stop() {
       stopped = true;
+      failover?.revoke();
       if (timer) clearTimeout(timer);
       timer = null;
     },

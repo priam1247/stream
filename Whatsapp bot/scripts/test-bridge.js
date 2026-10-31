@@ -139,3 +139,74 @@ test('member access waits until this process has both current portal snapshots',
   await sync.syncNow(); assert.equal(ready, 0);
   await sync.syncNow(); assert.equal(ready, 1);
 });
+
+test('only a current failover lease can execute bridge commands, and standby still receives permissions', async (t) => {
+  const { createFailoverLease } = require('../utils/failoverLease');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-failover-bridge-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const lease = createFailoverLease('botkeep', { instance: 'b'.repeat(32) });
+  let calls = 0;
+  const bodies = [];
+  let pairs = 0;
+  const sync = startDashboardSync({
+    dashboardUrl: 'https://dashboard.example', token: 'test-token', manualOnly: true,
+    wlFile: path.join(root, 'whitelist.json'), failover: lease,
+    getStatus: () => ({ connected: true }),
+    requestPairing: async () => { pairs++; return { code: 'SAFE', issuedAt: Date.now() }; },
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      calls++;
+      return { ok: true, json: async () => ({
+        failover: calls === 2 ? { granted: true, role: 'botkeep', instance: 'b'.repeat(32), epoch: 2, ttlMs: 30_000 } : { granted: false },
+        whitelistChanged: calls === 1, whitelistVersion: '0123456789abcdef',
+        users: [{ number: '15550001111', enabled: true }],
+        commands: [{ id: `pair-${calls}`, type: 'pair', payload: { number: '15550001111' }, expiresAt: Date.now() + 60_000 }],
+      }) };
+    },
+  });
+  t.after(() => sync.stop());
+  await sync.syncNow(); await flush();
+  assert.equal(lease.canServe(), false);
+  assert.equal(pairs, 0);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'whitelist.json'))).users.length, 1);
+  await sync.syncNow(); await flush();
+  assert.equal(lease.canServe(), true);
+  assert.equal(pairs, 1);
+  assert.equal(bodies[1].failover.epoch, 0);
+  await sync.syncNow(); await flush();
+  assert.equal(bodies[2].failover.epoch, 2);
+  assert.equal(lease.canServe(), false);
+  assert.equal(pairs, 1);
+});
+
+test('a slow command that finishes after lease revocation cannot report an old pairing code', async (t) => {
+  const { createFailoverLease } = require('../utils/failoverLease');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-failover-late-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const lease = createFailoverLease('xs', { instance: 'a'.repeat(32) });
+  let complete;
+  const wait = new Promise((resolve) => { complete = resolve; });
+  const bodies = [];
+  let calls = 0;
+  const sync = startDashboardSync({
+    dashboardUrl: 'https://dashboard.example', token: 'test-token', manualOnly: true,
+    wlFile: path.join(root, 'whitelist.json'), failover: lease, getStatus: () => ({ connected: true }),
+    requestPairing: () => wait,
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      calls++;
+      return { ok: true, json: async () => ({
+        failover: calls === 1 ? { granted: true, role: 'xs', instance: 'a'.repeat(32), epoch: 1, ttlMs: 30_000 } : { granted: false },
+        whitelistChanged: calls === 1, whitelistVersion: '0123456789abcdef', users: [{ number: '15550001111', enabled: true }],
+        commands: calls === 1 ? [{ id: 'slow', type: 'pair', payload: { number: '15550001111' }, expiresAt: Date.now() + 60_000 }] : [],
+      }) };
+    },
+  });
+  t.after(() => sync.stop());
+  await sync.syncNow();
+  await sync.syncNow();
+  complete({ code: 'MUST-NOT-REPORT', issuedAt: Date.now() });
+  await flush();
+  await sync.syncNow();
+  assert.deepEqual(bodies[2].completedResults, []);
+});

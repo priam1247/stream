@@ -3,6 +3,7 @@ import {
   getBotCommandById,
   getBotConnectionConfig,
   getBotHeartbeat,
+  getFailoverStatus,
   getStoredWhatsAppUser,
   setFastPollWindow,
 } from './storage';
@@ -66,16 +67,18 @@ export async function getResolvedBotTarget(): Promise<{
   botEnabledForMembers: boolean;
   rawUrl: string;
 }> {
-  const cfg = await getBotConnectionConfig();
-  const parsed = parseAndValidateBotUrl(cfg.botApiUrl);
+  const [cfg, failover] = await Promise.all([getBotConnectionConfig(), getFailoverStatus()]);
+  // Failover uses only the signed shared queue. A stale direct Botkeep URL
+  // could otherwise bypass the lease and pair or modify the wrong peer.
+  const parsed = parseAndValidateBotUrl(failover.enabled ? '' : cfg.botApiUrl);
   return {
     baseUrl: parsed.baseUrl,
     hostLabel: parsed.hostLabel,
     isInsecureHttp: Boolean(parsed.isInsecureHttp),
-    token: cfg.botAdminToken,
+    token: failover.enabled ? '' : cfg.botAdminToken,
     syncToken: cfg.botSyncToken,
     botEnabledForMembers: cfg.botEnabledForMembers,
-    rawUrl: cfg.botApiUrl,
+    rawUrl: failover.enabled ? '' : cfg.botApiUrl,
   };
 }
 
@@ -117,10 +120,12 @@ export async function fetchLiveBotStatus(customTarget?: {
   error?: string;
 }> {
   if (!customTarget) {
-    const hb = await getBotHeartbeat();
+    const [hb, failover] = await Promise.all([getBotHeartbeat(), getFailoverStatus()]);
     if (hb) {
       const ageSec = Math.max(0, Math.floor((Date.now() - hb.lastSeenAt) / 1000));
-      if (ageSec <= HEARTBEAT_FRESH_SECONDS) {
+      const ownsCurrentLease = !failover.enabled || Boolean(failover.activeRole &&
+        hb.failover?.role === failover.activeRole && hb.failover?.epoch === failover.epoch);
+      if (ageSec <= HEARTBEAT_FRESH_SECONDS && ownsCurrentLease) {
         return {
           reachable: true,
           connected: typeof hb.connected === 'boolean' ? hb.connected : null,

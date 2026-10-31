@@ -107,6 +107,16 @@ export interface WhatsAppAccountStatus {
   linkedAt?: number;
 }
 
+export type WhatsAppFailoverRole = 'xs' | 'botkeep';
+export interface WhatsAppFailoverStatus {
+  enabled: boolean;
+  activeRole: WhatsAppFailoverRole | null;
+  epoch: number | null;
+  issue: 'shared-session' | 'different-account' | null;
+  xs: { lastSeenAt: number; connected: boolean | null; version: string } | null;
+  botkeep: { lastSeenAt: number; connected: boolean | null; version: string } | null;
+}
+
 export interface BotHeartbeatRecord {
   lastSeenAt: number;
   connected: boolean | null;
@@ -126,6 +136,7 @@ export interface BotHeartbeatRecord {
   /** Version of the last whitelist snapshot the bot reports applying. */
   whitelistVersion?: string;
   commandPolicyVersion?: string;
+  failover?: { role: WhatsAppFailoverRole; epoch: number };
   sessionBackup?: { state: 'disabled' | 'starting' | 'ready' | 'error' | 'conflict'; lastBackupAt: number | null; sessions?: number; backedUp?: number };
 }
 
@@ -181,6 +192,7 @@ export interface AdminOverviewPayload {
   members: MemberRecord[];
   latencyMs?: number;
   sessionBackup?: { state: 'disabled' | 'starting' | 'ready' | 'error' | 'conflict'; lastBackupAt: number | null; sessions?: number; backedUp?: number } | null;
+  failover?: WhatsAppFailoverStatus;
 }
 
 export interface MemberOverviewPayload {

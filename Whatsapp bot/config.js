@@ -31,6 +31,9 @@
 })();
 
 const env = process.env;
+// Only this XS container gets the known dashboard origin as a default. Other
+// hosts, including the standby, keep their own explicit connection settings.
+const isPrimaryXsServer = String(env.SERVER_UUID || env.P_SERVER_UUID || '').trim().toLowerCase() === '381c9516-ac72-4b42-a4e3-e16bb7f9f4a0';
 const list = (raw, fallback = '') => String(raw || fallback).split(',').map(s => s.trim()).filter(Boolean);
 // Ignore legacy branding in existing environment files without changing access rules.
 const displayName = (raw, fallback) => {
@@ -170,7 +173,7 @@ module.exports = {
     // Pterodactyl hands the container a port (SERVER_PORT / PORT); on other
     // hosts ADMIN_API_PORT (or ADMIN_PORT) is the one to set. 3000 is last resort.
     port: Number(env.ADMIN_API_PORT || env.ADMIN_PORT || env.SERVER_PORT || env.PORT || 3000),
-    dashboardUrl: (env.DASHBOARD_URL || '').replace(/\/+$/, ''),
+    dashboardUrl: (env.DASHBOARD_URL || (isPrimaryXsServer ? 'https://dashboard-ij71.vercel.app' : '')).replace(/\/+$/, ''),
     corsOrigins: String(env.ADMIN_CORS_ORIGINS || '')
       .split(',')
       .map((s) => s.trim().replace(/\/+$/, ''))

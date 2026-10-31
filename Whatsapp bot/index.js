@@ -222,6 +222,15 @@ function getWebVersion() {
 
 async function startService() {
   const portalSyncConfigured = Boolean(config.admin?.dashboardUrl && config.admin?.syncToken);
+  const { getFailoverRole } = require('./utils/failoverConfig');
+  const failoverRole = getFailoverRole(process.env, config.admin);
+  let sessions;
+  const failover = failoverRole ? require('./utils/failoverLease').createFailoverLease(failoverRole, {
+    onChange: (active) => {
+      console.log(`WhatsApp failover: ${failoverRole} ${active ? 'active' : 'standby'}.`);
+      sessions?.refreshPermissions();
+    },
+  }) : null;
   let permissionsSynced = !portalSyncConfigured;
   const { createSessionBackup } = require('./utils/sessionBackup');
   const backup = createSessionBackup({ sessionDir: config.sessionName, dashboardUrl: config.admin?.dashboardUrl,
@@ -229,9 +238,10 @@ async function startService() {
     isEligible: (number, claim) => readWL().users.some((user) => String(user.number) === number && user.backupClaim === claim && (user.enabled !== false || user.pairAllowed === true)) });
   // Do not create a fresh manifest or credentials when recovery is unavailable.
   await backup.restore();
-  const sessions = createSessionManager({
+  sessions = createSessionManager({
   sessionDir: config.sessionName,
   pairNumber: config.pairNumber,
+  canServe: () => !failover || failover.canServe(),
   maxAccounts: Number(process.env.MAX_LINKED_ACCOUNTS || 20),
   loggedOutCode: DisconnectReason.loggedOut,
   loadAuthState: (dir) => backup.wrapAuth(useMultiFileAuthState, dir),
@@ -281,7 +291,8 @@ await startSessionServices(sessions, async function startDashboardBridge() {
     dashboardUrl: admin.dashboardUrl,
     token: admin.syncToken,
     intervalMs: admin.syncIntervalMs,
-    getStatus: () => sessions.status(),
+    failover,
+    getStatus: () => ({ ...sessions.status(), ...(failover ? { primaryDeviceFingerprint: sessions.primaryDeviceFingerprint() } : {}) }),
     getBackupStatus: () => backup.status(),
     requestPairing: (number) => sessions.requestPair(number),
     unlinkAccount: (number, sessionId) => sessions.unlinkAccount(number, sessionId),
@@ -299,7 +310,8 @@ await startSessionServices(sessions, async function startDashboardBridge() {
     },
   });
 
-  if (admin.apiEnabled && admin.token) {
+  // A direct per-host bridge could bypass the shared command lease.
+  if (admin.apiEnabled && admin.token && !failover) {
     api = startAdminApi({
       port: admin.port,
       token: admin.token,
