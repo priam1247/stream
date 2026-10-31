@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyBotSyncRequest } from '@/lib/bot-sync-auth';
-import { getEligibleSessionBackup, getSessionBackup, getStoredWhatsAppUser, isUsingCloudflareD1, listSessionBackupMetadata, putSessionBackup, revokeSessionBackup, sessionBackupClaim } from '@/lib/storage';
+import { getEligibleSessionBackup, getFailoverStatus, getSessionBackup, getStoredWhatsAppUser, isUsingCloudflareD1, listSessionBackupMetadata, putSessionBackup, revokeSessionBackup, sessionBackupClaim } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 const headers = { 'Cache-Control': 'no-store' };
@@ -38,19 +38,35 @@ export async function POST(req: NextRequest) {
   }
   const auth = await verifyBotSyncRequest(req, raw);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status, headers });
+  // The standby has a separate WhatsApp session and must not read, overwrite,
+  // or revoke the primary's encrypted recovery slots. XS may restore before its
+  // first heartbeat creates the lease; legacy is allowed only in single-host mode.
+  if (auth.credentialRole === 'botkeep') return NextResponse.json({ error: 'Recovery is restricted to the primary service.' }, { status: 403, headers });
   if (!(await isUsingCloudflareD1())) return NextResponse.json({ error: 'Durable D1 storage is not configured.' }, { status: 503, headers });
+  const legacy = auth.credentialRole === 'legacy';
+  if (legacy && (await getFailoverStatus()).enabled) {
+    return NextResponse.json({ error: 'Recovery requires the primary service credential.' }, { status: 403, headers });
+  }
+  // Storage also checks this mode within each SQL statement: activation can
+  // occur after the initial check while this request is still in flight.
   let data: Record<string, unknown>;
   try { data = JSON.parse(raw); } catch { return NextResponse.json({ error: 'Invalid request.' }, { status: 400, headers }); }
   if (data.action === 'list') {
     const after = data.after === undefined ? '' : data.after;
     if (after !== '' && !validSlot(after)) return NextResponse.json({ error: 'Invalid backup cursor.' }, { status: 400, headers });
-    const records = await listSessionBackupMetadata(String(after));
+    const records = await listSessionBackupMetadata(String(after), legacy);
+    if (legacy && (await getFailoverStatus()).enabled) {
+      return NextResponse.json({ error: 'Recovery mode changed; restart with the primary credential.' }, { status: 409, headers });
+    }
     return NextResponse.json({ ok: true, records }, { headers });
   }
   const slot = data.slot;
   if (!validSlot(slot)) return NextResponse.json({ error: 'Invalid backup slot.' }, { status: 400, headers });
   if (data.action === 'meta') {
-    const record = await getSessionBackup(slot);
+    const record = await getSessionBackup(slot, legacy);
+    if (legacy && (await getFailoverStatus()).enabled) {
+      return NextResponse.json({ error: 'Recovery mode changed; restart with the primary credential.' }, { status: 409, headers });
+    }
     if (!record) return NextResponse.json({ error: 'Backup not available.' }, { status: 404, headers });
     const { ciphertext: _ciphertext, ...metadata } = record;
     return NextResponse.json({ ok: true, record: metadata }, { headers });
@@ -58,13 +74,18 @@ export async function POST(req: NextRequest) {
   if (data.action === 'revoke') {
     const generation = typeof data.generation === 'string' ? data.generation : '';
     if (!/^[a-f0-9]{24}$/.test(generation)) return NextResponse.json({ error: 'Invalid generation.' }, { status: 400, headers });
-    await revokeSessionBackup(slot, generation);
+    if (!await revokeSessionBackup(slot, generation, legacy)) {
+      return NextResponse.json({ error: 'Recovery mode changed; restart with the primary credential.' }, { status: 409, headers });
+    }
     return NextResponse.json({ ok: true }, { headers });
   }
   const claim = await claimForSlot(slot);
   if (!claim) return NextResponse.json({ error: 'This session is not eligible for recovery.' }, { status: 403, headers });
   if (data.action === 'get') {
-    const record = await getEligibleSessionBackup(slot, claim.token, claim.identity);
+    const record = await getEligibleSessionBackup(slot, claim.token, claim.identity, legacy);
+    if (legacy && (await getFailoverStatus()).enabled) {
+      return NextResponse.json({ error: 'Recovery mode changed; restart with the primary credential.' }, { status: 409, headers });
+    }
     if (!record) return NextResponse.json({ error: 'Backup not available.' }, { status: 404, headers });
     return NextResponse.json({ ok: true, record }, { headers });
   }
@@ -76,7 +97,7 @@ export async function POST(req: NextRequest) {
         !Number.isSafeInteger(revision) || Number(revision) < 0 || !/^v1:[A-Za-z0-9+/=:.]+$/.test(ciphertext) || ciphertext.length > 1_000_000) {
       return NextResponse.json({ error: 'Invalid encrypted backup.' }, { status: 400, headers });
     }
-    const next = await putSessionBackup(slot, generation, claim.token, ciphertext, Number(revision), claim.identity);
+    const next = await putSessionBackup(slot, generation, claim.token, ciphertext, Number(revision), claim.identity, legacy);
     if (next == null) return NextResponse.json({ error: 'Backup changed; refresh before retrying.' }, { status: 409, headers });
     return NextResponse.json({ ok: true, revision: next }, { headers });
   }

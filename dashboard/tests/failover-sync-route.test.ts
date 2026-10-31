@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   enabled: true,
   lease: { role: 'xs', instance: 'a'.repeat(32), granted: true, epoch: 4, ttlMs: 30_000 } as Record<string, unknown>,
   unavailable: false,
+  credentialRole: 'xs' as 'xs' | 'botkeep' | 'legacy',
 }));
 const mocks = vi.hoisted(() => ({
   claimLease: vi.fn(async () => { if (state.unavailable) throw new Error('D1 down'); return state.lease; }),
@@ -16,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   legacyImport: vi.fn(async () => []),
 }));
 vi.mock('../lib/auth-engine', () => ({ getAdminEmail: () => 'owner@example.com' }));
-vi.mock('../lib/bot-sync-auth', () => ({ verifyBotSyncRequest: async () => ({ ok: true, status: 200 }) }));
+vi.mock('../lib/bot-sync-auth', () => ({ verifyBotSyncRequest: async () => ({ ok: true, status: 200, credentialRole: state.credentialRole }) }));
 vi.mock('../lib/rate-limit', () => ({ checkRateLimit: () => ({ allowed: true }), getClientIp: () => 'test', recordRateLimitHit: () => {} }));
 vi.mock('../lib/storage', () => ({
   claimFailoverLease: mocks.claimLease,
@@ -47,6 +48,7 @@ const fence = { role: 'xs', instance: 'a'.repeat(32), epoch: 4 };
 beforeEach(() => {
   state.enabled = true;
   state.unavailable = false;
+  state.credentialRole = 'xs';
   state.lease = { role: 'xs', instance: 'a'.repeat(32), granted: true, epoch: 4, ttlMs: 30_000 };
   for (const fn of Object.values(mocks)) fn.mockClear();
 });
@@ -55,13 +57,30 @@ describe('signed failover sync routing', () => {
   it('rejects unsigned, malformed and legacy requests once failover is enabled', async () => {
     expect((await POST(request({ connected: true, failover: identity }, false))).status).toBe(401);
     expect((await POST(request({ connected: true, failover: { role: 'xs', instance: 'bad' } }))).status).toBe(400);
+    state.credentialRole = 'legacy';
     expect((await POST(request({ connected: true }))).status).toBe(409);
     expect(mocks.claimLease).not.toHaveBeenCalled();
   });
 
-  it('uses primary-device health rather than the presence of an unrelated member session', async () => {
-    await POST(request({ connected: true, failover: { ...identity, primaryConnected: false } }));
+  it('rejects another role or a legacy credential before any failover lease claim', async () => {
+    for (const credentialRole of ['botkeep', 'legacy'] as const) {
+      state.credentialRole = credentialRole;
+      expect((await POST(request({ connected: true, failover: identity }))).status).toBe(403);
+    }
+    expect(mocks.claimLease).not.toHaveBeenCalled();
+    state.credentialRole = 'xs';
+    state.enabled = false;
+    expect((await POST(request({ connected: true }))).status).toBe(403);
+    state.credentialRole = 'legacy';
+    expect((await POST(request({ connected: true }))).status).toBe(200);
+  });
+
+  it('uses the primary number and health even while a linked member is the only online account', async () => {
+    await POST(request({ connected: true, botNumber: '15550001111', failover: { ...identity, primaryConnected: false, accountNumber: '15550009999' } }));
     expect(mocks.claimLease).toHaveBeenCalledWith({ role: 'xs', instance: 'a'.repeat(32) },
+      { connected: false, accountNumber: '15550009999', deviceFingerprint: '1'.repeat(64), version: '' });
+    await POST(request({ connected: true, botNumber: '15550001111', failover: { ...identity, primaryConnected: false } }));
+    expect(mocks.claimLease).toHaveBeenLastCalledWith({ role: 'xs', instance: 'a'.repeat(32) },
       { connected: false, accountNumber: '', deviceFingerprint: '1'.repeat(64), version: '' });
   });
 

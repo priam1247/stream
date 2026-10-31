@@ -4,7 +4,8 @@ import { NextRequest } from 'next/server';
 
 const state = vi.hoisted(() => ({ enabled: true }));
 const mocks = vi.hoisted(() => ({
-  save: vi.fn(async () => ({ botApiUrl: 'https://old-botkeep.example', botAdminToken: 'old-key', botSyncToken: 'test', botEnabledForMembers: true })),
+  save: vi.fn(async () => ({ botApiUrl: 'https://old-botkeep.example', botAdminToken: 'old-key', botSyncToken: 'test',
+    botXsSyncToken: 'private-xs-token', botBotkeepSyncToken: 'private-backup-token', botEnabledForMembers: true })),
   probe: vi.fn(async () => ({ reachable: false })),
 }));
 vi.mock('../lib/auth-engine', () => ({ getAuthenticatedSession: async () => ({ user: { isAdmin: true, email: 'owner@example.com' } }) }));
@@ -32,5 +33,29 @@ it('preserves old direct settings without probing or exposing them while saving 
   expect(response.status).toBe(200);
   expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ botApiUrl: undefined, botAdminToken: undefined, botSyncToken: 'test' }));
   expect(mocks.probe).toHaveBeenCalledWith();
-  expect(await response.json()).toMatchObject({ botApiUrl: '', hasBotToken: false });
+  const body = await response.json();
+  expect(body).toMatchObject({ botApiUrl: '', hasBotToken: false, hasXsSyncToken: true, hasBotkeepSyncToken: true });
+  expect(JSON.stringify(body)).not.toContain('private-xs-token');
+  expect(JSON.stringify(body)).not.toContain('private-backup-token');
+});
+
+it('accepts separately entered host keys without returning them', async () => {
+  const response = await POST(request({ botXsSyncToken: 'new-xs-token', botBotkeepSyncToken: 'new-backup-token' }));
+  expect(response.status).toBe(200);
+  expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ botXsSyncToken: 'new-xs-token', botBotkeepSyncToken: 'new-backup-token' }));
+  expect(mocks.probe).not.toHaveBeenCalled();
+  const body = JSON.stringify(await response.json());
+  expect(body).not.toContain('private-xs-token'); expect(body).not.toContain('private-backup-token');
+});
+
+it('reports validation problems without disclosing submitted credentials', async () => {
+  mocks.save.mockRejectedValueOnce(Object.assign(new Error('XS, Botkeep and single-host tokens must all be different.'), { code: 'INVALID_BOT_CREDENTIALS' }));
+  const response = await POST(request({ botXsSyncToken: 'new-private-token' }));
+  expect(response.status).toBe(400);
+  expect(JSON.stringify(await response.json())).not.toContain('new-private-token');
+});
+
+it('does not overwrite saved host keys with the masked placeholder', async () => {
+  expect((await POST(request({ botXsSyncToken: '••••••••', botBotkeepSyncToken: '••••••••' }))).status).toBe(200);
+  expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ botXsSyncToken: undefined, botBotkeepSyncToken: undefined }));
 });

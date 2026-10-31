@@ -64,6 +64,8 @@ export async function getResolvedBotTarget(): Promise<{
   isInsecureHttp: boolean;
   token: string;
   syncToken: string;
+  hasXsSyncToken: boolean;
+  hasBotkeepSyncToken: boolean;
   botEnabledForMembers: boolean;
   rawUrl: string;
 }> {
@@ -77,6 +79,8 @@ export async function getResolvedBotTarget(): Promise<{
     isInsecureHttp: Boolean(parsed.isInsecureHttp),
     token: failover.enabled ? '' : cfg.botAdminToken,
     syncToken: cfg.botSyncToken,
+    hasXsSyncToken: Boolean(cfg.botXsSyncToken),
+    hasBotkeepSyncToken: Boolean(cfg.botBotkeepSyncToken),
     botEnabledForMembers: cfg.botEnabledForMembers,
     rawUrl: failover.enabled ? '' : cfg.botApiUrl,
   };

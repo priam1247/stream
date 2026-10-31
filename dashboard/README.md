@@ -54,9 +54,11 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 
 - **WhatsApp → Status** distinguishes the XS primary and Botkeep standby after
   each sends a failover heartbeat. A missing check-in is not proof of host
-  power state. The coordinated mode needs D1, updated bot code and separate
-  WhatsApp devices; see the XS/Botkeep setup and limitations in the bot README.
-  Direct per-host bridging is disabled while coordinated failover is enabled.
+  power state. The coordinated mode needs D1, updated bot code, separate
+  WhatsApp devices, and distinct XS and Botkeep sync tokens generated under
+  **WhatsApp → Sync**; see the bot README for the safe migration procedure.
+  Old shared/legacy tokens cannot claim either role. Direct per-host bridging
+  is disabled while coordinated failover is enabled.
   The XS panel URL and server ID are defaults; old Botkeep panel credentials
   remain separate and are never automatically forwarded to XS.
 - Sign-in is kept only in the current page's memory. A full refresh or a closed,
@@ -123,6 +125,12 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+If D1 is configured but unreachable, failover fails closed. For **isolated local
+single-host development only**, set `ZAFAR_DEV_STANDALONE_FALLBACK=1` to opt
+into the disk fallback. Never enable that override for a dashboard connected to
+live coordinated hosts; fenced operations and leases still require D1. It has no
+effect in production.
 
 The Scribd contract test requires Python 3 and the `scribd` directory
 from this repository. It runs the unmodified web handler against temporary

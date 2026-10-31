@@ -84,6 +84,14 @@ function getD1Config() {
   return { accountId, databaseId, apiToken };
 }
 
+// An unreachable shared database may already contain a lease. Never silently
+// switch a coordinated dashboard to uncoordinated disk storage. Developers can
+// explicitly opt into isolated single-host disk mode for offline local work.
+function mayUseStandaloneDisk(): boolean {
+  return !getD1Config() || (process.env.NODE_ENV !== 'production' &&
+    globalThis.__zafarD1UnreachableInDev === true && process.env.ZAFAR_DEV_STANDALONE_FALLBACK === '1');
+}
+
 async function queryD1<T = Record<string, unknown>>(
   sql: string,
   params: (string | number | null)[] = [],
@@ -748,6 +756,8 @@ export async function getBotConnectionConfig(): Promise<BotConnectionConfig> {
   const envUrl = process.env.BOT_API_URL?.trim() || '';
   const envToken = process.env.ADMIN_DASHBOARD_TOKEN?.trim() || '';
   const envSyncToken = process.env.BOT_SYNC_TOKEN?.trim() || '';
+  const envXsToken = process.env.BOT_XS_SYNC_TOKEN?.trim() || '';
+  const envBotkeepToken = process.env.BOT_BOTKEEP_SYNC_TOKEN?.trim() || '';
 
   if (await ensureD1Tables()) {
     const rows =
@@ -762,6 +772,8 @@ export async function getBotConnectionConfig(): Promise<BotConnectionConfig> {
       botApiUrl: (map.get('bot_api_url') || envUrl).trim(),
       botAdminToken: (map.get('bot_admin_token') || envToken).trim(),
       botSyncToken: (map.get('bot_sync_token') || envSyncToken).trim(),
+      botXsSyncToken: (map.has('bot_xs_sync_token') ? map.get('bot_xs_sync_token')! : envXsToken).trim(),
+      botBotkeepSyncToken: (map.has('bot_botkeep_sync_token') ? map.get('bot_botkeep_sync_token')! : envBotkeepToken).trim(),
       botEnabledForMembers: map.get('bot_enabled_for_members') !== '0',
       updatedAt,
     };
@@ -772,6 +784,8 @@ export async function getBotConnectionConfig(): Promise<BotConnectionConfig> {
     botApiUrl: (store.settings.bot_api_url || envUrl).trim(),
     botAdminToken: (store.settings.bot_admin_token || envToken).trim(),
     botSyncToken: (store.settings.bot_sync_token || envSyncToken).trim(),
+    botXsSyncToken: (Object.hasOwn(store.settings, 'bot_xs_sync_token') ? store.settings.bot_xs_sync_token : envXsToken).trim(),
+    botBotkeepSyncToken: (Object.hasOwn(store.settings, 'bot_botkeep_sync_token') ? store.settings.bot_botkeep_sync_token : envBotkeepToken).trim(),
     botEnabledForMembers: store.settings.bot_enabled_for_members !== '0',
     updatedAt: store.settings.updated_at,
   };
@@ -781,6 +795,8 @@ export async function saveBotConnectionConfig(patch: {
   botApiUrl?: string;
   botAdminToken?: string;
   botSyncToken?: string;
+  botXsSyncToken?: string;
+  botBotkeepSyncToken?: string;
   botEnabledForMembers?: boolean;
 }): Promise<BotConnectionConfig> {
   const current = await getBotConnectionConfig();
@@ -794,51 +810,48 @@ export async function saveBotConnectionConfig(patch: {
     typeof patch.botSyncToken === 'string'
       ? patch.botSyncToken.trim()
       : current.botSyncToken;
+  const nextXsToken = typeof patch.botXsSyncToken === 'string' ? patch.botXsSyncToken.trim() : current.botXsSyncToken;
+  const nextBotkeepToken = typeof patch.botBotkeepSyncToken === 'string' ? patch.botBotkeepSyncToken.trim() : current.botBotkeepSyncToken;
+  if ([patch.botAdminToken, patch.botSyncToken, patch.botXsSyncToken, patch.botBotkeepSyncToken].some((value) => typeof value === 'string')) {
+    const legacy = [nextToken, nextSyncToken, process.env.ADMIN_DASHBOARD_TOKEN?.trim() || '', process.env.BOT_SYNC_TOKEN?.trim() || ''].filter(Boolean);
+    if ([nextXsToken, nextBotkeepToken].some((token) => token && (token.length < 32 || token.length > 512))) {
+      throw Object.assign(new Error('Each failover token must be between 32 and 512 characters.'), { code: 'INVALID_BOT_CREDENTIALS' });
+    }
+    if ((nextXsToken && (nextXsToken === nextBotkeepToken || legacy.includes(nextXsToken))) ||
+        (nextBotkeepToken && legacy.includes(nextBotkeepToken))) {
+      throw Object.assign(new Error('XS, Botkeep and single-host tokens must all be different.'), { code: 'INVALID_BOT_CREDENTIALS' });
+    }
+  }
   const nextEnabled =
     typeof patch.botEnabledForMembers === 'boolean'
       ? patch.botEnabledForMembers
       : current.botEnabledForMembers;
   const now = new Date().toISOString();
+  // Write only fields actually supplied, so an unrelated member-switch request
+  // cannot restore a stale credential. Save multiple changes atomically.
+  const entries: [string, string][] = [];
+  if (typeof patch.botApiUrl === 'string') entries.push(['bot_api_url', nextUrl]);
+  if (typeof patch.botAdminToken === 'string') entries.push(['bot_admin_token', nextToken]);
+  if (typeof patch.botSyncToken === 'string') entries.push(['bot_sync_token', nextSyncToken]);
+  if (typeof patch.botXsSyncToken === 'string') entries.push(['bot_xs_sync_token', nextXsToken]);
+  if (typeof patch.botBotkeepSyncToken === 'string') entries.push(['bot_botkeep_sync_token', nextBotkeepToken]);
+  if (typeof patch.botEnabledForMembers === 'boolean') entries.push(['bot_enabled_for_members', nextEnabled ? '1' : '0']);
+  const result = { botApiUrl: nextUrl, botAdminToken: nextToken, botSyncToken: nextSyncToken,
+    botXsSyncToken: nextXsToken, botBotkeepSyncToken: nextBotkeepToken, botEnabledForMembers: nextEnabled, updatedAt: now };
 
   if (await ensureD1Tables()) {
-    const entries: [string, string][] = [
-      ['bot_api_url', nextUrl],
-      ['bot_admin_token', nextToken],
-      ['bot_sync_token', nextSyncToken],
-      ['bot_enabled_for_members', nextEnabled ? '1' : '0'],
-    ];
-    for (const [k, v] of entries) {
-      await queryD1(
-        `INSERT INTO portal_settings (key, value, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-        [k, v, now],
-      );
-    }
-    return {
-      botApiUrl: nextUrl,
-      botAdminToken: nextToken,
-      botSyncToken: nextSyncToken,
-      botEnabledForMembers: nextEnabled,
-      updatedAt: now,
-    };
+    if (!entries.length) return result;
+    const values = entries.flatMap(([key, value]) => [key, value, now]);
+    const rows = await queryD1(`INSERT INTO portal_settings (key, value, updated_at)
+      VALUES ${entries.map(() => '(?, ?, ?)').join(', ')}
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, values);
+    if (rows !== null) return result;
   }
 
   const store = readDiskStore();
-  store.settings.bot_api_url = nextUrl;
-  store.settings.bot_admin_token = nextToken;
-  store.settings.bot_sync_token = nextSyncToken;
-  store.settings.bot_enabled_for_members = nextEnabled ? '1' : '0';
-  store.settings.updated_at = now;
-  writeDiskStore(store);
-
-  return {
-    botApiUrl: nextUrl,
-    botAdminToken: nextToken,
-    botSyncToken: nextSyncToken,
-    botEnabledForMembers: nextEnabled,
-    updatedAt: now,
-  };
+  for (const [key, value] of entries) store.settings[key] = value;
+  if (entries.length) { store.settings.updated_at = now; writeDiskStore(store); }
+  return result;
 }
 
 // ============================================================================
@@ -1229,15 +1242,24 @@ function mapSessionBackup(row: Record<string, unknown>): SessionBackupRecord {
   return { slot: String(row.slot), generation: String(row.generation), claimToken: String(row.claim_token || ''), revision: Number(row.revision), ciphertext: String(row.ciphertext || ''), revoked: Boolean(Number(row.revoked)), updatedAt: Number(row.updated_at) };
 }
 /** Session recovery is deliberately unavailable on the ephemeral disk fallback. */
-export async function listSessionBackupMetadata(after = ''): Promise<Omit<SessionBackupRecord, 'ciphertext'>[] | null> {
-  if (!(await ensureD1Tables())) return null;
-  const rows = await queryD1(`SELECT slot, generation, claim_token, revision, revoked, updated_at FROM portal_session_backups WHERE slot > ? ORDER BY slot LIMIT 100`, [after]);
-  return (rows || []).map((row) => { const { ciphertext: _ciphertext, ...rest } = mapSessionBackup(row); return rest; });
+async function requireSessionBackupStorage(legacy: boolean): Promise<void> {
+  if (!(await (legacy ? ensureFailoverTables() : ensureD1Tables()))) throw new Error('Recovery storage is unavailable.');
 }
-export async function getSessionBackup(slot: string): Promise<SessionBackupRecord | null> {
-  if (!(await ensureD1Tables())) return null;
-  const rows = await queryD1(`SELECT * FROM portal_session_backups WHERE slot = ? LIMIT 1`, [slot]);
-  return rows?.length ? mapSessionBackup(rows[0]) : null;
+function requireBackupRows<T>(rows: T[] | null): T[] {
+  if (rows === null) throw new Error('Recovery storage is unavailable.');
+  return rows;
+}
+export async function listSessionBackupMetadata(after = '', legacy = false): Promise<Omit<SessionBackupRecord, 'ciphertext'>[]> {
+  await requireSessionBackupStorage(legacy);
+  const guard = legacy ? ` AND ${NO_FAILOVER_LEASE}` : '';
+  const rows = requireBackupRows(await queryD1(`SELECT slot, generation, claim_token, revision, revoked, updated_at FROM portal_session_backups WHERE slot > ?${guard} ORDER BY slot LIMIT 100`, [after]));
+  return rows.map((row) => { const { ciphertext: _ciphertext, ...rest } = mapSessionBackup(row); return rest; });
+}
+export async function getSessionBackup(slot: string, legacy = false): Promise<SessionBackupRecord | null> {
+  await requireSessionBackupStorage(legacy);
+  const guard = legacy ? ` AND ${NO_FAILOVER_LEASE}` : '';
+  const rows = requireBackupRows(await queryD1(`SELECT * FROM portal_session_backups WHERE slot = ?${guard} LIMIT 1`, [slot]));
+  return rows.length ? mapSessionBackup(rows[0]) : null;
 }
 /** Portal ownership data used to recheck a backup write in the same SQL statement. */
 export interface SessionBackupClaim { key: string; owner: string }
@@ -1261,25 +1283,28 @@ function backupEligibility(slot: string, identity?: SessionBackupClaim | null): 
     params: [slot.slice(7), identity.key, identity.owner] };
 }
 /** Read the backup only if its ownership is still current at the SQL snapshot. */
-export async function getEligibleSessionBackup(slot: string, claimToken: string, identity?: SessionBackupClaim | null): Promise<SessionBackupRecord | null> {
-  if (!(await ensureD1Tables())) return null;
+export async function getEligibleSessionBackup(slot: string, claimToken: string, identity?: SessionBackupClaim | null, legacy = false): Promise<SessionBackupRecord | null> {
+  await requireSessionBackupStorage(legacy);
   const check = backupEligibility(slot, identity);
-  const rows = await queryD1(`SELECT * FROM portal_session_backups WHERE slot = ? AND claim_token = ? AND revoked = 0 AND ${check.sql} LIMIT 1`,
-    [slot, claimToken, ...check.params]);
-  return rows?.length ? mapSessionBackup(rows[0]) : null;
+  const guard = legacy ? ` AND ${NO_FAILOVER_LEASE}` : '';
+  const rows = requireBackupRows(await queryD1(`SELECT * FROM portal_session_backups WHERE slot = ? AND claim_token = ? AND revoked = 0 AND ${check.sql}${guard} LIMIT 1`,
+    [slot, claimToken, ...check.params]));
+  return rows.length ? mapSessionBackup(rows[0]) : null;
 }
-/** Compare-and-swap and check the current claim atomically, not in a prior request. */
-export async function putSessionBackup(slot: string, generation: string, claimToken: string, ciphertext: string, expected: number, identity?: SessionBackupClaim | null): Promise<number | null> {
-  if (!(await ensureD1Tables())) return null;
+/** Compare-and-swap and check the current claim and mode in the same SQL statement. */
+export async function putSessionBackup(slot: string, generation: string, claimToken: string, ciphertext: string, expected: number, identity?: SessionBackupClaim | null, legacy = false): Promise<number | null> {
+  await requireSessionBackupStorage(legacy);
   const check = backupEligibility(slot, identity);
+  const guard = legacy ? ` AND ${NO_FAILOVER_LEASE}` : '';
   const rows = expected === 0
     ? await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at)
-        SELECT ?, ?, ?, 1, ?, 0, ? WHERE ${check.sql} ON CONFLICT(slot) DO NOTHING RETURNING revision`,
+        SELECT ?, ?, ?, 1, ?, 0, ? WHERE ${check.sql}${guard} ON CONFLICT(slot) DO NOTHING RETURNING revision`,
       [slot, generation, claimToken, ciphertext, Date.now(), ...check.params])
     : await queryD1(`UPDATE portal_session_backups SET generation = ?, claim_token = ?, revision = revision + 1, ciphertext = ?, revoked = 0, updated_at = ?
-        WHERE slot = ? AND revision = ? AND (revoked = 0 OR generation != ?) AND ${check.sql} RETURNING revision`,
+        WHERE slot = ? AND revision = ? AND (revoked = 0 OR generation != ?) AND ${check.sql}${guard} RETURNING revision`,
       [generation, claimToken, ciphertext, Date.now(), slot, expected, generation, ...check.params]);
-  return rows?.length ? Number(rows[0].revision) : null;
+  const result = requireBackupRows(rows);
+  return result.length ? Number(result[0].revision) : null;
 }
 /** A delayed deletion can erase only the deleted owner's backup, never a replacement. */
 async function revokeBackupForClaim(slot: string, claimToken: string): Promise<void> {
@@ -1287,17 +1312,19 @@ async function revokeBackupForClaim(slot: string, claimToken: string): Promise<v
   await queryD1(`UPDATE portal_session_backups SET revision = revision + 1, ciphertext = '', revoked = 1, updated_at = ?
     WHERE slot = ? AND claim_token = ?`, [Date.now(), slot, claimToken]);
 }
-export async function revokeSessionBackup(slot: string, generation?: string): Promise<void> {
-  if (!(await ensureD1Tables())) return;
-  // When a generation is supplied, a delayed logout cannot revoke a newer link.
-  if (generation) {
-    await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at) VALUES (?, ?, '', 1, '', 1, ?)
-      ON CONFLICT(slot) DO UPDATE SET revision = portal_session_backups.revision + 1, ciphertext = '', revoked = 1, updated_at = excluded.updated_at
-      WHERE portal_session_backups.generation = excluded.generation`, [slot, generation, Date.now()]);
-  } else {
-    await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at) VALUES (?, '', '', 1, '', 1, ?)
-      ON CONFLICT(slot) DO UPDATE SET revision = portal_session_backups.revision + 1, ciphertext = '', revoked = 1, updated_at = excluded.updated_at`, [slot, Date.now()]);
-  }
+export async function revokeSessionBackup(slot: string, generation?: string, legacy = false): Promise<boolean> {
+  await requireSessionBackupStorage(legacy);
+  // An old single-host request cannot race the first failover lease. A delayed
+  // logout can also never revoke a newer generation of the same session.
+  const guard = legacy ? NO_FAILOVER_LEASE : '1 = 1';
+  const rows = await queryD1(`INSERT INTO portal_session_backups (slot, generation, claim_token, revision, ciphertext, revoked, updated_at)
+    SELECT ?, ?, '', 1, '', 1, ? WHERE ${guard}
+    ON CONFLICT(slot) DO UPDATE SET revision = portal_session_backups.revision + 1, ciphertext = '', revoked = 1, updated_at = excluded.updated_at
+    ${generation ? 'WHERE portal_session_backups.generation = excluded.generation' : ''} RETURNING slot`, [slot, generation || '', Date.now()]);
+  if (rows === null) throw new Error('Recovery storage is unavailable.');
+  if (!legacy || rows.length) return true;
+  // A generation mismatch is a safe no-op; distinguish it from a mode change.
+  return !(await getFailoverStatus()).enabled;
 }
 
 export async function getPanelConnectionConfig(): Promise<PanelConnectionConfig> {
@@ -1389,18 +1416,17 @@ export async function savePanelConnectionConfig(patch: {
 }
 
 export async function saveBotHeartbeat(hb: BotHeartbeatRecord, fence?: FailoverFence): Promise<void> {
-  if (!await ensureFailoverTables()) {
-    if (fence || getD1Config()) throw new Error('Failover storage is unavailable.');
-    await setSettingValue('bot_heartbeat_json', JSON.stringify(hb));
-    return;
+  if (await ensureFailoverTables()) {
+    const guard = fence ? CURRENT_FAILOVER_FENCE : NO_FAILOVER_LEASE;
+    const values: (string | number)[] = [JSON.stringify(hb), new Date().toISOString()];
+    if (fence) values.push(fence.role, fence.instance, fence.epoch);
+    const rows = await queryD1(`INSERT INTO portal_settings (key, value, updated_at)
+      SELECT 'bot_heartbeat_json', ?, ? WHERE ${guard}
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at RETURNING key`, values);
+    if (rows !== null) return;
   }
-  const guard = fence ? CURRENT_FAILOVER_FENCE : NO_FAILOVER_LEASE;
-  const values: (string | number)[] = [JSON.stringify(hb), new Date().toISOString()];
-  if (fence) values.push(fence.role, fence.instance, fence.epoch);
-  const rows = await queryD1(`INSERT INTO portal_settings (key, value, updated_at)
-    SELECT 'bot_heartbeat_json', ?, ? WHERE ${guard}
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at RETURNING key`, values);
-  if (rows === null) throw new Error('Failover storage is unavailable.');
+  if (fence || !mayUseStandaloneDisk()) throw new Error('Failover storage is unavailable.');
+  await setSettingValue('bot_heartbeat_json', JSON.stringify(hb));
 }
 
 export async function getBotHeartbeat(): Promise<BotHeartbeatRecord | null> {
@@ -1521,16 +1547,22 @@ export async function claimFailoverLease(identity: FailoverIdentity, state: {
 export async function getFailoverStatus(): Promise<FailoverStatus> {
   const empty: FailoverStatus = { enabled: false, activeRole: null, epoch: null, issue: null, xs: null, botkeep: null };
   if (!await ensureFailoverTables()) {
-    if (getD1Config()) throw new Error('Failover status is unavailable while D1 is unreachable.');
+    if (!mayUseStandaloneDisk()) throw new Error('Failover status is unavailable while D1 is unreachable.');
     return empty;
   }
   const leases = await queryD1<{ owner_role: string; expires_at: number; now_ms: number; epoch: number }>(
     `SELECT owner_role, expires_at, epoch, ${D1_NOW_MS} AS now_ms FROM portal_bot_failover WHERE id = 'whatsapp'`);
-  if (leases === null) throw new Error('Failover status is unavailable while D1 is unreachable.');
+  if (leases === null) {
+    if (mayUseStandaloneDisk()) return empty;
+    throw new Error('Failover status is unavailable while D1 is unreachable.');
+  }
   if (!leases.length) return empty;
   const nodes = await queryD1<{ role: string; last_seen_at: number; connected: number | null; version: string; account_hash: string; device_fingerprint: string }>(
     'SELECT role, last_seen_at, connected, version, account_hash, device_fingerprint FROM portal_bot_failover_nodes');
-  if (nodes === null) throw new Error('Failover storage is unavailable.');
+  if (nodes === null) {
+    if (mayUseStandaloneDisk()) return empty;
+    throw new Error('Failover storage is unavailable.');
+  }
   for (const row of nodes) {
     if (row.role === 'xs' || row.role === 'botkeep') empty[row.role] = {
       lastSeenAt: Number(row.last_seen_at), connected: row.connected === null ? null : Boolean(row.connected), version: row.version || '',
@@ -1550,20 +1582,19 @@ export async function getFailoverStatus(): Promise<FailoverStatus> {
 
 /** Import without replacing a dashboard member; atomically check the current mode/lease. */
 export async function importLocalUserForLease(number: string, label: string, addedBy: string, fence?: FailoverFence): Promise<boolean> {
-  if (!await ensureFailoverTables()) {
-    if (fence || getD1Config()) throw new Error('Failover storage is unavailable.');
-    if (await getStoredWhatsAppUser(number)) return false;
-    await saveStoredWhatsAppUser(number, label, addedBy);
-    return true;
+  if (await ensureFailoverTables()) {
+    const guard = fence ? CURRENT_FAILOVER_FENCE : NO_FAILOVER_LEASE;
+    const params: (string | number)[] = [number, label, addedBy.trim().toLowerCase(), new Date().toISOString(), crypto.randomUUID()];
+    if (fence) params.push(fence.role, fence.instance, fence.epoch);
+    const rows = await queryD1(`INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at, approval_status, claim_id)
+      SELECT ?, ?, 1, ?, ?, 'approved', ? WHERE ${guard}
+      ON CONFLICT(number) DO NOTHING RETURNING number`, params);
+    if (rows !== null) return rows.length > 0;
   }
-  const guard = fence ? CURRENT_FAILOVER_FENCE : NO_FAILOVER_LEASE;
-  const params: (string | number)[] = [number, label, addedBy.trim().toLowerCase(), new Date().toISOString(), crypto.randomUUID()];
-  if (fence) params.push(fence.role, fence.instance, fence.epoch);
-  const rows = await queryD1(`INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at, approval_status, claim_id)
-    SELECT ?, ?, 1, ?, ?, 'approved', ? WHERE ${guard}
-    ON CONFLICT(number) DO NOTHING RETURNING number`, params);
-  if (rows === null) throw new Error('Failover storage is unavailable.');
-  return rows.length > 0;
+  if (fence || !mayUseStandaloneDisk()) throw new Error('Failover storage is unavailable.');
+  if (await getStoredWhatsAppUser(number)) return false;
+  await saveStoredWhatsAppUser(number, label, addedBy);
+  return true;
 }
 
 function mapD1BotCommand(row: Record<string, unknown>): BotCommandRecord {
@@ -1694,10 +1725,9 @@ export async function claimPendingBotCommands(fence?: FailoverFence): Promise<Bo
       WHERE id IN (SELECT id FROM portal_bot_commands WHERE status = 'pending' AND expires_at >= ?
         ORDER BY created_at ASC LIMIT 10) AND status = 'pending' AND ${guard} RETURNING *`,
       fence ? [now, fence.role, fence.instance, fence.epoch] : [now]);
-    if (rows === null) throw new Error('Failover storage is unavailable.');
-    return rows.map(mapD1BotCommand);
+    if (rows !== null) return rows.map(mapD1BotCommand);
   }
-  if (fence || getD1Config()) throw new Error('Failover requires the shared Cloudflare D1 database.');
+  if (fence || !mayUseStandaloneDisk()) throw new Error('Failover requires the shared Cloudflare D1 database.');
 
   const store = readDiskStore();
   const claimed: BotCommandRecord[] = [];
@@ -1733,10 +1763,9 @@ export async function completeBotCommand(params: {
       fence ? [status, resultJson, errorText, params.id, fence.role, fence.instance, fence.epoch]
         : [status, resultJson, errorText, params.id],
     );
-    if (rows === null) throw new Error('Failover storage is unavailable.');
-    return;
+    if (rows !== null) return;
   }
-  if (fence || getD1Config()) throw new Error('Failover requires the shared Cloudflare D1 database.');
+  if (fence || !mayUseStandaloneDisk()) throw new Error('Failover requires the shared Cloudflare D1 database.');
 
   const store = readDiskStore();
   const found = store.botCommands.find((c) => c.id === params.id);

@@ -266,14 +266,12 @@ honor a `Procfile`, point the project root to that folder so it finds the bot's
 ### XS primary with Botkeep standby
 
 Failover is **not enabled merely by merging the code**. It requires the updated
-bot on both hosts, the updated dashboard, durable Cloudflare D1 and the same
-private dashboard sync token on both hosts. The known XS panel defaults are
-`https://panel.xsystemshosting.com`, server `381c9516` (full UUID
-`381c9516-ac72-4b42-a4e3-e16bb7f9f4a0`). XS SFTP is
-`eu2-node.xsystemshosting.com:2022`, user `qaqa2004_024192.381c9516`; its
-password and the XS panel API key must be supplied privately by the owner. The
-allocated service address is `195.123.189.57:25794`. These are not sync secrets.
-The dashboard keeps legacy panel settings separately and does not send an old
+bot on both hosts, the updated dashboard, durable Cloudflare D1 and a different
+private sync token for each host. The XS panel URL and server ID remain the
+configured defaults. Get the SFTP hostname, port, username, allocation and
+password privately from the hosting panel rather than putting them in this
+file. The XS panel API key must also be supplied privately by the owner. The
+dashboard keeps legacy panel settings separately and does not send an old
 Botkeep key to XS.
 
 1. Stop any **old-version** Botkeep bot before enabling failover. A legacy bot
@@ -283,12 +281,19 @@ Botkeep key to XS.
    the matching dashboard code. Preserve the connected XS `session/`, `.env`
    and `database/` files. The separate `botkeep-deploy` branch is not changed
    by this repository's primary deployment.
-3. In **WhatsApp → Sync** on the dashboard, save one long random sync token.
-   Privately set that same `BOT_SYNC_TOKEN` on each bot; do not post it in chat.
-   Set `DASHBOARD_URL=https://dashboard-ij71.vercel.app` on both. Set
+3. In **WhatsApp → Sync**, generate and save separate XS and Botkeep tokens.
+   Copy each one privately into `BOT_SYNC_TOKEN` on its matching host before
+   leaving the page; saved tokens cannot be revealed again. They must differ
+   from each other and from the older single-host sync/admin tokens;
+   never share the XS token with Botkeep or post either token in chat. Set
+   `DASHBOARD_URL=https://dashboard-ij71.vercel.app` on both. Set
    `WHATSAPP_FAILOVER_ROLE=xs` on XS and `WHATSAPP_FAILOVER_ROLE=botkeep` on
    Botkeep. Set `ADMIN_API_ENABLED=false` on both. Leave `SESSION_BACKUP_KEY`
    empty on Botkeep; encrypted recovery slots currently belong to XS only.
+   **Upgrade warning:** a coordinated bot using the old shared token is rejected
+   by the updated dashboard and stops serving when its lease expires. Configure
+   its own token and update its code before starting it again; existing sessions
+   and `.env` files must be preserved. Single-host mode still uses the old token.
 4. Start XS first and wait for its WhatsApp connection and dashboard check-in.
    Start Botkeep with the same pairing number and link it as a **separate**
    WhatsApp device. Keep its local session on persistent storage. A digest of

@@ -67,6 +67,8 @@ export async function GET(req: NextRequest) {
     botApiUrl: target.rawUrl,
     hasBotToken: Boolean(target.token),
     hasBotSyncToken: Boolean(target.syncToken),
+    hasXsSyncToken: target.hasXsSyncToken,
+    hasBotkeepSyncToken: target.hasBotkeepSyncToken,
     isInsecureHttp: target.isInsecureHttp,
     botEnabledForMembers: target.botEnabledForMembers,
     storageEngine: d1Active ? 'cloudflare-d1' : 'persistent-db',
