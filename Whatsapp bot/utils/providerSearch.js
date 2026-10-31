@@ -6,12 +6,11 @@
 // the bot's cookies or authorization headers.
 const axios = require('axios');
 const crypto = require('crypto');
-const YT = require('./youtubedl');
 
 const MAX_QUERY = 200;
 const MAX_BODY = 1024 * 1024;
 const HTTP_TIMEOUT = 10000;
-const YTDLP_TIMEOUT = 30000;
+const SEARCH_TIMEOUT = 30000;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
 // Domains are used for the search query; URL acceptance below is narrower and
@@ -22,7 +21,7 @@ const PROVIDERS = Object.freeze({
   dailymotion: { label: 'Dailymotion', domains: ['dailymotion.com'], indexSites: ['dailymotion.com/video'] },
   reddit: { label: 'Reddit', domains: ['reddit.com'] },
   twitch: { label: 'Twitch', domains: ['twitch.tv'] },
-  rumble: { label: 'Rumble', domains: ['rumble.com'] },
+  rumble: { label: 'Rumble', domains: ['rumble.com'], indexSites: ['rumble.com/v'] },
   odysee: { label: 'Odysee', domains: ['odysee.com'] },
   weibo: { label: 'Weibo', domains: ['weibo.com', 'weibo.cn'] },
   douyin: { label: 'Douyin', domains: ['douyin.com'], indexSites: ['douyin.com/video'] },
@@ -150,9 +149,17 @@ function safeResponse(res) {
   return res.data;
 }
 
-function requestOptions(timeout = HTTP_TIMEOUT) {
+function remaining(budget, ceiling = SEARCH_TIMEOUT) {
+  if (!budget) return ceiling;
+  const ms = budget.deadline - Date.now();
+  if (budget.signal.aborted || ms <= 0) throw new Error('Search deadline reached');
+  return Math.max(1, Math.min(ceiling, ms));
+}
+
+function requestOptions(timeout = HTTP_TIMEOUT, budget) {
   return {
-    timeout,
+    timeout: remaining(budget, timeout),
+    signal: budget?.signal,
     maxContentLength: MAX_BODY,
     maxBodyLength: MAX_BODY,
     maxRedirects: 0, // do not forward a query to a redirect chosen by a third party
@@ -168,15 +175,15 @@ function requestOptions(timeout = HTTP_TIMEOUT) {
   };
 }
 
-async function getText(url, params, headers = {}, timeout = HTTP_TIMEOUT) {
-  const opts = requestOptions(timeout);
+async function getText(url, params, headers = {}, timeout = HTTP_TIMEOUT, budget) {
+  const opts = requestOptions(timeout, budget);
   opts.params = params;
   Object.assign(opts.headers, headers);
   return safeResponse(await axios.get(url, opts));
 }
 
-async function postJson(url, body) {
-  const opts = requestOptions();
+async function postJson(url, body, budget) {
+  const opts = requestOptions(HTTP_TIMEOUT, budget);
   opts.headers['Content-Type'] = 'application/json';
   return safeResponse(await axios.post(url, body, opts));
 }
@@ -185,12 +192,12 @@ function parseJson(text) {
   try { return JSON.parse(text); } catch { throw new Error('Search response was not JSON'); }
 }
 
-async function searchBilibili(query) {
+async function searchBilibili(query, _limit, budget) {
   const endpoint = 'https://api.bilibili.com/x/web-interface/search/type';
   const params = { keyword: query, search_type: 'video', page: 1, highlight: 0 };
   const referer = 'https://search.bilibili.com/';
   const request = async (cookie) => {
-    const body = parseJson(await getText(endpoint, params, { Referer: referer, Cookie: cookie }));
+    const body = parseJson(await getText(endpoint, params, { Referer: referer, Cookie: cookie }, HTTP_TIMEOUT, budget));
     if (Number(body?.code) === -412) throw Object.assign(new Error('Bilibili access check'), { code: 'BILI_412' });
     if (Number(body?.code) !== 0 || !Array.isArray(body?.data?.result)) throw new Error('Bilibili search unavailable');
     return body.data.result;
@@ -203,7 +210,7 @@ async function searchBilibili(query) {
     if (err?.code !== 'BILI_412' && err?.response?.status !== 412) throw err;
     // If the public API asks for its own anonymous session, request one from
     // Bilibili. Never reuse account cookies or send these values off-domain.
-    const session = parseJson(await getText('https://api.bilibili.com/x/frontend/finger/spi', {}, { Referer: referer }));
+    const session = parseJson(await getText('https://api.bilibili.com/x/frontend/finger/spi', {}, { Referer: referer }, HTTP_TIMEOUT, budget));
     const b3 = session?.data?.b_3;
     const b4 = session?.data?.b_4;
     if (Number(session?.code) !== 0 || ![b3, b4].every((v) => typeof v === 'string' && /^[a-z0-9_+\/=.-]{8,220}$/i.test(v))) {
@@ -222,6 +229,16 @@ function requestedEpisode(query) {
   return match ? { number: Number(match[1]), base: query.replace(match[0], ' ').replace(/\s+/g, ' ').trim() } : null;
 }
 
+function episodeNumber(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return 0;
+  const text = String(value).normalize('NFKC').trim();
+  const match = /^(\d{1,4})$/.exec(text)
+    || /第\s*(\d{1,4})\s*(?:集|话|話|期|回)/.exec(text)
+    || /\b(?:episode|ep\.?)\s*(\d{1,4})\b/i.exec(text);
+  const number = match ? Number(match[1]) : 0;
+  return number > 0 ? number : 0;
+}
+
 function parseYouku(body) {
   if (body?.message !== 'success' || (!Array.isArray(body.originNodes) && !Array.isArray(body.pageComponentList))) {
     throw new Error('Youku search unavailable');
@@ -237,7 +254,7 @@ function parseYouku(body) {
       rows.push({
         url: `https://v.youku.com/v_show/id_${id}.html`,
         title: value.title || value.displayName || value.tempTitle || value.titleDTO?.displayName,
-        episode: value.orderId ?? value.showVideoStage ?? value.displayName,
+        episode: episodeNumber(value.orderId) || episodeNumber(value.showVideoStage) || episodeNumber(value.displayName),
       });
     }
     for (const child of Object.values(value)) visit(child, depth + 1);
@@ -250,10 +267,10 @@ const rankEpisode = (rows, number) => number
   ? rows.sort((a, b) => Number(Number(b.episode) === number) - Number(Number(a.episode) === number))
   : rows;
 
-async function searchYouku(query) {
+async function searchYouku(query, _limit, budget) {
   const request = async (term) => parseYouku(parseJson(await getText('https://search.youku.com/api/search', {
     keyword: term, pg: 1, pz: 5,
-  }, { Referer: 'https://search.youku.com/' })));
+  }, { Referer: 'https://search.youku.com/' }, HTTP_TIMEOUT, budget)));
   const episode = requestedEpisode(query);
   let rows = await request(query);
   // Some searches index a series name, not "S01E01". Still show actual episode
@@ -267,9 +284,9 @@ const titleKey = (title) => String(title || '').normalize('NFKC').toLowerCase().
 // For an English episodic Youku query, an exact TVMaze show match can supply an
 // original Chinese title. It is only a search term: selected results still have
 // to be real, independently validated Youku video URLs.
-async function youkuOriginalTitle(episode) {
+async function youkuOriginalTitle(episode, budget) {
   if (!episode?.base || !/[a-z]/i.test(episode.base) || /[\u3400-\u9fff]/.test(episode.base)) return '';
-  const matches = parseJson(await getText('https://api.tvmaze.com/search/shows', { q: episode.base }, {}, 6000));
+  const matches = parseJson(await getText('https://api.tvmaze.com/search/shows', { q: episode.base }, {}, 6000, budget));
   if (!Array.isArray(matches)) throw new Error('Title lookup unavailable');
   const candidates = matches.map((entry) => entry?.show).filter((show) => {
     if (titleKey(show?.name) !== titleKey(episode.base)) return false;
@@ -278,25 +295,25 @@ async function youkuOriginalTitle(episode) {
     return (channel === 'youku' || Boolean(official)) && Number.isSafeInteger(show?.id) && show.id > 0 && show.id < 1000000000;
   });
   if (candidates.length !== 1) return '';
-  const aliases = parseJson(await getText(`https://api.tvmaze.com/shows/${candidates[0].id}/akas`, {}, {}, 6000));
+  const aliases = parseJson(await getText(`https://api.tvmaze.com/shows/${candidates[0].id}/akas`, {}, {}, 6000, budget));
   if (!Array.isArray(aliases)) throw new Error('Title lookup unavailable');
   const alias = aliases.find((item) => (!item?.country || item.country.code === 'CN')
     && typeof item.name === 'string' && item.name.length <= 100 && /[\u3400-\u9fff]/.test(item.name));
   return alias ? alias.name.trim() : '';
 }
 
-async function searchAcfun(query) {
-  const body = parseJson(await getText('https://api-new.app.acfun.cn/rest/app/search/video', { keyword: query, sortType: 5 }));
+async function searchAcfun(query, _limit, budget) {
+  const body = parseJson(await getText('https://api-new.app.acfun.cn/rest/app/search/video', { keyword: query, sortType: 5 }, {}, HTTP_TIMEOUT, budget));
   if (Number(body?.result) !== 0 || !Array.isArray(body?.videoList)) throw new Error('AcFun search unavailable');
   return body.videoList.filter((v) => /^\d+$/.test(String(v.contentId || ''))).map((v) => ({
     url: `https://www.acfun.cn/v/ac${v.contentId}`, title: v.title, author: v.userName,
   }));
 }
 
-async function searchDailymotion(query, limit) {
+async function searchDailymotion(query, limit, budget) {
   const body = parseJson(await getText('https://api.dailymotion.com/videos', {
     search: query, fields: 'id,title,url,duration,owner.screenname', limit: Math.min(30, limit * 3), page: 1,
-  }));
+  }, {}, HTTP_TIMEOUT, budget));
   if (!Array.isArray(body?.list)) throw new Error('Dailymotion search unavailable');
   return body.list.map((item) => ({
     url: item.url || (/^[a-z0-9]+$/i.test(String(item.id || '')) ? `https://www.dailymotion.com/video/${item.id}` : ''),
@@ -304,36 +321,24 @@ async function searchDailymotion(query, limit) {
   }));
 }
 
-async function searchNiconicoSnapshot(query, limit) {
+async function searchNiconicoSnapshot(query, limit, budget) {
   const body = parseJson(await getText('https://snapshot.search.nicovideo.jp/api/v2/snapshot/video/contents/search', {
     q: query, targets: 'title,description,tags', fields: 'contentId,title,lengthSeconds',
-    _sort: '-viewCounter', _limit: Math.min(30, limit * 3), _context: 'video-search',
-  }));
+    _sort: '-viewCounter', _limit: Math.min(30, limit * 3), _context: 'zafar-video-search',
+  }, { 'User-Agent': 'zafar-video-search/2.2' }, HTTP_TIMEOUT, budget));
   if (Number(body?.meta?.status) !== 200 || !Array.isArray(body?.data)) throw new Error('Niconico snapshot search unavailable');
   return body.data.filter((item) => /^(?:[a-z]{2})?\d+$/i.test(String(item.contentId || ''))).map((item) => ({
     url: `https://www.nicovideo.jp/watch/${item.contentId}`, title: item.title, duration: item.lengthSeconds,
   }));
 }
 
-async function searchReddit(query, limit) {
-  const body = parseJson(await getText('https://www.reddit.com/search.json', { q: query, type: 'link', sort: 'relevance', limit: Math.min(30, limit * 4), raw_json: 1 }));
+async function searchReddit(query, limit, budget) {
+  const body = parseJson(await getText('https://www.reddit.com/search.json', { q: query, type: 'link', sort: 'relevance', limit: Math.min(30, limit * 4), raw_json: 1 }, {}, HTTP_TIMEOUT, budget));
   if (!Array.isArray(body?.data?.children)) throw new Error('Reddit search unavailable');
   return body.data.children.map((item) => item?.data).filter((v) => v && (v.is_video === true || v.media?.reddit_video || v.secure_media?.reddit_video)).map((v) => ({
     url: typeof v.permalink === 'string' && v.permalink.startsWith('/') ? `https://www.reddit.com${v.permalink}` : '',
     title: v.title, author: v.author,
   }));
-}
-
-async function searchRumble(query) {
-  const $ = dom(await getText('https://rumble.com/search/all', { q: query }));
-  const anchors = $('a.video-item--a, a.videostream__link').toArray();
-  if (!anchors.length && !$('.video-list, .search-results, [data-search-results]').length) throw new Error('Rumble search unavailable');
-  return anchors.map((node) => {
-    const a = $(node);
-    let url = '';
-    try { url = new URL(a.attr('href'), 'https://rumble.com').toString(); } catch { /* skip invalid */ }
-    return { url, title: a.attr('title') || a.find('img').attr('alt') || a.text() };
-  });
 }
 
 function lbryUrl(uri) {
@@ -342,13 +347,13 @@ function lbryUrl(uri) {
   return `https://odysee.com/${path}`;
 }
 
-async function searchOdysee(query, limit) {
+async function searchOdysee(query, limit, budget) {
   const body = parseJson(await postJson('https://api.na-backend.odysee.com/api/v1/proxy', {
     jsonrpc: '2.0', id: 1, method: 'claim_search', params: {
       text: query, claim_type: ['stream'], stream_types: ['video'], has_source: true,
       fee_amount: '<=0', page: 1, page_size: Math.min(20, limit * 2), no_totals: true,
     },
-  }));
+  }, budget));
   if (body?.error || !Array.isArray(body?.result?.items)) throw new Error('Odysee search unavailable');
   return body.result.items.map((item) => ({
     url: lbryUrl(item.canonical_url || item.permanent_url),
@@ -358,51 +363,10 @@ async function searchOdysee(query, limit) {
   }));
 }
 
-function parseYtdlpLines(stdout) {
-  const parse = (field) => {
-    if (!field || field === 'NA') return '';
-    try { return JSON.parse(field); } catch { return ''; }
-  };
-  return String(stdout || '').split('\n').map((line) => {
-    const fields = line.split('\t');
-    if (fields.length !== 6) return null;
-    const [webpage, url, id, title, duration, author] = fields.map(parse);
-    return { url: webpage || url, id, title, duration, author };
-  }).filter(Boolean);
-}
-
-async function searchNiconicoYtdlp(query, limit) {
-  if (!YT.resolveCommand()) throw new Error('yt-dlp unavailable');
-  const target = `nicosearch${limit}:${query}`;
-  const args = [
-    ...YT.baseArgs().filter((arg) => arg !== '--no-playlist'),
-    '--no-flat-playlist', '--skip-download', '--ignore-errors', '--playlist-end', String(limit),
-  ];
-  if (YT.capabilities().noCheckFormats) args.push('--no-check-formats');
-  // JSON-encode each field, so titles containing tabs/newlines stay one record.
-  args.push('--print', '%(webpage_url)j\t%(url)j\t%(id)j\t%(title)j\t%(duration)j\t%(uploader)j', '--', target);
-  let output;
-  try {
-    output = await YT.run(args, { timeout: YTDLP_TIMEOUT });
-  } catch (err) {
-    // A timeout or a failed entry may still have produced earlier valid rows.
-    const partial = parseYtdlpLines(err?.stdout);
-    if (partial.length) return partial;
-    throw err;
-  }
-  const rows = parseYtdlpLines(output.stdout);
-  if (!rows.length && /ERROR:/i.test(String(output.stderr || ''))) throw new Error('yt-dlp search unavailable');
-  return rows;
-}
-
 const NATIVE = Object.freeze({
   bilibili: searchBilibili, youku: searchYouku, acfun: searchAcfun,
-  reddit: searchReddit, rumble: searchRumble, odysee: searchOdysee,
-  dailymotion: searchDailymotion,
-  niconico: async (query, limit) => {
-    try { return await searchNiconicoSnapshot(query, limit); }
-    catch { return searchNiconicoYtdlp(query, limit); }
-  },
+  reddit: searchReddit, odysee: searchOdysee,
+  dailymotion: searchDailymotion, niconico: searchNiconicoSnapshot,
 });
 
 function indexQuery(site, query) {
@@ -440,16 +404,16 @@ function parseBrave(html) {
   });
 }
 
-async function searchDuck(site, query) {
-  return parseDuck(await getText('https://html.duckduckgo.com/html/', { q: indexQuery(site, query) }));
+async function searchDuck(site, query, budget) {
+  return parseDuck(await getText('https://html.duckduckgo.com/html/', { q: indexQuery(site, query) }, {}, HTTP_TIMEOUT, budget));
 }
-async function searchBrave(site, query) {
-  return parseBrave(await getText('https://search.brave.com/search', { q: indexQuery(site, query), source: 'web' }));
+async function searchBrave(site, query, budget) {
+  return parseBrave(await getText('https://search.brave.com/search', { q: indexQuery(site, query), source: 'web' }, {}, HTTP_TIMEOUT, budget));
 }
 
 // Firecrawl's public keyless search is explicitly offered for programmatic use
 // but is subject to per-IP request/credit caps. Request links only, not scraping.
-async function searchFirecrawl(site, query, limit) {
+async function searchFirecrawl(site, query, limit, budget) {
   const paths = PROVIDERS[site].indexSites;
   // The API accepts hostnames in includeDomains, but a provider's search or
   // music pages can drown out videos. For profiles with a known video path,
@@ -458,8 +422,8 @@ async function searchFirecrawl(site, query, limit) {
     ? { query: indexQuery(site, query) }
     : { query, includeDomains: PROVIDERS[site].domains };
   const body = parseJson(await postJson('https://api.firecrawl.dev/v2/search', {
-    ...scope, limit: Math.min(20, limit * 3), sources: ['web'], timeout: 9000,
-  }));
+    ...scope, limit: Math.min(20, limit * 3), sources: ['web'], timeout: remaining(budget, 9000),
+  }, budget));
   if (body?.success !== true || !Array.isArray(body?.data?.web)) throw new Error('Firecrawl search unavailable');
   return body.data.web.map((item) => ({ url: item.url, title: item.title }));
 }
@@ -468,45 +432,56 @@ async function searchFirecrawl(site, query, limit) {
  * Returns { results, status, source }. Search results are discovery hints, not
  * a promise that a video is public, playable, non-DRM, or an exact match.
  */
-async function searchProvider(site, query, { limit = 5 } = {}) {
+async function searchProvider(site, query, { limit = 5, timeoutMs = SEARCH_TIMEOUT } = {}) {
   if (!PROVIDERS[site]) throw new TypeError('Unknown provider');
   const q = String(query || '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
   if (!q || q.length > MAX_QUERY) return { results: [], status: 'invalid', source: '' };
   const n = Math.max(1, Math.min(10, Math.floor(Number(limit) || 5)));
+  const timeout = Math.max(1, Math.min(SEARCH_TIMEOUT, Math.floor(Number(timeoutMs) || SEARCH_TIMEOUT)));
+  const controller = new AbortController();
+  const budget = { signal: controller.signal, deadline: Date.now() + timeout };
+  const timer = setTimeout(() => controller.abort(), timeout);
   let completed = false;
   const attempt = async (source, run) => {
     try {
+      remaining(budget);
       const rows = normalizeRows(site, await run(), n);
+      remaining(budget);
       completed = true;
       return rows.length ? { results: rows, status: 'ok', source } : null;
     } catch { return null; }
   };
-  if (NATIVE[site]) {
-    const native = await attempt('provider', () => NATIVE[site](q, n));
-    if (native) return native;
-  }
-
-  // Youku's Chinese catalogue often does not index an English series title at
-  // all. Use metadata only after an unsuccessful native episodic search.
-  let localized = '';
-  const episode = site === 'youku' ? requestedEpisode(q) : null;
-  if (episode) {
-    try { localized = await youkuOriginalTitle(episode); } catch { /* continue with the original query */ }
-    if (localized) {
-      const found = await attempt('provider', async () => rankEpisode(await searchYouku(localized), episode.number));
-      if (found) return found;
-      const localizedQuery = `${localized} 第${episode.number}集`;
-      const index = await attempt('duckduckgo', () => searchDuck(site, localizedQuery))
-        || await attempt('brave', () => searchBrave(site, localizedQuery))
-        || await attempt('firecrawl', () => searchFirecrawl(site, localizedQuery, n));
-      if (index) return index;
+  try {
+    if (NATIVE[site]) {
+      const native = await attempt('provider', () => NATIVE[site](q, n, budget));
+      if (native) return native;
     }
-  }
 
-  const index = await attempt('duckduckgo', () => searchDuck(site, q))
-    || await attempt('brave', () => searchBrave(site, q))
-    || await attempt('firecrawl', () => searchFirecrawl(site, q, n));
-  return index || { results: [], status: completed ? 'empty' : 'unavailable', source: '' };
+    // Youku's Chinese catalogue often does not index an English series title at
+    // all. Use metadata only after an unsuccessful native episodic search.
+    let localized = '';
+    const episode = site === 'youku' ? requestedEpisode(q) : null;
+    if (episode) {
+      try { localized = await youkuOriginalTitle(episode, budget); } catch { /* continue with the original query */ }
+      if (localized) {
+        const found = await attempt('provider', async () => rankEpisode(await searchYouku(localized, n, budget), episode.number));
+        if (found) return found;
+        const localizedQuery = `${localized} 第${episode.number}集`;
+        const index = await attempt('duckduckgo', () => searchDuck(site, localizedQuery, budget))
+          || await attempt('brave', () => searchBrave(site, localizedQuery, budget))
+          || await attempt('firecrawl', () => searchFirecrawl(site, localizedQuery, n, budget));
+        if (index) return index;
+      }
+    }
+
+    const index = await attempt('duckduckgo', () => searchDuck(site, q, budget))
+      || await attempt('brave', () => searchBrave(site, q, budget))
+      || await attempt('firecrawl', () => searchFirecrawl(site, q, n, budget));
+    const timedOut = budget.signal.aborted || Date.now() >= budget.deadline;
+    return index || { results: [], status: completed && !timedOut ? 'empty' : 'unavailable', source: '' };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 module.exports = {
@@ -514,5 +489,5 @@ module.exports = {
   // Export pure helpers so the offline suite can exercise malformed responses
   // and the host/path boundary independently of third-party availability.
   normalizeSiteUrl, normalizeRows, cleanText, indexQuery, parseDuck, parseBrave,
-  parseYouku, parseYtdlpLines, requestedEpisode, lbryUrl,
+  parseYouku, requestedEpisode, lbryUrl,
 };

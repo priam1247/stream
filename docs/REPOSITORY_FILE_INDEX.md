@@ -2424,6 +2424,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - [`config.js`](../Whatsapp%20bot/config.js) — Loads bot configuration, defaults, environment values, and feature settings.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — computed bot-root path.
     - [`.github/tests/deploy-bot-gate.test.cjs`](../.github/tests/deploy-bot-gate.test.cjs) — file path mentioned.
     - [`Whatsapp bot/.env.example`](../Whatsapp%20bot/.env.example) — explicit relationship.
@@ -3663,7 +3664,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Outside modules:** `axios`, `node:assert/strict`, `node:child_process`, `node:crypto`, `node:fs`, `node:module`, `node:os`, `node:path`, `node:stream`, `node:test`, `youtubei.js`.
   - **Dynamic loading observed:** `import`, `require`.
 
-- [`test-media-extractors.py`](../Whatsapp%20bot/scripts/test-media-extractors.py) — Checks offline provider/search URL recognition and a synthetic playlist print template with installed yt-dlp; it does not download provider videos.
+- [`test-media-extractors.py`](../Whatsapp%20bot/scripts/test-media-extractors.py) — Checks offline URL-pattern recognition for the named providers using an installed yt-dlp; it does not download videos.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
     - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — direct test invocation with pinned yt-dlp.
@@ -3703,6 +3704,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — Offline real-handler tests for all provider searches, numbered choices, session isolation, options and member policy.
   - **References:**
+    - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require and test-only instrumentation.
+    - [`Whatsapp bot/utils/jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — require and test-only instrumentation.
     - [`Whatsapp bot/utils/memberCommandPolicy.js`](../Whatsapp%20bot/utils/memberCommandPolicy.js) — require and test-only instrumentation.
     - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — require and test-only instrumentation.
     - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require and test-only instrumentation.
@@ -3716,12 +3719,11 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 - [`test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — Offline mocked tests for provider search, URL validation, public indexes and metadata fallback.
   - **References:**
-    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require and test-only instrumentation.
     - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require and test-only instrumentation.
   - **Referenced by:**
     - [`.github/workflows/deploy-panel.yml`](../.github/workflows/deploy-panel.yml) — invoked via npm test:media.
     - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm test:media script.
-  - **Outside modules:** `axios`, `node:assert/strict`, `node:test`.
+  - **Outside modules:** `axios`, `node:assert/strict`, `node:http`, `node:test`.
 
 - [`test-service-startup.js`](../Whatsapp%20bot/scripts/test-service-startup.js) — Tests startup order and cleanup when session or bridge startup fails.
   - **References:**
@@ -3960,10 +3962,11 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/scripts/test-delivery.js`](../Whatsapp%20bot/scripts/test-delivery.js) — require.
   - **Outside modules:** `fs`, `path`.
 
-- [`jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — In-memory download queues and lanes.
+- [`jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — In-memory download and provider-search queues with separate lanes.
   - **References:**
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
   - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.
     - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
     - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
@@ -4145,8 +4148,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Outside modules:** `fs`, `path`.
 
 - [`providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — Provider-scoped title discovery, public search sources, safe result parsing, and Youku original-title fallback.
-  - **References:**
-    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
+  - **References:** none detected in this snapshot.
   - **Referenced by:**
     - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — require and test-only instrumentation.
     - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — require and test-only instrumentation.
@@ -4292,8 +4294,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/safeLog.js`](../Whatsapp%20bot/utils/safeLog.js) — require.
     - [`Whatsapp bot/utils/tempManager.js`](../Whatsapp%20bot/utils/tempManager.js) — require.
   - **Referenced by:**
-    - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — require and test-only instrumentation.
-    - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require.
     - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — test-only instrumentation and computed bot-root path.
     - [`Whatsapp bot/commands/admin/cookies.js`](../Whatsapp%20bot/commands/admin/cookies.js) — require.
     - [`Whatsapp bot/commands/admin/ytdl.js`](../Whatsapp%20bot/commands/admin/ytdl.js) — require.

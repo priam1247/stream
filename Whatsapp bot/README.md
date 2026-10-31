@@ -18,11 +18,11 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .ytv <name-or-YouTube-link> [quality]  Download YouTube MP4 with silent-audio verification
 .dl <URL> [audio|video] [quality]      Generic yt-dlp downloader (streamed to disk)
 .tiktok <URL>  .x <URL>  .pinterest <URL>  .instagram <URL>  .fb <URL>
-.bilibili <title or URL>  .vimeo <title or URL>  .dailymotion <title or URL>
-.reddit <title or URL>    .twitch <title or URL>  .rumble <title or URL>
-.odysee <title or URL>    .weibo <title or URL>   .douyin <title or URL>
-.acfun <title or URL>     .youku <title or URL>   .vk <title or URL>
-.xiaohongshu <title or URL>  .niconico <title or URL>
+.bilibili <title>  .vimeo <title>  .dailymotion <title>
+.reddit <title>    .twitch <title>  .rumble <title>
+.odysee <title>    .weibo <title>   .douyin <title>
+.acfun <title>     .youku <title>   .vk <title>
+.xiaohongshu <title>  .niconico <title>
 .spotify <Spotify URL or artist - title>
 .sticker (reply to media)              512x512 WebP sticker
 .viewonce (reply to view-once media)   Unwrap view-once photo/video/audio (from the session owner)
@@ -33,7 +33,8 @@ Interactive title and quality choices use a tap selector or a prefixed numbered 
 
 ### Video sites and YouTube troubleshooting
 
-The 14 site commands accept a title as well as a direct link. For example:
+The 14 site commands search by title only; pasted or quoted links are not
+accepted by those shortcuts. For example:
 
 ```text
 .youku the blood of youth s01e1
@@ -47,18 +48,19 @@ Search shows numbered results even when `SEARCH_PICKER` is off; reply with a
 prefixed number or `.cancel`. `--first` skips the list. For title searches use
 `--audio`, `--video`, `--image`, a trailing quality such as `480p`, or
 `--quality 480`; bare words such as `music` and `video` remain part of the
-search title. Direct links still accept the older `audio` and `480` options.
-`SEARCH_RESULTS` (1–10, default 5) and `SEARCH_TTL_MINUTES` apply to the list.
+search title. `SEARCH_RESULTS` (1–10, default 5) and `SEARCH_TTL_MINUTES` apply
+to the list. Searches use a separate four-slot queue and a 30-second deadline;
+waiting searches are queued rather than rejected.
 
-Bilibili, Youku, AcFun, Reddit, Rumble, Odysee, Dailymotion and Niconico first
-try public site search or APIs. Niconico may also try yt-dlp. All 14 can fall back to
-DuckDuckGo, Brave Search and the Firecrawl keyless search API with a site filter.
+Bilibili, Youku, AcFun, Reddit, Odysee, Dailymotion and Niconico first
+try public site search or APIs. Niconico's snapshot index updates daily. All 14
+can fall back to DuckDuckGo, Brave Search and the Firecrawl keyless search API
+with a site filter.
 Those services receive the search words. Firecrawl's free access is capped per
 IP and may rate-limit requests. For an English Youku episode search with no
 usable native result, TVMaze may receive the series name to find an exact matching
-original Chinese title; that title is then searched on Youku. HTTP searches do not
-send the bot's saved cookies or authorization to those services. yt-dlp's native
-searches use its existing domain-scoped cookie and proxy settings. Results are
+original Chinese title; that title is then searched on Youku. Searches do not
+send the bot's saved cookies or authorization to those services. Results are
 checked against the requested site's video/post URLs, but may be outdated,
 incomplete, unrelated or not downloadable. A site's original language may work
 better; `S01E01` is only a search hint, not an episode guarantee.
@@ -66,10 +68,11 @@ Search and downloads can fail because of rate limits, sign-in, location, deleted
 videos, network blocks, DRM or site changes. Search is not a filter for explicit
 material hosted on general-purpose sites.
 
-Downloads still use the existing yt-dlp pipeline, not separate extractors;
-`.bili`, `.daily`, `.xhs`, and `.nico` are aliases. `.dl` remains available for
-other supported links. Use individual public video/post URLs; the bot does not
-intentionally download whole playlists. Dashboard command switches apply to
+Selected results still use the existing yt-dlp pipeline, not separate extractors;
+`.bili`, `.daily`, `.xhs`, and `.nico` are aliases. To download a direct link,
+use `.dl <URL>`. The older `.tiktok`, `.x`, `.pinterest`, `.instagram` and `.fb`
+shortcuts continue accepting links. The bot does not intentionally download
+whole playlists. Dashboard command switches apply to
 individual commands, not whole websites: turning off `.bilibili` for members
 does not stop `.dl` accepting a Bilibili URL.
 
@@ -131,7 +134,9 @@ server (`../working scribd/`) are separate projects.
 
 ## Quick start
 
-From the repository root (Node.js 22 is recommended; the CI tests use Node 22):
+From the repository root (Node.js 22.13 or newer within v22 is recommended;
+CI uses Node 22). Older runtimes may not support the installed Baileys/jsdom
+dependencies or the built-in SQLite used by background jobs:
 
 ```bash
 cd "Whatsapp bot"

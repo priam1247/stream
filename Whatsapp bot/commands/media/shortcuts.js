@@ -51,18 +51,34 @@ function searchOptions(args, defaultKind) {
   return { kind, height, first, invalidQuality, query: rest.join(' ').trim() };
 }
 
-// Keep the old URL syntax (audio, 480, etc.) and accept the explicit flags too.
+// Keep legacy trailing link options, but apply explicit flags wherever they
+// appear. A malformed explicit quality must never start a default download.
 function linkOptions(args, defaultKind) {
-  const translated = [];
+  const rest = [];
+  let explicitKind;
+  let explicitHeight;
+  let invalidQuality = false;
   for (let i = 0; i < args.length; i++) {
     const token = String(args[i] || '');
     if (/^--?first$/i.test(token)) continue;
-    if (/^--(?:audio|video|image)$/i.test(token)) { translated.push(token.slice(2)); continue; }
+    if (/^--(?:audio|video|image)$/i.test(token)) { explicitKind = token.slice(2).toLowerCase(); continue; }
     const qualityFlag = /^--quality(?:=(.*))?$/i.exec(token);
-    if (qualityFlag) { translated.push(qualityFlag[1] === undefined ? String(args[++i] || '') : qualityFlag[1]); continue; }
-    translated.push(token);
+    if (qualityFlag) {
+      const value = qualityFlag[1] === undefined ? String(args[++i] || '') : qualityFlag[1];
+      const quality = Number(value.toLowerCase().replace(/p$/, ''));
+      if (QUALITIES.includes(quality)) explicitHeight = quality;
+      else invalidQuality = true;
+      continue;
+    }
+    rest.push(token);
   }
-  return parseOptions(translated, { kind: defaultKind });
+  const parsed = parseOptions(rest, { kind: defaultKind });
+  return { ...parsed, kind: explicitKind || parsed.kind, height: explicitHeight || parsed.height, invalidQuality };
+}
+
+// A URL is not a title. Also catch common scheme-less links with a path.
+function containsUrl(text) {
+  return Boolean(YT.extractUrl(text) || /(?:^|\s)(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?::\d+)?\/\S*/i.test(text));
 }
 
 function quotedTextOf(msg) {
@@ -91,13 +107,12 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
     const say = (text) => sock.sendMessage(chatId, { text }, { quoted: msg });
     const P = config.prefix || '.';
     const input = Array.isArray(args) ? args : [];
-    const link = linkOptions(input, defaultKind);
-    const argUrl = YT.extractUrl(link.rest.join(' ').trim());
-    const quotedUrl = YT.extractUrl(quotedTextOf(msg));
     const search = searchable ? searchOptions(input, defaultKind) : null;
-    // A quoted URL remains useful with no arguments or only download options;
-    // an actual title typed in the command takes precedence over a quoted URL.
-    const url = argUrl || (quotedUrl && (!searchable || !link.rest.length || !search.query) ? quotedUrl : null);
+    const link = searchable ? null : linkOptions(input, defaultKind);
+    const quotedUrl = YT.extractUrl(quotedTextOf(msg));
+    const url = searchable ? null : (YT.extractUrl(link.rest.join(' ').trim()) || quotedUrl);
+    const qualityError = 'Quality must be 144, 240, 360, 480, 720 or 1080.';
+    if (!searchable && link.invalidQuality) return say(qualityError);
 
     const send = (socket, message, context, selectedUrl, kind, height, known) => {
       const imageUrl = /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(selectedUrl);
@@ -122,16 +137,22 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
       return send(sock, msg, extra, url, link.kind, link.height, known);
     }
 
-    if (!searchable || !search.query) return say(`Usage: ${P}${usage.replace(/^\./, '')}`);
-    if (search.invalidQuality) return say('Quality must be 144, 240, 360, 480, 720 or 1080.');
+    if (searchable && containsUrl(input.join(' '))) {
+      return say(`This shortcut searches titles only. To download a link, use ${P}dl <link>.`);
+    }
+    if (searchable && search.invalidQuality) return say(qualityError);
+    if (!searchable || !search.query) {
+      if (searchable && quotedUrl) return say(`This shortcut searches titles only. To download a link, use ${P}dl <link>.`);
+      return say(`Usage: ${P}${usage.replace(/^\./, '')}`);
+    }
     if (search.query.length > providerSearch.MAX_QUERY) return say(`Search titles must be ${providerSearch.MAX_QUERY} characters or fewer.`);
 
     await say(`Searching ${hostLabel}...`);
     let found;
     try {
-      // Release the lane before a selected download starts; there is no nested
-      // queue wait. A burst of searches is bounded but commands are not rejected.
-      found = await jobQueue.runInLane('light', () => providerSearch.searchProvider(name, search.query, {
+      // Searches have their own queue and release it before a selected
+      // download starts, so a slow index cannot occupy download-lane slots.
+      found = await jobQueue.runInLane('search', () => providerSearch.searchProvider(name, search.query, {
         limit: Number(config.search?.maxResults) || 5,
       }));
     } catch {
@@ -139,9 +160,9 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
     }
     if (!found.results.length) {
       if (found.status === 'unavailable') {
-        return say(`${hostLabel} search is unavailable right now. The site or search indexes may be blocked; try again or use a direct link.`);
+        return say(`${hostLabel} search is unavailable right now. The site or search indexes may be blocked; try again later.`);
       }
-      return say(`No ${hostLabel} videos found. Try a shorter or original-language title, or use a direct link. Some videos may not be indexed.`);
+      return say(`No ${hostLabel} videos found. Try a shorter or original-language title. Some videos may not be indexed.`);
     }
 
     if (search.first) return send(sock, msg, extra, found.results[0].url, search.kind, search.height, true);
@@ -226,7 +247,7 @@ module.exports = [
     ...site,
     label: site.name,
     searchable: true,
-    description: `Search for or download a ${site.hostLabel} video`,
-    usage: `.${site.name} <title or ${site.hostLabel} link> [--audio] [480p]`,
+    description: `Search ${site.hostLabel} by title and download a result`,
+    usage: `.${site.name} <title> [--audio] [480p]`,
   })),
 ];

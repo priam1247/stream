@@ -21,8 +21,10 @@ process.env.QUEUE_MIN_FREE_MB = '0';
 const database = require('../database');
 database.getBotState = () => true;
 const pipeline = require('../utils/mediaPipeline');
+const config = require('../config');
 const providerSearch = require('../utils/providerSearch');
 const selections = require('../utils/selections');
+const jobQueue = require('../utils/jobQueue');
 const policy = require('../utils/memberCommandPolicy');
 const originalPolicy = policy.isUnavailable;
 const downloads = [];
@@ -132,18 +134,20 @@ test('aliases, explicit quality and --first preserve the requested provider and 
   assert.deepEqual(searches.map((s) => s.site), ['bilibili', 'dailymotion', 'xiaohongshu', 'niconico']);
 });
 
-test('old direct and quoted links still work with old and explicit flags; a typed title wins over a quote', async () => {
-  const sock = socket('direct');
-  await handler.handleMessage(sock, msg(`.youku ${urls.youku} audio 480`));
-  assert.equal(downloads[0].kind, 'audio');
-  assert.equal(downloads[0].height, 480);
+test('new shortcuts reject pasted and quoted links, while typed one-word titles always search', async () => {
+  const sock = socket('title-only');
+  await handler.handleMessage(sock, msg(`.youku ${urls.youku} --audio --quality 480`));
   await handler.handleMessage(sock, msg('.youku --audio --quality=360', { quoted: urls.youku }));
-  assert.equal(downloads[1].url, urls.youku);
-  assert.equal(downloads[1].kind, 'audio');
-  assert.equal(downloads[1].height, 360);
-  await handler.handleMessage(sock, msg('.youku a different title --first', { quoted: urls.youku }));
-  assert.equal(searches[0].query, 'a different title');
-  assert.equal(downloads.length, 3);
+  assert.equal(searches.length, 0);
+  assert.equal(downloads.length, 0);
+  assert.match(sock.sent.at(-1).text, /searches titles only.*\.dl/i);
+
+  await handler.handleMessage(sock, msg('.vimeo video', { quoted: urls.vimeo }));
+  await handler.handleMessage(sock, msg('.vimeo music', { quoted: urls.vimeo }));
+  assert.deepEqual(searches.map(({ site, query }) => [site, query]), [['vimeo', 'video'], ['vimeo', 'music']]);
+  assert.equal(downloads.length, 0);
+  await handler.handleMessage(sock, msg('.1'));
+  assert.equal(downloads[0].url, urls.vimeo);
 });
 
 test('cancel, expiry, unrelated quotes and other sessions cannot pick an outstanding search', async () => {
@@ -176,6 +180,52 @@ test('member policy is rechecked for an outstanding aliased search; owner remain
   assert.match(member.sent.map((m) => m.text || '').join(' '), /temporarily unavailable/i);
   await handler.handleMessage(owner, msg('.bili title --first'));
   assert.equal(downloads[0].url, urls.bilibili);
+});
+
+test('a full search lane queues searches without occupying a light download slot', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const running = Array.from({ length: 4 }, () => jobQueue.runInLane('search', () => gate));
+  let nextStarted = false;
+  const queued = jobQueue.runInLane('search', async () => { nextStarted = true; });
+  try {
+    assert.equal(jobQueue.stats().search.running, 4);
+    assert.equal(jobQueue.stats().search.waiting, 1);
+    const light = await jobQueue.runInLane('light', async () => 'download-started');
+    assert.equal(light, 'download-started');
+    assert.equal(nextStarted, false);
+  } finally {
+    release();
+    await Promise.allSettled([...running, queued]);
+  }
+  assert.equal(nextStarted, true);
+  assert.equal(jobQueue.stats().search.running, 0);
+});
+
+test('a search waiting for memory retries until memory recovers', async () => {
+  const oldFree = os.freemem;
+  const oldMinimum = config.queue.minFreeMB;
+  config.queue.minFreeMB = 1;
+  os.freemem = () => 0;
+  let started = false;
+  const pending = jobQueue.runInLane('search', async () => { started = true; });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    assert.equal(started, false);
+    os.freemem = () => 2 * 1024 * 1024;
+    let timer;
+    try {
+      await Promise.race([
+        pending,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('search did not retry')), 3000); }),
+      ]);
+    } finally { clearTimeout(timer); }
+    assert.equal(started, true);
+  } finally {
+    os.freemem = oldFree;
+    config.queue.minFreeMB = oldMinimum;
+    await pending;
+  }
 });
 
 test('no results, service failures, invalid quality and long titles give useful errors without downloads', async () => {

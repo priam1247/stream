@@ -78,27 +78,6 @@ jobs:
           "$RUNNER_TEMP/yt-extractors/bin/python" -m pip install 'yt-dlp==2026.10.26'
           "$RUNNER_TEMP/yt-extractors/bin/python" scripts/test-media-extractors.py
 
-      - name: One-time live provider search diagnostic
-        if: github.event_name == 'pull_request'
-        continue-on-error: true
-        timeout-minutes: 5
-        working-directory: Whatsapp bot
-        run: |
-          PATH="$RUNNER_TEMP/yt-extractors/bin:$PATH" node - <<'NODE'
-          const search = require('./utils/providerSearch');
-          (async () => {
-            const observations = [];
-            for (const [site, query] of [
-              ['dailymotion', 'cat'], ['niconico', 'cat'], ['douyin', 'cat'],
-              ['xiaohongshu', '小猫'], ['weibo', 'cat'], ['reddit', 'cat'], ['rumble', 'cat'],
-            ]) {
-              const result = await search.searchProvider(site, query, { limit: 3 });
-              observations.push({ site, status: result.status, source: result.source, count: result.results.length });
-            }
-            console.log('::notice title=Live search diagnostic::' + JSON.stringify(observations));
-          })().catch((err) => { console.error(err.message); process.exitCode = 1; });
-          NODE
-
       - name: Live HLS downloader smoke test
         working-directory: Whatsapp bot
         run: node scripts/test-nm3u8dl-live.js

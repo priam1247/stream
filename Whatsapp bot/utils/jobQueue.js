@@ -1,15 +1,15 @@
 /**
  * ZaFar Bot — download lanes
  *
- * Two lanes keep a burst of commands from either serialising or melting the
- * box:
+ * Separate lanes keep a burst of commands from either serialising or melting
+ * the box:
  *
- *   light — link/YouTube downloads (`.ytv`, `.dl`, `.song` …): 20 at a time
- *   heavy — movie/episode jobs (`.movie`, `.series`): 4 at a time
+ *   light  — link/YouTube downloads (`.ytv`, `.dl`, `.song` …): 20 at a time
+ *   heavy  — movie/episode jobs (`.movie`, `.series`): 2 at a time
+ *   search — provider title discovery: 4 at a time
  *
- * A job that would exceed the lane limit waits in a FIFO queue and gets a ⏳
- * reaction, so a 20th download never blocks the 1st and 21 commands in one
- * minute still all run.
+ * A job that would exceed the lane limit waits in a FIFO queue. Download
+ * callers may signal that wait, and queued commands still get a turn.
  *
  * Memory guard: RAM is the real ceiling on a 4 GB panel, so a slot is only
  * opened when `os.freemem()` is above config.queue.minFreeMB. It is a soft
@@ -24,6 +24,7 @@ const limitFor = (name, fallback) => Math.max(1, Math.floor(Number(config.queue?
 const lanes = {
   light: { fallback: 20, running: 0, waiters: [] },
   heavy: { fallback: 2, running: 0, waiters: [] },
+  search: { fallback: 4, running: 0, waiters: [] },
 };
 
 const minFreeBytes = () => Math.max(0, Number(config.queue?.minFreeMB) || 0) * 1024 * 1024;
@@ -34,11 +35,27 @@ function memoryOk() {
   try { return os.freemem() >= need; } catch { return true; }
 }
 
+// Memory can recover even when no running job completes. Keep one retry per
+// lane while anything is waiting, rather than leaving a queue stuck forever.
+function scheduleRetry(lane) {
+  if (!lane.waiters.length || lane.retryTimer) return;
+  lane.retryTimer = setTimeout(() => {
+    lane.retryTimer = null;
+    drain(lane);
+  }, 2000);
+  lane.retryTimer.unref?.();
+}
+
 /** Wake queued jobs until the lane is full or memory says stop. */
 function drain(lane) {
   while (lane.waiters.length && lane.running < limitFor(lane.name, lane.fallback) && memoryOk()) {
     lane.running++;
     lane.waiters.shift()();
+  }
+  if (lane.waiters.length) scheduleRetry(lane);
+  else if (lane.retryTimer) {
+    clearTimeout(lane.retryTimer);
+    lane.retryTimer = null;
   }
 }
 
@@ -54,9 +71,7 @@ async function runInLane(name, fn, onWait) {
       if (typeof onWait === 'function') {
         try { Promise.resolve(onWait()).catch(() => {}); } catch { /* ignore */ }
       }
-      // the memory guard can free up while nothing else finishes
-      const timer = setTimeout(() => drain(lane), 2000);
-      timer.unref?.();
+      scheduleRetry(lane);
     });
   } else {
     lane.running++;

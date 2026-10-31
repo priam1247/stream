@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 'use strict';
 
-// All provider/search-engine HTTP and yt-dlp calls are stubbed. This suite tests
-// parsing, routing and safety boundaries, not third-party availability.
+// All provider/search-engine HTTP calls are stubbed. This suite tests parsing,
+// routing and safety boundaries, not third-party availability.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const http = require('node:http');
 const axios = require('axios');
-const YT = require('../utils/youtubedl');
 const search = require('../utils/providerSearch');
 
 const examples = {
@@ -25,22 +25,17 @@ const examples = {
   xiaohongshu: 'https://www.xiaohongshu.com/explore/123456789012345678901234',
   niconico: 'https://www.nicovideo.jp/watch/sm9',
 };
-const originals = { get: axios.get, post: axios.post, resolve: YT.resolveCommand, run: YT.run, base: YT.baseArgs, caps: YT.capabilities };
+const originals = { get: axios.get, post: axios.post };
 const success = (data) => ({ status: 200, data: typeof data === 'string' ? data : JSON.stringify(data) });
 const denied = async () => { throw new Error('fixture: offline'); };
 
 test.beforeEach(() => {
   axios.get = denied;
   axios.post = denied;
-  YT.resolveCommand = () => null;
 });
 test.afterEach(() => {
   axios.get = originals.get;
   axios.post = originals.post;
-  YT.resolveCommand = originals.resolve;
-  YT.run = originals.run;
-  YT.baseArgs = originals.base;
-  YT.capabilities = originals.caps;
 });
 
 function duck(results) {
@@ -131,6 +126,39 @@ test('HTTP search suppresses inherited Axios authorization and account cookies',
   }
 });
 
+test('one overall deadline aborts a real in-flight HTTP request and skips later sources', async () => {
+  let requests = 0;
+  const server = http.createServer(() => { requests++; }); // deliberately never responds
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const local = `http://127.0.0.1:${server.address().port}`;
+  const seen = [];
+  axios.get = (endpoint, opts) => {
+    seen.push({ endpoint, signal: opts.signal, timeout: opts.timeout });
+    return originals.get(local, { ...opts, proxy: false });
+  };
+  try {
+    const start = Date.now();
+    const found = await search.searchProvider('vimeo', 'title', { timeoutMs: 300 });
+    assert.equal(found.status, 'unavailable');
+    assert.equal(requests, 1);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].signal.aborted, true);
+    assert.ok(seen[0].timeout <= 300);
+    assert.ok(Date.now() - start < 2500);
+
+    // An earlier empty provider response must not turn a later deadline into a
+    // misleading definitive "no results" status.
+    axios.get = (endpoint, opts) => endpoint.includes('youku.com')
+      ? Promise.resolve(success({ message: 'success', originNodes: [] }))
+      : originals.get(local, { ...opts, proxy: false });
+    const partlyCompleted = await search.searchProvider('youku', 'a title', { timeoutMs: 300 });
+    assert.equal(partlyCompleted.status, 'unavailable');
+    assert.equal(requests, 2);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('DuckDuckGo unwraps exactly one encoding layer and ignores bad destinations', () => {
   const target = 'https://www.xiaohongshu.com/explore/123456789012345678901234?token=a%25b';
   const rows = search.parseDuck(duck([{ url: target, title: '<em>Result</em>' }]));
@@ -183,6 +211,20 @@ test('Firecrawl keyless fallback can scope to the video path and validates every
   const found = await search.searchProvider('douyin', 'cat', { limit: 3 });
   assert.equal(found.source, 'firecrawl');
   assert.deepEqual(found.results.map((r) => r.url), [examples.douyin]);
+});
+
+test('Rumble title discovery uses an index rather than automated requests to the site', async () => {
+  const visited = [];
+  axios.get = async (endpoint) => { visited.push(endpoint); throw new Error('other indexes offline'); };
+  axios.post = async (endpoint, body) => {
+    visited.push(endpoint);
+    assert.equal(body.query, 'cat site:rumble.com/v');
+    return success({ success: true, data: { web: [{ url: examples.rumble, title: 'Rumble video' }] } });
+  };
+  const found = await search.searchProvider('rumble', 'cat');
+  assert.equal(found.source, 'firecrawl');
+  assert.equal(found.results[0].url, examples.rumble);
+  assert.equal(visited.some((endpoint) => endpoint.startsWith('https://rumble.com/')), false);
 });
 
 test('Firecrawl uses hostname filters for providers without a narrower video path', async () => {
@@ -297,6 +339,21 @@ test('Youku searches its endpoint, retries the series name, and prioritizes only
   assert.deepEqual(found.results.map((r) => r.title), ['Drama 01', 'Drama 02']);
   assert.deepEqual(found.results.map((r) => r.url), ['https://v.youku.com/v_show/id_XABC1.html', 'https://v.youku.com/v_show/id_XABC2.html']);
   assert.equal(search.requestedEpisode('show s02e03').number, 3);
+});
+
+test('Youku ranks and displays numeric and labeled episodes without inventing numbers', async () => {
+  axios.get = async (endpoint) => {
+    assert.equal(endpoint, 'https://search.youku.com/api/search');
+    return success({ message: 'success', originNodes: [{ data: [
+      { videoId: 'XABC2', title: 'Episode two', showVideoStage: 2 },
+      { videoId: 'XABC1', title: 'Episode one', orderId: 0, showVideoStage: '第1集' },
+      { videoId: 'XABC3', title: 'Episode three', displayName: '第３集' },
+      { videoId: 'XABCU', title: 'Unknown episode', showVideoStage: 'Coming soon' },
+    ] }] });
+  };
+  const found = await search.searchProvider('youku', 'a drama s01e1');
+  assert.deepEqual(found.results.map((row) => row.title), ['Episode one', 'Episode two', 'Episode three', 'Unknown episode']);
+  assert.deepEqual(found.results.map((row) => row.episode), [1, 2, 3, 0]);
 });
 
 test('Youku can resolve an exact English episode query to an original Chinese title without leaving Youku', async () => {
@@ -419,7 +476,7 @@ test('Youku validates both possible result layouts and fails on a changed schema
   assert.throws(() => search.parseYouku({ message: 'captcha', originNodes: [] }), /unavailable/);
 });
 
-test('AcFun, Reddit, Rumble and Odysee native responses use individually validated videos', async () => {
+test('AcFun, Reddit and Odysee native responses use individually validated videos', async () => {
   axios.get = async (endpoint) => {
     if (endpoint.includes('api-new.app.acfun.cn')) return success({ result: 0, videoList: [
       { contentId: '12345678', title: 'AcFun title', userName: 'Creator' }, { contentId: '../evil', title: 'bad' },
@@ -428,7 +485,6 @@ test('AcFun, Reddit, Rumble and Odysee native responses use individually validat
       { data: { is_video: false, permalink: '/r/test/comments/aaa/image/', title: 'Image' } },
       { data: { is_video: true, permalink: '/r/test/comments/abc123/example/', title: 'Reddit video' } },
     ] } });
-    if (endpoint.includes('rumble.com')) return success('<div class="video-list"><a class="video-item--a" href="/v1xyz-example.html"><img alt="Rumble video"></a></div>');
     throw new Error('offline');
   };
   let rpc;
@@ -439,7 +495,7 @@ test('AcFun, Reddit, Rumble and Odysee native responses use individually validat
     rpc = body;
     return success({ result: { items: [{ canonical_url: 'lbry://@example#1/title#2', value: { title: 'Odysee title', video: { duration: 42 } } }] } });
   };
-  for (const site of ['acfun', 'reddit', 'rumble', 'odysee']) {
+  for (const site of ['acfun', 'reddit', 'odysee']) {
     const result = await search.searchProvider(site, 'a title');
     assert.equal(result.source, 'provider', site);
     assert.equal(result.results.length, 1, site);
@@ -466,6 +522,8 @@ test('Dailymotion and Niconico public APIs return validated video titles and dur
     assert.ok(endpoint.startsWith('https://snapshot.search.nicovideo.jp/'));
     assert.equal(opts.params.q, 'cat');
     assert.equal(opts.params._limit, 9);
+    assert.equal(opts.params._context, 'zafar-video-search');
+    assert.equal(opts.headers['User-Agent'], 'zafar-video-search/2.2');
     return success({ meta: { status: 200 }, data: [
       { contentId: 'sm9', title: 'Nico title', lengthSeconds: 63 },
       { contentId: '../bad', title: 'Bad video' },
@@ -482,40 +540,6 @@ test('Dailymotion and Niconico public APIs return validated video titles and dur
   assert.equal(nico.source, 'provider');
   assert.equal(nico.results[0].url, examples.niconico);
   assert.equal(nico.results[0].duration, 63);
-});
-
-test('Niconico can fall back to bounded yt-dlp search with JSON-encoded fields and no shell', async () => {
-  YT.resolveCommand = () => ['yt-dlp'];
-  YT.baseArgs = () => ['--no-playlist', '--ignore-config', '--cookies', '/private/cookies'];
-  YT.capabilities = () => ({ noCheckFormats: true });
-  let call;
-  YT.run = async (args, options) => {
-    call = { args, options };
-    const parts = [examples.niconico, null, 'video-id', 'Title\twith\nlines', 120, 'Author'];
-    return { stdout: parts.map((x) => x === null ? 'NA' : JSON.stringify(x)).join('\t'), stderr: '' };
-  };
-  const found = await search.searchProvider('niconico', 'a title --ignored ; $(not a shell)', { limit: 3 });
-  assert.equal(found.source, 'provider');
-  assert.equal(found.results[0].title, 'Title with lines');
-  assert.equal(call.options.timeout, 30000);
-  assert.ok(call.args.includes('--no-flat-playlist'));
-  assert.ok(call.args.includes('--ignore-errors'));
-  assert.ok(!call.args.includes('--no-playlist'));
-  assert.equal(call.args[call.args.length - 2], '--');
-  assert.equal(call.args.at(-1), 'nicosearch3:a title --ignored ; $(not a shell)');
-});
-
-test('partial yt-dlp output survives a timeout; offsite rows never pass validation', async () => {
-  YT.resolveCommand = () => ['yt-dlp'];
-  YT.baseArgs = () => ['--no-playlist'];
-  YT.capabilities = () => ({});
-  YT.run = async () => {
-    const record = (url) => [url, null, 'id', 'Result', 20, ''].map((x) => x === null ? 'NA' : JSON.stringify(x)).join('\t');
-    throw Object.assign(new Error('timeout'), { stdout: `${record(examples.vimeo)}\n${record(examples.niconico)}` });
-  };
-  const result = await search.searchProvider('niconico', 'video');
-  assert.equal(result.source, 'provider');
-  assert.deepEqual(result.results.map((r) => r.url), [examples.niconico]);
 });
 
 test('malicious title markup and control characters cannot forge picker lines', () => {

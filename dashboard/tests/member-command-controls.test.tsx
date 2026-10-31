@@ -27,12 +27,12 @@ it('shows site shortcuts, searches aliases, and toggles the canonical member com
   expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ name: 'bilibili', disabled: true });
 });
 
-it('documents title or link search for all 14 site shortcuts', () => {
+it('documents title-only search for all 14 site shortcuts', () => {
   const sites = ['bilibili', 'vimeo', 'dailymotion', 'reddit', 'twitch', 'rumble', 'odysee', 'weibo', 'douyin', 'acfun', 'youku', 'vk', 'xiaohongshu', 'niconico'];
   for (const name of sites) {
     const command = BOT_COMMANDS.find((item) => item.name === name);
     const member = MEMBER_COMMANDS.find((item) => item.name === name);
-    expect(command?.usage).toContain('<title or url>');
+    expect(command?.usage).toContain('<title>');
     expect(member?.usage).toBe(command?.usage);
   }
   expect(BOT_COMMANDS.find((item) => item.name === 'youku')?.example).toBe('.youku the blood of youth s01e1');
