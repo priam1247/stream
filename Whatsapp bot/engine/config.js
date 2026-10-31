@@ -151,7 +151,7 @@ const problems = [];
 if (!cfg.tmdbKey) problems.push('TMDB_API_KEY is not set — falling back to Cinemeta/IMDb/TVMaze for titles');
 if (!cfg.realDebridKey && !cfg.allDebridKey) {
   problems.push(cfg.torrentDirect
-    ? 'no debrid key — torrent sources download directly to this server.'
+    ? 'no debrid key — direct torrents require a working optional WebTorrent installation.'
     : 'no debrid key — torrent sources are skipped (DDL + stream tiers still work). Add REALDEBRID_API_KEY or ALLDEBRID_API_KEY for 4K/1080p torrents.');
 }
 if (problems.length && !cfg.quiet) {

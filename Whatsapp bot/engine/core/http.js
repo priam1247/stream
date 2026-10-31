@@ -58,23 +58,32 @@ export const nextUserAgent = () => UA_POOL[uaCursor++ % UA_POOL.length];
 const INFLIGHT_JSON = new Map();
 
 // ── per-host inflight limiter (prevents hammering one site) ───────────────
-const inflight = new Map();           // host -> current count
-const MAX_PER_HOST = Number(process.env.MAX_PER_HOST || 4);
+const inflight = new Map();           // host -> current count, including handed-off slots
+const rawMaxPerHost = Number(process.env.MAX_PER_HOST || 4);
+const MAX_PER_HOST = Number.isFinite(rawMaxPerHost) && rawMaxPerHost >= 1
+  ? Math.floor(rawMaxPerHost) : 4;
 const hostQueue = new Map();          // host -> [waiters]
 
 async function acquire(host) {
-  let n = inflight.get(host) || 0;
+  const n = inflight.get(host) || 0;
   if (n < MAX_PER_HOST) { inflight.set(host, n + 1); return; }
   let q = hostQueue.get(host);
-  if (!q) { q = []; hostQueue.set(host, q); }        // MUST persist the queue on the map
+  if (!q) { q = []; hostQueue.set(host, q); }
+  // release() hands this waiter an already-reserved slot. Incrementing after
+  // waking would allow a newcomer to take the same slot in the meantime.
   await new Promise(res => q.push(res));
-  inflight.set(host, (inflight.get(host) || 0) + 1);
 }
 function release(host) {
-  const n = Math.max(0, (inflight.get(host) || 1) - 1);
-  inflight.set(host, n);
   const q = hostQueue.get(host);
-  if (q?.length) q.shift()();
+  if (q?.length) {
+    const next = q.shift();
+    if (!q.length) hostQueue.delete(host);
+    next();
+    return;
+  }
+  const n = Math.max(0, (inflight.get(host) || 1) - 1);
+  if (n) inflight.set(host, n);
+  else inflight.delete(host);
 }
 
 // ── core request with retries + backoff jitter ────────────────────────────
@@ -124,7 +133,9 @@ async function run(url, { timeout, retries, json, headers, cookies, ...rest }) {
           if (c) h.cookie = c;
         }
         const res = await fetch(url, { ...rest, headers: h, signal: AbortSignal.timeout(timeout) });
-        if (cookies) jar.set(host, res.headers.getSetCookie?.());
+        // Fetch can follow redirects; Set-Cookie belongs to the final response
+        // URL, not to the original request's host.
+        if (cookies) jar.set(res.url || url, res.headers.getSetCookie?.());
         const ms = Date.now() - started;
 
         if (res.status === 429 || res.status >= 500) {

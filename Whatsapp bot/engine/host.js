@@ -44,13 +44,15 @@ export async function hlsDownload(url, dest, opts = {}) {
  * sometimes reject Node's fetch fingerprint but accept the bot's agent.
  * @returns {Promise<null|{bytes:number}>} null when the host cannot help
  */
-export async function downloadFallback(url, dest, { headers = {}, onProgress } = {}) {
+export async function downloadFallback(url, dest, { headers = {}, onProgress, signal, maxBytes } = {}) {
   const h = await host();
   if (!h?.download) return null;
   try {
-    const res = await h.download(url, dest, { headers, onProgress });
+    const res = await h.download(url, dest, { headers, onProgress, signal, maxBytes });
     return { bytes: res.bytes };
-  } catch {
+  } catch (err) {
+    if (signal?.aborted) throw Object.assign(new Error('download aborted'), { code: 'ABORTED' });
+    if (err?.code === 'TOO_BIG') throw err;
     return null;
   }
 }

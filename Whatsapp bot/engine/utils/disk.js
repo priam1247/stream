@@ -1,7 +1,6 @@
 // src/utils/disk.js — filesystem utilities. 2.0 only shipped an "append to
 // utils/disk.js" fragment; 3.0 has the complete module.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 

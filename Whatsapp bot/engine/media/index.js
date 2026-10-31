@@ -19,7 +19,6 @@ import debrid from '../providers/debrid/index.js';
 import registry from '../core/registry.js';
 import queue from '../core/queue.js';
 import { isOld, rank } from '../core/ranker.js';
-import { metrics } from '../core/metrics.js';
 import metadata from '../metadata/index.js';
 import * as tmdb from '../metadata/tmdb.js';
 import * as tv from '../core/tv.js';
@@ -54,8 +53,6 @@ async function boot() {
   // never install signal handlers here: the bot owns process lifecycle
   await cache.init({ installSignalHandlers: false });
 }
-
-const cacheId = (meta) => meta?.imdbId || meta?.tmdbId || meta?.malId || null;
 
 // ── title → full metadata ──────────────────────────────────────────────────
 /**

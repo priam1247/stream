@@ -64,34 +64,35 @@ export function seasonQuery(title, year, season) {
   return Q(`${title} ${year || ''} S${pad2(season)}`);
 }
 
-// from a debrid file list (pack or single), pick the right episode file
+// Read explicit labels even when an underscore (a regex word character)
+// separates the title and SxxExx. A range may contain the requested episode.
+export function episodeFileLabel(name) {
+  const text = String(name || '');
+  const sxe = /(?:^|[^a-z0-9])s(\d{1,2})[\s._-]*e(\d{1,3})(?:[\s._]*(?:e|-\s*e?)(\d{1,3}))?(?:[^0-9]|$)/i.exec(text);
+  if (sxe) return { season: Number(sxe[1]), first: Number(sxe[2]), last: Number(sxe[3] || sxe[2]) };
+  const alt = /(?:^|[^a-z0-9])(\d{1,2})x(\d{1,3})(?:[\s._-]+(\d{1,3}))?(?:[^0-9]|$)/i.exec(text);
+  return alt ? { season: Number(alt[1]), first: Number(alt[2]), last: Number(alt[3] || alt[2]) } : null;
+}
+
+// From a debrid pack, never choose a known different episode or an arbitrary
+// position in an ambiguously named pack.
 export function pickEpisodeFile(files, season, episode) {
-  const vids = files
+  const vids = (files || [])
     .filter(f => /\.(mp4|mkv|avi|mov|m4v|webm)$/i.test(f.path || ''))
     .filter(f => !/sample|trailer|extras|behind/i.test(f.path || ''));
   if (!vids.length) return null;
+  const labelled = vids.map(file => ({ file, label: episodeFileLabel(file.path) }));
+  const matching = labelled.find(({ label }) => label && label.season === Number(season)
+    && Number(episode) >= label.first && Number(episode) <= label.last);
+  if (matching) return matching.file;
+  if (labelled.some(({ label }) => label)) return null;
 
-  const sP = pad2(season), eP = pad2(episode);
-
-  const exact = vids.find(f =>
-    new RegExp(`s${sP}[ ._-]?e${eP}(?:[ ._-]?e\\d{1,3})?\\b`, 'i').test(f.path) ||
-    new RegExp(`\\b${season}x${eP}\\b`, 'i').test(f.path) ||
-    new RegExp(`\\b${season} ?[.-] ?${episode}\\b`).test(f.path));
-  if (exact) return exact;
-
-  // release-aware filter: drop files that plainly belong to other episodes
-  const parsed = vids
-    .map(f => ({ f, rel: parseRelease(f.path) }))
-    .filter(({ rel, f }) => matchesEpisode(rel, season, episode, f.path));
-  if (parsed.length === 1) return parsed[0].f;
-
-  // absolute-numbered anime fallback
-  const abs = vids.find(f => new RegExp(`\\b${pad2(episode)}\\b`).test(f.path));
-  if (abs) return abs;
-
-  // ordered fallback: numeric sort then index
-  const sorted = [...vids].sort((a, b) => String(a.path).localeCompare(String(b.path), undefined, { numeric: true }));
-  return sorted[episode - 1] || sorted[0] || null;
+  // Anime packs sometimes use absolute numbers rather than SxxExx.
+  if (Number(season) === 1) {
+    const abs = vids.filter(f => new RegExp(`(?:^|\\D)0*${Number(episode)}(?:\\D|$)`).test(f.path));
+    if (abs.length === 1) return abs[0];
+  }
+  return vids.length === 1 ? vids[0] : null;
 }
 
 export { parseRelease, matchesEpisode };

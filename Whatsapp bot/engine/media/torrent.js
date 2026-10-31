@@ -4,6 +4,7 @@ import config from '../config.js';
 import cache from '../core/cache.js';
 import { metrics } from '../core/metrics.js';
 import { emit, EVENTS } from '../core/events.js';
+import { episodeFileLabel } from '../core/tv.js';
 
 const MB = 1024 * 1024;
 const VIDEO_EXT = /\.(mkv|mp4|avi|m4v|webm|mov|ts)$/i;
@@ -19,7 +20,7 @@ function loadWebTorrent() {
       .catch((error) => {
         const message = error?.message || String(error);
         throw Object.assign(
-          new Error(`torrent engine unavailable: ${message} (run npm rebuild node-datachannel)`),
+          new Error(`torrent engine unavailable: ${message} (check the optional WebTorrent install and npm logs, then restart)`),
           { code: 'NO_TORRENT_ENGINE' }
         );
       });
@@ -48,29 +49,32 @@ function isEligible(file) {
     Number(file.length) >= MIN_VIDEO_BYTES;
 }
 
-function isEpisodeFile(file, season, episode) {
-  const s = Number(season);
-  const e = Number(episode);
-  if (!Number.isInteger(s) || !Number.isInteger(e)) return false;
-  const ss = `0?${s}`;
-  const ee = `0?${e}`;
-  const pattern = new RegExp(`(?:^|[^a-z0-9])(?:s${ss}[\\s._-]*e${ee}|${ss}x${ee})(?:[^0-9]|$)`, 'i');
-  return pattern.test(file.name || '');
-}
+const episodeLabel = (file) => episodeFileLabel(file?.name);
 
 export function pickTorrentFile(files, { fileIdx, season, episode } = {}) {
   if (!Array.isArray(files) || !files.length) return null;
   const eligible = files.filter(isEligible);
   const index = Number(fileIdx);
-  if (fileIdx !== undefined && fileIdx !== null && Number.isInteger(index) && index >= 0 && index < files.length) {
-    if (isEligible(files[index])) return files[index];
-  }
+  const indexed = fileIdx !== undefined && fileIdx !== null && Number.isInteger(index) && index >= 0 && index < files.length
+    && isEligible(files[index]) ? files[index] : null;
+  const targetSeason = Number(season);
+  const targetEpisode = Number(episode);
+  const isEpisode = season != null && episode != null && Number.isInteger(targetSeason) && Number.isInteger(targetEpisode);
+  if (!isEpisode) return indexed || eligible.sort((a, b) => Number(b.length) - Number(a.length))[0] || null;
 
-  const matchingEpisode = season != null && episode != null
-    ? eligible.filter(file => isEpisodeFile(file, season, episode))
-    : [];
-  const pool = matchingEpisode.length ? matchingEpisode : eligible;
-  return pool.sort((a, b) => Number(b.length) - Number(a.length))[0] || null;
+  const matches = (file) => {
+    const label = episodeLabel(file);
+    return label && label.season === targetSeason && targetEpisode >= label.first && targetEpisode <= label.last;
+  };
+  // A provider-specified file index is useful even for an unlabelled file, but
+  // never trust it when its filename explicitly identifies a different episode.
+  if (indexed && (!episodeLabel(indexed) || matches(indexed))) return indexed;
+  const matching = eligible.filter(matches).sort((a, b) => Number(b.length) - Number(a.length));
+  if (matching.length) return matching[0];
+  // An unlabelled single-file torrent can still be an episode. A pack with no
+  // clear match is ambiguous, so fail instead of sending the largest wrong file.
+  if (eligible.length === 1 && !episodeLabel(eligible[0])) return eligible[0];
+  return null;
 }
 
 function destroyTorrent(torrent) {
@@ -119,7 +123,9 @@ export async function torrentToFile(magnet, dest, {
 
     const files = torrent.files || [];
     const selected = pickTorrentFile(files, { fileIdx, season, episode });
-    if (!selected) throw new Error('no video file in torrent');
+    if (!selected) throw new Error(season != null && episode != null
+      ? 'no matching episode file found in torrent'
+      : 'no video file in torrent');
     const sizeMB = Number(selected.length) / MB;
     if (sizeMB > maxMB) throw new Error(`torrent file too big (${sizeMB.toFixed(0)}MB, cap ${maxMB}MB)`);
 

@@ -13,6 +13,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import config from '../config.js';
 import cache from '../core/cache.js';
 import { formatBytes } from '../utils/format.js';
@@ -21,6 +23,7 @@ import { emit, EVENTS } from '../core/events.js';
 import { metrics } from '../core/metrics.js';
 import { ffmpegPath, downloadFallback, hlsDownload } from '../host.js';
 import { downloadHlsNative, parseVariants, chooseVariant } from './hls.js';
+import { readPlaylist } from '../utils/httpBody.js';
 
 export const sanitize = (name, q, s, e) => {
   const base = sanitizeName(name);
@@ -30,27 +33,37 @@ export const sanitize = (name, q, s, e) => {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-/**
- * When falling back to raw `ffmpeg -i <url>`, pick the variant matching
- * `maxHeight` if `url` is a master playlist without separate audio renditions.
- */
-async function resolveFfmpegVariantUrl(url, headers, maxHeight) {
-  if (!maxHeight) return url;
+/** Select one video variant and, when present, its separate audio rendition. */
+async function resolveFfmpegInputs(url, headers, maxHeight) {
+  if (!maxHeight) return { video: url };
   try {
     const res = await fetch(url, {
       headers: { 'user-agent': config.userAgent, accept: '*/*', ...headers },
       signal: AbortSignal.timeout(12000),
       redirect: 'follow',
     });
-    if (!res.ok) return url;
-    const text = await res.text();
-    if (!/#EXT-X-STREAM-INF/i.test(text)) return url;
-    // Keep master URL if audio is carried in a separate #EXT-X-MEDIA rendition
-    if (/#EXT-X-MEDIA:[^\r\n]*TYPE=AUDIO[^\r\n]*URI="/i.test(text)) return url;
-    const chosen = chooseVariant(parseVariants(text, url), maxHeight);
-    return chosen?.url || url;
-  } catch {
-    return url;
+    if (!res.ok) { try { await res.body?.cancel(); } catch {} return { video: url }; }
+    const text = await readPlaylist(res);
+    if (!/#EXT-X-STREAM-INF/i.test(text)) return { video: url };
+    const base = res.url || url;
+    const chosen = chooseVariant(parseVariants(text, base), maxHeight);
+    if (!chosen?.url) return { video: url };
+    const validHttp = (value) => {
+      try { return /^https?:$/.test(new URL(value).protocol); } catch { return false; }
+    };
+    if (!validHttp(chosen.url)) throw new Error('invalid HLS variant URL');
+
+    const audio = text.split(/\r?\n/).filter((line) => {
+      if (!/^#EXT-X-MEDIA:/i.test(line) || !/(?:^|[:,])TYPE=AUDIO(?:,|$)/i.test(line)) return false;
+      return /(?:^|[:,])GROUP-ID="([^"]+)"/i.exec(line)?.[1] === chosen.audioGroup && /(?:^|[:,])URI="[^"]+"/i.test(line);
+    }).sort((a, b) => Number(/(?:^|[:,])DEFAULT=YES(?:,|$)/i.test(b)) - Number(/(?:^|[:,])DEFAULT=YES(?:,|$)/i.test(a)))[0];
+    const audioUri = audio && /(?:^|[:,])URI="([^"]+)"/i.exec(audio)?.[1];
+    const audioUrl = audioUri ? new URL(audioUri, base).toString() : null;
+    if (audioUrl && !validHttp(audioUrl)) throw new Error('invalid HLS audio URL');
+    return { video: chosen.url, ...(audioUrl ? { audio: audioUrl } : {}) };
+  } catch (error) {
+    if (error.code === 'TOO_BIG') throw error;
+    return { video: url };
   }
 }
 
@@ -89,19 +102,23 @@ export async function hlsToFile(url, dest, onProgress, { headers = {}, maxHeight
     // ── Tier 2: ffmpeg HLS remux ────────────────────────────────────────────
     const ffmpeg = hlsMode === 'native' ? null : ((await ffmpegPath()) || await which('ffmpeg'));
     if (ffmpeg) {
-      const targetUrl = await resolveFfmpegVariantUrl(url, headers, maxHeight);
+      const inputs = await resolveFfmpegInputs(url, headers, maxHeight);
       const headerLines = Object.entries({ 'User-Agent': config.userAgent, ...headers })
         .map(([k, v]) => `${k}: ${v}`)
         .join('\r\n');
+      const inputArgs = (input) => [
+        '-headers', `${headerLines}\r\n`,
+        '-user_agent', config.userAgent,
+        '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '10',
+        '-i', input,
+      ];
 
       try {
         await new Promise((resolve, reject) => {
           const p = execFile(ffmpeg, [
             '-y', '-hide_banner', '-loglevel', 'error',
-            '-headers', `${headerLines}\r\n`,
-            '-user_agent', config.userAgent,
-            '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '10',
-            '-i', targetUrl,
+            ...inputArgs(inputs.video),
+            ...(inputs.audio ? [...inputArgs(inputs.audio), '-map', '0:v:0', '-map', '1:a:0'] : []),
             '-c', 'copy', '-bsf:a', 'aac_adtstoasc',
             '-movflags', '+faststart',
             dest
@@ -135,11 +152,15 @@ export async function hlsToFile(url, dest, onProgress, { headers = {}, maxHeight
         });
 
         const bytes = fs.statSync(dest).size;
+        if (maxBytes > 0 && bytes > maxBytes) {
+          throw Object.assign(new Error('HLS stream larger than the cap'), { code: 'TOO_BIG' });
+        }
         if (bytes >= 10 * 1024) {
           metrics.bump('download.bytes', {}, bytes);
           emit(EVENTS.DOWNLOAD_DONE, { dest, bytes });
           return { bytes, file: dest, engine: 'ffmpeg' };
         }
+        try { fs.rmSync(dest, { force: true }); } catch { /* ignore */ }
       } catch (ffErr) {
         try { fs.rmSync(dest, { force: true }); } catch { /* ignore */ }
         if (ffErr?.code === 'TOO_BIG' || ffErr?.code === 'ABORTED') throw ffErr;
@@ -156,7 +177,7 @@ export async function hlsToFile(url, dest, onProgress, { headers = {}, maxHeight
             onProgress(bytes, estTotal);
           }
         : undefined;
-      got = await downloadHlsNative(url, dest, { headers, onProgress: wrappedProgress, maxHeight, maxBytes });
+      got = await downloadHlsNative(url, dest, { headers, onProgress: wrappedProgress, onAbort, maxHeight, maxBytes });
     } catch (e) {
       // never leave a half-written stream behind for the next retry to resume
       for (const f of [dest, dest.replace(/\.(mp4|mkv|ts|m4v)$/i, '') + '.ts']) {
@@ -173,9 +194,11 @@ export async function hlsToFile(url, dest, onProgress, { headers = {}, maxHeight
 }
 
 // One HTTP attempt. Resumes from whatever is already on disk.
-async function httpAttempt(url, dest, { onProgress, onAbort, headers, signal }) {
+async function httpAttempt(url, dest, { onProgress, onAbort, headers, signal, maxBytes }) {
   let start = 0;
   try { if (fs.existsSync(dest)) start = fs.statSync(dest).size; } catch { /* ignore */ }
+  const tooBig = () => Object.assign(new Error('download is larger than the size cap'), { code: 'TOO_BIG' });
+  if (maxBytes > 0 && start > maxBytes) throw tooBig();
 
   const res = await fetch(url, {
     headers: {
@@ -186,42 +209,58 @@ async function httpAttempt(url, dest, { onProgress, onAbort, headers, signal }) 
     signal,
     redirect: 'follow'
   });
+  const cancel = async () => { try { await res.body?.cancel(); } catch { /* already closed */ } };
 
-  // 416: we already have the whole file
-  if (res.status === 416 && start) return { bytes: start, complete: true };
-  if (!res.ok && res.status !== 206) throw new Error(`HTTP ${res.status}`);
+  if (res.status === 416 && start) {
+    const total = /^bytes \*\/(\d+)$/i.exec(res.headers.get('content-range') || '')?.[1];
+    await cancel();
+    if (Number(total) === start) return { bytes: start, complete: true };
+    // A stale partial is not a completed file. Discard it and make one clean
+    // request instead of sending corrupt data or retrying the same bad range.
+    fs.rmSync(dest, { force: true });
+    return httpAttempt(url, dest, { onProgress, onAbort, headers, signal, maxBytes });
+  }
+  if (!res.ok && res.status !== 206) { await cancel(); throw new Error(`HTTP ${res.status}`); }
 
-  // server ignored the range header? restart cleanly
+  // A server that ignores Range is safe to restart from zero. A 206 response
+  // must begin at the requested offset or appending it would corrupt the file.
   if (start && res.status !== 206) start = 0;
-
-  const total = Number(res.headers.get('content-length') || 0) + start;
-
-  const free = await freeBytes(path.dirname(dest));
-  if (free !== null && total && free < total + 300 * 1048576) {
-    throw new Error(`low disk: need ${formatBytes(total)}, have ${formatBytes(free)}`);
+  else if (start) {
+    const offset = /^bytes (\d+)-\d+\/(?:\d+|\*)$/i.exec(res.headers.get('content-range') || '')?.[1];
+    if (Number(offset) !== start) {
+      await cancel();
+      fs.rmSync(dest, { force: true });
+      return httpAttempt(url, dest, { onProgress, onAbort, headers, signal, maxBytes });
+    }
   }
 
-  const out = fs.createWriteStream(dest, { flags: start ? 'a' : 'w' });
-  let got = start, last = 0;
+  const total = Number(res.headers.get('content-length') || 0) + start;
+  if (maxBytes > 0 && total > maxBytes) { await cancel(); throw tooBig(); }
+  const free = await freeBytes(path.dirname(dest));
+  if (free !== null && total && free < total + 300 * 1048576) {
+    await cancel();
+    throw new Error(`low disk: need ${formatBytes(total)}, have ${formatBytes(free)}`);
+  }
+  if (!res.body) throw new Error('download response has no body');
 
-  try {
-    for await (const chunk of res.body) {
-      if (onAbort?.()) { out.destroy(); throw new Error('download aborted'); }
+  let got = start, last = 0;
+  const meter = new Transform({
+    transform(chunk, _encoding, callback) {
+      if (onAbort?.()) return callback(Object.assign(new Error('download aborted'), { code: 'ABORTED' }));
       got += chunk.length;
-      if (!out.write(chunk)) await new Promise(r => out.once('drain', r));
+      if (maxBytes > 0 && got > maxBytes) return callback(tooBig());
       const now = Date.now();
       if (now - last > 4000) {
         last = now;
-        onProgress?.(got, total);
+        try { onProgress?.(got, total); } catch { /* progress is best effort */ }
         emit(EVENTS.DOWNLOAD_PROGRESS, { dest, got, total });
       }
+      callback(null, chunk);
     }
-    out.end();
-    await new Promise(r => out.once('close', r));
-  } finally {
-    if (!out.closed && !out.destroyed) { try { out.destroy(); } catch {} }
-  }
-
+  });
+  // pipeline handles backpressure, write errors (including ENOSPC), and closes
+  // both the response and destination on failure.
+  await pipeline(Readable.fromWeb(res.body), meter, fs.createWriteStream(dest, { flags: start ? 'a' : 'w' }), { signal });
   if (total && got < total) throw new Error(`incomplete download (${got}/${total} bytes)`);
   return { bytes: got, complete: true };
 }
@@ -231,6 +270,7 @@ export async function httpToFile(url, dest, { onProgress, onAbort, headers = {} 
   ensureDir(path.dirname(dest));
   cache.markActive(dest);                 // a partial file must survive the sweeper
   emit(EVENTS.DOWNLOAD_START, { dest });
+  const maxBytes = Math.round(config.maxDownloadMB * 1.2 * 1048576);
 
   try {
     let lastErr;
@@ -239,20 +279,26 @@ export async function httpToFile(url, dest, { onProgress, onAbort, headers = {} 
       const controller = new AbortController();
       let lastData = Date.now();
       const guard = setInterval(() => {
-        if (Date.now() - lastData > config.downloadStallMs) controller.abort();
+        if (onAbort?.() || Date.now() - lastData > config.downloadStallMs) controller.abort();
       }, 5000);
       guard.unref?.();
 
       try {
         const out = await httpAttempt(url, dest, {
           onProgress: (got, total) => { lastData = Date.now(); onProgress?.(got, total); },
-          onAbort, headers, signal: controller.signal,
+          onAbort, headers, signal: controller.signal, maxBytes,
         });
         metrics.bump('download.bytes', {}, out.bytes);
         emit(EVENTS.DOWNLOAD_DONE, { dest, bytes: out.bytes });
         return out;
       } catch (e) {
         lastErr = e;
+        const cancelled = e.code === 'ABORTED' || Boolean(onAbort?.());
+        if (cancelled || ['TOO_BIG', 'ENOSPC', 'EDQUOT', 'EROFS', 'EACCES', 'EPERM'].includes(e.code)) {
+          try { fs.rmSync(dest, { force: true }); } catch { /* ignore */ }
+          if (cancelled && e.code !== 'ABORTED') throw Object.assign(new Error('download aborted'), { code: 'ABORTED' });
+          throw e;
+        }
         const stalled = e.name === 'AbortError' || /aborted|stalled/i.test(e.message || '');
         if (attempt >= config.downloadRetries) {
           // Last resort: the bot's own downloader (different TLS/agent stack).
@@ -260,7 +306,14 @@ export async function httpToFile(url, dest, { onProgress, onAbort, headers = {} 
           try {
             fs.rmSync(dest, { force: true });     // restart clean: host has no resume
           } catch { /* ignore */ }
-          const viaHost = await downloadFallback(url, dest, { headers, onProgress });
+          const fallbackController = new AbortController();
+          if (onAbort?.()) fallbackController.abort();
+          const cancelGuard = setInterval(() => { if (onAbort?.()) fallbackController.abort(); }, 250);
+          cancelGuard.unref?.();
+          let viaHost;
+          try {
+            viaHost = await downloadFallback(url, dest, { headers, onProgress, maxBytes, signal: fallbackController.signal });
+          } finally { clearInterval(cancelGuard); }
           if (viaHost && viaHost.bytes > 0) {
             metrics.bump('download.bytes', {}, viaHost.bytes);
             emit(EVENTS.DOWNLOAD_DONE, { dest, bytes: viaHost.bytes });

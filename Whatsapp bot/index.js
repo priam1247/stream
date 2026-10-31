@@ -6,6 +6,14 @@
 // when the entry point is started from the repository root or a panel script.
 process.chdir(__dirname);
 
+// Baileys/jsdom and the built-in SQLite job store need a current Node runtime.
+// Give panel users an actionable message before a dependency crashes on load.
+const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
+if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 13)) {
+  console.error(`Node.js ${process.versions.node} is too old. Use Node.js 22.13 or newer (Node 22 LTS is recommended).`);
+  process.exit(1);
+}
+
 // A fresh install (or a panel reinstall) has no node_modules yet. Say that in
 // one line instead of letting the first require() throw a 40-line stack.
 (function checkDependencies() {

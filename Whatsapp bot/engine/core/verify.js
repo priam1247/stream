@@ -13,6 +13,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import config from '../config.js';
 import { which } from '../utils/disk.js';
+import { readPlaylist } from '../utils/httpBody.js';
 import { metrics } from './metrics.js';
 import { emit, EVENTS } from './events.js';
 
@@ -36,6 +37,29 @@ export function sniffContainer(buf) {
 const ua = () => config.userAgent;
 const tmo = (ms) => AbortSignal.timeout(ms);
 
+// Some video hosts ignore Range and return an entire multi-gigabyte file with
+// status 200. Read and retain only the requested prefix, then cancel the body.
+async function readPrefix(res, maxBytes) {
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      const take = Math.min(value.byteLength, maxBytes - total);
+      chunks.push(Buffer.from(value.subarray(0, take)));
+      total += take;
+    }
+    return Buffer.concat(chunks, total);
+  } finally {
+    try { await reader.cancel(); } catch { /* connection already closed */ }
+    try { reader.releaseLock(); } catch { /* already released */ }
+  }
+}
+
 /** HEAD first, then a 1-byte ranged GET — many hosts refuse HEAD. */
 async function sizeOf(url, headers) {
   const h = { 'user-agent': ua(), ...headers };
@@ -52,7 +76,10 @@ async function sizeOf(url, headers) {
       headers: { ...h, range: 'bytes=0-0' },
       signal: tmo(config.verifyTimeoutMs), redirect: 'follow'
     });
-    if (!res.ok && res.status !== 206) return { ok: false, status: res.status };
+    if (!res.ok && res.status !== 206) {
+      try { await res.body?.cancel(); } catch { /* already closed */ }
+      return { ok: false, status: res.status };
+    }
     const cr = res.headers.get('content-range');           // "bytes 0-0/1234567"
     const total = Number(String(cr || '').split('/')[1] || res.headers.get('content-length') || 0);
     try { await res.body?.cancel(); } catch {}
@@ -65,19 +92,25 @@ async function sizeOf(url, headers) {
 export async function probeRange(url, bytes = config.verifyBytes, headers = {}) {
   const ffprobe = await which('ffprobe');
   if (!ffprobe) return null;
+  const limit = Math.max(1, Math.min(32 * 1048576, Math.floor(Number(bytes) || 0)));
 
   const res = await fetch(url, {
-    headers: { ...headers, 'user-agent': ua(), range: `bytes=0-${bytes - 1}` },
+    headers: { ...headers, 'user-agent': ua(), range: `bytes=0-${limit - 1}` },
     signal: tmo(config.verifyTimeoutMs), redirect: 'follow'
   });
-  if (!res.ok && res.status !== 206) throw new Error(`range ${res.status}`);
+  if (!res.ok && res.status !== 206) {
+    try { await res.body?.cancel(); } catch { /* already closed */ }
+    throw new Error(`range ${res.status}`);
+  }
 
-  const buf = Buffer.from(await res.arrayBuffer());
+  const buf = await readPrefix(res, limit);
   if (buf.length < 20000) throw new Error('suspiciously small header');
 
-  const tmp = path.join(os.tmpdir(), `zf-probe-${process.pid}-${Date.now()}.bin`);
-  fs.writeFileSync(tmp, buf);
+  // Separate directories avoid concurrent probes clobbering the same file.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zf-probe-'));
+  const tmp = path.join(dir, 'header.bin');
   try {
+    fs.writeFileSync(tmp, buf);
     const out = await exec(ffprobe, [
       '-v', 'error', '-select_streams', 'v:0',
       '-show_entries', 'stream=height,codec_name,width',
@@ -85,7 +118,7 @@ export async function probeRange(url, bytes = config.verifyBytes, headers = {}) 
       '-of', 'json', tmp
     ]);
     return JSON.parse(out);
-  } finally { try { fs.unlinkSync(tmp); } catch {} }
+  } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
 }
 
 // download just the first 512 bytes and identify the container
@@ -94,8 +127,11 @@ export async function sniffRemote(url, headers = {}) {
     headers: { ...headers, 'user-agent': ua(), range: 'bytes=0-511' },
     signal: tmo(config.verifyTimeoutMs), redirect: 'follow'
   });
-  if (!res.ok && res.status !== 206) throw new Error(`sniff ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
+  if (!res.ok && res.status !== 206) {
+    try { await res.body?.cancel(); } catch { /* already closed */ }
+    throw new Error(`sniff ${res.status}`);
+  }
+  const buf = await readPrefix(res, 512);
   if (buf.length < 16) return null;
   return sniffContainer(buf);
 }
@@ -108,8 +144,11 @@ async function verifyHls(cand) {
     headers: { ...cand.headers, 'user-agent': ua() },
     signal: tmo(config.verifyTimeoutMs), redirect: 'follow'
   });
-  if (!res.ok) throw new Error(`stream dead (${res.status})`);
-  const text = await res.text();
+  if (!res.ok) {
+    try { await res.body?.cancel(); } catch { /* already closed */ }
+    throw new Error(`stream dead (${res.status})`);
+  }
+  const text = await readPlaylist(res);
   if (!/#EXTM3U/i.test(text)) throw new Error('not an HLS playlist');
   const variants = (text.match(/#EXT-X-STREAM-INF/gi) || []).length;
   if (!variants && !/#EXTINF/i.test(text)) throw new Error('empty HLS playlist');

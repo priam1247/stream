@@ -25,11 +25,6 @@ export function tryHex(s) {
 // ── Dean Edwards p.a.c.k.e.r unpacker (COMPLETE) ───────────────────────────
 const B62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
-function unbase(n, a) {
-  if (n < a) return n < 62 ? B62[n] : '';
-  return unbase(Math.floor(n / a), a) + B62[n % a];
-}
-
 export function unpack(src) {
   const m = /eval\(function\(p,a,c,k,e,[dr]?\)\{[\s\S]*?\}\(\s*['"]([\s\S]*?)['"]\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*['"]([\s\S]*?)['"]\.split\(['"]\|['"]\)/.exec(src);
   if (!m) return null;
