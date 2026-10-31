@@ -78,7 +78,7 @@ export async function hlsToFile(url, dest, onProgress, { headers = {}, maxHeight
   emit(EVENTS.DOWNLOAD_START, { dest });
 
   // hard cap so a runaway playlist can never eat the host's disk
-  const maxBytes = Math.round(config.maxDownloadMB * 1.2 * 1048576);
+  const maxBytes = Math.round(config.maxDownloadMB * config.downloadCapFactor * 1048576);
   const hlsMode = String(process.env.MOVIE_HLS_ENGINE || 'auto').toLowerCase();
 
   try {
@@ -270,7 +270,7 @@ export async function httpToFile(url, dest, { onProgress, onAbort, headers = {} 
   ensureDir(path.dirname(dest));
   cache.markActive(dest);                 // a partial file must survive the sweeper
   emit(EVENTS.DOWNLOAD_START, { dest });
-  const maxBytes = Math.round(config.maxDownloadMB * 1.2 * 1048576);
+  const maxBytes = Math.round(config.maxDownloadMB * config.downloadCapFactor * 1048576);
 
   try {
     let lastErr;

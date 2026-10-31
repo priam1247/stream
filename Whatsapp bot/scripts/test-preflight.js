@@ -14,8 +14,10 @@ const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
 
 // Keep the HTTP cap small in this isolated process so size-limit behavior can
-// be tested without downloading gigabytes.
+// be tested without downloading gigabytes. Lower the sample floor accordingly
+// so verification can exercise the same boundary.
 process.env.MAX_DOWNLOAD_MB = '1';
+process.env.MIN_SAMPLE_MB = '0';
 process.env.DOWNLOAD_RETRIES = '0';
 process.env.MAX_PER_HOST = '4';
 process.env.REALDEBRID_API_KEY = '';
@@ -257,6 +259,68 @@ test('torrent episode selection never substitutes an explicitly different episod
   assert.equal(pickTorrentFile([unknown, files[0]], { season: 1, episode: 2, fileIdx: 0 }), unknown);
 });
 
+test('episode file labels use explicit ranges, not resolution or unrelated numbers', async () => {
+  const { episodeFileLabel } = await import(pathToFileURL(path.join(ROOT, 'engine/core/tv.js')).href);
+  const single = { season: 1, first: 2, last: 2 };
+  const cases = [
+    ['Show.1x02.720p.mkv', single],
+    ['Show S01E02 - 720p.mkv', single],
+    ['Show - 1x02 - 480p', single],
+    ['Show.1x02-1080p.mkv', single],
+    ['Show.S01E02 - 2160p.mkv', single],
+    ['Show.1x02.03.mkv', single],
+    ['Show.S01E02-03.mkv', single], // no second E marker: not an explicit SxxE range
+    ['Show.S01E02-E03p.mkv', single],
+    ['Show.1x02-03i.mkv', single],
+    ['Show.1x02-03K.mkv', single],
+    ['Show.S01E02E03.mkv', { season: 1, first: 2, last: 3 }],
+    ['Show.S01E02-E03.mkv', { season: 1, first: 2, last: 3 }],
+    ['Show S01E02 - E03.mkv', { season: 1, first: 2, last: 3 }],
+    ['Show.1x02-03.mkv', { season: 1, first: 2, last: 3 }],
+    ['Show.1X02X03.mkv', { season: 1, first: 2, last: 3 }],
+    ['Show.1x02 - x03.mkv', { season: 1, first: 2, last: 3 }],
+    ['Show.S01E02E52.mkv', { season: 1, first: 2, last: 52 }],
+    ['Show.1x02-52.mkv', { season: 1, first: 2, last: 52 }],
+    ['Show.S01E02E53.mkv', single], // more than 50 episodes apart
+    ['Show.1x02-53.mkv', single],
+    ['Show.S01E10E02.mkv', { season: 1, first: 10, last: 10 }],
+    ['Show.1x10-02.mkv', { season: 1, first: 10, last: 10 }],
+  ];
+  for (const [name, expected] of cases) assert.deepEqual(episodeFileLabel(name), expected, name);
+});
+
+for (const name of ['Show.1x02.720p.mkv', 'Show S01E02 - 720p.mkv', 'Show - 1x02 - 480p.mkv']) {
+  test(`debrid and torrent packs do not mistake ${name} for episode 3`, async () => {
+    const { pickEpisodeFile } = await import(pathToFileURL(path.join(ROOT, 'engine/core/tv.js')).href);
+    const { pickTorrentFile } = await import(pathToFileURL(path.join(ROOT, 'engine/media/torrent.js')).href);
+    const wrong = { path: `/Season 1/${name}` };
+    const right = { path: '/Season 1/Show.S01E03.720p.mkv' };
+    assert.equal(pickEpisodeFile([wrong, right], 1, 3), right);
+    assert.equal(pickEpisodeFile([wrong], 1, 3), null);
+    assert.equal(pickEpisodeFile([wrong], 1, 2), wrong);
+
+    // The wrong episode is larger and explicitly indexed: neither should make
+    // it win over the file whose label actually matches the request.
+    const wrongTorrent = { name, length: 120 * 1024 * 1024 };
+    const rightTorrent = { name: 'Show.S01E03.720p.mkv', length: 100 * 1024 * 1024 };
+    assert.equal(pickTorrentFile([wrongTorrent, rightTorrent], { season: 1, episode: 3 }), rightTorrent);
+    assert.equal(pickTorrentFile([wrongTorrent, rightTorrent], { season: 1, episode: 3, fileIdx: 0 }), rightTorrent);
+    assert.equal(pickTorrentFile([wrongTorrent], { season: 1, episode: 3 }), null);
+    assert.equal(pickTorrentFile([wrongTorrent], { season: 1, episode: 2 }), wrongTorrent);
+  });
+}
+
+test('explicit multi-episode ranges remain selectable from debrid and torrent packs', async () => {
+  const { pickEpisodeFile } = await import(pathToFileURL(path.join(ROOT, 'engine/core/tv.js')).href);
+  const { pickTorrentFile } = await import(pathToFileURL(path.join(ROOT, 'engine/media/torrent.js')).href);
+  for (const name of ['Show.S01E02E03.mkv', 'Show.S01E02-E03.mkv', 'Show.1x02-03.mkv', 'Show.1x02x03.mkv']) {
+    const debrid = { path: name };
+    const torrent = { name, length: 100 * 1024 * 1024 };
+    assert.equal(pickEpisodeFile([debrid], 1, 3), debrid, name);
+    assert.equal(pickTorrentFile([torrent], { season: 1, episode: 3 }), torrent, name);
+  }
+});
+
 for (const padded of [true, false]) {
   test(`native HLS decrypts every sequence with its own IV (${padded ? 'padded' : 'unpadded'} segments)`, async () => {
     const { downloadHlsNative } = await import(pathToFileURL(path.join(ROOT, 'engine/media/hls.js')).href);
@@ -440,6 +504,134 @@ test('ffmpeg HLS fallback keeps the selected quality with separate audio', { tim
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('movie verification and HTTP downloads agree at the configured byte boundary', async () => {
+  const { verify } = await import(pathToFileURL(path.join(ROOT, 'engine/core/verify.js')).href);
+  const { httpToFile } = await import(pathToFileURL(path.join(ROOT, 'engine/media/download.js')).href);
+  const mb = 1024 * 1024;
+  const cap = Math.round(1.2 * mb);
+  const sizes = { below: cap - 1, at: cap, above: cap + 1, between: Math.ceil(1.3 * mb) };
+  const payload = Buffer.alloc(sizes.between, 7);
+  payload.write('ftyp', 4, 'ascii');
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    requests.push(`${req.method} ${req.url}`);
+    if (req.url === '/unknown') {
+      if (req.method === 'HEAD') return res.writeHead(200, { 'Content-Type': 'video/mp4' }).end();
+      return res.writeHead(200, { 'Content-Type': 'video/mp4', 'Transfer-Encoding': 'chunked' }).end(payload.subarray(0, 512));
+    }
+    const size = sizes[req.url.slice(1)];
+    if (!size) return res.writeHead(404).end();
+    if (req.headers.range) {
+      return res.writeHead(206, {
+        'Content-Type': 'video/mp4', 'Content-Length': 512, 'Content-Range': `bytes 0-511/${size}`,
+      }).end(payload.subarray(0, 512));
+    }
+    res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': size });
+    return res.end(req.method === 'HEAD' ? undefined : payload.subarray(0, size));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    for (const label of ['below', 'at']) {
+      const result = await verify({ url: `${base}/${label}` });
+      assert.equal(result.verified, true, label);
+      assert.equal(result.sizeMB * mb, sizes[label], label);
+      const dest = path.join(TMP, `cap-${label}.mp4`);
+      assert.equal((await httpToFile(`${base}/${label}`, dest)).bytes, sizes[label], label);
+      assert.equal(fs.statSync(dest).size, sizes[label], label);
+    }
+    for (const label of ['above', 'between']) {
+      const before = requests.length;
+      await assert.rejects(verify({ url: `${base}/${label}` }), /too big/i);
+      assert.deepEqual(requests.slice(before), [`HEAD /${label}`], 'reject known oversized files before sniffing');
+      const dest = path.join(TMP, `cap-${label}.mp4`);
+      await assert.rejects(httpToFile(`${base}/${label}`, dest), (err) => err.code === 'TOO_BIG');
+      assert.equal(fs.existsSync(dest), false);
+    }
+    // With no Content-Length or Content-Range, the same rule applies to a
+    // provider's candidate size rather than just the HTTP probe.
+    assert.equal((await verify({ url: `${base}/unknown`, sizeMB: cap / mb })).verified, true);
+    await assert.rejects(verify({ url: `${base}/unknown`, sizeMB: (cap + 1) / mb }), /too big/i);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('native HLS uses the same byte boundary as HTTP downloads', async () => {
+  const { hlsToFile } = await import(pathToFileURL(path.join(ROOT, 'engine/media/download.js')).href);
+  const cap = Math.round(1.2 * 1024 * 1024);
+  const sizes = { below: cap - 1, at: cap, above: cap + 1, between: Math.ceil(1.3 * 1024 * 1024) };
+  const payload = Buffer.alloc(sizes.between, 7);
+  payload[0] = payload[188] = 0x47;
+  const server = http.createServer((req, res) => {
+    const [kind, label] = req.url.slice(1).split('/');
+    if (!sizes[label]) return res.writeHead(404).end();
+    if (kind === 'playlist') return res.end(`#EXTM3U\n#EXTINF:2,\n/segment/${label}\n#EXT-X-ENDLIST`);
+    if (kind === 'segment') return res.writeHead(200, { 'Content-Length': sizes[label] }).end(payload.subarray(0, sizes[label]));
+    return res.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const oldMode = process.env.MOVIE_HLS_ENGINE;
+  process.env.MOVIE_HLS_ENGINE = 'native';
+  try {
+    for (const label of ['below', 'at']) {
+      const dest = path.join(TMP, `hls-cap-${label}.mp4`);
+      const result = await hlsToFile(`http://127.0.0.1:${server.address().port}/playlist/${label}`, dest);
+      assert.equal(result.engine, 'native');
+      assert.equal(result.bytes, sizes[label], label);
+      assert.equal(fs.statSync(result.file).size, sizes[label], label);
+    }
+    for (const label of ['above', 'between']) {
+      const dest = path.join(TMP, `hls-cap-${label}.mp4`);
+      await assert.rejects(hlsToFile(`http://127.0.0.1:${server.address().port}/playlist/${label}`, dest), (err) => err.code === 'TOO_BIG');
+      assert.equal(fs.existsSync(dest), false);
+      assert.equal(fs.existsSync(dest.replace(/\.mp4$/, '.ts')), false);
+    }
+  } finally {
+    if (oldMode === undefined) delete process.env.MOVIE_HLS_ENGINE;
+    else process.env.MOVIE_HLS_ENGINE = oldMode;
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('verification and HTTP downloads round a fractional byte cap identically', () => {
+  // A fresh process can use 1.3 MB without changing the other preflight tests.
+  // Here the 1.2x cap rounds UP, so a float-only verifier would reject the
+  // exact last byte that the downloader allows.
+  const script = `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import config from ${JSON.stringify(pathToFileURL(path.join(ROOT, 'engine/config.js')).href)};
+    import { verify } from ${JSON.stringify(pathToFileURL(path.join(ROOT, 'engine/core/verify.js')).href)};
+    import { httpToFile } from ${JSON.stringify(pathToFileURL(path.join(ROOT, 'engine/media/download.js')).href)};
+    const mb = 1024 * 1024;
+    const cap = Math.round(1.3 * 1.2 * mb);
+    assert.ok(cap > 1.3 * 1.2 * mb);
+    assert.equal(config.downloadCapFactor, 1.2);
+    const payload = Buffer.alloc(cap + 1, 7);
+    payload.write('ftyp', 4, 'ascii');
+    globalThis.fetch = async (url, options = {}) => {
+      const size = String(url).endsWith('/at') ? cap : cap + 1;
+      return new Response(options.method === 'HEAD' ? null : payload.subarray(0, size), {
+        headers: { 'content-type': 'video/mp4', 'content-length': String(size) },
+      });
+    };
+    const at = ${JSON.stringify(path.join(TMP, 'fraction-at.mp4'))};
+    const above = ${JSON.stringify(path.join(TMP, 'fraction-above.mp4'))};
+    assert.equal((await verify({ url: 'http://fixture/at' })).verified, true);
+    assert.equal((await httpToFile('http://fixture/at', at)).bytes, cap);
+    await assert.rejects(verify({ url: 'http://fixture/above' }), /too big/i);
+    await assert.rejects(httpToFile('http://fixture/above', above), (err) => err.code === 'TOO_BIG');
+    assert.equal(fs.existsSync(above), false);
+  `;
+  execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+    env: { ...process.env, MAX_DOWNLOAD_MB: '1.3', MIN_SAMPLE_MB: '0' },
+    timeout: 10000,
+  });
 });
 
 for (const chunked of [false, true]) {
