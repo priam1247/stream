@@ -89,6 +89,7 @@ jobs:
           const { JSDOM } = require('jsdom');
           const search = require('./utils/providerSearch');
           (async () => {
+            let brave;
             try {
               const response = await axios.get('https://search.brave.com/search', {
                 params: { q: 'cat site:douyin.com/video', source: 'web' },
@@ -96,19 +97,20 @@ jobs:
                 headers: { 'User-Agent': 'Mozilla/5.0' },
               });
               const doc = new JSDOM(response.data).window.document;
-              console.log('BRAVE_MARKUP', JSON.stringify({
+              brave = {
                 status: response.status, bytes: response.data.length,
                 snippet: doc.querySelectorAll('.snippet').length,
                 headers: doc.querySelectorAll('a.result-header').length,
                 results: doc.querySelectorAll('#results a[href], #web-results a[href]').length,
                 parsed: search.normalizeRows('douyin', search.parseBrave(response.data), 5).length,
-              }));
-            } catch (err) { console.log('BRAVE_MARKUP unavailable', err.response?.status || err.code || err.message); }
-            await Promise.all(Object.keys(search.PROVIDERS).map(async (site) => {
+              };
+            } catch (err) { brave = { error: err.response?.status || err.code || err.message }; }
+            const sites = await Promise.all(Object.keys(search.PROVIDERS).map(async (site) => {
               const query = site === 'youku' ? 'the blood of youth s01e1' : 'cat';
               const found = await search.searchProvider(site, query, { limit: 3 });
-              console.log('LIVE_SEARCH', JSON.stringify({ site, status: found.status, source: found.source, count: found.results.length, firstEpisode: found.results[0]?.episode || 0 }));
+              return { site, status: found.status, source: found.source, count: found.results.length, firstEpisode: found.results[0]?.episode || 0 };
             }));
+            console.log('::notice title=Live search diagnostic::' + JSON.stringify({ brave, sites }));
           })().catch((err) => { console.error(err.message); process.exitCode = 1; });
           NODE
 
