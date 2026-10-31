@@ -1,6 +1,6 @@
 # Complete repository map
 
-This map describes the repository at baseline commit `4e0771f` plus these two new documents. It inventories **all 342 files** (340 existing files + 2 map documents). The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
+This map covers the 342 tracked files at commit `f3c77ac` plus the four tests added with the video-provider integration: **346 files** in this snapshot. The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
 
 ## Contents
 
@@ -74,6 +74,8 @@ engine/media/index.js → metadata, registry, resolver, providers, downloaders
 `handler.js` accepts the linked account's own prefixed messages, scopes selections and delivery to the originating session, and checks owner/member command policy. `sessionManager.js` owns account lifecycle; `sessionBackup.js` handles encrypted backup and restore; `dashboardSync.js` exchanges heartbeats, policy, and queued work with the dashboard. `jobQueue.js`, `persistentJobs.js`, and `jobDelivery.js` cover distinct in-memory queue, durable jobs, and account-scoped delivery concerns.
 
 The bot is CommonJS. The nested `engine/package.json` switches that subtree to ES modules; the bridge uses dynamic `import()`. The engine entry point statically registers its selected stream and torrent providers. The three files in `engine/providers/ddl/` register themselves if loaded, but are not imported by the current `engine/media/index.js`; their presence alone does not mean they are active.
+
+Media shortcuts and `.dl` use `utils/mediaPipeline.js` → yt-dlp, an Innertube fallback for YouTube, and optional existing remote resolvers. Shortcuts are wrappers rather than independent extractors. `dashboard/lib/bot-data.ts` catalogs the canonical commands; member switches apply to individual commands, not website-wide blocking.
 
 ## Dashboard
 
@@ -154,7 +156,7 @@ The previously diagnosed page-audit logger crash is still present in this snapsh
 
 - `.github/workflows/deploy-panel.yml` runs the bot safeguard/self-tests and dashboard tests, typecheck, and build. Its old SFTP upload is gated behind **manual workflow dispatch with explicit confirmation**; ordinary pushes do not upload to the retired panel. Botkeep deployment is separate.
 - The root `README.md` and parts of `Whatsapp bot/README.md` contain older automatic-deployment/`working scribd/` wording. The workflow and current `scribd/` directory are the source of truth; the old `working scribd/` link is not a current file.
-- `Whatsapp bot/scripts/` contains offline tests plus a separate live N_m3u8DL-RE smoke test. `dashboard/tests/` is discovered by `vitest.config.ts`; the contract fixture starts the real Scribd HTTP handler locally with external operations stubbed. `scribd/test_*.py` covers Python tools separately.
+- `Whatsapp bot/scripts/` contains offline tests plus a separate live N_m3u8DL-RE smoke test. The media tests mock network and media, and the extractor test checks URL recognition only; they do not verify live provider downloads. `dashboard/tests/` is discovered by `vitest.config.ts`; the contract fixture starts the real Scribd HTTP handler locally with external operations stubbed. `scribd/test_*.py` covers Python tools separately.
 - `dashboard/package.json` and `Whatsapp bot/package.json` are independent npm projects with separate lockfiles. `scribd/requirements.txt`, the optional MuPDF/Discord requirements, and `scribd/uploads/requirements.txt` define separate Python dependency sets.
 - A GitHub Actions pass or public `/health` response is not proof that a production bot session, private token, full PDF conversion, or live D1 recovery works.
 
@@ -407,6 +409,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── control-room-storage.test.ts
 │   │   ├── d1-initialization.test.ts
 │   │   ├── email-branding.test.ts
+│   │   ├── member-command-controls.test.tsx
 │   │   ├── member-features-security.test.ts
 │   │   ├── member-home.test.tsx
 │   │   ├── member-link-api.test.ts
@@ -592,6 +595,9 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── test-account-routing.js
 │   │   ├── test-bridge.js
 │   │   ├── test-delivery.js
+│   │   ├── test-media-downloads.js
+│   │   ├── test-media-extractors.py
+│   │   ├── test-media-shortcuts.js
 │   │   ├── test-nm3u8dl-live.js
 │   │   ├── test-provider-core.js
 │   │   ├── test-service-startup.js

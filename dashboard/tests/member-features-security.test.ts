@@ -59,6 +59,16 @@ describe('new management routes', () => {
     expect(response.status).toBe(200); expect((await response.json()).sync).toBe('pending');
     expect(calls.updatePolicy).toHaveBeenCalledWith('movie', true);
   });
+  it('allows only admins to control the new canonical media commands', async () => {
+    const patch = (name: string) => commandsPatch(request('/api/admin/commands', { name, disabled: true }, 'PATCH'));
+    expect((await patch('bilibili')).status).toBe(403);
+    state.role = 'admin';
+    expect((await patch('bili')).status).toBe(400);
+    for (const name of ['bilibili', 'vimeo', 'dailymotion', 'reddit', 'twitch', 'rumble', 'odysee', 'weibo', 'douyin', 'acfun', 'youku', 'vk', 'xiaohongshu', 'niconico']) {
+      expect((await patch(name)).status).toBe(200);
+      expect(calls.updatePolicy).toHaveBeenCalledWith(name, true);
+    }
+  });
   it('keeps support available to a restricted member and refreshes owner unread after reading', async () => {
     state.memberAllowed = false;
     expect((await supportGet(request('/api/support'))).status).toBe(200);

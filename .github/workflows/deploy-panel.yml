@@ -56,8 +56,12 @@ jobs:
         run: |
           npm ci
           npm run selftest
+          npm run test:media
           npm run test:jobs
           npm run test:sessions
+          python3 -m venv "$RUNNER_TEMP/yt-extractors"
+          "$RUNNER_TEMP/yt-extractors/bin/python" -m pip install 'yt-dlp==2026.10.26'
+          "$RUNNER_TEMP/yt-extractors/bin/python" scripts/test-media-extractors.py
           node scripts/test-nm3u8dl-live.js
 
       - name: Verify standalone dashboard typecheck & build

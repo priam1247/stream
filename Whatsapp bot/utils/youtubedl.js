@@ -6,10 +6,10 @@
  * "Blocked in your region" was never a diagnosis: the old build printed it for
  * *every* failure, including the two that actually happen on hosting panels:
  *
- *   1. YouTube asks the host's IP to prove it is not a bot
- *      ("Sign in to confirm you're not a bot") — fixed with cookies/proxy, and
- *   2. YouTube rewrites its player every few weeks, so an old yt-dlp build
- *      stops working — fixed with an update + several player clients.
+ *   1. YouTube asks the host's IP to prove it is not a bot. Authentication
+ *      may help but does not guarantee access from a hosting IP, and
+ *   2. YouTube changes its player, so an old yt-dlp build can stop working.
+ *      Updates and different supported clients may help.
  *
  * This module does the work properly:
  *   • finds (or auto-installs) a runnable yt-dlp,
@@ -25,6 +25,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const https = require('https');
+const crypto = require('crypto');
+const { Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 const { spawn, execFile, execFileSync } = require('child_process');
 const { promisify } = require('util');
 const axios = require('axios');
@@ -41,26 +44,50 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 // Where cookies the *bot* manages live. Never inside temp/ — the cleanup timer
 // would delete them mid-job (the old build wrote them to temp and they vanished).
 const COOKIE_STORE = path.join(process.cwd(), 'database', 'yt_cookies.txt');
+// Inline configuration takes precedence, but must never overwrite an owner's
+// separately uploaded .cookies set file.
+const INLINE_COOKIE_STORE = path.join(process.cwd(), 'database', 'yt_cookies_inline.txt');
 
 // ─── URL / ID HELPERS ─────────────────────────────────────────────────────────
 
-const YT_HOST_RE = /(?:youtube\.com|youtu\.be|youtube-nocookie\.com|music\.youtube\.com)/i;
-const YT_ID_RE = /(?:youtube\.com\/(?:watch\?(?:[^#\s]*&)?v=|shorts\/|live\/|embed\/|clip\/|v\/)|youtu\.be\/|music\.youtube\.com\/watch\?(?:[^#\s]*&)?v=)([A-Za-z0-9_-]{11})/i;
-
-const isYouTubeUrl = (text) => YT_HOST_RE.test(String(text || ''));
-
-const extractVideoId = (text) => {
-  const m = String(text || '').match(YT_ID_RE);
-  return m ? m[1] : null;
-};
-
-const youtubeId = (url) => extractVideoId(url);
-
 /** Pull the first http(s) URL out of a text blob. */
 const extractUrl = (text) => {
-  const m = String(text || '').match(/https?:\/\/[^\s"'<>]+/);
+  const m = String(text || '').match(/https?:\/\/[^\s"'<>]+/i);
   return m ? m[0].replace(/[),.;]+$/, '') : null;
 };
+
+// Match the URL's host, not a substring in a different host, path or query.
+// Keep accepting the scheme-less YouTube links supported by the old helper.
+function youtubeUrl(text) {
+  const input = String(text || '').trim();
+  const bare = input.match(/^(?:(?:www|m|music)\.)?(?:youtube\.com|youtube-nocookie\.com|youtu\.be)\/[^\s"'<>]*/i);
+  const candidate = extractUrl(input) || (bare ? `https://${bare[0]}` : '');
+  if (!candidate) return null;
+  try {
+    const parsed = new URL(candidate);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+    const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
+    const allowed = ['youtube.com', 'youtube-nocookie.com', 'youtu.be'];
+    return allowed.some((d) => host === d || host.endsWith(`.${d}`)) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+const isYouTubeUrl = (text) => Boolean(youtubeUrl(text));
+
+function extractVideoId(text) {
+  const url = youtubeUrl(text);
+  if (!url) return null;
+  const parts = url.pathname.split('/').filter(Boolean);
+  const isShortHost = url.hostname.toLowerCase().replace(/\.$/, '').endsWith('youtu.be');
+  const id = isShortHost ? parts[0]
+    : parts[0] === 'watch' ? url.searchParams.get('v')
+      : ['shorts', 'live', 'embed', 'v'].includes(parts[0]) ? parts[1] : null;
+  return /^[-_0-9A-Za-z]{11}$/.test(id || '') ? id : null;
+}
+
+const youtubeId = (url) => extractVideoId(url);
 
 /**
  * Any accepted input -> a canonical youtube URL (or the raw URL for other
@@ -121,45 +148,59 @@ const version = () => {
 let _installError = null;
 const installError = () => _installError;
 
-async function fetchBinary(url, insecure) {
-  const res = await axios.get(url, {
-    responseType: 'stream', timeout: 180000, maxRedirects: 10,
-    // Strict verification first; the fallback exists because many cheap hosts
-    // ship an outdated CA bundle ("unable to verify the first certificate").
-    httpsAgent: new https.Agent({ keepAlive: false, rejectUnauthorized: !insecure }),
-    headers: { 'User-Agent': UA, Accept: '*/*' },
-  });
-  await new Promise((resolve, reject) => {
-    const ws = fs.createWriteStream(LOCAL_BIN);
-    res.data.pipe(ws);
-    res.data.on('error', reject);
-    ws.on('error', reject);
-    ws.on('finish', resolve);
-  });
-}
-
-// Download the official standalone build (works without pip / root).
+// Download the official standalone build over verified TLS, check its published
+// SHA-256, and only replace the installed file after it is complete and runs.
+// The checksum is obtained over the same trusted HTTPS channel (not a separate
+// signature verification). A failed or partial download is never executed.
 async function downloadStandaloneBinary() {
-  const url = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+  const release = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download';
+  const agent = new https.Agent({ keepAlive: false });
+  const headers = { 'User-Agent': UA, Accept: '*/*' };
+  const requireHttps = (options) => {
+    if (options.protocol !== 'https:') throw new Error('yt-dlp release redirected to an insecure URL');
+  };
   fs.mkdirSync(BIN_DIR, { recursive: true });
+  const temp = `${LOCAL_BIN}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {
-    await fetchBinary(url, false);
-  } catch (e) {
-    if (!/certificate|self.signed|unable to verify|CERT_|SSL/i.test(String(e.message))) throw e;
-    console.warn('[ytdlp] TLS verification failed for the download, retrying without certificate checks');
-    await fetchBinary(url, true);
+    const sums = await axios.get(`${release}/SHA2-256SUMS`, {
+      responseType: 'text', timeout: 30000, maxRedirects: 10,
+      maxContentLength: 1024 * 1024, httpsAgent: agent, beforeRedirect: requireHttps, headers,
+    });
+    const match = String(sums.data).match(/^([a-f0-9]{64})\s+\*?yt-dlp\s*$/im);
+    if (!match) throw new Error('official yt-dlp checksum is missing');
+
+    const res = await axios.get(`${release}/yt-dlp`, {
+      responseType: 'stream', timeout: 180000, maxRedirects: 10,
+      httpsAgent: agent, beforeRedirect: requireHttps, headers,
+    });
+    const hash = crypto.createHash('sha256');
+    let size = 0;
+    const verifyStream = new Transform({
+      transform(chunk, _encoding, done) {
+        size += chunk.length;
+        if (size > 80 * 1024 * 1024) return done(new Error('yt-dlp download exceeds size limit'));
+        hash.update(chunk);
+        done(null, chunk);
+      },
+    });
+    await pipeline(res.data, verifyStream, fs.createWriteStream(temp, { mode: 0o600, flags: 'wx' }));
+    if (!size || hash.digest('hex') !== match[1].toLowerCase()) throw new Error('yt-dlp checksum mismatch');
+    fs.chmodSync(temp, 0o755);
+    if (!probeCommand([temp])) throw new Error('downloaded yt-dlp is not runnable (python3 missing on this host?)');
+    fs.renameSync(temp, LOCAL_BIN);
+    return LOCAL_BIN;
+  } finally {
+    try { fs.unlinkSync(temp); } catch { /* already renamed or not created */ }
+    agent.destroy();
   }
-  fs.chmodSync(LOCAL_BIN, 0o755);
-  if (!probeCommand([LOCAL_BIN])) throw new Error('downloaded yt-dlp is not runnable (python3 missing on this host?)');
-  return LOCAL_BIN;
 }
 
 async function pipInstall() {
   const pipCmds = [
-    ['python3', '-m', 'pip', 'install', '--user', '-q', '--break-system-packages', '--upgrade', 'yt-dlp'],
-    ['python3', '-m', 'pip', 'install', '--user', '-q', '--upgrade', 'yt-dlp'],
-    ['pip3', 'install', '--user', '-q', '--break-system-packages', '--upgrade', 'yt-dlp'],
-    ['pip', 'install', '-q', '--upgrade', 'yt-dlp'],
+    ['python3', '-m', 'pip', 'install', '--user', '-q', '--break-system-packages', '--upgrade', 'yt-dlp[default]'],
+    ['python3', '-m', 'pip', 'install', '--user', '-q', '--upgrade', 'yt-dlp[default]'],
+    ['pip3', 'install', '--user', '-q', '--break-system-packages', '--upgrade', 'yt-dlp[default]'],
+    ['pip', 'install', '-q', '--upgrade', 'yt-dlp[default]'],
   ];
   for (const cmd of pipCmds) {
     try {
@@ -214,9 +255,10 @@ async function update({ quick = false } = {}) {
     } catch (e) { console.warn('[ytdlp] self-update failed:', String(e.message).split('\n')[0]); }
   }
   if (!ok && !quick) ok = await pipInstall();
-  if (!ok && !cmd && !quick) await ensureInstalled();
+  if (!ok && !cmd && !quick) ok = Boolean(await ensureInstalled());
   capabilities({ force: true }); // flags may have changed with the version
-  return version();
+  // A still-runnable old binary does not mean the attempted update succeeded.
+  return ok ? version() : null;
 }
 
 // ─── CAPABILITIES (which options does the installed build understand?) ────────
@@ -306,7 +348,7 @@ function jsonCookiesToNetscape(text) {
     const expires = Number.isFinite(Number(c.expirationDate)) ? Math.floor(Number(c.expirationDate))
       : Number.isFinite(Number(c.expires)) ? Math.floor(Number(c.expires)) : 0;
     lines.push([
-      domain, includeSub, String(c.path || '/'), bool(c.secure),
+      `${c.httpOnly === true ? '#HttpOnly_' : ''}${domain}`, includeSub, String(c.path || '/'), bool(c.secure),
       String(expires), String(c.name), String(c.value ?? ''),
     ].join('\t'));
   }
@@ -342,21 +384,22 @@ function normaliseCookieText(raw) {
  */
 function setCookies(raw) {
   const text = normaliseCookieText(raw);
-  if (!text) {
-    const err = new Error('That does not look like a cookies.txt (Netscape) file');
+  const count = text ? countCookies(text) : 0;
+  if (!text || !count) {
+    const err = new Error('That does not contain any Netscape cookie records');
     err.code = 'BAD_COOKIES';
     throw err;
   }
   fs.mkdirSync(path.dirname(COOKIE_STORE), { recursive: true });
-  fs.writeFileSync(COOKIE_STORE, text);
+  fs.writeFileSync(COOKIE_STORE, text, { mode: 0o600 });
   try { fs.chmodSync(COOKIE_STORE, 0o600); } catch { /* windows */ }
   _cookieInfoCache = null;
-  return { file: COOKIE_STORE, count: countCookies(text) };
+  return { file: COOKIE_STORE, count };
 }
 
 function clearCookies() {
   let removed = false;
-  for (const p of [COOKIE_STORE, path.join(process.cwd(), 'cookies.txt')]) {
+  for (const p of [COOKIE_STORE, INLINE_COOKIE_STORE, path.join(process.cwd(), 'cookies.txt')]) {
     try { if (fs.existsSync(p)) { fs.unlinkSync(p); removed = true; } } catch { /* ignore */ }
   }
   _cookieInfoCache = null;
@@ -365,7 +408,11 @@ function clearCookies() {
 
 const countCookies = (text) => String(text || '')
   .split('\n')
-  .filter((l) => l.trim() && !l.trim().startsWith('#') && l.split('\t').length >= 6)
+  .filter((line) => {
+    const value = line.replace(/\r$/, '').trimStart();
+    if (!value || (value.startsWith('#') && !value.startsWith('#HttpOnly_'))) return false;
+    return value.split('\t').length >= 7;
+  })
   .length;
 
 let _cookieInfoCache = null;
@@ -419,8 +466,8 @@ const hasCookies = () => Boolean(cookieInfo().source);
 
 /**
  * Resolve the cookies flag value for yt-dlp.
- * Inline cookies are materialised to the managed file (stable path, no temp
- * cleanup deleting them).
+ * Inline cookies use a separate private file, so they cannot overwrite the
+ * owner's managed upload. Both paths survive temp cleanup.
  */
 function cookieFile() {
   const cfg = config.ytdlp || {};
@@ -429,12 +476,12 @@ function cookieFile() {
     const text = normaliseCookieText(inline);
     if (text) {
       try {
-        fs.mkdirSync(path.dirname(COOKIE_STORE), { recursive: true });
-        if (!fs.existsSync(COOKIE_STORE) || fs.readFileSync(COOKIE_STORE, 'utf8') !== text) {
-          fs.writeFileSync(COOKIE_STORE, text);
-          try { fs.chmodSync(COOKIE_STORE, 0o600); } catch { /* windows */ }
+        fs.mkdirSync(path.dirname(INLINE_COOKIE_STORE), { recursive: true });
+        if (!fs.existsSync(INLINE_COOKIE_STORE) || fs.readFileSync(INLINE_COOKIE_STORE, 'utf8') !== text) {
+          fs.writeFileSync(INLINE_COOKIE_STORE, text, { mode: 0o600 });
+          try { fs.chmodSync(INLINE_COOKIE_STORE, 0o600); } catch { /* windows */ }
         }
-        return COOKIE_STORE;
+        return INLINE_COOKIE_STORE;
       } catch { /* fall through to other sources */ }
     }
   }
@@ -512,22 +559,16 @@ function baseArgs({ progress = false, noProxy = false } = {}) {
 
   if (!_minimalBaseArgs) {
     args.push('--no-color', '--user-agent', UA, '--add-header', 'Accept-Language: en-US,en;q=0.9');
+    if (caps.extractorRetries) args.push('--extractor-retries', '1');
+    if (caps.forceIpv4 && cfg.ipv4 !== false) args.push('--force-ipv4');
+
+    // The bot already runs on Node. EJS is needed for full YouTube support;
+    // yt-dlp can use its installed copy or fetch the official component. Enable
+    // this on the first attempt, not only on a late profile that may never run.
+    if (caps.jsRuntimes) args.push('--js-runtimes', `node:${process.execPath}`);
+    if (caps.remoteComponents) args.push('--remote-components', 'ejs:github');
   }
-
-  if (caps.extractorRetries) args.push('--extractor-retries', '1');
-
-  // Hosts with broken/outdated CA stores (common on free panels) fail every
-  // HTTPS request otherwise. On by default; set ytdlp.noCheckCertificates=false
-  // to re-enable strict verification.
-  if (caps.noCheckCertificates && cfg.noCheckCertificates !== false) args.push('--no-check-certificates');
-
-  // Some hosts only have IPv6 egress and YouTube throttles/blocks it.
-  if (caps.forceIpv4 && cfg.ipv4 !== false) args.push('--force-ipv4');
-
-  // yt-dlp needs a JavaScript runtime to solve YouTube's challenges; node is
-  // always present because this bot *is* a node process. Only pass the flag on
-  // builds that know it.
-  if (caps.jsRuntimes) args.push('--js-runtimes', `node:${process.execPath}`);
+  // Do not disable certificate verification for downloads or credentials.
 
   const cookies = cookieFile();
   if (cookies) args.push('--cookies', cookies);
@@ -535,7 +576,7 @@ function baseArgs({ progress = false, noProxy = false } = {}) {
   const proxy = noProxy ? '' : proxyUrl();
   if (proxy) args.push('--proxy', proxy);
 
-  if (progress && caps.newline && caps.progressTemplate) {
+  if (!_minimalBaseArgs && progress && caps.newline && caps.progressTemplate) {
     args.push('--newline', '--progress-template', PROGRESS_TEMPLATE);
   } else {
     args.push('--no-progress');
@@ -554,15 +595,15 @@ function attemptProfiles(url) {
   if (!isYouTubeUrl(url)) return [{ name: 'default', args: [] }];
 
   const list = [{ name: 'default', args: [] }];
-  if (caps.impersonate && !caps.impersonateBroken) {
-    list.push({ name: 'impersonate', args: ['--impersonate', 'chrome'] });
-  }
   list.push({ name: 'tv', args: ['--extractor-args', 'youtube:player_client=tv,web_safari'] });
   list.push({ name: 'android_vr', args: ['--extractor-args', 'youtube:player_client=android_vr,web_embedded'] });
   list.push({ name: 'ios', args: ['--extractor-args', 'youtube:player_client=ios,mweb'] });
+  if (caps.impersonate && !caps.impersonateBroken) {
+    list.push({ name: 'impersonate', args: ['--impersonate', 'chrome'] });
+  }
   list.push({ name: 'web_safari', args: ['--extractor-args', 'youtube:player_client=web_safari,web'] });
   if (caps.remoteComponents) {
-    list.push({ name: 'ejs', args: ['--remote-components', 'ejs:github', '--extractor-args', 'youtube:player_client=default,web_embedded'] });
+    list.push({ name: 'ejs', args: ['--extractor-args', 'youtube:player_client=default,web_embedded'] });
   }
   list.push({ name: 'missing_pot', args: ['--extractor-args', 'youtube:player_client=default;formats=missing_pot'] });
   return list;
@@ -571,12 +612,12 @@ function attemptProfiles(url) {
 // Kept as a stable export for older callers / diagnostics output.
 const ATTEMPT_PROFILES = [
   { name: 'default', args: [] },
-  { name: 'impersonate', args: ['--impersonate', 'chrome'] },
   { name: 'tv', args: ['--extractor-args', 'youtube:player_client=tv,web_safari'] },
   { name: 'android_vr', args: ['--extractor-args', 'youtube:player_client=android_vr,web_embedded'] },
   { name: 'ios', args: ['--extractor-args', 'youtube:player_client=ios,mweb'] },
+  { name: 'impersonate', args: ['--impersonate', 'chrome'] },
   { name: 'web_safari', args: ['--extractor-args', 'youtube:player_client=web_safari,web'] },
-  { name: 'ejs', args: ['--remote-components', 'ejs:github', '--extractor-args', 'youtube:player_client=default,web_embedded'] },
+  { name: 'ejs', args: ['--extractor-args', 'youtube:player_client=default,web_embedded'] },
   { name: 'missing_pot', args: ['--extractor-args', 'youtube:player_client=default;formats=missing_pot'] },
 ];
 
@@ -700,6 +741,7 @@ const RULES = [
   { code: 'UNSUPPORTED_URL', re: /unsupported url|no suitable extractor|unknown extractor|is not a valid url|no video formats found for this url/i },
   { code: 'NO_AUDIO',       re: /no audio track|has no audio/i },
   { code: 'NO_FORMATS',     re: /requested format (?:is )?not available|no video formats found|only images are available|no video formats|unable to extract (?:any )?(?:video|data)|no formats? found for|some formats may be missing/i },
+  { code: 'TLS_ERROR',      re: /certificate.verify.failed|unable to verify (?:the first )?certificate|self.signed certificate|certificate has expired|CERT_HAS_EXPIRED|UNABLE_TO_GET_ISSUER_CERT/i },
   { code: 'NETWORK',        re: /unable to download (?:webpage|api page|video data|json)|timed out|timeout|temporary failure|connection (?:refused|reset|aborted)|getaddrinfo|ssl|certificate|EOF occurred|HTTP Error 5\d\d|network is unreachable|remote end closed|tls\/ssl connection has been closed/i },
   { code: 'NO_YTDLP',       re: /yt-dlp is not installed|ENOENT|not recognized as an internal or external command/i },
 ];
@@ -757,32 +799,41 @@ const USER_HINTS = {
   PRIVATE: '❌ This video is private — only its owner can download it.',
   MEMBERS_ONLY: '❌ This video is members-only (paid channel membership).',
   LIVE_EVENT: '❌ This is a live stream or a not-yet-started premiere. Only normal videos can be downloaded.',
-  DRM: '❌ This video is DRM-protected — no downloader can fetch it.',
+  DRM: '❌ This media is DRM-protected and is not supported by this downloader.',
   PO_TOKEN: '❌ YouTube blocked automated access to this stream right now. Please try another link.',
   UNAVAILABLE: '❌ This video is unavailable — deleted, removed by the uploader, or a dead link.',
   TOO_LONG: '❌ That media is longer than the allowed limit.',
   TOO_BIG: '❌ That file is bigger than the size limit — try a lower quality.',
   FFMPEG_MISSING: '❌ Media conversion is temporarily unavailable on this server.',
-  UNSUPPORTED_URL: '❌ That link is not a media page the downloader understands (or the site is not supported).\nSupported: YouTube, TikTok, Instagram, Facebook, X/Twitter, Reddit, SoundCloud and ~1000 more — paste the link to the *post/video*, not to a profile or search page.',
+  UNSUPPORTED_URL: '❌ The downloader could not recognize that link. Try a direct link to a public post or video, rather than a profile or search page.',
   NO_FORMATS: '❌ No downloadable stream was returned for that video. Try a different quality (e.g. 360p) or another video.',
   IMPERSONATE: '❌ That site rejected automated requests from this server.',
   BAD_ARGS: '❌ The media downloader on this server needs an update. Please try again later.',
   RATE_LIMIT: '❌ YouTube is rate-limiting requests right now (HTTP 429). Wait a few minutes and try again.',
+  TLS_ERROR: '❌ The server could not verify the media site’s secure connection. Please try again later.',
   NETWORK: '❌ Could not reach the media site right now (network timeout). Please try again in a moment.',
   UNKNOWN: '❌ Download failed. Please check the link and try again.',
 };
 
 const OWNER_HINTS = {
-  PROXY_ERROR: 'Admin fix: clear or fix the proxy with `.ytdl proxy off`.',
-  NO_YTDLP: 'Admin fix: run `.ytdl repair` or `pip install -U yt-dlp`.',
-  BOT_CHECK: 'Admin fix: run `.ytlogin` (Google TV sign-in), `.cookies set` (YouTube cookies.txt), or `.ytdl proxy <url>`.',
-  AGE_RESTRICTED: 'Admin fix: run `.ytlogin` or add cookies with `.cookies set`.',
-  GEO_BLOCK: 'Admin fix: `.ytdl proxy <url>`.',
-  PO_TOKEN: 'Admin fix: `.ytlogin` or `.cookies set` and `.ytdl update`.',
-  FFMPEG_MISSING: 'Admin fix: install `ffmpeg` on the host.',
-  BAD_ARGS: 'Admin fix: `.ytdl update` or `.ytdl repair`.',
-  NETWORK: 'Admin fix: check server internet or `.ytdl proxy <url>`.',
-  UNKNOWN: 'Admin fix: run `.ytdl` to inspect the last failure.',
+  PROXY_ERROR: 'Admin: clear or fix the proxy with `{p}ytdl proxy off`.',
+  NO_YTDLP: 'Admin: run `{p}ytdl repair` or install `yt-dlp[default]` on the host.',
+  BOT_CHECK: 'Admin: try `{p}ytdl update`, then `{p}ytdl test <link>`. Your own private cookies.txt may help (`{p}cookies set`), but the host IP may still be challenged.',
+  AGE_RESTRICTED: 'Admin: access may require an eligible signed-in account and private cookies (`{p}cookies set`).',
+  GEO_BLOCK: 'Admin: check regional availability; an appropriate proxy can be configured with `{p}ytdl proxy <url>`. Restrictions may still apply.',
+  PO_TOKEN: 'Admin: try `{p}ytdl update` and check Node/EJS with `{p}ytdl`. Access may still be restricted.',
+  FFMPEG_MISSING: 'Admin: install `ffmpeg` on the host.',
+  BAD_ARGS: 'Admin: try `{p}ytdl update` or `{p}ytdl repair`.',
+  TLS_ERROR: 'Admin: check the host’s clock and trusted CA certificates; certificate verification is required.',
+  NETWORK: 'Admin: check the host’s internet connection and proxy configuration.',
+  UNKNOWN: 'Admin: run `{p}ytdl` to inspect the last failure.',
+};
+
+const OTHER_SITE_HINTS = {
+  BOT_CHECK: '❌ This site requires sign-in or is restricting automated access from the server.',
+  AGE_RESTRICTED: '❌ This media is age-restricted or requires an eligible account.',
+  RATE_LIMIT: '❌ This site is rate-limiting requests. Please wait and try again.',
+  PO_TOKEN: '❌ This site requires an access token the downloader could not obtain.',
 };
 
 /**
@@ -794,11 +845,14 @@ const OWNER_HINTS = {
  * @param {any} err
  * @param {{ isOwner?: boolean }} [opts]
  */
-function friendlyError(err, { isOwner = false } = {}) {
+function friendlyError(err, { isOwner = false, isYouTube = true } = {}) {
   const info = classify(err);
-  const base = USER_HINTS[info.code] || USER_HINTS.UNKNOWN;
+  const base = (!isYouTube && OTHER_SITE_HINTS[info.code]) || USER_HINTS[info.code] || USER_HINTS.UNKNOWN;
   if (!isOwner) return base;
-  const ownerTip = OWNER_HINTS[info.code] ? `\n${OWNER_HINTS[info.code]}` : '';
+  const otherSiteTip = !isYouTube && ['BOT_CHECK', 'AGE_RESTRICTED', 'PO_TOKEN'].includes(info.code)
+    ? 'Admin: check the site’s account requirements and try `{p}ytdl update`.' : null;
+  const hint = otherSiteTip || OWNER_HINTS[info.code];
+  const ownerTip = hint ? `\n${hint.replace(/\{p\}/g, config.prefix || '.')}` : '';
   return base + ownerTip;
 }
 
@@ -1247,15 +1301,24 @@ async function runWithProfiles(url, buildArgs, {
         // version is worth one self-update per process before giving up.
         if (info.code === 'BOT_CHECK' && !_autoUpdated && config.ytdlp?.updateOnBotCheck !== false) {
           _autoUpdated = true;
-          console.log('[ytdlp] bot-check detected — updating yt-dlp before retrying');
-          try { await update({ quick: true }); } catch (e) { console.warn('[ytdlp] auto-update failed:', e.message); }
+          const previousVersion = capabilities().version;
+          console.log('[ytdlp] bot-check detected — checking for a yt-dlp update');
+          try {
+            const updatedVersion = await update({ quick: true });
+            // The newly updated default client deserves a fresh attempt. Do not
+            // retry it if the update failed or the version did not change.
+            if (updatedVersion && previousVersion && updatedVersion !== previousVersion) {
+              i--;
+              continue;
+            }
+          } catch (e) { console.warn('[ytdlp] auto-update failed:', e.message); }
         }
 
-        // When unauthenticated on YouTube, cap repeated bot-check retries so
-        // Innertube + remote fallbacks take over promptly instead of stalling.
+        // Bound repeated unauthenticated bot-checks, but allow the distinct iOS
+        // and impersonation profiles to run before switching to other engines.
         if ((info.code === 'BOT_CHECK' || info.code === 'PO_TOKEN') && !hasCookies()) {
           botChecksInPass += 1;
-          if (botChecksInPass >= 4) break;
+          if (botChecksInPass >= 5) break;
         }
 
         // "Video unavailable" style failures are final — retrying other clients
@@ -1464,6 +1527,7 @@ async function diagnostics() {
       version: caps.version,
       impersonate: caps.impersonate && !caps.impersonateBroken,
       jsRuntimes: caps.jsRuntimes,
+      remoteComponents: caps.remoteComponents,
       matchFilter: caps.matchFilter,
       ipv4: caps.forceIpv4,
     },

@@ -49,7 +49,16 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
       return say(`Usage: ${P}${usage.replace(/^\./, '')}`);
     }
 
-    const known = domains.some((d) => url.toLowerCase().includes(d));
+    // This is diagnostic only: shortcuts have historically accepted other
+    // links too. Inspect the host rather than substrings in paths or queries.
+    let host = '';
+    try { host = new URL(url).hostname.toLowerCase().replace(/\.$/, ''); } catch { /* pipeline reports invalid URLs */ }
+    const known = domains.some((d) => {
+      const domain = d.toLowerCase();
+      return domain.endsWith('.')
+        ? host.startsWith(domain) || host.includes(`.${domain}`)
+        : host === domain || host.endsWith(`.${domain}`);
+    });
     const imageUrl = /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(url);
     const lane = kind === 'audio' || kind === 'image' || imageUrl ? 'light' : 'heavy';
 
@@ -109,4 +118,25 @@ module.exports = [
     domains: ['facebook.com', 'fb.watch', 'fb.com', 'm.facebook.com'],
     hostLabel: 'Facebook',
   }),
+  ...[
+    { name: 'bilibili', aliases: ['bili'], hostLabel: 'Bilibili', domains: ['bilibili.com', 'bilibili.tv', 'bili.tv', 'b23.tv'] },
+    { name: 'vimeo', aliases: [], hostLabel: 'Vimeo', domains: ['vimeo.com'] },
+    { name: 'dailymotion', aliases: ['daily'], hostLabel: 'Dailymotion', domains: ['dailymotion.com', 'dai.ly'] },
+    { name: 'reddit', aliases: [], hostLabel: 'Reddit', domains: ['reddit.com', 'redd.it'] },
+    { name: 'twitch', aliases: [], hostLabel: 'Twitch', domains: ['twitch.tv'] },
+    { name: 'rumble', aliases: [], hostLabel: 'Rumble', domains: ['rumble.com'] },
+    { name: 'odysee', aliases: [], hostLabel: 'Odysee', domains: ['odysee.com', 'lbry.tv'] },
+    { name: 'weibo', aliases: [], hostLabel: 'Weibo', domains: ['weibo.com', 'weibo.cn'] },
+    { name: 'douyin', aliases: [], hostLabel: 'Douyin', domains: ['douyin.com', 'iesdouyin.com'] },
+    { name: 'acfun', aliases: [], hostLabel: 'AcFun', domains: ['acfun.cn'] },
+    { name: 'youku', aliases: [], hostLabel: 'Youku', domains: ['youku.com'] },
+    { name: 'vk', aliases: [], hostLabel: 'VK', domains: ['vk.com', 'vkvideo.ru'] },
+    { name: 'xiaohongshu', aliases: ['xhs'], hostLabel: 'Xiaohongshu', domains: ['xiaohongshu.com', 'xhslink.com'] },
+    { name: 'niconico', aliases: ['nico'], hostLabel: 'Niconico', domains: ['nicovideo.jp', 'nico.ms'] },
+  ].map((site) => makeCommand({
+    ...site,
+    label: site.name,
+    description: `Download a ${site.hostLabel} post or video via yt-dlp`,
+    usage: `.${site.name} <${site.hostLabel} link>`,
+  })),
 ];

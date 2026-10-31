@@ -89,8 +89,9 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
   pending request.
 - **WhatsApp → Commands** switches individual member commands on or off. Aliases
   and pending selections use the same canonical policy; the owner can still test.
-  Changes show **awaiting service sync** until the bot reports the matching
-  policy version. Work already running is not forcibly cancelled.
+  A site shortcut switch does not block that site through the separate `.dl`
+  command. Changes show **awaiting service sync** until the bot reports the
+  matching policy version. Work already running is not forcibly cancelled.
 - **Report a problem** is a private member/administrator conversation. The
   server derives the member from the signed-in account and checks the admin role.
   Production reports require D1 rather than silently using ephemeral Vercel disk;

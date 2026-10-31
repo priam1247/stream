@@ -209,6 +209,7 @@ const execute = async (sock, msg, args, extra) => {
             const itRes = await ytInnertube.downloadAudio(url, {
               outBase,
               maxMB: MAX_AUDIO_MB,
+              maxSeconds: MAX_AUDIO_SECONDS,
               timeoutMs: 120000,
               onAttempt: (name, err) => {
                 attempts.push({ engine: name, code: err?.code || 'FAILED' });
@@ -221,6 +222,7 @@ const execute = async (sock, msg, args, extra) => {
             artist = artist || itRes.metadata?.author || '';
             files.push(file);
           } catch (itErr) {
+            if (itErr.code === 'TOO_LONG') throw itErr;
             log.warn(`innertube audio failed · ${itErr.message}`);
             attempts.push({ engine: 'innertube', code: itErr.code || 'FAILED' });
           }

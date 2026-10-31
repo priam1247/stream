@@ -715,7 +715,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     await dlCmd.execute(sock, mockMsg('.dl https://example.com/page'), ['https://example.com/page'], makeExtra(sock));
 
     const text = sock.sent.map(textOf).join('\n');
-    assert.ok(/not a media page/i.test(text), `unhelpful error: ${text}`);
+    assert.ok(/could not recognize/i.test(text), `unhelpful error: ${text}`);
   });
 
   await test('.dl with no link shows usage', async () => {
@@ -723,6 +723,146 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     const sock = mockSock();
     await dlCmd.execute(sock, mockMsg('.dl'), [], makeExtra(sock));
     assert.ok(/Usage/.test(sock.sent.map(textOf).join(' ')), 'no usage message');
+  });
+
+  await test('.dl uses the local Innertube fallback for a YouTube link', async () => {
+    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
+    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
+    const previousVideo = YT.downloadVideo, previousInfo = YT.getInfo, previousRemote = providersMod.resolveMedia;
+    let remoteCalls = 0, called = null;
+    try {
+      YT.getInfo = async () => ({ title: 'Fixture', duration: 20 });
+      YT.downloadVideo = async () => { throw Object.assign(new Error('bot check'), { code: 'BOT_CHECK' }); };
+      providersMod.resolveMedia = async () => { remoteCalls++; throw new Error('remote should not be needed'); };
+      it._setTestOverride(async (url, mode, options) => {
+        called = { url, mode, options };
+        const file = `${options.outBase}_it.mp4`;
+        fs.writeFileSync(file, Buffer.concat([
+          Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.from('avc1mp4a'), Buffer.alloc(90000, 3),
+        ]));
+        return { file, metadata: { title: 'Fixture', duration: 20 } };
+      });
+      const sock = mockSock();
+      await dlCmd.execute(sock, mockMsg('.dl https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ', '480'], makeExtra(sock));
+      assert.strictEqual(called.mode, 'video');
+      assert.strictEqual(called.options.height, 480);
+      assert.strictEqual(remoteCalls, 0);
+      assert.ok(sock.sent.some((m) => (m.video || m.document) && /via innertube/i.test(textOf(m))));
+      assert.ok(!fs.existsSync(`${called.options.outBase}_it.mp4`), 'download was not cleaned up');
+    } finally {
+      it._setTestOverride(null);
+      YT.downloadVideo = previousVideo; YT.getInfo = previousInfo; providersMod.resolveMedia = previousRemote;
+    }
+  });
+
+  await test('.dl audio mode also uses the local YouTube fallback', async () => {
+    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
+    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
+    const previousAudio = YT.downloadAudio, previousInfo = YT.getInfo, previousRemote = providersMod.resolveMedia;
+    let mode = '', remoteCalls = 0;
+    try {
+      YT.getInfo = async () => ({ title: 'Fixture song', duration: 20 });
+      YT.downloadAudio = async () => { throw Object.assign(new Error('bot check'), { code: 'BOT_CHECK' }); };
+      providersMod.resolveMedia = async () => { remoteCalls++; throw new Error('remote should not be needed'); };
+      it._setTestOverride(async (_url, kind, options) => {
+        mode = kind;
+        const file = `${options.outBase}_it.mp3`;
+        fs.writeFileSync(file, Buffer.concat([Buffer.from('ID3'), Buffer.alloc(60000, 4)]));
+        return { file, ext: 'mp3', metadata: { title: 'Fixture song' } };
+      });
+      const sock = mockSock();
+      await dlCmd.execute(sock, mockMsg('.dl https://youtu.be/dQw4w9WgXcQ audio'), ['https://youtu.be/dQw4w9WgXcQ', 'audio'], makeExtra(sock));
+      assert.strictEqual(mode, 'audio');
+      assert.strictEqual(remoteCalls, 0);
+      assert.ok(sock.sent.some((m) => m.document && /via innertube/i.test(textOf(m))));
+    } finally {
+      it._setTestOverride(null);
+      YT.downloadAudio = previousAudio; YT.getInfo = previousInfo; providersMod.resolveMedia = previousRemote;
+    }
+  });
+
+  await test('.song and .ytv do not bypass an Innertube duration failure via remote sources', async () => {
+    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
+    const cfg = require(path.join(REPO, 'config.js'));
+    const previousAudio = YT.downloadAudio, previousVideo = YT.downloadVideo;
+    const previousInfo = YT.getInfo, previousRemote = providersMod.resolveMedia;
+    let remoteCalls = 0;
+    const options = [];
+    try {
+      YT.getInfo = async () => ({ title: 'Fixture', duration: 20 });
+      YT.downloadAudio = YT.downloadVideo = async () => { throw Object.assign(new Error('bot check'), { code: 'BOT_CHECK' }); };
+      providersMod.resolveMedia = async () => { remoteCalls++; throw new Error('remote should not be needed'); };
+      it._setTestOverride(async (_url, mode, opts) => {
+        options.push({ mode, maxSeconds: opts.maxSeconds });
+        throw Object.assign(new Error('media exceeds duration limit'), { code: 'TOO_LONG' });
+      });
+      const audioSock = mockSock();
+      const videoSock = mockSock();
+      const url = 'https://youtu.be/dQw4w9WgXcQ';
+      await songCmd.execute(audioSock, mockMsg(`.song ${url}`), [url], makeExtra(audioSock));
+      await ytvCmd.execute(videoSock, mockMsg(`.ytv ${url}`), [url], makeExtra(videoSock));
+      assert.deepStrictEqual(options, [
+        { mode: 'audio', maxSeconds: cfg.song.maxMinutes * 60 },
+        { mode: 'video', maxSeconds: cfg.video.maxMinutes * 60 },
+      ]);
+      assert.strictEqual(remoteCalls, 0);
+      assert.ok(audioSock.sent.map(textOf).some((s) => /longer than the allowed limit/i.test(s)));
+      assert.ok(videoSock.sent.map(textOf).some((s) => /longer than the allowed limit/i.test(s)));
+      assert.ok(!audioSock.sent.some((m) => m.audio || m.document));
+      assert.ok(!videoSock.sent.some((m) => m.video || m.document));
+    } finally {
+      it._setTestOverride(null);
+      YT.downloadAudio = previousAudio; YT.downloadVideo = previousVideo;
+      YT.getInfo = previousInfo; providersMod.resolveMedia = previousRemote;
+    }
+  });
+
+  await test('.dl respects an Innertube size failure and cleans partials without trying a remote', async () => {
+    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
+    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
+    const previousVideo = YT.downloadVideo, previousInfo = YT.getInfo, previousRemote = providersMod.resolveMedia;
+    let remoteCalls = 0, partial = '';
+    try {
+      YT.getInfo = async () => ({ title: 'Fixture', duration: 20 });
+      YT.downloadVideo = async () => { throw Object.assign(new Error('bot check'), { code: 'BOT_CHECK' }); };
+      providersMod.resolveMedia = async () => { remoteCalls++; throw new Error('remote should not be needed'); };
+      it._setTestOverride(async (_url, _mode, options) => {
+        partial = `${options.outBase}_partial.tmp`;
+        fs.writeFileSync(partial, 'partial');
+        throw Object.assign(new Error('too large'), { code: 'TOO_BIG' });
+      });
+      const sock = mockSock();
+      await dlCmd.execute(sock, mockMsg('.dl https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ'], makeExtra(sock));
+      assert.strictEqual(remoteCalls, 0);
+      assert.ok(sock.sent.map(textOf).some((s) => /exceeds limit/i.test(s)));
+      assert.ok(!sock.sent.some((m) => m.video || m.document));
+      assert.ok(!fs.existsSync(partial), 'partial download was not cleaned up');
+    } finally {
+      it._setTestOverride(null);
+      YT.downloadVideo = previousVideo; YT.getInfo = previousInfo; providersMod.resolveMedia = previousRemote;
+    }
+  });
+
+  await test('.dl does not send another site to Innertube or blame YouTube for its access check', async () => {
+    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
+    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
+    const previousVideo = YT.downloadVideo, previousInfo = YT.getInfo, previousRemote = providersMod.resolveMedia;
+    let innertubeCalls = 0;
+    try {
+      YT.getInfo = async () => ({ title: 'Fixture', duration: 20 });
+      YT.downloadVideo = async () => { throw Object.assign(new Error('sign in required'), { code: 'BOT_CHECK' }); };
+      providersMod.resolveMedia = async () => { throw new Error('no remote'); };
+      it._setTestOverride(async () => { innertubeCalls++; throw new Error('unexpected'); });
+      const sock = mockSock();
+      await dlCmd.execute(sock, mockMsg('.dl https://www.bilibili.com/video/BV1xx411c7mD'), ['https://www.bilibili.com/video/BV1xx411c7mD'], { ...makeExtra(sock), isOwner: false });
+      assert.strictEqual(innertubeCalls, 0);
+      const text = sock.sent.map(textOf).join(' ');
+      assert.ok(/this site/i.test(text));
+      assert.ok(!/youtube/i.test(text));
+    } finally {
+      it._setTestOverride(null);
+      YT.downloadVideo = previousVideo; YT.getInfo = previousInfo; providersMod.resolveMedia = previousRemote;
+    }
   });
 
   console.log('\n── 9. numbered search results (reply with a number) ──');
