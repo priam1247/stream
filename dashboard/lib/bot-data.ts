@@ -21,7 +21,15 @@ export const BOT_COMMANDS: CommandEntry[] = [
     category: 'media',
     usage: '.song <name|url>',
     example: '.song Alan Walker Faded',
-    summary: 'YouTube MP3',
+    summary: 'Music MP3',
+  },
+  {
+    name: 'deezer',
+    aliases: ['dz'],
+    category: 'media',
+    usage: '.deezer <title|track url> [audio|doc]',
+    example: '.deezer Daft Punk One More Time',
+    summary: 'Deezer MP3',
   },
   {
     name: 'ytv',

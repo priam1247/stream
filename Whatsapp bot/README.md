@@ -14,7 +14,8 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .paper <course-code> [module] [year]   Search & send past papers (capped per query, 3-day dedupe)
 .paper browse [letter|code] [page]     Paginated course/module directory
 .countpapers [course-code]             Count papers in the vault
-.song <name-or-YouTube-link>           ID3-tagged MP3 via yt-dlp + Cobalt/Gifted fallbacks
+.song <name-or-track-link>             MP3: Deezer first when configured, then YouTube
+.deezer <title-or-track-link>          Deezer MP3 (.dz; optional audio or doc)
 .ytv <name-or-YouTube-link> [quality]  Download YouTube MP4 with silent-audio verification
 .dl <URL> [audio|video] [quality]      Generic yt-dlp downloader (streamed to disk)
 .tiktok <URL>  .x <URL>  .pinterest <URL>  .instagram <URL>  .fb <URL>
@@ -30,6 +31,34 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 ```
 
 Interactive title and quality choices use a tap selector or a prefixed numbered reply, such as `.1`, `.2` or `.cancel`. Poll votes and replies without the prefix are ignored.
+
+### Deezer music
+
+Add `DEEZER_ARL` privately to the bot host's `.env` or environment settings,
+then restart the bot. Use the value of the `arl` cookie from your own Deezer
+account, **not the whole cookies file**. Treat it as a password: never commit
+it, paste it into WhatsApp, or share it. The account is shared by bot commands
+for approved members; it is not sent to the dashboard or YouTube. Leaving it
+blank preserves the existing YouTube behavior.
+
+```text
+.deezer Daft Punk One More Time
+.dz https://www.deezer.com/track/3135553 audio
+.song Daft Punk One More Time
+.spotify Daft Punk - One More Time
+```
+
+`.deezer` accepts a title, track URL, or supported Deezer share link. Title
+searches may show a picker; `--first` skips it. Title-based `.song` and
+`.spotify` try Deezer first and fall back to YouTube if unavailable. Spotify
+track links use Deezer only when the title and artist match, with duration and
+ISRC checks when Spotify provides them. Explicit YouTube and Deezer links do not
+silently switch sources. This supports individual audio tracks only, not
+albums, playlists, video or movies. Dashboard switches control commands, not
+backends: disabling `.deezer` does not prevent `.song` or `.spotify` using the
+configured account. Availability and MP3 quality depend on the account, region
+and Deezer; authentication and playback must be checked on the actual host.
+Download only content you have permission to use.
 
 ### Video sites and YouTube troubleshooting
 
