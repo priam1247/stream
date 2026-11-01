@@ -1244,6 +1244,31 @@ test('offline bot fixture copies source without copying private runtime data', (
   }
 });
 
+test('safe logging masks Deezer credentials in text, URLs and structured data', () => {
+  const { redactSecrets, safeText, redactArg } = botRequire('../utils/safeLog');
+  const previous = process.env.DEEZER_ARL;
+  const secrets = {
+    arl: 'syntheticDeezerArl123456', sid: 'syntheticDeezerSid123456', csrf: 'syntheticCheckForm123456',
+    license: 'syntheticLicenseToken123456', track: 'syntheticTrackToken123456', api: 'syntheticApiToken123456',
+  };
+  process.env.DEEZER_ARL = secrets.arl;
+  try {
+    const message = `failed with ${secrets.arl} sid=${secrets.sid} checkForm=${secrets.csrf} license_token=${secrets.license} TRACK_TOKEN=${secrets.track} api_token=${secrets.api}`;
+    const err = new Error(message);
+    err.config = { headers: { Cookie: `arl=${secrets.arl}` }, body: secrets.license };
+    const safe = redactArg(err);
+    assert.equal(safe.config, undefined);
+    const output = [redactSecrets(message), redactSecrets(`https://www.deezer.com/?sid=${secrets.sid}&api_token=${secrets.api}`),
+      safeText({ deezerArl: secrets.arl, sessionId: secrets.sid, checkForm: secrets.csrf, license_token: secrets.license, track_token: secrets.track }),
+      safe.message, safe.stack].join('\n');
+    for (const secret of Object.values(secrets)) assert.equal(output.includes(secret), false, 'Deezer credential leaked');
+    assert.match(output, /failed with/);
+  } finally {
+    if (previous === undefined) delete process.env.DEEZER_ARL;
+    else process.env.DEEZER_ARL = previous;
+  }
+});
+
 test('redacted error logs retain safe aggregate causes and statuses without request metadata', () => {
   const util = require('node:util');
   const { redactArg, safeText } = botRequire('../utils/safeLog');

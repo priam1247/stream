@@ -13,10 +13,12 @@ const { getTempDir, deleteTempFile, holdTemp } = require('../../utils/tempManage
 const { sniffFile, tagMp3, safeName, fmtMB, probeMedia } = require('../../utils/mediaTransfer');
 const getFfmpeg = require('../../utils/ffmpeg');
 const telemetry = require('../../utils/telemetry');
+const { redactArg, redactSecrets, safeText } = require('../../utils/safeLog');
+const log = require('../../utils/logger')('deezer');
 
 const MAX_MB = Number(config.song?.maxMB) || 120;
 const MAX_SECONDS = Number(config.song?.maxMinutes ? config.song.maxMinutes * 60 : 3 * 60 * 60);
-const RECOVERABLE = new Set(['DEEZER_CONFIG', 'DEEZER_AUTH', 'DEEZER_NETWORK', 'DEEZER_TRACK', 'DEEZER_UNAVAILABLE', 'BAD_SOURCE']);
+const RECOVERABLE = new Set(['DEEZER_CONFIG', 'DEEZER_AUTH', 'DEEZER_NETWORK', 'DEEZER_TRACK', 'DEEZER_UNAVAILABLE', 'DEEZER_VERIFY', 'BAD_SOURCE', 'DEEZER_ERROR']);
 const ERROR_CODES = new Set([...RECOVERABLE, 'DEEZER_SEND', 'TOO_BIG', 'TOO_LONG', 'NOT_ENOUGH_DISK']);
 
 function messageFor(err, isOwner) {
@@ -25,6 +27,7 @@ function messageFor(err, isOwner) {
     case 'DEEZER_AUTH': return isOwner ? 'Deezer rejected the account. Check DEEZER_ARL privately in the bot environment.' : 'Deezer is temporarily unavailable.';
     case 'DEEZER_TRACK': return 'No Deezer track found. Try a title or a full Deezer track link.';
     case 'DEEZER_UNAVAILABLE': return 'This track is not available from Deezer for the configured account.';
+    case 'DEEZER_VERIFY': return isOwner ? 'Could not verify the full Deezer track. Check that ffmpeg is installed and working.' : 'Could not verify the full Deezer track.';
     case 'TOO_BIG': return 'That track is larger than the maximum send size.';
     case 'TOO_LONG': return 'That track exceeds the audio duration limit.';
     case 'NOT_ENOUGH_DISK': return 'Server storage is temporarily full. Please try again shortly.';
@@ -33,22 +36,42 @@ function messageFor(err, isOwner) {
   }
 }
 
+// Preserve useful diagnostics without ever rendering an HTTP request object.
+function logUnexpected(err) {
+  const safe = err instanceof Error ? redactArg(err) : new Error('Non-error rejection');
+  const clean = (value) => {
+    let text = redactSecrets(value);
+    const arl = String(config.deezer?.arl || '').trim();
+    if (arl.length >= 10) text = text.split(arl).join('[REDACTED]');
+    // Gateway/license tokens can also appear as unlabeled opaque values in a
+    // third-party error. Preserve the surrounding message and stack frames.
+    return text.replace(/\b[A-Za-z0-9_-]{24,}\b/g, '[REDACTED]');
+  };
+  log.error('Unexpected Deezer failure:', clean(safeText(safe)));
+  if (safe instanceof Error && safe.stack) log.error('Stack:', clean(safe.stack));
+}
+
 /**
- * Try Deezer for a title or full track URL. `fallback` is used by .song so
- * service failures can fall through to YouTube without exposing credentials.
- * Returns true when a picker, audio, or final error was sent; false means the
- * caller may try its original engine. An explicit Deezer link never falls back.
+ * Try Deezer for a title or full track URL. Returns false only when the caller
+ * can safely use another source. User-supplied Deezer links stay terminal;
+ * selectedFromSearch distinguishes an internally selected search result.
  */
-async function attempt(sock, msg, extra, { input, sendAs = 'document', firstHit = false, fallback = false, expected = null } = {}) {
+async function attempt(sock, msg, extra, {
+  input, sendAs = 'document', firstHit = false, fallback = false, expected = null,
+  onSelectionFallback = null, selectedFromSearch = false,
+} = {}) {
   const text = String(input || '').trim();
   const explicit = Boolean(deezer.deezerUrl(text));
   const chat = extra?.from || msg.key.remoteJid;
   const reply = (value) => sock.sendMessage(chat, { text: value }, { quoted: msg });
   const react = (emoji) => sock.sendMessage(chat, { react: { text: emoji, key: msg.key } }).catch(() => {});
   if (!explicit && /^https?:\/\//i.test(text)) return false;
+  let deliveryStarted = false;
+  let deliverySucceeded = false;
 
   try {
     if (!deezer.configured()) throw Object.assign(new Error('Deezer is not configured'), { code: 'DEEZER_CONFIG' });
+    if (!getFfmpeg.works()) throw Object.assign(new Error('Cannot verify audio without ffmpeg'), { code: 'DEEZER_VERIFY' });
     let id = deezer.trackId(text);
     const client = deezer.createClient();
     if (explicit && !id) id = await client.resolveTrackId(text);
@@ -67,7 +90,14 @@ async function attempt(sock, msg, extra, { input, sendAs = 'document', firstHit 
           await selections.sendTextPrompt(sock, msg, extra, {
             text: list, image: null, items: rows, label: 'deezer',
             ttlMs: Math.max(1, Number(config.search?.ttlMinutes) || 5) * 60_000,
-            run: (s, m, e, item) => attempt(s, m, e, { input: item.url, sendAs, firstHit: true }),
+            run: async (s, m, e, item) => {
+              const canFallback = fallback && typeof onSelectionFallback === 'function';
+              const handled = await attempt(s, m, e, {
+                input: item.url, sendAs, firstHit: true, fallback: canFallback,
+                selectedFromSearch: true, expected,
+              });
+              if (!handled && canFallback) await onSelectionFallback(s, m, e, item);
+            },
           });
         } catch { throw Object.assign(new Error('Selection prompt failed'), { code: 'DEEZER_SEND' }); }
         await react('❓');
@@ -91,8 +121,11 @@ async function attempt(sock, msg, extra, { input, sendAs = 'document', firstHit 
         const kind = sniffFile(raw);
         if (kind.kind !== 'audio' || kind.ext !== 'mp3') throw Object.assign(new Error('Invalid audio'), { code: 'BAD_SOURCE' });
         const info = await probeMedia(raw);
-        if (getFfmpeg.works() && (!info.probed || !info.hasAudio || (track.duration > 45 && (!info.duration || info.duration < track.duration * 0.7)))) {
-          throw Object.assign(new Error('Incomplete audio'), { code: 'BAD_SOURCE' });
+        const duration = Number(track.duration);
+        const minimumDuration = duration - Math.max(3, duration * 0.05);
+        if (!info.probed || !info.hasAudio || !Number.isFinite(duration) || duration <= 0 ||
+            !Number.isFinite(info.duration) || info.duration <= 0 || info.duration < minimumDuration) {
+          throw Object.assign(new Error('Could not verify the complete audio'), { code: 'DEEZER_VERIFY' });
         }
         const title = safeName(track.title, 'song');
         const artist = safeName(track.artist, '');
@@ -102,8 +135,10 @@ async function attempt(sock, msg, extra, { input, sendAs = 'document', firstHit 
         const fileName = `${artist ? `${artist} - ` : ''}${title}.mp3`;
         const caption = `${artist ? `🎵 *${title}*\n👤 ${artist}` : `🎵 *${title}*`}\n📦 ${fmtMB(bytes)} • via Deezer`;
         try {
+          deliveryStarted = true;
           if (sendAs === 'audio') await sock.sendMessage(chat, { audio: { url: final }, mimetype: 'audio/mpeg', ptt: false, fileName }, { quoted: msg });
           else await sock.sendMessage(chat, { document: { url: final }, mimetype: 'audio/mpeg', fileName, caption }, { quoted: msg });
+          deliverySucceeded = true;
         } catch { throw Object.assign(new Error('Delivery failed'), { code: 'DEEZER_SEND' }); }
         telemetry.recordDownloadSuccess('audio');
         await react('✅');
@@ -117,9 +152,12 @@ async function attempt(sock, msg, extra, { input, sendAs = 'document', firstHit 
   } catch (err) {
     const rawCode = String(err?.code || '');
     const code = rawCode === 'ENOSPC' || rawCode === 'EDQUOT' ? 'NOT_ENOUGH_DISK' : (ERROR_CODES.has(rawCode) ? rawCode : 'DEEZER_ERROR');
-    // Axios errors may carry request headers. Log only a known code, never the error or URL.
-    console.warn(`[deezer] ${code}`);
-    if (fallback && !explicit && RECOVERABLE.has(code)) return false;
+    // Expected errors contain no useful request diagnostics. Unexpected errors
+    // retain a redacted message and stack, never Axios config/headers/response.
+    if (code === 'DEEZER_ERROR') logUnexpected(err);
+    else log.warn(code);
+    if (deliverySucceeded) return true;
+    if (fallback && (!explicit || selectedFromSearch) && !deliveryStarted && RECOVERABLE.has(code)) return false;
     telemetry.recordFailure('deezer');
     await reply(messageFor({ code }, Boolean(extra?.isOwner)));
     await react('❌');

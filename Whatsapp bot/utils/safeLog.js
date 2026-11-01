@@ -12,6 +12,11 @@
 function redactSecrets(input) {
   let s = String(input ?? '');
   if (!s) return s;
+  // A configured Deezer ARL may appear without a key in an unexpected error.
+  for (const value of [process.env.DEEZER_ARL, process.env.DEEZER_COOKIE_ARL]) {
+    const secret = String(value || '').trim();
+    if (secret.length >= 10) s = s.split(secret).join('[REDACTED]');
+  }
   // Authorization credentials can be bearer tokens or Basic auth.
   s = s.replace(/\b((?:Bearer|Basic)\s+)[A-Za-z0-9._~+|/=-]{8,}/gi, '$1[REDACTED]');
   // Pterodactyl & Hydrodactyl client / application keys (ptlc_, ptla_, hydro_)
@@ -24,13 +29,14 @@ function redactSecrets(input) {
   s = s.replace(/(\b(?:set-)?cookie\s*:\s*)[^\r\n]*/gi, '$1[REDACTED]');
   // Query strings, structured error messages, and logfmt-style assignments.
   s = s.replace(/((?:[?&]|\b)(?:api_?key|access_token|token)=)[^&\s"']+/gi, '$1[REDACTED]');
+  s = s.replace(/(\b(?:deezer[_-]?(?:cookie[_-]?)?arl|arl|sid|session[_-]?id|checkform)\b["']?\s*[:=]\s*)(["']?)([^\s,;&"'{}]+)\2/gi, '$1$2[REDACTED]$2');
   s = s.replace(/(["']?(?:api[_-]?key|x[_-]?(?:bot|admin)[_-]?token|access[_-]?token|refresh[_-]?token|password|passwd|secret|token|cookie|set-cookie)["']?\s*[:=]\s*)(["']?)([^\s,;&"'{}]+)\2/gi, '$1$2[REDACTED]$2');
   return s;
 }
 
 function isSensitiveKey(key) {
   const normalized = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
-  return /(?:authorization|apikey|password|passwd|secret|privatekey|backupkey|encryptionkey|signingkey|cookies?|token)$/.test(normalized);
+  return /(?:authorization|apikey|password|passwd|secret|privatekey|backupkey|encryptionkey|signingkey|cookies?|token|arl|sid|sessionid|checkform)$/.test(normalized);
 }
 
 function maskUrlCredentials(url) {
