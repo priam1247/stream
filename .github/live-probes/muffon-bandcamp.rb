@@ -65,6 +65,7 @@ begin
   path = '/tmp/muffon-bandcamp-sample.mp3'
   bytes = 0
   4.times do |redirect|
+    note("audio host #{uri.host} over #{uri.scheme}") if uri.host.to_s.match?(/\A[a-z0-9.-]+\z/i)
     raise 'UNEXPECTED_AUDIO_HOST' unless uri.scheme == 'https' && (uri.host == 'bcbits.com' || uri.host.end_with?('.bcbits.com'))
     target = nil
     Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 15, read_timeout: 40) do |http|
