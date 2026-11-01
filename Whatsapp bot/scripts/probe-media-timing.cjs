@@ -7,6 +7,8 @@ const { execFileSync } = require('child_process');
 const { createBotFixture, clearHostConfig } = require('./test-sandbox');
 clearHostConfig();
 const mode = process.argv[2];
+const reportLog = console.log;
+console.log = (...args) => { const line = args.join(' '); reportLog(line.startsWith('TIMING ') ? `::notice title=Live audit::${line}` : line); };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'media-timing-'));
 const bot = createBotFixture(tmp);
 process.chdir(tmp);

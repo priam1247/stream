@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 process.env.LOG_LEVEL = 'error';
+const reportLog = console.log;
+console.log = (...args) => { const line = args.join(' '); reportLog(line.startsWith('AUDIT ') ? `::notice title=Live audit::${line}` : line); };
 process.env.MOVIE_HLS_ENGINE = 'ffmpeg';
 process.env.NM3U8DL_DISABLE_AUTOINSTALL = '1';
 process.env.TORRENT_METADATA_TIMEOUT_MS = '45000';
