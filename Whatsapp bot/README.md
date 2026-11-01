@@ -88,7 +88,8 @@ require FFmpeg and working access from the bot host. Availability varies, and
 Commons can rate-limit hosting IPs. To check the deployed host without WhatsApp
 or account credentials, run
 `PUBLIC_MUSIC_LIVE=1 node scripts/test-public-music-live.js audius` (or use
-`commons-audio` / `commons-video`). These opt-in tests download public samples.
+`commons-audio` / `commons-video`). These opt-in tests download public samples
+and use FFmpeg from `PATH` or the bot's installed package.
 
 ### Video sites and YouTube troubleshooting
 
