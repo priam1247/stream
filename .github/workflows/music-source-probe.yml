@@ -153,6 +153,29 @@ jobs:
           b=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 30 -A 'ZaFarBot source verification/1.0' "$sample" || true)
           c=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 30 -A 'ZaFarBot/2.2 public media' "$sample?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original" || true)
           echo "::error::Commons sample HTTP statuses: bot=$a curl-probe=$b tracking-query=$c"
+      - name: Diagnose Commons public transport
+        if: failure() && matrix.source == 'commons-audio'
+        working-directory: Whatsapp bot
+        run: |
+          node <<'NODE'
+          const https = require('https');
+          const { publicGet } = require('./utils/publicHttp');
+          const { publicLookup } = require('./utils/publicMediaDownload');
+          const url='https://upload.wikimedia.org/wikipedia/commons/3/3f/Moonlight_Sonata_%28Sharp_c_minor_Sonata%29_2nd_Movement_Beethoven_JMC%2CHan.ogg';
+          (async () => {
+            const result=[];
+            for (const mode of ['default','checked']) {
+              const agent = mode === 'checked' ? new https.Agent({keepAlive:false, lookup:publicLookup()}) : undefined;
+              try {
+                const r=await publicGet(url,{httpsAgent:agent,proxy:false,auth:null,maxRedirects:0,responseType:'stream',validateStatus:()=>true,timeout:15000,headers:{'User-Agent':'ZaFarBot/2.2 public media',Accept:'*/*','Accept-Encoding':'identity'}});
+                result.push({mode,status:r.status,ip:r.request?.socket?.remoteAddress,server:r.headers.server,retry:r.headers['retry-after'],cache:r.headers['x-cache']});
+                r.data.destroy();
+              } catch(e) { result.push({mode,error:e.code||'ERROR'}); }
+              agent?.destroy();
+            }
+            console.log('::error::Transport summary '+JSON.stringify(result));
+          })();
+          NODE
       - name: Exercise actual bot search, delivery and full decode
         working-directory: Whatsapp bot
         env:
