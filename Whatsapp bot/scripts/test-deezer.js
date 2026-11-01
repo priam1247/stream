@@ -19,6 +19,10 @@ const TRACK = '3135553';
 const ARL = 'SYNTHETIC_FAKE_ARL_123456789';
 const LIC = 'SYNTHETIC_LICENSE';
 const TOKEN = 'SYNTHETIC_TRACK_TOKEN';
+const CSRF = 'SYNTHETIC_CSRF';
+const SID = 'SYNTHETIC_SESSION';
+const MEDIA = 'https://media.deezer.com/v1/get_url';
+const GATEWAY = 'https://www.deezer.com/ajax/gw-light.php';
 const CDN = 'https://e-cdns-proxy-a.dzcdn.net/media/example';
 const row = { id: Number(TRACK), title: 'Example', duration: 200, artist: { name: 'Artist' }, album: { title: 'Album' } };
 
@@ -31,17 +35,32 @@ function encryptStripes(plain) {
   return execFileSync(process.execPath, ['--openssl-legacy-provider', '-e', script, dz.songKey(TRACK).toString('hex')], { input: plain, maxBuffer: 1024 * 1024 });
 }
 
-function fakeService(encrypted, { premium = false, fail320 = false, arl = ARL, mediaUrl = CDN } = {}) {
+function fakeService(encrypted, {
+  premium = false, high = false, fail320 = false, arl = ARL, mediaUrl = CDN,
+  userId = '12345', sessionId = SID, csrf = CSRF, license = LIC, loginError = [],
+  gatewayId = TRACK, token = TOKEN, gatewayError = [], mediaErrors = [], publicToken,
+} = {}) {
   const calls = [];
   const http = {
     async get(url, options) {
       calls.push({ method: 'get', url, options });
       assert.equal(options.maxRedirects, 0);
-      if (url.includes('/search/track?')) return { status: 200, data: { data: [row] } };
-      if (url === `https://api.deezer.com/track/${TRACK}`) return { status: 200, data: { ...row, track_token: TOKEN } };
-      if (url.startsWith('https://www.deezer.com/ajax/gw-light.php')) {
+      if (url.includes('/search/track?')) {
+        assert.equal(options.headers.Cookie, undefined);
+        return { status: 200, data: { data: [row] } };
+      }
+      if (url === `https://api.deezer.com/track/${TRACK}`) {
+        assert.equal(options.headers.Cookie, undefined);
+        // The public API normally provides metadata, not an account token.
+        return { status: 200, data: { ...row, ...(publicToken ? { track_token: publicToken } : {}) } };
+      }
+      if (url.startsWith(`${GATEWAY}?`)) {
+        assert.equal(new URL(url).searchParams.get('method'), 'deezer.getUserData');
         assert.equal(options.headers.Cookie, `arl=${arl}; comeback=1`);
-        return { status: 200, data: { results: { USER: { OPTIONS: { license_token: LIC, web_sound_quality: { lossless: premium } } } } } };
+        return { status: 200, data: { error: loginError, results: {
+          checkForm: csrf, SESSION_ID: sessionId,
+          USER: { USER_ID: userId, OPTIONS: { license_token: license, web_sound_quality: { high, lossless: premium } } },
+        } } };
       }
       if (url === CDN) {
         assert.equal(options.headers.Cookie, undefined);
@@ -53,16 +72,26 @@ function fakeService(encrypted, { premium = false, fail320 = false, arl = ARL, m
     },
     async post(url, body, options) {
       calls.push({ method: 'post', url, body, options });
-      assert.equal(url, 'https://media.deezer.com/v1/get_url');
       assert.equal(options.maxRedirects, 0);
+      if (url.startsWith(`${GATEWAY}?`)) {
+        const params = new URL(url).searchParams;
+        assert.equal(params.get('method'), 'song.getData');
+        assert.equal(params.get('input'), '3');
+        assert.equal(params.get('api_version'), '1.0');
+        assert.equal(params.get('api_token'), csrf);
+        assert.equal(options.headers.Cookie, `arl=${arl}; comeback=1; sid=${sessionId}`);
+        assert.deepEqual(body, { sng_id: TRACK });
+        return { status: 200, data: { error: gatewayError, results: { SNG_ID: gatewayId, TRACK_TOKEN: token } } };
+      }
+      assert.equal(url, MEDIA);
       assert.equal(options.headers.Cookie, undefined);
       assert.equal(body.license_token, LIC);
       assert.deepEqual(body.track_tokens, [TOKEN]);
       assert.equal(body.media[0].type, 'FULL');
       const fmt = body.media[0].formats[0];
       assert.equal(fmt.cipher, 'BF_CBC_STRIPE');
-      if (fail320 && fmt.format === 'MP3_320') return { status: 200, data: { data: [{ errors: [{ message: 'unavailable' }] }] } };
-      return { status: 200, data: { data: [{ media: [{ cipher: { type: 'BF_CBC_STRIPE' }, sources: [{ url: mediaUrl }] }] }] } };
+      const errors = fail320 && fmt.format === 'MP3_320' ? [{ message: 'unavailable' }] : mediaErrors;
+      return { status: 200, data: { data: [{ errors, media: [{ cipher: { type: 'BF_CBC_STRIPE' }, sources: [{ url: mediaUrl }] }] }] } };
     },
   };
   return { http, calls };
@@ -122,8 +151,83 @@ test('search and full download keep credentials scoped and stream valid MP3 byte
   assert.equal(result.trackToken, undefined);
   const jsonCalls = fake.calls.filter((c) => c.url.startsWith('https://api.deezer.com'));
   assert.ok(jsonCalls.every((c) => !c.options.headers.Cookie));
-  assert.equal(fake.calls.find((c) => c.method === 'post').body.media[0].formats[0].format, 'MP3_128');
+  const gateway = fake.calls.find((c) => c.url.startsWith(`${GATEWAY}?method=song.getData`));
+  assert.ok(gateway, 'track token comes from the authenticated gateway');
+  assert.equal(fake.calls.find((c) => c.url === MEDIA).body.media[0].formats[0].format, 'MP3_128');
   assert.equal(fs.statSync(dest).mode & 0o777, 0o600);
+});
+
+test('ignores any stale public token and URL-encodes the authenticated gateway token', async () => {
+  const fake = fakeService(encryptStripes(sample()), { publicToken: 'STALE_PUBLIC_TOKEN', csrf: 'csrf+with/equals=' });
+  const client = dz.createClient({ http: fake.http, arl: ARL });
+  const metadata = await client.getTrack(TRACK);
+  assert.equal(metadata.trackToken, undefined);
+  await client.download(TRACK, path.join(TEMP, 'fresh-token.mp3'));
+  const gateway = fake.calls.find((c) => c.url.startsWith(`${GATEWAY}?method=song.getData`));
+  assert.equal(new URL(gateway.url).searchParams.get('api_token'), 'csrf+with/equals=');
+  assert.deepEqual(fake.calls.find((c) => c.url === MEDIA).body.track_tokens, [TOKEN]);
+});
+
+test('logged-out, malformed or unsafe gateway sessions stop before track and media requests', async () => {
+  const encrypted = encryptStripes(sample());
+  const cases = [
+    { userId: '0' }, { userId: '' }, { sessionId: '' }, { sessionId: 'bad; extra=secret' },
+    { csrf: '' }, { csrf: 'bad\r\nvalue' }, { license: '' }, { license: 'bad\r\nvalue' },
+    { loginError: { VALID_TOKEN_REQUIRED: true } },
+  ];
+  for (const [i, invalid] of cases.entries()) {
+    const fake = fakeService(encrypted, invalid);
+    await assert.rejects(dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, path.join(TEMP, `bad-session-${i}.mp3`)), { code: 'DEEZER_AUTH' });
+    assert.equal(fake.calls.some((c) => c.method === 'post'), false);
+  }
+});
+
+test('gateway token must belong to the requested track and be a bounded nonempty string', async () => {
+  const encrypted = encryptStripes(sample());
+  const cases = [
+    { gatewayId: '999999' }, { gatewayId: '' }, { token: '' }, { token: null }, { token: 'bad\r\ntoken' },
+    { token: 'x'.repeat(4097) }, { gatewayError: { VALID_TOKEN_REQUIRED: true } },
+  ];
+  for (const [i, invalid] of cases.entries()) {
+    const fake = fakeService(encrypted, invalid);
+    await assert.rejects(dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, path.join(TEMP, `bad-token-${i}.mp3`)), { code: 'DEEZER_UNAVAILABLE' });
+    assert.equal(fake.calls.some((c) => c.url === MEDIA || c.url === CDN), false);
+  }
+});
+
+test('authenticated gateway failures and redirects never forward or expose credentials', async () => {
+  const encrypted = encryptStripes(sample());
+  for (const failureMode of ['redirect', 'exception']) {
+    const fake = fakeService(encrypted);
+    const post = fake.http.post;
+    fake.http.post = async (url, body, options) => {
+      if (!url.startsWith(`${GATEWAY}?method=song.getData`)) return post(url, body, options);
+      assert.equal(options.maxRedirects, 0);
+      if (failureMode === 'redirect') return { status: 302, headers: { location: 'https://evil.test/steal' }, data: {} };
+      const error = new Error(`failure with ${ARL} ${CSRF} ${SID}`);
+      error.config = { url, headers: options.headers };
+      throw error;
+    };
+    await assert.rejects(
+      dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, path.join(TEMP, `gateway-${failureMode}.mp3`)),
+      (err) => err.code === 'DEEZER_NETWORK' && ![ARL, CSRF, SID].some((secret) => `${err.message} ${err.stack}`.includes(secret)),
+    );
+    assert.equal(fake.calls.some((c) => c.url === MEDIA || c.url === CDN || c.url.includes('evil.test')), false);
+  }
+});
+
+test('empty media errors are accepted while real errors stop delivery', async () => {
+  const encrypted = encryptStripes(sample());
+  for (const [i, errors] of [[], {}, null].entries()) {
+    const fake = fakeService(encrypted, { mediaErrors: errors });
+    await dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, path.join(TEMP, `no-errors-${i}.mp3`));
+    assert.equal(fake.calls.some((c) => c.url === CDN), true);
+  }
+  for (const [i, errors] of [[{ code: 'NOT_ALLOWED' }], { message: 'unavailable' }, 'unavailable'].entries()) {
+    const fake = fakeService(encrypted, { mediaErrors: errors });
+    await assert.rejects(dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, path.join(TEMP, `media-error-${i}.mp3`)), { code: 'DEEZER_UNAVAILABLE' });
+    assert.equal(fake.calls.some((c) => c.url === CDN), false);
+  }
 });
 
 test('decrypted full-track fixture is probed, tagged and delivered by the real command', async (t) => {
@@ -165,6 +269,32 @@ test('decrypted full-track fixture is probed, tagged and delivered by the real c
   }
 });
 
+test('real ffmpeg rejects a decrypted preview shorter than the full-track metadata', async (t) => {
+  const ffmpeg = require(path.join(ROOT, 'utils/ffmpeg'));
+  if (!ffmpeg.works()) return t.skip('ffmpeg unavailable');
+  const preview = path.join(TEMP, 'preview.mp3');
+  execFileSync(ffmpeg(), ['-y', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3', '-c:a', 'libmp3lame', '-b:a', '128k', preview]);
+  const fake = fakeService(encryptStripes(fs.readFileSync(preview)));
+  const config = require(path.join(ROOT, 'config'));
+  const originalArl = config.deezer.arl;
+  const originalClient = dz.createClient;
+  config.deezer.arl = ARL;
+  dz.createClient = () => originalClient({ http: fake.http, arl: ARL });
+  const command = require(path.join(ROOT, 'commands/media/deezer'));
+  const sent = [];
+  const sock = { async sendMessage(_chat, body) { sent.push(body); } };
+  try {
+    const handled = await command.attempt(sock, { key: { remoteJid: 'self@s.whatsapp.net', id: '1' }, message: {} },
+      { from: 'self@s.whatsapp.net' }, { input: 'Example', fallback: true, firstHit: true });
+    assert.equal(handled, false);
+    assert.equal(sent.some((body) => body.document || body.audio), false);
+    assert.equal(fake.calls.some((c) => c.url === CDN), true);
+  } finally {
+    config.deezer.arl = originalArl;
+    dz.createClient = originalClient;
+  }
+});
+
 test('mismatched track metadata is rejected before authentication and media download', async () => {
   const fake = fakeService(encryptStripes(sample()));
   const expected = { title: 'Example', artist: 'Artist', duration: 200, isrc: 'USABC1234567' };
@@ -172,10 +302,33 @@ test('mismatched track metadata is rejected before authentication and media down
   assert.deepEqual(fake.calls.map((c) => c.url), [`https://api.deezer.com/track/${TRACK}`]);
 });
 
-test('premium tries 320, then 128 only when that format is unavailable', async () => {
-  const fake = fakeService(encryptStripes(sample()), { premium: true, fail320: true });
-  await dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, path.join(TEMP, 'premium.mp3'));
-  assert.deepEqual(fake.calls.filter((c) => c.method === 'post').map((c) => c.body.media[0].formats[0].format), ['MP3_320', 'MP3_128']);
+test('high or lossless entitlement requests 320, then 128 only if unavailable', async () => {
+  const encrypted = encryptStripes(sample());
+  for (const [label, quality, formats] of [
+    ['high-only', { high: true }, ['MP3_320']],
+    ['lossless-only', { premium: true }, ['MP3_320']],
+    ['standard', {}, ['MP3_128']],
+    ['high-fallback', { high: true, fail320: true }, ['MP3_320', 'MP3_128']],
+    ['lossless-fallback', { premium: true, fail320: true }, ['MP3_320', 'MP3_128']],
+  ]) {
+    const fake = fakeService(encrypted, quality);
+    await dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, path.join(TEMP, `${label}.mp3`));
+    assert.deepEqual(fake.calls.filter((c) => c.url === MEDIA).map((c) => c.body.media[0].formats[0].format), formats);
+    assert.equal(fake.calls.filter((c) => c.url.startsWith(`${GATEWAY}?method=song.getData`)).length, 1);
+  }
+});
+
+test('high-quality authentication failures do not retry at a lower format', async () => {
+  const fake = fakeService(encryptStripes(sample()), { high: true });
+  const post = fake.http.post;
+  let mediaCalls = 0;
+  fake.http.post = async (url, body, options) => {
+    if (url === MEDIA) { mediaCalls++; return { status: 403, data: {} }; }
+    return post(url, body, options);
+  };
+  await assert.rejects(dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, path.join(TEMP, 'hq-auth.mp3')), { code: 'DEEZER_AUTH' });
+  assert.equal(mediaCalls, 1);
+  assert.equal(fake.calls.some((c) => c.url === CDN), false);
 });
 
 test('media redirects stay on trusted HTTPS hosts without credentials', async () => {

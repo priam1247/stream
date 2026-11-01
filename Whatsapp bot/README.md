@@ -56,9 +56,11 @@ ISRC checks when Spotify provides them. Explicit YouTube and Deezer links do not
 silently switch sources. This supports individual audio tracks only, not
 albums, playlists, video or movies. Dashboard switches control commands, not
 backends: disabling `.deezer` does not prevent `.song` or `.spotify` using the
-configured account. Availability and MP3 quality depend on the account, region
-and Deezer; authentication and playback must be checked on the actual host.
-Download only content you have permission to use.
+configured account. Deezer delivery requires a working ffmpeg to verify the
+track length; `.song` and `.spotify` can fall back to YouTube if it is missing.
+Availability and MP3 quality depend on the account, region and Deezer;
+authentication and playback must be checked on the actual host. Download only
+content you have permission to use.
 
 ### Video sites and YouTube troubleshooting
 

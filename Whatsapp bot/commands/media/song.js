@@ -70,7 +70,7 @@ function splitArtist(title, uploader) {
   return { title: t || clean(title) || 'song', artist: a };
 }
 
-const execute = async (sock, msg, args, extra) => {
+const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
     const chatId = extra?.from || msg.key.remoteJid;
     const reply = (text) => sock.sendMessage(chatId, { text }, { quoted: msg });
     const react = (emoji) => sock.sendMessage(chatId, { react: { text: emoji, key: msg.key } }).catch(() => {});
@@ -97,8 +97,16 @@ const execute = async (sock, msg, args, extra) => {
     // A named song can use the configured Deezer account first. A YouTube
     // link always keeps its exact video; never silently substitute another
     // recording for a specific URL.
-    if (deezer.deezerUrl(text) || (deezer.configured() && !YT.isYouTubeUrl(text))) {
-      const handled = await deezerCommand.attempt(sock, msg, extra, { input: text, sendAs, firstHit, fallback: true });
+    if (!skipDeezer && (deezer.deezerUrl(text) || (deezer.configured() && !YT.isYouTubeUrl(text)))) {
+      const handled = await deezerCommand.attempt(sock, msg, extra, {
+        input: text, sendAs, firstHit, fallback: true,
+        onSelectionFallback: (s, m, e, item) => {
+          const query = [item.artist, item.title].filter(Boolean).join(' - ');
+          // The selection already identifies the recording. Search YouTube
+          // once for that artist/title; do not re-enter the Deezer picker.
+          return execute(s, m, [query, '--first', sendAs === 'audio' ? 'audio' : 'doc'], e, { skipDeezer: true });
+        },
+      });
       if (handled) return;
     }
 

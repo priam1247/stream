@@ -3,9 +3,9 @@
  * kmille/deezer-downloader (https://github.com/kmille/deezer-downloader).
  * Copyright (c) 2021 kmille; see docs/third-party/deezer-downloader-LICENSE.
  *
- * Only the owner's ARL is sent to Deezer's fixed login endpoint. The returned
- * license token is sent only to Deezer's media endpoint; CDN requests carry
- * neither credential. No account data or request bodies are logged.
+ * The owner's ARL and session credentials go only to Deezer's fixed gateway.
+ * The license and track tokens go only to Deezer's media endpoint; CDN
+ * requests carry none of them. No account data or request bodies are logged.
  */
 const fs = require('fs');
 const crypto = require('crypto');
@@ -15,7 +15,8 @@ const axios = require('axios');
 const config = require('../config');
 
 const API = 'https://api.deezer.com';
-const USER_URL = 'https://www.deezer.com/ajax/gw-light.php?method=deezer.getUserData&input=3&api_version=1.0&api_token=';
+const GATEWAY = 'https://www.deezer.com/ajax/gw-light.php';
+const USER_URL = `${GATEWAY}?method=deezer.getUserData&input=3&api_version=1.0&api_token=`;
 const MEDIA_URL = 'https://media.deezer.com/v1/get_url';
 const UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0';
 const BLOCK = 2048;
@@ -24,6 +25,12 @@ const IV = Buffer.from('0001020304050607', 'hex');
 
 function failure(code, message) {
   return Object.assign(new Error(message), { code });
+}
+
+function hasErrors(value) {
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === 'object') return Object.keys(value).length > 0;
+  return Boolean(value);
 }
 
 const configured = () => Boolean(String(config.deezer?.arl || '').trim());
@@ -178,10 +185,8 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
     if (!/^\d{1,16}$/.test(String(id))) throw failure('DEEZER_TRACK', 'Invalid track ID');
     const data = await request('get', `${API}/track/${id}`);
     const track = normalizedTrack(data);
-    if (!track || track.id !== String(id) || typeof data.track_token !== 'string' || !data.track_token || data.track_token.length > 4096) {
-      throw failure('DEEZER_TRACK', 'Track unavailable');
-    }
-    return { ...track, trackToken: data.track_token };
+    if (!track || track.id !== String(id)) throw failure('DEEZER_TRACK', 'Track unavailable');
+    return track;
   }
 
   async function session() {
@@ -193,23 +198,47 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
       Cookie: `arl=${cookie}; comeback=1`, Origin: 'https://www.deezer.com',
       Referer: 'https://www.deezer.com/', 'X-Requested-With': 'XMLHttpRequest',
     } });
-    const user = data?.results?.USER?.OPTIONS;
-    if (typeof user?.license_token !== 'string' || !user.license_token || user.license_token.length > 4096) {
+    const results = data?.results;
+    const user = results?.USER;
+    const licenseToken = user?.OPTIONS?.license_token;
+    const apiToken = results?.checkForm;
+    const sessionId = results?.SESSION_ID;
+    // Logged-out sessions can also have a license token; require a real user
+    // and the session/CSRF values needed for the account-scoped track request.
+    if (hasErrors(data?.error) || !/^[1-9]\d{0,20}$/.test(String(user?.USER_ID || '')) ||
+        typeof licenseToken !== 'string' || !licenseToken || licenseToken.length > 4096 || /\s/.test(licenseToken) ||
+        typeof apiToken !== 'string' || !apiToken || apiToken.length > 4096 || /\s/.test(apiToken) ||
+        typeof sessionId !== 'string' || !/^[A-Za-z0-9._~-]{1,512}$/.test(sessionId)) {
       throw failure('DEEZER_AUTH', 'Deezer did not accept the account');
     }
-    return { licenseToken: user.license_token, premium: user.web_sound_quality?.lossless === true };
+    const quality = user.OPTIONS.web_sound_quality;
+    return { licenseToken, apiToken, sessionId, premium: quality?.high === true || quality?.lossless === true };
   }
 
-  async function media(track, auth, format) {
+  async function trackToken(id, auth) {
+    const params = new URLSearchParams({ method: 'song.getData', input: '3', api_version: '1.0', api_token: auth.apiToken });
+    const data = await request('post', `${GATEWAY}?${params}`, { sng_id: String(id) }, { headers: {
+      Cookie: `arl=${cookie}; comeback=1; sid=${auth.sessionId}`, Origin: 'https://www.deezer.com',
+      Referer: 'https://www.deezer.com/', 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json',
+    } });
+    const result = data?.results;
+    if (hasErrors(data?.error) || String(result?.SNG_ID || '') !== String(id) ||
+        typeof result?.TRACK_TOKEN !== 'string' || !result.TRACK_TOKEN || result.TRACK_TOKEN.length > 4096 || /\s/.test(result.TRACK_TOKEN)) {
+      throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account');
+    }
+    return result.TRACK_TOKEN;
+  }
+
+  async function media(token, auth, format) {
     const data = await request('post', MEDIA_URL, {
       license_token: auth.licenseToken,
       media: [{ type: 'FULL', formats: [{ cipher: 'BF_CBC_STRIPE', format }] }],
-      track_tokens: [track.trackToken],
+      track_tokens: [token],
     }, { headers: { 'Content-Type': 'application/json' } });
     const item = data?.data?.[0];
     const candidate = Array.isArray(item?.media) ? item.media.find((m) => Array.isArray(m?.sources) && m.sources.length) : null;
     const cipher = typeof candidate?.cipher === 'string' ? candidate.cipher : candidate?.cipher?.type;
-    if (!candidate || item.errors || (cipher && cipher !== 'BF_CBC_STRIPE')) throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account');
+    if (!candidate || hasErrors(item.errors) || (cipher && cipher !== 'BF_CBC_STRIPE')) throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account');
     const source = candidate.sources.find((s) => validMediaUrl(s?.url));
     if (!source) throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account');
     return source.url;
@@ -220,12 +249,15 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
     if (!sameRecording(track, expected, { requireIsrc: true })) throw failure('BAD_SOURCE', 'Track metadata did not match');
     if (maxSeconds && track.duration > maxSeconds) throw failure('TOO_LONG', 'Track exceeds duration limit');
     const auth = await session();
+    // Public track metadata does not reliably contain a usable token. Obtain a
+    // fresh token for this exact track within the authenticated session.
+    const token = await trackToken(track.id, auth);
     let url;
-    // Premium can use 320 kbps; if that format is unavailable, try 128 kbps.
-    try { url = await media(track, auth, auth.premium ? 'MP3_320' : 'MP3_128'); }
+    // High-quality accounts can use 320 kbps; if unavailable, try 128 kbps.
+    try { url = await media(token, auth, auth.premium ? 'MP3_320' : 'MP3_128'); }
     catch (e) {
       if (!auth.premium || e.code !== 'DEEZER_UNAVAILABLE') throw e;
-      url = await media(track, auth, 'MP3_128');
+      url = await media(token, auth, 'MP3_128');
     }
     const signal = AbortSignal.timeout(180_000);
     let response;
@@ -259,8 +291,7 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
       await pipeline(response.data, decoder, fs.createWriteStream(dest, { fd, autoClose: true }), { signal });
       const bytes = fs.statSync(dest).size;
       if (bytes < 10 * 1024) throw failure('BAD_SOURCE', 'Track is too small');
-      const { trackToken: _trackToken, ...safeTrack } = track;
-      return { ...safeTrack, file: dest, bytes };
+      return { ...track, file: dest, bytes };
     } catch (e) {
       response.data?.destroy?.();
       if (created) { try { fs.rmSync(dest, { force: true }); } catch { /* best effort */ } }
