@@ -6,7 +6,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 process.env.LOG_LEVEL = 'error';
 const reportLog = console.log;
-console.log = (...args) => { const line = args.join(' '); reportLog(line.startsWith('AUDIT ') ? `::notice title=Live audit::${line}` : line); };
+const auditLines = [];
+console.log = (...args) => { const line = args.join(' '); if (line.startsWith('AUDIT ')) auditLines.push(line); else reportLog(line); };
 process.env.MOVIE_HLS_ENGINE = 'ffmpeg';
 process.env.NM3U8DL_DISABLE_AUTOINSTALL = '1';
 process.env.TORRENT_METADATA_TIMEOUT_MS = '45000';
@@ -48,6 +49,11 @@ await Promise.all(registry.providers.map(async (p) => {
       if (safe.length) { found.push({ p, sample, candidates: safe }); break; }
     } catch(e) { errors.push(e.code || e.status || e.name); console.log(`AUDIT ${p.id}: ${sample.title} search=failed ${e.code || e.status || e.name}`); }
   }
+  if (!found.some(row => row.p === p)) {
+    const popular = { type: 'movie', title: 'Dune', year: '2021', imdbId: 'tt1160419', tmdbId: 438631 };
+    try { const c = await bounded(p.search(popular, opts(popular)), 35000); console.log(`AUDIT ${p.id}: popular-search=${c.length ? 'candidates' : 'empty'} count=${c.length}`); }
+    catch(e) { console.log(`AUDIT ${p.id}: popular-search=failed ${e.code || e.name}`); }
+  }
 }));
 for (const sample of samples) {
   try {
@@ -79,6 +85,7 @@ await Promise.all(found.map(async ({ p, sample, candidates }) => {
   } catch(e) { console.log(`AUDIT ${p.id}: complete=failed ${e.code || e.status || e.name}`); }
 }));
 console.log(`AUDIT elapsed=${Date.now() - start}ms`);
+reportLog(`::notice title=Live audit::${JSON.stringify(auditLines)}`);
 for (const t of timers) clearTimeout(t);
 fs.rmSync(dir, { recursive: true, force: true });
 process.exit(0);
