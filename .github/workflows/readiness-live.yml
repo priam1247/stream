@@ -1,0 +1,40 @@
+name: Temporary live readiness audit
+on:
+  push:
+    branches: ['arena/85e6085a-stream']
+    paths: ['.github/workflows/readiness-live.yml', 'Whatsapp bot/scripts/probe-movies-live.mjs', 'Whatsapp bot/scripts/probe-media-timing.cjs']
+jobs:
+  movies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'Whatsapp bot/package-lock.json'
+      - run: npm ci --no-audit --no-fund
+        working-directory: Whatsapp bot
+      - run: node scripts/probe-movies-live.mjs
+        working-directory: Whatsapp bot
+  media:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [song, title, video, fb]
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'Whatsapp bot/package-lock.json'
+      - run: npm ci --no-audit --no-fund
+        working-directory: Whatsapp bot
+      - if: matrix.mode == 'fb'
+        run: python3 -m pip install --user --break-system-packages 'yt-dlp==2026.10.26' && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: node scripts/probe-media-timing.cjs '${{ matrix.mode }}'
+        working-directory: Whatsapp bot
