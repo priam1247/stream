@@ -1,5 +1,5 @@
 /**
- * ZaFar Bot — .song  (YouTube → MP3)
+ * ZaFar Bot — .song  (Deezer or YouTube → MP3)
  *
  *   .song <name or link> [audio|doc]     [audio|doc] overrides config.song.sendAs
  *
@@ -7,6 +7,8 @@
  * Highest-quality audio yt-dlp can get (m4a/aac first), converted to MP3 at
  * LAME V0 and sent as a document unless the caller explicitly asks for `audio`.
  *
+ * Title searches try configured Deezer first; explicit YouTube links stay on
+ * YouTube. If Deezer is unavailable, the existing YouTube pipeline takes over.
  * Pipeline (first engine that works wins):
  *   1. yt-dlp   — local, best quality, retries with several YouTube player
  *                 clients, converts to MP3 with ffmpeg (raw stream if no ffmpeg).
@@ -29,6 +31,8 @@ const settings = require('../../utils/mediaSettings');
 const providers = require('../../utils/downloadProviders');
 const youtubeSearch = require('../../utils/youtubeSearch');
 const selections = require('../../utils/selections');
+const deezer = require('../../utils/deezer');
+const deezerCommand = require('./deezer');
 const jobQueue = require('../../utils/jobQueue');
 const {
   downloadToFile, sniffFile, audioToMp3, tagMp3, safeName, fmtMB,
@@ -89,6 +93,14 @@ const execute = async (sock, msg, args, extra) => {
     let text = args.join(' ').trim();
     if (text.startsWith('!')) { firstHit = true; text = text.slice(1).trim(); }
     if (!text) return reply('Usage: .song <name or YouTube link>');
+
+    // A named song can use the configured Deezer account first. A YouTube
+    // link always keeps its exact video; never silently substitute another
+    // recording for a specific URL.
+    if (deezer.deezerUrl(text) || (deezer.configured() && !YT.isYouTubeUrl(text))) {
+      const handled = await deezerCommand.attempt(sock, msg, extra, { input: text, sendAs, firstHit, fallback: true });
+      if (handled) return;
+    }
 
     const id = stamp();
     const outBase = path.join(getTempDir(), id);
@@ -369,7 +381,7 @@ module.exports = {
   name: 'song',
   aliases: ['play', 'music', 'yta'],
   category: 'media',
-  description: 'Download a song from YouTube as MP3',
-  usage: '.song <song name or YouTube link> [audio|doc]',
+  description: 'Download a song as MP3',
+  usage: '.song <song name or YouTube/Deezer track link> [audio|doc]',
   execute,
 };
