@@ -1,0 +1,60 @@
+name: Temporary music-source probe
+
+on:
+  push:
+    branches: [arena/0bbc3f9a-stream]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check public media and decode it
+        shell: bash
+        run: |
+          set -u
+          work="$RUNNER_TEMP/music-probe"
+          mkdir -p "$work"
+          ua='ZaFarBot source verification/1.0'
+          echo 'AUDIUS: checking official metadata, public download endpoint, and audio decode'
+          if curl -fsSG --max-time 35 -A "$ua" 'https://api.audius.co/v1/tracks/search' \
+              --data-urlencode 'query=Tеееest' --data-urlencode 'limit=3' \
+              --data-urlencode 'app_name=stream-bot' --data-urlencode 'only_downloadable=1' > "$work/audius.json" \
+            && node -e "const d=require(process.argv[1]);const t=d.data.find(x=>x.id==='xd8gY');if(!t||t.is_downloadable!==true||t.is_download_gated!==false||t.access?.download!==true)process.exit(1)" "$work/audius.json" \
+            && curl -fsSL --max-time 90 --max-filesize 20000000 -A "$ua" 'https://api.audius.co/v1/tracks/xd8gY/download?app_name=stream-bot' -o "$work/audius.mp3" \
+            && [ "$(wc -c < "$work/audius.mp3")" -ge 10240 ] \
+            && ffmpeg -v error -i "$work/audius.mp3" -map 0:a:0 -f null - \
+            && ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$work/audius.mp3" | awk '$1 >= 25 {good=1} END {exit !good}'; then
+            echo 'AUDIUS: PASS (search, creator-enabled download, complete audio decoded)'
+          else
+            echo 'AUDIUS: FAIL (search, download, or decode)'
+          fi
+          echo 'COMMONS: checking file metadata, public video download, and audio/video decode'
+          if curl -fsSG --max-time 35 -A "$ua" 'https://commons.wikimedia.org/w/api.php' \
+              --data-urlencode 'action=query' --data-urlencode 'titles=File:Bach BWV 939.ogv' \
+              --data-urlencode 'prop=imageinfo' --data-urlencode 'iiprop=url|size|mime|extmetadata' \
+              --data-urlencode 'format=json' --data-urlencode 'formatversion=2' > "$work/commons.json" \
+            && node -e "const p=require(process.argv[1]).query.pages[0];let i=p.imageinfo[0];if(!i.extmetadata.Artist||!i.extmetadata.LicenseShortName||!i.descriptionurl||!i.url.startsWith('https://upload.wikimedia.org/'))process.exit(1)" "$work/commons.json" \
+            && curl -fsSL --max-time 90 --max-filesize 20000000 -A "$ua" 'https://upload.wikimedia.org/wikipedia/commons/6/60/Bach_BWV_939.ogv' -o "$work/commons.ogv" \
+            && ffmpeg -v error -i "$work/commons.ogv" -map 0:v:0 -map 0:a:0 -f null -; then
+            echo 'COMMONS: PASS (metadata, license, complete video and audio decoded)'
+          else
+            echo 'COMMONS: FAIL (metadata, media download, or decode)'
+          fi
+          echo 'DAILYMOTION: checking existing source with yt-dlp and a short clip'
+          python3 -m venv "$work/yt"
+          if "$work/yt/bin/python" -m pip -q install 'yt-dlp==2026.10.26' \
+            && "$work/yt/bin/yt-dlp" --quiet --no-warnings --no-playlist --no-cache-dir --retries 1 --socket-timeout 20 \
+               --download-sections '*0-12' -f 'worst[height<=360]/worst' --merge-output-format mp4 \
+               -o "$work/dailymotion.%(ext)s" 'https://www.dailymotion.com/video/x5qmoi5' 2> "$work/daily-error" \
+            && file=$(find "$work" -maxdepth 1 -name 'dailymotion.*' ! -name '*.part*' | head -1) \
+            && [ -n "$file" ] && ffmpeg -v error -i "$file" -map 0:v:0 -map 0:a:0 -f null -; then
+            echo 'DAILYMOTION: PASS (existing downloader, video and audio decoded)'
+          else
+            echo 'DAILYMOTION: FAIL (download or decode; public media can be host- or region-dependent)'
+            sed -E 's~https?://[^ ]+~[URL]~g; s/[^[:print:]\t]/?/g' "$work/daily-error" 2>/dev/null | tail -2 || true
+          fi
