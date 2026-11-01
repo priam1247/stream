@@ -66,7 +66,8 @@ begin
   bytes = 0
   4.times do |redirect|
     note("audio host #{uri.host} over #{uri.scheme}") if uri.host.to_s.match?(/\A[a-z0-9.-]+\z/i)
-    raise 'UNEXPECTED_AUDIO_HOST' unless uri.scheme == 'https' && (uri.host == 'bcbits.com' || uri.host.end_with?('.bcbits.com'))
+    raise 'UNEXPECTED_AUDIO_HOST' unless uri.scheme == 'https' &&
+      %w[bcbits.com bandcamp.com].any? { |host| uri.host == host || uri.host.end_with?(".#{host}") }
     target = nil
     Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 15, read_timeout: 40) do |http|
       request = Net::HTTP::Get.new(uri.request_uri)
