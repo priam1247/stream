@@ -1,6 +1,10 @@
 name: Temporary music-source probe
 on:
   workflow_dispatch:
+  push:
+    branches: [arena/c505c542-stream]
+    paths:
+      - .github/workflows/music-source-probe.yml
 permissions:
   contents: read
 jobs:
