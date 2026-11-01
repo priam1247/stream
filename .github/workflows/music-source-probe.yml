@@ -24,10 +24,18 @@ jobs:
         run: |
           curl -fsSL --max-time 90 --max-filesize 20000000 -A 'ZaFarBot source verification/1.0' 'https://api.audius.co/v1/tracks/xd8gY/download?app_name=stream-bot' -o "$RUNNER_TEMP/audius.mp3"
           [ "$(wc -c < "$RUNNER_TEMP/audius.mp3")" -ge 10240 ]
-      - name: Decode complete audio and check duration
+      - name: Check ffmpeg availability
+        run: command -v ffmpeg && command -v ffprobe
+      - name: Decode complete audio
         run: |
-          ffmpeg -v error -i "$RUNNER_TEMP/audius.mp3" -map 0:a:0 -f null -
-          ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/audius.mp3" | awk '$1 >= 25 {good=1} END {exit !good}'
+          if ! ffmpeg -v error -i "$RUNNER_TEMP/audius.mp3" -map 0:a:0 -f null - 2> "$RUNNER_TEMP/err"; then
+            echo "::error::$(tr '\n' ' ' < "$RUNNER_TEMP/err" | cut -c1-800)"
+            exit 1
+          fi
+      - name: Check expected audio duration
+        run: |
+          duration=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$RUNNER_TEMP/audius.mp3")
+          echo "$duration" | awk '$1 >= 25 {good=1} END {exit !good}' || { echo "::error::Unexpected duration $duration"; exit 1; }
   commons:
     name: Wikimedia Commons music video
     runs-on: ubuntu-latest
@@ -43,8 +51,16 @@ jobs:
           node -e "const p=require(process.argv[1]).query.pages[0];let i=p.imageinfo[0];if(!i.extmetadata.Artist||!i.extmetadata.LicenseShortName||!i.descriptionurl||!i.url.startsWith('https://upload.wikimedia.org/'))process.exit(1)" "$RUNNER_TEMP/commons.json"
       - name: Download Commons file
         run: curl -fsSL --max-time 90 --max-filesize 20000000 -A 'ZaFarBot source verification/1.0' 'https://upload.wikimedia.org/wikipedia/commons/6/60/Bach_BWV_939.ogv' -o "$RUNNER_TEMP/commons.ogv"
-      - name: Decode complete video and audio
-        run: ffmpeg -v error -i "$RUNNER_TEMP/commons.ogv" -map 0:v:0 -map 0:a:0 -f null -
+      - name: Check ffmpeg availability
+        run: command -v ffmpeg && command -v ffprobe
+      - name: Decode Commons audio
+        run: |
+          if ! ffmpeg -v error -i "$RUNNER_TEMP/commons.ogv" -map 0:a:0 -f null - 2> "$RUNNER_TEMP/err"; then
+            echo "::error::$(tr '\n' ' ' < "$RUNNER_TEMP/err" | cut -c1-800)"
+            exit 1
+          fi
+      - name: Decode Commons video
+        run: ffmpeg -v error -i "$RUNNER_TEMP/commons.ogv" -map 0:v:0 -f null -
   dailymotion:
     name: Dailymotion existing video downloader
     runs-on: ubuntu-latest
@@ -54,11 +70,17 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/yt"
           "$RUNNER_TEMP/yt/bin/python" -m pip -q install 'yt-dlp==2026.10.26'
+      - name: Check ffmpeg availability
+        run: command -v ffmpeg && command -v ffprobe
       - name: Download short video clip with yt-dlp
         run: |
-          "$RUNNER_TEMP/yt/bin/yt-dlp" --quiet --no-warnings --no-playlist --no-cache-dir --retries 1 --socket-timeout 20 \
+          if ! "$RUNNER_TEMP/yt/bin/yt-dlp" --quiet --no-warnings --no-playlist --no-cache-dir --retries 1 --socket-timeout 20 \
             --download-sections '*0-12' -f 'worst[height<=360]/worst' --merge-output-format mp4 \
-            -o "$RUNNER_TEMP/dailymotion.%(ext)s" 'https://www.dailymotion.com/video/x5qmoi5'
+            -o "$RUNNER_TEMP/dailymotion.%(ext)s" 'https://www.dailymotion.com/video/x5qmoi5' 2> "$RUNNER_TEMP/err"; then
+            error=$(sed -E 's~https?://[^ ]+~[URL]~g' "$RUNNER_TEMP/err" | tr '\n' ' ' | cut -c1-800)
+            echo "::error::$error"
+            exit 1
+          fi
       - name: Decode clip audio and video
         run: |
           file=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'dailymotion.*' ! -name '*.part*' | head -1)
