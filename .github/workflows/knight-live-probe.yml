@@ -2,7 +2,7 @@ name: Temporary real KnightBot source probe
 on:
   push:
     branches: [arena/afda50e9-stream]
-    paths: ['.github/live-probes/**', '.github/workflows/knight-live-probe.yml']
+    paths: ['.github/live-probes/knight-probe.cjs', '.github/workflows/knight-live-probe.yml']
 permissions:
   contents: read
 jobs:

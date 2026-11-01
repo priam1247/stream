@@ -28,14 +28,23 @@ function load(file, injections, appendix = '') {
   return result.exports;
 }
 const api = load('utils/api.js', { axios: boundedAxios });
-const common = { axios: boundedAxios, 'yt-search': () => {}, '../../utils/api': api, '../../config': {}, '../../utils/converter': { toAudio() {} }, 'ffmpeg-static': 'ffmpeg' };
-const song = load('commands/media/song.js', common, 'module.exports._live = {hectorSongDownload,prexzySongDownload};')._live;
-const video = load('commands/media/video.js', common, 'module.exports._live = {hectorVideoDownload};')._live;
+// Execute the supplied public upstream configuration only for this temporary test.
+// Its values are never logged, stored, or imported into the bot.
+const upstreamConfig = load('config.js', {});
+const common = { axios: boundedAxios, 'yt-search': () => {}, '../../utils/api': api, '../../config': upstreamConfig, '../../utils/converter': { toAudio() {} }, 'ffmpeg-static': 'ffmpeg' };
+const song = load('commands/media/song.js', common, 'module.exports._live = {hectorSongDownload,prexzySongDownload,knightSongDownload,princeSongDownload};')._live;
+const video = load('commands/media/video.js', common, 'module.exports._live = {hectorVideoDownload,knightVideoDownload,princeVideoDownload};')._live;
 const audioUrl = 'https://www.youtube.com/watch?v=H5eLnIhRpWg';
 const videoUrl = 'https://www.youtube.com/watch?v=H5eLnIhRpWg';
 const providers = [
   ['Hector audio', 'audio', () => song.hectorSongDownload(audioUrl, 1)],
   ['Hector video', 'video', () => video.hectorVideoDownload(videoUrl, '360')],
+  ['Knight audio upstream config', 'audio', () => song.knightSongDownload(audioUrl, 1)],
+  ['Knight video upstream config', 'video', () => video.knightVideoDownload({url: videoUrl, format: '360p'})],
+  ['Prince audio upstream config', 'audio', () => song.princeSongDownload(audioUrl, 1)],
+  ['Prince video upstream config', 'video', () => video.princeVideoDownload(videoUrl, '360')],
+  ['Hector BBB audio', 'audio', () => song.hectorSongDownload('https://www.youtube.com/watch?v=8jtRL_Yl0Wc', 1)],
+  ['Hector BBB video', 'video', () => video.hectorVideoDownload('https://www.youtube.com/watch?v=8jtRL_Yl0Wc', '360')],
   ['Prexzy audio', 'audio', () => song.prexzySongDownload(audioUrl)],
   ['Elite audio', 'audio', () => api.getEliteProTechDownloadByUrl(audioUrl)],
   ['Elite video', 'video', () => api.getEliteProTechVideoByUrl(videoUrl)],
@@ -71,7 +80,7 @@ async function fullFile(url, name, kind) {
     let streams;
     try {
       streams=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','stream=codec_type','-of','json',file],{timeout:15000,stdio:['ignore','pipe','ignore']})).streams || [];
-    } catch { throw Object.assign(new Error('probe'),{code:'BAD_MEDIA'}); }
+    } catch { const fd=fs.openSync(file,'r');const b=Buffer.alloc(8);fs.readSync(fd,b,0,8,0);fs.closeSync(fd);const ct=String(resp.headers['content-type']||'').split(';')[0].replace(/[^a-z0-9\/+.-]/gi,'').slice(0,60);throw Object.assign(new Error('probe'),{code:'BAD_MEDIA',info:`bytes=${bytes} mime=${ct||'none'} magic=${b.toString('hex')}`}); }
     if (!streams.some(s=>s.codec_type==='audio')) throw Object.assign(new Error('audio'),{code:'NO_AUDIO'});
     if (kind==='video' && !streams.some(s=>s.codec_type==='video')) throw Object.assign(new Error('video'),{code:'NO_VIDEO'});
     try {
@@ -90,10 +99,10 @@ async function attempt([name, kind, resolve]) {
   const url = hit?.download || hit?.dl_url || hit?.audio || hit?.downloadUrl || hit?.dl;
   if (typeof url !== 'string') return `${name}: resolver NO_MEDIA`;
   try { const bytes=await fullFile(url,name,kind); return `${name}: COMPLETE_DECODE_OK ${bytes} bytes`; }
-  catch (err) { return `${name}: file ${safeErr(err)}`; }
+  catch (err) { return `${name}: file ${safeErr(err)} ${err.info||''}`; }
 }
 (async()=>{
   const results = await Promise.all(providers.map(attempt));
   for(const result of results) console.log(`::notice title=Live KnightBot probe::${result}`);
-  console.log('Knight and Prince: skipped; external keys are not ours to copy or use.');
+  console.log('Keyed calls used only the supplied upstream repository configuration; nothing copied into this bot.');
 })().catch(()=>{console.log('probe failed'); process.exitCode=1;}).finally(()=>fs.rmSync(tmp,{recursive:true,force:true}));
