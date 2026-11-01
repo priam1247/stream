@@ -1,0 +1,24 @@
+name: Temporary encrypted Deezer probe
+on:
+  push:
+    branches: [arena/afda50e9-stream]
+    paths: ['.github/live-probes/deezer-relay.cjs', '.github/workflows/deezer-encrypted-probe.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  encrypted-transport:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - working-directory: Whatsapp bot
+        run: npm ci --no-audit --no-fund
+      - name: Forward encrypted Deezer connections only
+        env:
+          RELAY_URL: wss://31872-i3l706i0y9mqv99aftqw7.e2b.app
+          WORKFLOW_TOKEN: ${{ github.token }}
+        run: node .github/live-probes/deezer-relay.cjs
