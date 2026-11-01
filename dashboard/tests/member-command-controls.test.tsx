@@ -36,4 +36,9 @@ it('documents title-only search for all 14 site shortcuts', () => {
     expect(member?.usage).toBe(command?.usage);
   }
   expect(BOT_COMMANDS.find((item) => item.name === 'youku')?.example).toBe('.youku the blood of youth s01e1');
+  for (const name of ['audius', 'commons']) {
+    const command = BOT_COMMANDS.find((item) => item.name === name);
+    expect(command?.usage).toContain('<title>');
+    expect(MEMBER_COMMANDS.find((item) => item.name === name)?.usage).toBe(command?.usage);
+  }
 });

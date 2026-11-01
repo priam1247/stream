@@ -32,6 +32,22 @@ export const BOT_COMMANDS: CommandEntry[] = [
     summary: 'Deezer MP3',
   },
   {
+    name: 'audius',
+    aliases: [],
+    category: 'media',
+    usage: '.audius <title>',
+    example: '.audius artist song',
+    summary: 'Creator-permitted Audius music',
+  },
+  {
+    name: 'commons',
+    aliases: [],
+    category: 'media',
+    usage: '.commons <title> [--audio|--video]',
+    example: '.commons Bach --video',
+    summary: 'Open-licensed music and video',
+  },
+  {
     name: 'ytv',
     aliases: ['ytvideo', 'ytmp4', 'video'],
     category: 'media',

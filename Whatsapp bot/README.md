@@ -16,6 +16,8 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .countpapers [course-code]             Count papers in the vault
 .song <name-or-track-link>             MP3: Deezer first when configured, then YouTube
 .deezer <title-or-track-link>          Deezer MP3 (.dz; optional audio or doc)
+.audius <title>                        Audius music enabled for public download
+.commons <title> [--audio|--video]     Open-licensed music or music videos
 .ytv <name-or-YouTube-link> [quality]  Download YouTube MP4 with silent-audio verification
 .dl <URL> [audio|video] [quality]      Generic yt-dlp downloader (streamed to disk)
 .tiktok <URL>  .x <URL>  .pinterest <URL>  .instagram <URL>  .fb <URL>
@@ -65,6 +67,30 @@ the decoder without downloading audio. Add a full track link or ID to test its
 availability. The report contains no cookies or tokens and does not confirm
 playback. Download only content you have permission to use.
 
+### Audius and Wikimedia Commons
+
+```text
+.audius artist song
+.commons piano sonata
+.commons Bach --video
+.1
+```
+
+Both shortcuts search titles only; reply with a numbered choice or use `--first`.
+Add `--as-audio` or `--as-document` for audio delivery. Audius results are
+limited to public downloads enabled by the creator; gated or disabled downloads
+are not bypassed. Wikimedia Commons searches open-licensed recordings and
+community videos, not a comprehensive catalog of commercial music videos.
+Only files with supported public-domain, CC0 or CC BY/CC BY-SA metadata are offered.
+Credits, license and the original file page accompany each delivery; check that
+page for full terms because Commons metadata can be incomplete. These sources
+require FFmpeg and working access from the bot host. Availability varies, and
+Commons can rate-limit hosting IPs. To check the deployed host without WhatsApp
+or account credentials, run
+`PUBLIC_MUSIC_LIVE=1 node scripts/test-public-music-live.js audius` (or use
+`commons-audio` / `commons-video`). These opt-in tests download public samples
+and use FFmpeg from `PATH` or the bot's installed package.
+
 ### Video sites and YouTube troubleshooting
 
 The 14 site commands search by title only; pasted or quoted links are not
@@ -99,8 +125,9 @@ checked against the requested site's video/post URLs, but may be outdated,
 incomplete, unrelated or not downloadable. A site's original language may work
 better; `S01E01` is only a search hint, not an episode guarantee.
 Search and downloads can fail because of rate limits, sign-in, location, deleted
-videos, network blocks, DRM or site changes. Search is not a filter for explicit
-material hosted on general-purpose sites.
+videos, network blocks, DRM or site changes. A current system FFmpeg may be more
+reliable for Dailymotion HLS than the older packaged fallback. Search is not a
+filter for explicit material hosted on general-purpose sites.
 
 Selected results still use the existing yt-dlp pipeline, not separate extractors;
 `.bili`, `.daily`, `.xhs`, and `.nico` are aliases. To download a direct link,

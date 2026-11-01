@@ -33,6 +33,8 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
         [`${p}xhs ${p}niconico`, 'title search'],
         [`${p}spotify <url|title>`, 'Spotify MP3'],
         [`${p}deezer <url|title>`, 'Deezer MP3'],
+        [`${p}audius <title>`, 'permitted music'],
+        [`${p}commons <title> [--video]`, 'open-licensed media'],
         [`${p}sticker ${p}viewonce`, 'reply tools'],
       ],
     },
@@ -84,7 +86,7 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
 }
 
 const SECTION_ALIASES = {
-  movie: 'media', movies: 'media', song: 'media', ytv: 'media', dl: 'media', deezer: 'media', dz: 'media',
+  movie: 'media', movies: 'media', song: 'media', ytv: 'media', dl: 'media', deezer: 'media', dz: 'media', audius: 'media', commons: 'media',
   bilibili: 'media', bili: 'media', vimeo: 'media', reddit: 'media', twitch: 'media',
   paper: 'papers', papers: 'papers',
   engine: 'engine', sources: 'engine', status: 'engine',

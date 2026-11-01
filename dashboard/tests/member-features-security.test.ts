@@ -64,7 +64,7 @@ describe('new management routes', () => {
     expect((await patch('bilibili')).status).toBe(403);
     state.role = 'admin';
     expect((await patch('bili')).status).toBe(400);
-    for (const name of ['bilibili', 'vimeo', 'dailymotion', 'reddit', 'twitch', 'rumble', 'odysee', 'weibo', 'douyin', 'acfun', 'youku', 'vk', 'xiaohongshu', 'niconico']) {
+    for (const name of ['bilibili', 'vimeo', 'dailymotion', 'reddit', 'twitch', 'rumble', 'odysee', 'weibo', 'douyin', 'acfun', 'youku', 'vk', 'xiaohongshu', 'niconico', 'audius', 'commons']) {
       expect((await patch(name)).status).toBe(200);
       expect(calls.updatePolicy).toHaveBeenCalledWith(name, true);
     }
