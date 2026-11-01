@@ -1,0 +1,71 @@
+name: Temporary supplied-resource live probes
+on:
+  push:
+    branches: [arena/afda50e9-stream]
+    paths:
+      - '.github/workflows/resource-live-probe.yml'
+      - '.github/live-probes/muffon-bandcamp.rb'
+      - '.github/live-probes/musicdl-ccmixter.py'
+      - 'Whatsapp bot/scripts/test-public-music-live.js'
+permissions:
+  contents: read
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [audius-command, title]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: npm ci --no-audit --no-fund
+        working-directory: Whatsapp bot
+      - name: Run actual Audius title command
+        if: matrix.mode == 'audius-command'
+        working-directory: Whatsapp bot
+        env: { PUBLIC_MUSIC_LIVE: '1' }
+        run: node scripts/test-public-music-live.js audius-command
+      - name: Run actual YouTube title command
+        if: matrix.mode == 'title'
+        working-directory: Whatsapp bot
+        env: { KNIGHT_LIVE: '1' }
+        run: node scripts/test-knight-live.js title
+  muffon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: ruby/setup-ruby@v1
+        with: { ruby-version: '3.3' }
+      - run: npm ci --no-audit --no-fund
+        working-directory: Whatsapp bot
+      - name: Clone actual Muffon source
+        run: git clone -q https://github.com/staniel359/muffon-api.git /tmp/muffon-resource && git -C /tmp/muffon-resource checkout -q 8c42827
+      - name: Exercise actual Bandcamp service and fully decode a CC BY track
+        run: |
+          export FFMPEG_PATH="$(cd 'Whatsapp bot' && node -e 'process.stdout.write(require("./utils/ffmpeg")())')"
+          ruby .github/live-probes/muffon-bandcamp.rb
+  musicdl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: npm ci --no-audit --no-fund
+        working-directory: Whatsapp bot
+      - name: Clone supplied musicdl source
+        run: git clone -q https://github.com/CharlesPikachu/musicdl.git /tmp/musicdl-resource && git -C /tmp/musicdl-resource checkout -q dca2f09
+      - name: Install upstream Python dependencies
+        run: grep -v '^nodejs-wheel' /tmp/musicdl-resource/requirements.txt > /tmp/musicdl-requirements.txt && python -m pip install -q -r /tmp/musicdl-requirements.txt
+      - name: Run actual musicdl ccMixter search and full download
+        run: |
+          export FFMPEG_PATH="$(cd 'Whatsapp bot' && node -e 'process.stdout.write(require("./utils/ffmpeg")())')"
+          python .github/live-probes/musicdl-ccmixter.py

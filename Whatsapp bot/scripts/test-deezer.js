@@ -386,6 +386,46 @@ test('stream limits and interruptions remove partially written files', async () 
   assert.equal(fs.existsSync(partial), false);
 });
 
+test('a prematurely closed CDN stream is restarted once and partial files are removed', async () => {
+  const plain = sample();
+  const encrypted = encryptStripes(plain);
+  const fake = fakeService(encrypted);
+  const get = fake.http.get;
+  let streams = 0;
+  fake.http.get = async (url, options) => {
+    const response = await get(url, options);
+    if (url === CDN && ++streams === 1) {
+      response.data.destroy();
+      response.data = Readable.from((async function* () {
+        yield encrypted.subarray(0, 4096);
+        throw Object.assign(new Error('private upstream detail'), { code: 'ERR_STREAM_PREMATURE_CLOSE' });
+      })());
+    }
+    return response;
+  };
+  const dest = path.join(TEMP, 'recovered-stream.mp3');
+  await dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, dest);
+  assert.equal(streams, 2);
+  assert.deepEqual(fs.readFileSync(dest), plain);
+});
+
+test('content-length mismatches retry once, then report a safe stream diagnostic', async () => {
+  const encrypted = encryptStripes(sample());
+  const fake = fakeService(encrypted);
+  const get = fake.http.get;
+  let streams = 0;
+  fake.http.get = async (url, options) => {
+    const response = await get(url, options);
+    if (url === CDN) { streams++; response.headers['content-length'] = String(encrypted.length + 100); }
+    return response;
+  };
+  const dest = path.join(TEMP, 'wrong-length.mp3');
+  await assert.rejects(dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, dest),
+    { code: 'DEEZER_NETWORK', stage: 'stream', reason: 'ERR_HTTP_CONTENT_LENGTH_MISMATCH' });
+  assert.equal(streams, 2);
+  assert.equal(fs.existsSync(dest), false);
+});
+
 test('invalid cookies, media URLs, redirects, limits, and existing destinations fail safely', async () => {
   const plain = sample();
   const encrypted = encryptStripes(plain);

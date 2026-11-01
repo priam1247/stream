@@ -84,14 +84,13 @@ const execute = async (sock, msg, args, extra) => {
   let title = '', author = '', duration = 0, thumbnail = '';
 
   if (!YT.isYouTubeUrl(query)) {
-    const maxResults = Number(config.search?.maxResults) || 5;
+    const pickerOn = config.search?.picker !== false && settings.get('searchPicker', true) !== false;
+    const maxResults = firstHit || !pickerOn ? 1 : (Number(config.search?.maxResults) || 5);
     const results = await youtubeSearch.searchYouTube(query, { limit: maxResults });
 
     if (!results.length) {
       return say('❌ No results found.');
     }
-
-    const pickerOn = config.search?.picker !== false && settings.get('searchPicker', true) !== false;
     if (results.length > 1 && pickerOn && !firstHit) {
       void YT.getInfo(results[0].url).catch(() => {});
       const listText = youtubeSearch.formatResults(results, {
@@ -169,7 +168,7 @@ const execute = async (sock, msg, args, extra) => {
           kind: 'video', quality: requestedHeight, only: ['hector'], timeoutMs: 55000,
           onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
           accept: (candidate) => providers.fetchCandidate(candidate, {
-            outBase, kind: 'video', maxBytes: MAX_VIDEO_MB * 1024 * 1024, maxSeconds: MAX_MINUTES * 60,
+            outBase, kind: 'video', maxBytes: MAX_VIDEO_MB * 1024 * 1024, maxSeconds: MAX_MINUTES * 60, expectedSeconds: duration,
           }),
         });
         file = hit.file; via = hit.provider; title = title || hit.title;
@@ -258,7 +257,7 @@ const execute = async (sock, msg, args, extra) => {
           kind: 'video', quality: requestedHeight, timeoutMs: 75000, exclude: ['hector'],
           onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
           accept: (candidate) => providers.fetchCandidate(candidate, {
-            outBase, kind: 'video', maxBytes: MAX_VIDEO_MB * 1024 * 1024, maxSeconds: MAX_MINUTES * 60,
+            outBase, kind: 'video', maxBytes: MAX_VIDEO_MB * 1024 * 1024, maxSeconds: MAX_MINUTES * 60, expectedSeconds: duration,
           }),
         });
       } catch (providerErr) {

@@ -174,7 +174,7 @@ async function resolveMedia(url, {
 
 /** Download one provider's file safely, then verify its actual streams. */
 async function fetchCandidate(hit, {
-  outBase, kind = 'audio', maxBytes, maxSeconds = 0, timeoutMs = 180000,
+  outBase, kind = 'audio', maxBytes, maxSeconds = 0, expectedSeconds = 0, timeoutMs = 180000,
   transfer = downloadPublicFile, inspect = probeMedia, hasFfmpeg = ffmpeg.works,
 } = {}) {
   if (!outBase || !['audio', 'video'].includes(kind) || !knight.usableUrl(hit?.url)) {
@@ -184,10 +184,17 @@ async function fetchCandidate(hit, {
   try {
     const got = await transfer(hit.url, dest, { maxBytes, timeoutMs, headers: hit.headers || {} });
     const sniff = sniffFile(dest);
+    if (sniff.kind === 'unknown' || sniff.kind === 'image') throw fail('BAD_SOURCE', 'Media has an unsupported container');
     const info = await inspect(dest);
     if (info.probed) {
       if (!info.hasAudio || (kind === 'video' && !info.hasVideo)) throw fail('BAD_SOURCE', 'Media is missing a required track');
-      if (maxSeconds && info.duration && info.duration > maxSeconds) throw fail('TOO_LONG', 'Media exceeds duration limit');
+      const duration = Number(info.duration) || 0;
+      if (maxSeconds && !duration) throw fail('BAD_SOURCE', 'Media duration could not be verified');
+      if (maxSeconds && duration > maxSeconds) throw fail('TOO_LONG', 'Media exceeds duration limit');
+      const expected = Number(expectedSeconds) || 0;
+      if (expected > 0 && duration > 0 && duration < expected - Math.max(3, expected * 0.05)) {
+        throw fail('BAD_SOURCE', 'Media is shorter than the selected recording');
+      }
     } else {
       if (hasFfmpeg() || (kind === 'audio' ? sniff.kind !== 'audio' : sniff.kind !== 'video')) {
         throw fail('BAD_SOURCE', 'Media could not be verified');

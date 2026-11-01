@@ -72,6 +72,6 @@ function createClient({ http = createPublicHttp() } = {}) {
   };
 }
 
-const enabled = () => process.env.FAKE_YTDLP !== '1' && process.env.HECTOR_DISABLED !== '1';
+const enabled = () => !process.env.FAKE_YTDLP && process.env.HECTOR_DISABLED !== '1';
 
 module.exports = { ENDPOINT, UA, enabled, usableUrl, selectVideo, createClient };

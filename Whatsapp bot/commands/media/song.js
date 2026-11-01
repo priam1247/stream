@@ -116,14 +116,13 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
       if (YT.isYouTubeUrl(text)) {
         url = YT.normalizeYouTubeUrl(text);
       } else {
-        const maxResults = Number(config.search?.maxResults) || 5;
+        const pickerOn = settings.get('searchPicker', config.search?.picker === true) !== false;
+        const maxResults = firstHit || !pickerOn ? 1 : (Number(config.search?.maxResults) || 5);
         const results = await youtubeSearch.searchYouTube(text, { limit: maxResults });
 
         if (!results.length) {
           return reply('❌ No results found.');
         }
-
-        const pickerOn = settings.get('searchPicker', config.search?.picker === true) !== false;
         if (results.length > 1 && pickerOn && !firstHit) {
           void YT.getInfo(results[0].url).catch(() => {});
           const listText = youtubeSearch.formatResults(results, {
@@ -198,7 +197,7 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
             kind: 'audio', only: ['hector'], timeoutMs: 55000,
             onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
             accept: (candidate) => providers.fetchCandidate(candidate, {
-              outBase, kind: 'audio', maxBytes: MAX_AUDIO_MB * 1024 * 1024, maxSeconds: MAX_AUDIO_SECONDS,
+              outBase, kind: 'audio', maxBytes: MAX_AUDIO_MB * 1024 * 1024, maxSeconds: MAX_AUDIO_SECONDS, expectedSeconds: duration,
             }),
           });
           file = hit.file; ext = hit.sniff.ext; verifiedSniff = hit.sniff;
@@ -276,7 +275,7 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
               kind: 'audio', timeoutMs: 55000, exclude: ['hector'],
               onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
               accept: (candidate) => providers.fetchCandidate(candidate, {
-                outBase, kind: 'audio', maxBytes: MAX_AUDIO_MB * 1024 * 1024, maxSeconds: MAX_AUDIO_SECONDS,
+                outBase, kind: 'audio', maxBytes: MAX_AUDIO_MB * 1024 * 1024, maxSeconds: MAX_AUDIO_SECONDS, expectedSeconds: duration,
               }),
             });
           } catch (providerErr) {

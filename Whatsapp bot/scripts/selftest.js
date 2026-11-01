@@ -381,11 +381,10 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     catch (e) { caught = e; }
     assert.ok(caught, 'expected a failure');
     assert.strictEqual(YT.classify(caught).code, 'BOT_CHECK');
-    // Regular users get a plain anti-bot explanation without owner-only commands;
-    // owners get the .cookies / .ytdl admin hints.
+    // Neither owners nor members should be asked for cookies, login or repair.
     assert.ok(!/\.cookies|\.ytdl/i.test(YT.friendlyError(caught)), 'admin hint leaked to regular user');
     assert.ok(/anti-bot|automated access/i.test(YT.friendlyError(caught)), 'missing plain anti-bot message');
-    assert.ok(/cookies/i.test(YT.friendlyError(caught, { isOwner: true })), 'owner hint missing cookies');
+    assert.doesNotMatch(YT.friendlyError(caught, { isOwner: true }), /\.cookies|\.ytlogin|\.ytdl\s+repair/i);
     assert.ok(!/not available in the server's region/i.test(YT.friendlyError(caught)), 'message blames the region');
   });
 
