@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { isPublicAddress, publicLookup, safeUrl, downloadPublicFile } = require('../utils/publicMediaDownload');
+const { createPublicHttp, credentialHeaders } = require('../utils/publicHttp');
 
 const response = (status, body = Buffer.alloc(11000), headers = {}) => ({ status, data: Readable.from([body]), headers });
 const tempFile = (t) => {
@@ -14,6 +15,36 @@ const tempFile = (t) => {
 };
 const lookup = (fn, hostname, options = {}) => new Promise((resolve, reject) => {
   fn(hostname, options, (err, ...rows) => err ? reject(err) : resolve(rows));
+});
+
+test('public HTTP never inherits global credentials, headers or query parameters', async () => {
+  const axios = require('axios');
+  const old = { auth: axios.defaults.auth, params: axios.defaults.params,
+    authorization: axios.defaults.headers.common.Authorization, cookie: axios.defaults.headers.common.Cookie,
+    apiKey: axios.defaults.headers.common['X-Api-Key'], proxyAuthorization: axios.defaults.headers.common['Proxy-Authorization'] };
+  axios.defaults.auth = { username: 'fixture', password: 'secret' };
+  axios.defaults.params = { token: 'fixture' };
+  axios.defaults.headers.common.Authorization = 'fixture';
+  axios.defaults.headers.common.Cookie = 'fixture';
+  axios.defaults.headers.common['X-Api-Key'] = 'fixture';
+  axios.defaults.headers.common['Proxy-Authorization'] = 'fixture';
+  try {
+    const client = createPublicHttp(async (config) => {
+      assert.equal(config.auth, null);
+      assert.equal(config.proxy, false);
+      assert.deepEqual(config.params, { query: 'song' });
+      for (const key of ['Authorization', 'Cookie', 'X-Api-Key', 'Proxy-Authorization']) assert.equal(config.headers.has(key), false);
+      return { status: 200, data: {}, headers: {}, config };
+    });
+    await client.get('https://api.audius.co/v1/tracks/search', { params: { query: 'song' }, headers: { ...credentialHeaders } });
+  } finally {
+    for (const [key, value] of [['auth', old.auth], ['params', old.params]]) {
+      if (value === undefined) delete axios.defaults[key]; else axios.defaults[key] = value;
+    }
+    for (const [key, value] of [['Authorization', old.authorization], ['Cookie', old.cookie], ['X-Api-Key', old.apiKey], ['Proxy-Authorization', old.proxyAuthorization]]) {
+      if (value === undefined) delete axios.defaults.headers.common[key]; else axios.defaults.headers.common[key] = value;
+    }
+  }
 });
 
 test('public address checking rejects private, local, reserved and mapped addresses', () => {

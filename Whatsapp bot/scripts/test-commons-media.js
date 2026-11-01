@@ -27,6 +27,13 @@ test('normalizes an open-licensed video with creator, source and license', () =>
   assert.equal(commons.normalizePage(page(), 'audio'), null);
 });
 
+test('strips Commons tracking parameters while keeping other download parameters', () => {
+  const item = commons.normalizePage(page({
+    url: 'https://upload.wikimedia.org/wikipedia/commons/6/60/Bach.ogv?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original&other=1',
+  }), 'video');
+  assert.equal(item.url, 'https://upload.wikimedia.org/wikipedia/commons/6/60/Bach.ogv?other=1');
+});
+
 test('public-domain records need explicit machine-readable status', () => {
   const meta = metadata();
   meta.LicenseShortName.value = 'Public domain';

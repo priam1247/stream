@@ -9,7 +9,7 @@ const net = require('net');
 const https = require('https');
 const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
-const axios = require('axios');
+const { publicGet, credentialHeaders } = require('./publicHttp');
 const ipaddr = require('ipaddr.js');
 
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
@@ -62,7 +62,7 @@ async function downloadPublicFile(initialUrl, dest, {
   timeoutMs = 180000,
   allowedHosts,
   maxRedirects = 5,
-  request = axios.get,
+  request = publicGet,
   resolve = dns.promises.lookup,
 } = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 10240 || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -80,8 +80,8 @@ async function downloadPublicFile(initialUrl, dest, {
       try {
         response = await request(current.href, {
           responseType: 'stream', timeout: 30000, signal, maxRedirects: 0,
-          httpsAgent: agent, proxy: false, decompress: false,
-          headers: { 'User-Agent': 'ZaFarBot/2.2 public media', Accept: '*/*', 'Accept-Encoding': 'identity' },
+          httpsAgent: agent, proxy: false, auth: null, decompress: false,
+          headers: { 'User-Agent': 'ZaFarBot/2.2 public media', Accept: '*/*', 'Accept-Encoding': 'identity', ...credentialHeaders },
           validateStatus: () => true,
         });
         if (!response?.data || typeof response.data.destroy !== 'function') {

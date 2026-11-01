@@ -3,7 +3,7 @@
  * API reference: https://docs.audius.co/api
  * Never use a stream URL to work around a disabled or gated download.
  */
-const axios = require('axios');
+const { publicGet, credentialHeaders } = require('./publicHttp');
 const { downloadPublicFile } = require('./publicMediaDownload');
 
 const API = 'https://api.audius.co/v1';
@@ -28,13 +28,13 @@ function permittedTrack(track) {
   return { id: String(track.id), title, artist, duration: Math.round(duration) };
 }
 
-function createClient({ get = axios.get, download = downloadPublicFile } = {}) {
+function createClient({ get = publicGet, download = downloadPublicFile } = {}) {
   async function json(url, params = {}) {
     try {
       const response = await get(url, {
         params: { app_name: APP, ...params }, timeout: 15000,
-        maxRedirects: 0, maxContentLength: 4 * 1024 * 1024, proxy: false,
-        headers: { 'User-Agent': 'ZaFarBot/2.2 public music search', Accept: 'application/json' },
+        maxRedirects: 0, maxContentLength: 4 * 1024 * 1024, proxy: false, auth: null,
+        headers: { 'User-Agent': 'ZaFarBot/2.2 public music search', Accept: 'application/json', ...credentialHeaders },
       });
       if (!response?.data || typeof response.data !== 'object') throw new Error('Invalid response');
       return response.data;

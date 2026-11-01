@@ -3,7 +3,7 @@
  * Metadata is imperfect; the file page is always included for full terms.
  * https://www.mediawiki.org/wiki/API:Imageinfo
  */
-const axios = require('axios');
+const { publicGet, credentialHeaders } = require('./publicHttp');
 const cheerio = require('cheerio');
 const { downloadPublicFile, safeUrl } = require('./publicMediaDownload');
 
@@ -83,10 +83,13 @@ function normalizePage(page, kind) {
   let url;
   try { url = safeUrl(info.url, allowedUpload); } catch { return null; }
   if (!url.pathname.startsWith('/wikipedia/commons/')) return null;
+  // The imageinfo API adds tracking parameters to original file URLs. They
+  // are not needed to fetch the file and can defeat shared CDN caching.
+  for (const key of ['utm_source', 'utm_campaign', 'utm_content']) url.searchParams.delete(key);
   return { id: page.pageid, title, artist, duration, size, url: url.href, source, credit, ...license };
 }
 
-function createClient({ get = axios.get, download = downloadPublicFile } = {}) {
+function createClient({ get = publicGet, download = downloadPublicFile } = {}) {
   async function query(params) {
     try {
       const response = await get(API, {
@@ -94,8 +97,8 @@ function createClient({ get = axios.get, download = downloadPublicFile } = {}) {
           action: 'query', prop: 'imageinfo', iiprop: 'url|size|mime|mediatype|extmetadata',
           iiextmetadatafilter: META_FIELDS, format: 'json', formatversion: 2, ...params,
         },
-        timeout: 20000, maxRedirects: 0, maxContentLength: 4 * 1024 * 1024, proxy: false,
-        headers: { 'User-Agent': 'ZaFarBot/2.2 (public Wikimedia Commons search)', Accept: 'application/json' },
+        timeout: 20000, maxRedirects: 0, maxContentLength: 4 * 1024 * 1024, proxy: false, auth: null,
+        headers: { 'User-Agent': 'ZaFarBot/2.2 (public Wikimedia Commons search)', Accept: 'application/json', ...credentialHeaders },
       });
       if (!response?.data || response.data.error || !response.data.query) throw new Error('Invalid response');
       return response.data.query;
