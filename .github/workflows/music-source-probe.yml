@@ -37,10 +37,11 @@ jobs:
           const { createClient } = require('./utils/deezer');
           const client = createClient({ arl: '' });
           const safe = (err) => [err?.code, err?.stage, err?.status, err?.reason].filter(Boolean).join(' ');
+          const notice = (message) => console.log(`::notice title=Anonymous Deezer comparison::${message}`);
           (async () => {
-            try { const rows = await client.search('Daft Punk One More Time', { limit: 2 }); console.log(`bot public search: response received; results=${rows.length}`); }
-            catch (err) { console.log(`bot public search: ${safe(err)}`); }
-            try { const row = await client.getTrack('3135553'); console.log(`bot public metadata: response received; exact_id=${row.id === '3135553'}`); }
-            catch (err) { console.log(`bot public metadata: ${safe(err)}`); }
+            try { const rows = await client.search('Daft Punk One More Time', { limit: 2 }); notice(`bot public search: response received; results=${rows.length}`); }
+            catch (err) { notice(`bot public search: ${safe(err)}`); }
+            try { const row = await client.getTrack('3135553'); notice(`bot public metadata: response received; exact_id=${row.id === '3135553'}`); }
+            catch (err) { notice(`bot public metadata: ${safe(err)}`); }
           })().catch(() => { console.error('Anonymous probe failed'); process.exitCode = 1; });
           NODE

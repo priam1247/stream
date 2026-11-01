@@ -138,6 +138,8 @@ test('public transport errors use a verified account and normalize gateway searc
 test('gateway metadata never accepts a different track id or repeats the version', async () => {
   const matching = fixture({ metadata: 'timeout', rows: [track({ SNG_TITLE: 'Example (Live)', VERSION: '(Live)' })] });
   assert.equal((await deezer.createClient({ http: matching.http, arl: ARL }).getTrack(ID)).title, 'Example (Live)');
+  const different = fixture({ metadata: 'timeout', rows: [track({ SNG_TITLE: 'Live It Up', VERSION: 'Live' })] });
+  assert.equal((await deezer.createClient({ http: different.http, arl: ARL }).getTrack(ID)).title, 'Live It Up (Live)');
   const wrong = fixture({ metadata: 'timeout', rows: [track({ SNG_ID: '999999' })] });
   await assert.rejects(deezer.createClient({ http: wrong.http, arl: ARL }).getTrack(ID),
     { code: 'DEEZER_NETWORK', stage: 'metadata', reason: 'ETIMEDOUT' });

@@ -73,25 +73,29 @@ root = ENV.fetch('MUFFON_CHECKOUT')
   app/services/deezer/track/base.rb
 ].each { |file| load File.join(root, file) }
 
+def notice(message)
+  puts "::notice title=Anonymous Deezer comparison::#{message}"
+end
+
 def safe_probe(label)
   yield
 rescue ProbeHttpError => e
-  puts "#{label}: HTTP #{e.status}"
+  notice("#{label}: HTTP #{e.status}")
 rescue StandardError => e
   # Only the exception class is printed; exception messages may contain URLs.
-  puts "#{label}: #{e.class.name}"
+  notice("#{label}: #{e.class.name}")
 end
 
 safe_probe('muffon gateway search') do
   service = Deezer::Search::Tracks.new(query: 'Daft Punk One More Time')
   rows = service.send(:raw_collection)
   raise 'invalid search response' unless rows.is_a?(Array)
-  puts "muffon gateway search: response received; results=#{rows.length}"
+  notice("muffon gateway search: response received; results=#{rows.length}")
 end
 
 safe_probe('muffon gateway metadata') do
   service = Deezer::Track::Base.new(track_id: '3135553')
   row = service.send(:raw_track_data)
   raise 'invalid track response' unless row.is_a?(Hash)
-  puts "muffon gateway metadata: response received; exact_id=#{row['SNG_ID'].to_s == '3135553'}"
+  notice("muffon gateway metadata: response received; exact_id=#{row['SNG_ID'].to_s == '3135553'}")
 end

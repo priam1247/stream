@@ -190,11 +190,15 @@ function normalizedTrack(row) {
 // The account gateway uses a different response shape from the public API.
 // Keep only display metadata; in particular, never return its track token.
 function normalizedGatewayTrack(row) {
-  const title = String(row?.SNG_TITLE || '').trim();
-  const version = String(row?.VERSION || '').trim().slice(0, 150);
+  if (typeof row?.SNG_TITLE !== 'string') return null;
+  const title = row.SNG_TITLE.trim();
+  const version = typeof row.VERSION === 'string' ? row.VERSION.trim().slice(0, 150) : '';
   const versionText = version.replace(/^\((.*)\)$/, '$1').trim();
-  const fullTitle = title && versionText && !title.toLowerCase().includes(versionText.toLowerCase())
-    ? `${title} (${versionText})` : title;
+  const lowerTitle = title.toLowerCase();
+  const lowerVersion = versionText.toLowerCase();
+  const versionSuffixes = [` (${lowerVersion})`, ` [${lowerVersion}]`, ` - ${lowerVersion}`, ` – ${lowerVersion}`, ` — ${lowerVersion}`];
+  const hasVersionSuffix = lowerTitle === lowerVersion || versionSuffixes.some((suffix) => lowerTitle.endsWith(suffix));
+  const fullTitle = title && versionText && !hasVersionSuffix ? `${title} (${versionText})` : title;
   const primaryArtist = Array.isArray(row?.ARTISTS) ? row.ARTISTS[0]?.ART_NAME : '';
   return normalizedTrack({
     id: row?.SNG_ID,
