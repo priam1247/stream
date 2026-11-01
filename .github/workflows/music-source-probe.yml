@@ -119,3 +119,33 @@ jobs:
           file=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'dailymotion.*' ! -name '*.part*' | head -1)
           test -n "$file"
           ffmpeg -v error -i "$file" -map 0:v:0 -map 0:a:0 -f null -
+  bot_adapter:
+    name: Bot adapter ${{ matrix.source }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        source: [audius, commons-audio, commons-video]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install bot dependencies
+        working-directory: Whatsapp bot
+        run: npm ci --omit=optional --no-audit --no-fund
+      - name: Install FFmpeg for sample decoding
+        run: |
+          npm install --prefix "$RUNNER_TEMP/ffmpeg" --no-save --no-audit --no-fund --ignore-scripts @ffmpeg-installer/linux-x64@4.1.0
+          chmod u+x "$RUNNER_TEMP/ffmpeg/node_modules/@ffmpeg-installer/linux-x64/ffmpeg"
+          echo "$RUNNER_TEMP/ffmpeg/node_modules/@ffmpeg-installer/linux-x64" >> "$GITHUB_PATH"
+      - name: Exercise actual bot search, delivery and full decode
+        working-directory: Whatsapp bot
+        env:
+          PUBLIC_MUSIC_LIVE: '1'
+        run: |
+          if ! node scripts/test-public-music-live.js '${{ matrix.source }}' > "$RUNNER_TEMP/adapter.log" 2>&1; then
+            echo "::error::$(sed -E 's~https?://[^ ]+~[URL]~g' "$RUNNER_TEMP/adapter.log" | tr '\n' ' ' | cut -c1-1200)"
+            exit 1
+          fi

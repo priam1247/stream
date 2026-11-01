@@ -16,6 +16,8 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .countpapers [course-code]             Count papers in the vault
 .song <name-or-track-link>             MP3: Deezer first when configured, then YouTube
 .deezer <title-or-track-link>          Deezer MP3 (.dz; optional audio or doc)
+.audius <title>                        Audius music enabled for public download
+.commons <title> [--audio|--video]     Open-licensed music or music videos
 .ytv <name-or-YouTube-link> [quality]  Download YouTube MP4 with silent-audio verification
 .dl <URL> [audio|video] [quality]      Generic yt-dlp downloader (streamed to disk)
 .tiktok <URL>  .x <URL>  .pinterest <URL>  .instagram <URL>  .fb <URL>
@@ -64,6 +66,25 @@ owner chat, `.deezer --status` checks connectivity, account access, FFmpeg and
 the decoder without downloading audio. Add a full track link or ID to test its
 availability. The report contains no cookies or tokens and does not confirm
 playback. Download only content you have permission to use.
+
+### Audius and Wikimedia Commons
+
+```text
+.audius artist song
+.commons piano sonata
+.commons Bach --video
+.1
+```
+
+Both shortcuts search titles only; reply with a numbered choice or use `--first`.
+Add `--as-audio` or `--as-document` for audio delivery. Audius results are
+limited to public downloads enabled by the creator; gated or disabled downloads
+are not bypassed. Wikimedia Commons searches open-licensed recordings and
+community videos, not a comprehensive catalog of commercial music videos.
+Only files with supported public-domain or CC BY/CC BY-SA metadata are offered.
+Credits, license and the original file page accompany each delivery; check that
+page for full terms because Commons metadata can be incomplete. These sources
+require FFmpeg and working access from the bot host. Availability varies.
 
 ### Video sites and YouTube troubleshooting
 
