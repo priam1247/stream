@@ -145,6 +145,13 @@ jobs:
         working-directory: Whatsapp bot
         run: |
           node -e "const c=require('./utils/commonsMedia').createClient();c.downloadItem(78943371,process.env.RUNNER_TEMP+'/sample.ogg',{kind:'audio',maxBytes:120*1024*1024,maxSeconds:10800}).then(()=>console.log('download passed')).catch(e=>{console.log('::error::download stage '+String(e.code||'UNKNOWN')+' HTTP '+String(e.status||'unknown')+' '+String(e.message||''));process.exitCode=1;})"
+      - name: Compare public Commons download status
+        if: failure() && matrix.source == 'commons-audio'
+        run: |
+          sample='https://upload.wikimedia.org/wikipedia/commons/3/3f/Moonlight_Sonata_%28Sharp_c_minor_Sonata%29_2nd_Movement_Beethoven_JMC%2CHan.ogg'
+          a=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 30 -A 'ZaFarBot/2.2 public media' "$sample" || true)
+          b=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 30 -A 'ZaFarBot source verification/1.0' "$sample" || true)
+          echo "::error::Commons sample HTTP statuses: bot=$a curl-probe=$b"
       - name: Exercise actual bot search, delivery and full decode
         working-directory: Whatsapp bot
         env:

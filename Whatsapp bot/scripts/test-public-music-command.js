@@ -185,6 +185,7 @@ test('missing FFmpeg, incomplete audio and broken video are not sent and cleanup
 });
 
 test('delivery helpers reject bad duration and missing streams', () => {
+  assert.match(delivery.errorMessage('MEDIA_RATE_LIMIT', 'Wikimedia Commons', false), /rate-limiting/);
   assert.equal(delivery.verified({ probed: true, hasAudio: true, duration: 32 }, { duration: 32 }, 'audio', 60), true);
   assert.equal(delivery.verified({ probed: true, hasAudio: true, duration: 4 }, { duration: 32 }, 'audio', 60), false);
   assert.equal(delivery.verified({ probed: true, hasAudio: true, hasVideo: false, duration: 32 }, { duration: 32 }, 'video', 60), false);

@@ -17,12 +17,13 @@ const AUDIO_SECONDS = (Number(config.song?.maxMinutes) || 180) * 60;
 const VIDEO_SECONDS = Math.max(0, Number(config.video?.maxMinutes) || 0) * 60;
 const DOWNLOAD_TIMEOUT = Math.max(60000, Math.min(30 * 60 * 1000, Number(config.ytdlp?.deadlineMs) || 10 * 60 * 1000));
 const AS_DOCUMENT_ABOVE = 50 * 1024 * 1024;
-const KNOWN = new Set(['MEDIA_NETWORK', 'MEDIA_UNAVAILABLE', 'UNSAFE_SOURCE', 'BAD_SOURCE', 'MEDIA_VERIFY', 'MEDIA_CREDIT', 'MEDIA_SEND',
+const KNOWN = new Set(['MEDIA_NETWORK', 'MEDIA_RATE_LIMIT', 'MEDIA_UNAVAILABLE', 'UNSAFE_SOURCE', 'BAD_SOURCE', 'MEDIA_VERIFY', 'MEDIA_CREDIT', 'MEDIA_SEND',
   'TOO_BIG', 'TOO_LONG', 'NOT_ENOUGH_DISK', 'ENOSPC', 'EDQUOT', 'EACCES', 'EPERM', 'EROFS', 'EEXIST']);
 
 function errorMessage(code, label, owner) {
   switch (code) {
     case 'MEDIA_UNAVAILABLE': return `${label} download is no longer available or permitted.`;
+    case 'MEDIA_RATE_LIMIT': return `${label} is rate-limiting downloads. Please try again later.`;
     case 'TOO_BIG': return 'That file exceeds the download size limit.';
     case 'TOO_LONG': return 'That file exceeds the duration limit.';
     case 'NOT_ENOUGH_DISK': case 'ENOSPC': case 'EDQUOT': return 'Server storage is temporarily full.';

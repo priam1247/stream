@@ -91,7 +91,8 @@ test('unsafe, cross-host restricted, and excessive redirects never reach their t
 
 test('disabled downloads, partial replies, pages and oversized bodies are refused', async (t) => {
   for (const [res, code] of [
-    [response(403), 'MEDIA_UNAVAILABLE'], [response(404), 'MEDIA_UNAVAILABLE'], [response(206), 'MEDIA_NETWORK'],
+    [response(403), 'MEDIA_UNAVAILABLE'], [response(404), 'MEDIA_UNAVAILABLE'], [response(429), 'MEDIA_RATE_LIMIT'],
+    [response(206), 'MEDIA_NETWORK'],
     [response(200, Buffer.alloc(11000), { 'content-type': 'text/html' }), 'BAD_SOURCE'],
     [response(200, Buffer.alloc(11000), { 'content-type': 'application/json' }), 'BAD_SOURCE'],
     [response(200, Buffer.alloc(11000), { 'content-length': '999999' }), 'TOO_BIG'],

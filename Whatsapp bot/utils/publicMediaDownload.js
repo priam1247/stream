@@ -100,6 +100,10 @@ async function downloadPublicFile(initialUrl, dest, {
           response.data.destroy();
           throw fail('MEDIA_UNAVAILABLE', 'Media is unavailable or download is not permitted');
         }
+        if (status === 429) {
+          response.data.destroy();
+          throw Object.assign(fail('MEDIA_RATE_LIMIT', 'Media source is rate limiting downloads'), { status: 429 });
+        }
         if (status !== 200) {
           response.data.destroy();
           throw Object.assign(fail('MEDIA_NETWORK', 'Media source returned an unexpected status'), {
@@ -138,7 +142,7 @@ async function downloadPublicFile(initialUrl, dest, {
     throw fail('BAD_SOURCE', 'Media redirect limit reached');
   } catch (err) {
     if (ownedFile) await fs.promises.rm(dest, { force: true }).catch(() => {});
-    const known = new Set(['UNSAFE_SOURCE', 'MEDIA_UNAVAILABLE', 'MEDIA_NETWORK', 'BAD_SOURCE', 'TOO_BIG', 'ENOSPC', 'EDQUOT', 'EACCES', 'EPERM', 'EEXIST', 'EROFS']);
+    const known = new Set(['UNSAFE_SOURCE', 'MEDIA_UNAVAILABLE', 'MEDIA_NETWORK', 'MEDIA_RATE_LIMIT', 'BAD_SOURCE', 'TOO_BIG', 'ENOSPC', 'EDQUOT', 'EACCES', 'EPERM', 'EEXIST', 'EROFS']);
     if (known.has(err?.code)) throw err;
     throw fail('MEDIA_NETWORK', 'Media download failed');
   }
