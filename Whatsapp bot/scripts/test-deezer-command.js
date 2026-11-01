@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { PassThrough, Transform } = require('node:stream');
 const { createBotFixture, clearHostConfig } = require('./test-sandbox');
 clearHostConfig();
 const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'deezer-command-'));
@@ -33,6 +34,8 @@ let probeResult = { probed: true, hasAudio: true, duration: 200 };
 let createdPaths = [];
 let deezerSearches = 0;
 let downloadedIds = [];
+let statusCalls = [];
+let statusReport = null;
 let searchRows = [
   { id: '1234567', url: 'https://www.deezer.com/track/1234567', title: 'Song', artist: 'Artist', album: 'Album', duration: 200 },
   { id: '7654321', url: 'https://www.deezer.com/track/7654321', title: 'Song (Live)', artist: 'Artist', album: 'Live', duration: 250 },
@@ -41,6 +44,7 @@ const sourceBytes = Buffer.concat([Buffer.from('ID3'), Buffer.alloc(12_000, 3)])
 dz.createClient = () => ({
   async resolveTrackId() { throw Object.assign(new Error('Not a track'), { code: 'DEEZER_TRACK' }); },
   async search() { deezerSearches++; if (responseError) throw responseError; return searchRows; },
+  async diagnose(id) { statusCalls.push(id); return statusReport; },
   async download(id, file) {
     downloadedIds.push(id);
     if (responseError) throw responseError;
@@ -65,7 +69,7 @@ const song = at('commands/media/song');
 const spotifyCommand = at('commands/media/spotify');
 const menu = at('commands/general/menu');
 const message = { key: { remoteJid: 'self@s.whatsapp.net', id: '1' }, message: {} };
-const extra = { from: 'self@s.whatsapp.net', isOwner: false, status: async () => ({ update: async () => {} }) };
+const extra = { from: 'self@s.whatsapp.net', sender: 'self@s.whatsapp.net', senderIds: ['self@s.whatsapp.net'], isOwner: false, status: async () => ({ update: async () => {} }) };
 const sent = [];
 const sock = { async sendMessage(_to, body) {
   if (body.document || body.audio) {
@@ -79,7 +83,8 @@ const sock = { async sendMessage(_to, body) {
 test.after(() => fs.rmSync(TEMP, { recursive: true, force: true }));
 test.beforeEach(() => {
   prompt = null; picker = false; responseError = null; sent.length = 0; deliveries = []; createdPaths = [];
-  deezerSearches = 0; downloadedIds = [];
+  deezerSearches = 0; downloadedIds = []; statusCalls = [];
+  statusReport = { search: { ok: true }, metadata: { ok: true }, account: { ok: true }, trackToken: { ok: true }, media: { ok: true } };
   ffmpeg.works = () => true;
   probeResult = { probed: true, hasAudio: true, duration: 200 };
 });
@@ -270,11 +275,12 @@ test('unexpected errors keep redacted diagnostics and fall back before delivery'
     arl: process.env.DEEZER_ARL,
     otherArl: 'syntheticOtherArl987', sid: 'syntheticSession987', csrf: 'syntheticCsrf987',
     license: 'syntheticLicense987', track: 'syntheticTrack987', api: 'syntheticApi987',
-    bareToken: 'SYNTHETIC_UNLABELED_TOKEN_1234567890',
+    bareToken: 'SYNTHETIC_UNLABELED_TOKEN_1234567890', signature: 'shortsig123',
+    signedUrl: 'https://e-cdns-proxy-a.dzcdn.net/private-path?sig=shortsig123',
     headers: 'syntheticHeader987', config: 'syntheticConfig987',
   };
-  const err = new TypeError(`decoder crashed raw ${secrets.arl} ${secrets.bareToken} arl=${secrets.otherArl} sid=${secrets.sid} checkForm=${secrets.csrf} license_token=${secrets.license} TRACK_TOKEN=${secrets.track} api_token=${secrets.api}`);
-  err.stack = `${err.name}: ${err.message}\n    at decode (https://www.deezer.com/ajax/gw-light.php?api_token=${secrets.api}&sid=${secrets.sid})`;
+  const err = new TypeError(`decoder crashed raw ${secrets.arl} ${secrets.bareToken} arl=${secrets.otherArl} sid=${secrets.sid} checkForm=${secrets.csrf} license_token=${secrets.license} TRACK_TOKEN=${secrets.track} api_token=${secrets.api} signature=${secrets.signature}`);
+  err.stack = `${err.name}: ${err.message}\n    at decode (https://www.deezer.com/ajax/gw-light.php?api_token=${secrets.api}&sid=${secrets.sid})\n    at fetch (${secrets.signedUrl})`;
   err.config = { headers: { Cookie: `arl=${secrets.headers}` }, data: secrets.config };
   err.response = { data: secrets.config };
   responseError = err;
@@ -399,4 +405,125 @@ test('media menu exposes Deezer without exposing its configuration', () => {
   const text = menu._buildCard(menu._buildGroups('.', { isOwner: false }), null, { prefix: '.' });
   assert.match(text, /\.deezer/);
   assert.doesNotMatch(text, /ARL|SYNTHETIC/);
+});
+
+test('owner-only private status reports safe checks and never exposes raw fields', async () => {
+  let decoderCalls = 0;
+  const originalDecoder = dz.stripeDecoder;
+  dz.stripeDecoder = async () => { decoderCalls++; return new PassThrough(); };
+  try {
+    await cmd.execute(sock, message, ['--status'], extra);
+    assert.match(sent.at(-1).text, /private owner chat/i);
+    assert.equal(statusCalls.length, 0);
+    assert.equal(decoderCalls, 0);
+    sent.length = 0;
+    await cmd.execute(sock, message, ['--status'], { ...extra, isOwner: true, from: 'group@g.us' });
+    assert.match(sent.at(-1).text, /private owner chat/i);
+    assert.equal(statusCalls.length, 0);
+    assert.equal(decoderCalls, 0);
+    sent.length = 0;
+    await cmd.execute(sock, message, ['--status'], { ...extra, isOwner: true, from: 'other@s.whatsapp.net' });
+    assert.match(sent.at(-1).text, /private owner chat/i);
+    assert.equal(statusCalls.length, 0);
+    assert.equal(decoderCalls, 0);
+    sent.length = 0;
+    const secret = process.env.DEEZER_ARL;
+    statusReport = {
+      search: { ok: false, code: 'DEEZER_NETWORK', stage: 'search', status: 403, reason: 'EAI_AGAIN', url: `https://example.test/?arl=${secret}` },
+      metadata: { ok: true, token: secret },
+      account: { ok: false, code: 'DEEZER_NETWORK', stage: secret, status: secret, reason: secret },
+      trackToken: { skipped: true, token: secret }, media: { skipped: true, url: secret },
+    };
+    ffmpeg.works = () => false;
+    await cmd.execute(sock, message, ['--status', 'https://www.deezer.com/track/1234567'], { ...extra, isOwner: true });
+    assert.deepEqual(statusCalls, ['1234567']);
+    assert.equal(decoderCalls, 1);
+    const text = sent.at(-1).text;
+    assert.match(text, /FFmpeg: missing/);
+    assert.match(text, /Decoder: ok/);
+    assert.match(text, /Search: failed \(DEEZER_NETWORK, search, HTTP 403, EAI_AGAIN\)/);
+    assert.match(text, /Track metadata: ok/);
+    assert.match(text, /Account: failed \(DEEZER_NETWORK\)/);
+    assert.match(text, /Track token: skipped/);
+    assert.match(text, /Media URL: skipped/);
+    assert.match(text, /download and playback not tested/i);
+    assert.equal(text.includes(secret), false);
+    assert.equal(text.includes('example.test'), false);
+    sent.length = 0;
+    await cmd.execute(sock, message, ['--status', 'https://evil.test/track/1234567'], { ...extra, isOwner: true });
+    assert.match(sent.at(-1).text, /Usage:/);
+    assert.deepEqual(statusCalls, ['1234567']);
+  } finally { dz.stripeDecoder = originalDecoder; }
+});
+
+test('status exercises the installed decoder without downloading audio', async () => {
+  await cmd.execute(sock, message, ['--status'], { ...extra, isOwner: true });
+  assert.deepEqual(statusCalls, ['3135553']);
+  assert.match(sent.at(-1).text, /Decoder: ok/);
+  assert.match(sent.at(-1).text, /download and playback not tested/i);
+});
+
+test('status checks the decoder transform, not just the dependency import', async () => {
+  const originalDecoder = dz.stripeDecoder;
+  dz.stripeDecoder = async () => new Transform({ transform(_chunk, _encoding, done) { done(new Error(process.env.DEEZER_ARL)); } });
+  try {
+    await cmd.execute(sock, message, ['--status'], { ...extra, isOwner: true });
+    const text = sent.at(-1).text;
+    assert.match(text, /Decoder: failed \(DEEZER_DECODER, decoder\)/);
+    assert.equal(text.includes(process.env.DEEZER_ARL), false);
+  } finally { dz.stripeDecoder = originalDecoder; }
+});
+
+test('owner error details are allowlisted, while members and fallback stay private', async () => {
+  const captured = [];
+  const originalConsole = console.error;
+  try {
+    console.error = (...args) => captured.push(args.join(' '));
+    responseError = Object.assign(new Error(`cookie=${process.env.DEEZER_ARL}`), {
+      code: 'DEEZER_NETWORK', stage: 'search', status: 403, reason: 'EAI_AGAIN',
+      config: { headers: { Cookie: process.env.DEEZER_ARL } },
+    });
+    await cmd.execute(sock, message, ['Artist', 'Song'], { ...extra, isOwner: true });
+    assert.match(sent.find((s) => s.text).text, /Step: search, HTTP 403, EAI_AGAIN/);
+    assert.match(captured.join('\n'), /DEEZER_NETWORK \(search, HTTP 403, EAI_AGAIN\)/);
+    assert.equal((JSON.stringify(sent) + captured.join('\n')).includes(process.env.DEEZER_ARL), false);
+    sent.length = 0;
+    await cmd.execute(sock, message, ['Artist', 'Song'], extra);
+    assert.doesNotMatch(sent.find((s) => s.text).text, /Step:|EAI_AGAIN|HTTP 403/);
+    sent.length = 0;
+    responseError = Object.assign(new Error('bad decoder'), { code: 'DEEZER_DECODER', stage: 'decoder', reason: 'ERR_MODULE_NOT_FOUND' });
+    assert.equal(await cmd.attempt(sock, message, extra, { input: 'Artist Song', fallback: true }), false);
+    assert.equal(sent.length, 0);
+    responseError = Object.assign(new Error('bad file'), { code: 'DEEZER_STORAGE', stage: 'storage', reason: 'EACCES' });
+    assert.equal(await cmd.attempt(sock, message, { ...extra, isOwner: true }, { input: 'Artist Song', fallback: true }), true);
+    assert.match(sent.find((s) => s.text).text, /storage and permissions/i);
+    assert.match(sent.find((s) => s.text).text, /storage, EACCES/);
+    sent.length = 0;
+    responseError = Object.assign(new Error('raw filesystem error'), { code: 'EIO' });
+    assert.equal(await cmd.attempt(sock, message, { ...extra, isOwner: true }, { input: 'Artist Song', fallback: true }), true);
+    assert.match(sent.find((s) => s.text).text, /storage, EIO/);
+  } finally { console.error = originalConsole; }
+});
+
+test('owner status accepts the socket\'s own LID in a self chat', async () => {
+  const originalDecoder = dz.stripeDecoder;
+  dz.stripeDecoder = async () => new PassThrough();
+  try {
+    await cmd.execute(sock, message, ['--status'], { ...extra, isOwner: true, from: 'self-lid@lid', senderIds: ['self@s.whatsapp.net', 'self-lid@lid'] });
+    assert.deepEqual(statusCalls, ['3135553']);
+    assert.match(sent.at(-1).text, /Deezer diagnostics/);
+  } finally { dz.stripeDecoder = originalDecoder; }
+});
+
+test('status labels a missing decoder without claiming playback was tested', async () => {
+  const originalDecoder = dz.stripeDecoder;
+  dz.stripeDecoder = async () => { throw Object.assign(new Error(process.env.DEEZER_ARL), { code: 'ERR_MODULE_NOT_FOUND' }); };
+  try {
+    await cmd.execute(sock, message, ['--status'], { ...extra, isOwner: true });
+    const text = sent.at(-1).text;
+    assert.deepEqual(statusCalls, ['3135553']);
+    assert.match(text, /Decoder: failed \(DEEZER_DECODER, decoder, ERR_MODULE_NOT_FOUND\)/);
+    assert.match(text, /download and playback not tested/i);
+    assert.equal(text.includes(process.env.DEEZER_ARL), false);
+  } finally { dz.stripeDecoder = originalDecoder; }
 });

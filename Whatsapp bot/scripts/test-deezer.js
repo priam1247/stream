@@ -400,8 +400,163 @@ test('invalid cookies, media URLs, redirects, limits, and existing destinations 
   await assert.rejects(dz.createClient({ http: fakeService(encrypted).http, arl: ARL }).download(TRACK, limitFile, { maxSeconds: 10 }), { code: 'TOO_LONG' });
   const existing = path.join(TEMP, 'existing.mp3');
   fs.writeFileSync(existing, 'preserve');
-  await assert.rejects(dz.createClient({ http: fakeService(encrypted).http, arl: ARL }).download(TRACK, existing), { code: 'DEEZER_NETWORK' });
+  await assert.rejects(dz.createClient({ http: fakeService(encrypted).http, arl: ARL }).download(TRACK, existing), { code: 'DEEZER_STORAGE', stage: 'storage', reason: 'EEXIST' });
   assert.equal(fs.readFileSync(existing, 'utf8'), 'preserve');
   const redirect = { get: async () => ({ status: 302, data: {} }) };
   await assert.rejects(dz.createClient({ http: redirect, arl: ARL }).session(), { code: 'DEEZER_NETWORK' });
+});
+
+test('request diagnostics identify fixed stages and HTTP status without response data', async () => {
+  const cases = [
+    { stage: 'search', status: 403, code: 'DEEZER_NETWORK', run: (c) => c.search('Example') },
+    { stage: 'metadata', status: 429, code: 'DEEZER_NETWORK', run: (c) => c.getTrack(TRACK) },
+    { stage: 'account', status: 401, code: 'DEEZER_AUTH', run: (c) => c.session() },
+  ];
+  for (const item of cases) {
+    const http = { async get() { return { status: item.status, data: { error: `${ARL} ${TOKEN}` } }; } };
+    await assert.rejects(item.run(dz.createClient({ http, arl: ARL })), (err) => {
+      assert.equal(err.code, item.code);
+      assert.deepEqual(dz.diagnosticDetails(err), { stage: item.stage, status: item.status });
+      assert.doesNotMatch(`${err.message} ${err.stack} ${JSON.stringify(err)}`, /SYNTHETIC_/);
+      return true;
+    });
+  }
+
+  for (const stage of ['track-token', 'media']) {
+    const fake = fakeService(sample());
+    const post = fake.http.post;
+    fake.http.post = async (url, body, opts) => {
+      if ((stage === 'track-token' && url.startsWith(GATEWAY)) || (stage === 'media' && url === MEDIA)) {
+        return { status: 503, data: { error: `${ARL} ${SID} ${CSRF} ${LIC} ${TOKEN}` } };
+      }
+      return post(url, body, opts);
+    };
+    await assert.rejects(dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, path.join(TEMP, `http-${stage}.mp3`)), (err) => {
+      assert.equal(err.code, 'DEEZER_NETWORK');
+      assert.deepEqual(dz.diagnosticDetails(err), { stage, status: 503 });
+      assert.doesNotMatch(`${err.message} ${err.stack} ${JSON.stringify(err)}`, /SYNTHETIC_/);
+      return true;
+    });
+  }
+});
+
+test('network reasons and Deezer API quota are safe, stage-specific diagnostics', async () => {
+  const err = Object.assign(new Error(`request ${ARL} ${TOKEN}`), {
+    code: `SECRET_${ARL}`, cause: { code: 'EAI_AGAIN', message: SID }, config: { headers: { Cookie: ARL } },
+  });
+  const client = dz.createClient({ http: { async get() { throw err; } }, arl: ARL });
+  await assert.rejects(client.search('example'), (actual) => {
+    assert.equal(actual.code, 'DEEZER_NETWORK');
+    assert.deepEqual(dz.diagnosticDetails(actual), { stage: 'search', reason: 'EAI_AGAIN' });
+    assert.doesNotMatch(`${actual.message} ${actual.stack} ${JSON.stringify(actual)}`, /SYNTHETIC_/);
+    return true;
+  });
+  const quota = dz.createClient({ http: { async get() { return { status: 200, data: { error: { code: 4, message: ARL } } }; } }, arl: ARL });
+  await assert.rejects(quota.search('example'), { code: 'DEEZER_NETWORK', stage: 'search', reason: 'RATE_LIMIT' });
+  await assert.rejects(quota.getTrack(TRACK), { code: 'DEEZER_NETWORK', stage: 'metadata', reason: 'RATE_LIMIT' });
+  assert.deepEqual(dz.diagnosticDetails({ stage: ARL, status: '403', reason: TOKEN }), {});
+  assert.equal(dz.diagnosticCode(`DEEZER_${ARL}`), 'DEEZER_ERROR');
+});
+
+test('decoder, storage, CDN and stream failures are classified separately', async () => {
+  const encrypted = encryptStripes(sample());
+  const decoderError = Object.assign(new Error(`decoder ${ARL}`), { code: 'ERR_MODULE_NOT_FOUND' });
+  const decoderFile = path.join(TEMP, 'decoder-missing.mp3');
+  const decoder = dz.createClient({ http: fakeService(encrypted).http, arl: ARL, makeDecoder: async () => { throw decoderError; } });
+  await assert.rejects(decoder.download(TRACK, decoderFile), (err) => {
+    assert.equal(err.code, 'DEEZER_DECODER');
+    assert.deepEqual(dz.diagnosticDetails(err), { stage: 'decoder', reason: 'ERR_MODULE_NOT_FOUND' });
+    assert.doesNotMatch(`${err.message} ${err.stack} ${JSON.stringify(err)}`, /SYNTHETIC_/);
+    return true;
+  });
+  assert.equal(fs.existsSync(decoderFile), false);
+  await assert.rejects(dz.createClient({ http: fakeService(encrypted).http, arl: ARL }).download(TRACK, path.join(TEMP, 'missing-parent', 'track.mp3')),
+    { code: 'DEEZER_STORAGE', stage: 'storage', reason: 'ENOENT' });
+  const failedOpen = path.join(TEMP, 'failed-open.mp3');
+  const open = fs.openSync;
+  try {
+    fs.openSync = (file, ...args) => {
+      if (file === failedOpen) throw Object.assign(new Error(ARL), { code: 'UNKNOWN_FS_ERROR' });
+      return open(file, ...args);
+    };
+    await assert.rejects(dz.createClient({ http: fakeService(encrypted).http, arl: ARL }).download(TRACK, failedOpen), (err) => {
+      assert.equal(err.code, 'DEEZER_STORAGE');
+      assert.deepEqual(dz.diagnosticDetails(err), { stage: 'storage' });
+      assert.doesNotMatch(`${err.message} ${err.stack} ${JSON.stringify(err)}`, /SYNTHETIC_/);
+      return true;
+    });
+  } finally { fs.openSync = open; }
+  assert.equal(fs.existsSync(failedOpen), false);
+
+  const cdn = fakeService(encrypted);
+  const getCdn = cdn.http.get;
+  cdn.http.get = async (url, opts) => {
+    if (url === CDN) throw Object.assign(new Error(`signed ${TOKEN}`), { code: 'ETIMEDOUT' });
+    return getCdn(url, opts);
+  };
+  await assert.rejects(dz.createClient({ http: cdn.http, arl: ARL }).download(TRACK, path.join(TEMP, 'cdn-fail.mp3')),
+    { code: 'DEEZER_NETWORK', stage: 'cdn', reason: 'ETIMEDOUT' });
+  for (const [status, code] of [[403, 'DEEZER_UNAVAILABLE'], [503, 'DEEZER_NETWORK']]) {
+    const fake = fakeService(encrypted);
+    const get = fake.http.get;
+    fake.http.get = async (url, opts) => url === CDN ? { status, data: Readable.from([]), headers: {} } : get(url, opts);
+    await assert.rejects(dz.createClient({ http: fake.http, arl: ARL }).download(TRACK, path.join(TEMP, `cdn-${status}.mp3`)), { code, stage: 'cdn', status });
+  }
+
+  const broken = fakeService(encrypted);
+  const getStream = broken.http.get;
+  broken.http.get = async (url, opts) => {
+    const response = await getStream(url, opts);
+    if (url === CDN) {
+      response.data.destroy();
+      response.data = Readable.from((async function* () {
+        yield encrypted.subarray(0, 4096);
+        throw Object.assign(new Error(`stream ${TOKEN}`), { code: 'ECONNRESET' });
+      })());
+    }
+    return response;
+  };
+  const partial = path.join(TEMP, 'classified-partial.mp3');
+  await assert.rejects(dz.createClient({ http: broken.http, arl: ARL }).download(TRACK, partial),
+    { code: 'DEEZER_NETWORK', stage: 'stream', reason: 'ECONNRESET' });
+  assert.equal(fs.existsSync(partial), false);
+});
+
+test('read-only status checks never download or return account data or signed media URLs', async () => {
+  const signature = 'SYNTHETIC_SIGNED_CDN_SECRET';
+  const fake = fakeService(sample(), { high: true, fail320: true, mediaUrl: `${CDN}?sig=${signature}` });
+  const report = await dz.createClient({ http: fake.http, arl: ARL }).diagnose(TRACK);
+  assert.deepEqual(report, {
+    search: { ok: true }, metadata: { ok: true }, account: { ok: true }, trackToken: { ok: true }, media: { ok: true },
+  });
+  assert.equal(fake.calls.filter((c) => c.url === MEDIA).length, 2, 'status uses the playback quality fallback');
+  assert.equal(fake.calls.some((c) => c.url.startsWith(CDN)), false, 'status does not fetch audio');
+  for (const secret of [ARL, LIC, TOKEN, CSRF, SID, signature, CDN]) assert.equal(JSON.stringify(report).includes(secret), false);
+
+  const loggedOut = fakeService(sample(), { userId: '0' });
+  const failed = await dz.createClient({ http: loggedOut.http, arl: ARL }).diagnose(TRACK);
+  assert.deepEqual(failed.account, { ok: false, code: 'DEEZER_AUTH', stage: 'account' });
+  assert.deepEqual(failed.trackToken, { skipped: true });
+  assert.deepEqual(failed.media, { skipped: true });
+  assert.equal(loggedOut.calls.some((c) => c.method === 'post'), false);
+
+  const noConfig = fakeService(sample());
+  const unconfigured = await dz.createClient({ http: noConfig.http, arl: '' }).diagnose(TRACK);
+  assert.deepEqual(unconfigured.account, { ok: false, code: 'DEEZER_CONFIG', stage: 'account' });
+  assert.deepEqual(unconfigured.media, { skipped: true });
+  assert.equal(noConfig.calls.some((c) => c.url.startsWith(GATEWAY)), false);
+
+  const noSearch = fakeService(sample());
+  const get = noSearch.http.get;
+  noSearch.http.get = async (url, opts) => url.includes('/search/track?') ? { status: 403, data: ARL } : get(url, opts);
+  const directOnly = await dz.createClient({ http: noSearch.http, arl: ARL }).diagnose(TRACK);
+  assert.deepEqual(directOnly.search, { ok: false, code: 'DEEZER_NETWORK', stage: 'search', status: 403 });
+  assert.deepEqual(directOnly.media, { ok: true }, 'a search failure does not block independent direct-track checks');
+  assert.doesNotMatch(JSON.stringify(directOnly), /SYNTHETIC_/);
+
+  const badToken = fakeService(sample(), { gatewayError: [{ message: ARL }] });
+  const unavailable = await dz.createClient({ http: badToken.http, arl: ARL }).diagnose(TRACK);
+  assert.deepEqual(unavailable.trackToken, { ok: false, code: 'DEEZER_UNAVAILABLE', stage: 'track-token' });
+  assert.deepEqual(unavailable.media, { skipped: true });
+  assert.doesNotMatch(JSON.stringify(unavailable), /SYNTHETIC_/);
 });
