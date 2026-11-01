@@ -12,6 +12,7 @@ const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), 'deezer-command-'));
 const ROOT = createBotFixture(TEMP);
 process.chdir(TEMP);
 process.env.DEEZER_ARL = 'SYNTHETIC_FAKE_ARL_123456789';
+process.env.HECTOR_DISABLED = '1'; // offline test: never contact a public provider
 const at = (file) => require(path.join(ROOT, file));
 const dz = at('utils/deezer');
 const transfer = at('utils/mediaTransfer');

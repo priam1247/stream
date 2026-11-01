@@ -6,8 +6,8 @@
 // Example: PUBLIC_MUSIC_LIVE=1 node scripts/test-public-music-live.js audius
 const enabled = process.env.PUBLIC_MUSIC_LIVE === '1';
 const mode = String(process.argv[2] || '');
-if (!enabled || !['audius', 'commons-audio', 'commons-video'].includes(mode)) {
-  console.error('Opt in with PUBLIC_MUSIC_LIVE=1 and choose audius, commons-audio or commons-video.');
+if (!enabled || !['audius', 'audius-command', 'commons-audio', 'commons-video'].includes(mode)) {
+  console.error('Opt in with PUBLIC_MUSIC_LIVE=1 and choose audius, audius-command, commons-audio or commons-video.');
   process.exit(2);
 }
 const fs = require('fs');
@@ -35,6 +35,7 @@ const sock = { async sendMessage(_chat, body) {
   assert.ok(fs.existsSync(media.url), 'file exists during delivery');
   const info = await probeMedia(media.url);
   assert.ok(info.probed && info.hasAudio, 'output has audio');
+  if (mode === 'audius-command') assert.match(body.caption || '', /Audius/i);
   if (mode === 'commons-video') {
     assert.ok(info.hasVideo && info.videoCodec === 'h264' && info.audioCodec === 'aac', 'video is H.264/AAC');
     assert.match(body.caption, /CC BY-SA 3\.0/);
@@ -52,6 +53,14 @@ const sock = { async sendMessage(_chat, body) {
 
 async function run() {
   assert.ok(ffmpeg.works(), 'FFmpeg is required');
+  if (mode === 'audius-command') {
+    const [command] = at('commands/media/publicMusic');
+    // The published sample is a creator-enabled, ungated Audius download.
+    await command.execute(sock, message, ['Tеееest', '--first'], extra);
+    assert.ok(received, 'the actual .audius title command delivered and fully decoded a file');
+    console.log('::notice title=Public music live::Actual Audius title command downloaded and fully decoded a creator-enabled sample');
+    return;
+  }
   let result;
   if (mode === 'audius') {
     const client = audius.createClient();

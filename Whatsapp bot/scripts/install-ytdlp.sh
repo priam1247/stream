@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs yt-dlp for hosts where pip is unavailable or the environment is
 # "externally managed" (Debian/Ubuntu 23+, Katabump, Pterodactyl images, …).
-# The bot can also do this by itself at runtime (.ytdl repair / automatic).
+# Optional manual install; normal bot requests do not run this script.
 set -u
 cd "$(dirname "$0")/.."
 

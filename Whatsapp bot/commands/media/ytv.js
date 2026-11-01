@@ -6,9 +6,9 @@
  * Search phrases show a numbered list (reply with a number to download, or
  * *cancel*); add --first to take the top hit immediately.
  *
- * Engine 1: yt-dlp — auto-updating, several YouTube player-client profiles,
- *           cookie/proxy aware, streamed to disk (RAM stays flat).
- * Engine 2: remote providers (Gifted / cobalt) when the host IP is refused.
+ * The keyless KnightBot provider is tried first. Installed local engines and
+ * other remote providers remain fallbacks. Each remote file is checked before
+ * it can be sent.
  *
  * Quiet by design: reactions only (⏳ → ✅ / ❌), one short line only on failure.
  *
@@ -29,7 +29,7 @@ const youtubeSearch = require('../../utils/youtubeSearch');
 const selections = require('../../utils/selections');
 const jobQueue = require('../../utils/jobQueue');
 const {
-  downloadToFile, ensureWhatsAppMp4, probeMedia, safeName, fmtMB,
+  ensureWhatsAppMp4, probeMedia, safeName, fmtMB,
 } = require('../../utils/mediaTransfer');
 const { getTempDir, deleteTempFile } = require('../../utils/tempManager');
 const diskSpace = require('../../utils/diskSpace');
@@ -84,16 +84,13 @@ const execute = async (sock, msg, args, extra) => {
   let title = '', author = '', duration = 0, thumbnail = '';
 
   if (!YT.isYouTubeUrl(query)) {
-    const maxResults = Number(config.search?.maxResults) || 5;
+    const pickerOn = config.search?.picker !== false && settings.get('searchPicker', true) !== false;
+    const maxResults = firstHit || !pickerOn ? 1 : (Number(config.search?.maxResults) || 5);
     const results = await youtubeSearch.searchYouTube(query, { limit: maxResults });
 
     if (!results.length) {
-      const engine = YT.resolveCommand() || await YT.ensureInstalled();
-      if (!engine) return say(YT.friendlyError({ code: 'NO_YTDLP' }, { isOwner: Boolean(extra?.isOwner) }));
       return say('❌ No results found.');
     }
-
-    const pickerOn = config.search?.picker !== false && settings.get('searchPicker', true) !== false;
     if (results.length > 1 && pickerOn && !firstHit) {
       void YT.getInfo(results[0].url).catch(() => {});
       const listText = youtubeSearch.formatResults(results, {
@@ -124,7 +121,8 @@ const execute = async (sock, msg, args, extra) => {
   }
 
   // ── Metadata (best effort) ───────────────────────────────────────────────
-  if (!title || !duration) {
+  // The downloaded provider file is checked for its actual duration below.
+  if ((!title || !duration) && !providers.preferredEnabled()) {
     try {
       const i = await YT.getInfo(query, { timeout: 35000 });
       title = title || i.title; duration = duration || i.duration;
@@ -156,13 +154,33 @@ const execute = async (sock, msg, args, extra) => {
       tagPrefix: stamp,
     });
 
-    // ── Download: yt-dlp first, with automatic quality fallback ────────────
     let file = null;
     let via = 'yt-dlp';
     const deadlineAt = Date.now() + JOB_DEADLINE;
     const candidates = [height, ...QUALITIES.filter(q => q < height).reverse()].slice(0, 3);
     let ytErr = null;
 
+    // KnightBot's keyless provider first. Verify the full file and both audio
+    // and video streams before treating it as a successful candidate.
+    if (providers.preferredEnabled() && YT.isYouTubeUrl(query)) {
+      try {
+        const hit = await providers.resolveMedia(query, {
+          kind: 'video', quality: requestedHeight, only: ['hector'], timeoutMs: 55000,
+          onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
+          accept: (candidate) => providers.fetchCandidate(candidate, {
+            outBase, kind: 'video', maxBytes: MAX_VIDEO_MB * 1024 * 1024, maxSeconds: MAX_MINUTES * 60, expectedSeconds: duration,
+          }),
+        });
+        file = hit.file; via = hit.provider; title = title || hit.title;
+        duration = duration || hit.metadata?.duration || 0;
+        height = hit.quality || requestedHeight;
+      } catch (error) {
+        if (['TOO_LONG', 'NOT_ENOUGH_DISK', 'ENOSPC', 'EDQUOT', 'EACCES', 'EPERM', 'EROFS'].includes(error?.code)) throw error;
+        log.warn(`Hector video unavailable · ${error.code || 'FAILED'}`);
+      }
+    }
+
+    // Installed local engines remain fallbacks; never repair them automatically.
     for (let i = 0; i < candidates.length && !file; i++) {
       const q = candidates[i];
       if (i > 0) { sweep(stamp); await react('📉'); }
@@ -183,7 +201,7 @@ const execute = async (sock, msg, args, extra) => {
       } catch (e) {
         const info = YT.classify(e);
         attempts.push({ engine: `yt-dlp:${q}p`, code: info.code });
-        log.warn(`yt-dlp failed at ${q}p · ${info.code} · ${info.detail}`);
+        log.warn(`yt-dlp failed at ${q}p · ${info.code}`);
         ytErr = e;
         // Only a size/format problem is worth a lower quality; bot/proxy checks cascade immediately.
         if (!['TOO_BIG', 'NO_FORMATS'].includes(info.code)) break;
@@ -236,10 +254,11 @@ const execute = async (sock, msg, args, extra) => {
       let remoteHit = null;
       try {
         remoteHit = await providers.resolveMedia(query, {
-          kind: 'video',
-          quality: requestedHeight,
-          timeoutMs: 75000,
+          kind: 'video', quality: requestedHeight, timeoutMs: 75000, exclude: ['hector'],
           onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
+          accept: (candidate) => providers.fetchCandidate(candidate, {
+            outBase, kind: 'video', maxBytes: MAX_VIDEO_MB * 1024 * 1024, maxSeconds: MAX_MINUTES * 60, expectedSeconds: duration,
+          }),
         });
       } catch (providerErr) {
         log.warn(`backup sources failed · ${providerErr.message}`);
@@ -248,15 +267,10 @@ const execute = async (sock, msg, args, extra) => {
       }
 
       via = remoteHit.provider;
-      height = requestedHeight;
-      const dest = path.join(getTempDir(), `${stamp}_remote.${remoteHit.ext || 'mp4'}`);
-      const got = await downloadToFile(remoteHit.url, dest, {
-        maxBytes: MAX_VIDEO_MB * 1024 * 1024,
-        headers: remoteHit.headers
-      });
-      file = dest;
+      height = remoteHit.quality || requestedHeight;
+      file = remoteHit.file;
       title = title || remoteHit.title;
-      log.info(`via ${via} · ${got.sniff.kind}/${got.sniff.ext}`);
+      log.info(`via ${via} · ${remoteHit.sniff.kind}/${remoteHit.sniff.ext}`);
     }
 
     if (!file || !fs.existsSync(file) || fs.statSync(file).size < 10 * 1024) {
@@ -288,7 +302,7 @@ const execute = async (sock, msg, args, extra) => {
     require('../../utils/telemetry').recordDownloadSuccess('video');
   } catch (err) {
     require('../../utils/telemetry').recordFailure('ytv');
-    log.error(`${title || query || 'video'} · ${YT.classify(err).code} · ${String(err.message).split('\n')[0]}`);
+    log.error(`${title || query || 'video'} · ${YT.classify(err).code}`);
     const info = YT.classify(err);
     const merged = attempts.length ? attempts : (err.attempts || info.attempts);
     // one short line on failure, never a wall of engine detail

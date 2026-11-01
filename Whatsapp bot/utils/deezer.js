@@ -32,6 +32,14 @@ const DIAGNOSTIC_REASONS = new Set([
   'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER', 'ERR_MODULE_NOT_FOUND', 'ERR_PACKAGE_PATH_NOT_EXPORTED',
   'EACCES', 'EPERM', 'ENOENT', 'EEXIST', 'EROFS', 'ENOSPC', 'EDQUOT', 'ENOTDIR', 'EISDIR', 'ENAMETOOLONG',
   'EMFILE', 'ENFILE', 'EFBIG', 'EIO', 'EBADF', 'ABORT_ERR', 'RATE_LIMIT', 'INVALID_RESPONSE',
+  'ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED', 'ERR_STREAM_WRITE_AFTER_END',
+  'ERR_HTTP_CONTENT_LENGTH_MISMATCH', 'ERR_HTTP2_STREAM_ERROR', 'UND_ERR_SOCKET',
+]);
+// Retry one interrupted transfer, not account denials, decoder/storage errors,
+// rate limits or overall timeouts. The next attempt starts a fresh full stream.
+const TRANSIENT_TRANSFER_REASONS = new Set([
+  'ECONNRESET', 'ECONNABORTED', 'EPIPE', 'ERR_STREAM_PREMATURE_CLOSE',
+  'ERR_STREAM_DESTROYED', 'ERR_HTTP_CONTENT_LENGTH_MISMATCH', 'ERR_HTTP2_STREAM_ERROR', 'UND_ERR_SOCKET',
 ]);
 const STORAGE_CODES = new Set(['EACCES', 'EPERM', 'ENOENT', 'EEXIST', 'EROFS', 'ENOSPC', 'EDQUOT', 'ENOTDIR', 'EISDIR', 'ENAMETOOLONG', 'EMFILE', 'ENFILE', 'EFBIG', 'EIO', 'EBADF']);
 const STORAGE_SYSCALLS = new Set(['open', 'write', 'writev', 'stat', 'fstat', 'fsync', 'close']);
@@ -441,6 +449,18 @@ function createClient({ http = axios, arl = config.deezer?.arl || '', makeDecode
     // fresh token for this exact track within the authenticated session.
     const token = await trackToken(track.id, auth);
     const url = await resolveMedia(token, auth);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { return await streamTrack(track, url, dest, maxBytes); }
+      catch (err) {
+        const transient = err?.code === 'DEEZER_NETWORK' && ['cdn', 'stream'].includes(err?.stage) &&
+          (TRANSIENT_TRANSFER_REASONS.has(err?.reason) || [502, 503, 504].includes(err?.status));
+        if (!transient || attempt > 0) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }
+
+  async function streamTrack(track, url, dest, maxBytes) {
     const signal = AbortSignal.timeout(180_000);
     let response;
     let nextUrl = url;
@@ -459,14 +479,15 @@ function createClient({ http = axios, arl = config.deezer?.arl || '', makeDecode
       try { nextUrl = new URL(response.headers.location, nextUrl).href; } catch { nextUrl = ''; }
       if (!validMediaUrl(nextUrl)) throw failure('DEEZER_UNAVAILABLE', 'Invalid Deezer redirect', { stage: 'cdn', status: response.status });
     }
-    if (response.status < 200 || response.status >= 300) {
+    if (response.status !== 200) {
       response.data?.destroy?.();
       const network = response.status === 429 || response.status >= 500;
       throw failure(network ? 'DEEZER_NETWORK' : 'DEEZER_UNAVAILABLE', network ? 'Deezer download failed' : 'Track unavailable for this account',
         { stage: 'cdn', status: response.status });
     }
     const type = String(response.headers?.['content-type'] || '').toLowerCase();
-    const length = Number(response.headers?.['content-length']) || 0;
+    const declaredLength = String(response.headers?.['content-length'] || '');
+    const length = /^\d+$/.test(declaredLength) && Number.isSafeInteger(Number(declaredLength)) ? Number(declaredLength) : 0;
     if (type.includes('text/') || type.includes('json') || (length && length > maxBytes)) {
       response.data?.destroy?.();
       throw failure(length > maxBytes ? 'TOO_BIG' : 'BAD_SOURCE', 'Invalid track response');
@@ -490,6 +511,9 @@ function createClient({ http = axios, arl = config.deezer?.arl || '', makeDecode
       let bytes;
       try { bytes = fs.statSync(dest).size; }
       catch (err) { throw storageFailure(err); }
+      if (length && bytes !== length) {
+        throw failure('DEEZER_NETWORK', 'Deezer download was incomplete', { stage: 'stream', reason: 'ERR_HTTP_CONTENT_LENGTH_MISMATCH' });
+      }
       if (bytes < 10 * 1024) throw failure('BAD_SOURCE', 'Track is too small');
       return { ...track, file: dest, bytes };
     } catch (err) {
@@ -498,7 +522,7 @@ function createClient({ http = axios, arl = config.deezer?.arl || '', makeDecode
       output?.destroy?.();
       if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* best effort */ } }
       if (created) { try { fs.rmSync(dest, { force: true }); } catch { /* best effort */ } }
-      if (['TOO_BIG', 'BAD_SOURCE', 'DEEZER_STORAGE', 'NOT_ENOUGH_DISK'].includes(err.code)) throw err;
+      if (['TOO_BIG', 'BAD_SOURCE', 'DEEZER_STORAGE', 'NOT_ENOUGH_DISK', 'DEEZER_NETWORK'].includes(err.code)) throw err;
       if (isStorageCode(err?.code) || STORAGE_SYSCALLS.has(err?.syscall)) throw storageFailure(err);
       throw failure('DEEZER_NETWORK', 'Deezer download failed', { stage: 'stream', reason: errorReason(err) });
     }

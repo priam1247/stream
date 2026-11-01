@@ -328,19 +328,16 @@ try { require('./utils/logger').banner([
   `node     ${process.version}`,
 ]); } catch (error) { console.warn('Startup banner warning:', error.message); }
 
-// yt-dlp looks after itself: install/repair at boot, verify every 30 minutes,
-// and re-download the binary when a download reports it as missing or broken.
+// Report the optional local engine without installing or repairing it at boot.
 (() => {
   try {
   const YT = require('./utils/youtubedl');
   const ffmpeg = require('./utils/ffmpeg');
   const nm3u8dl = require('./utils/nm3u8dl');
   console.log(ffmpeg.works() ? `🎞️ ffmpeg  ${ffmpeg.version() || 'ready'}` : '🎞️ ffmpeg  ❌ not available');
-  YT.scheduleAutoUpdate();
   YT.healthCheck().then((cmd) => {
-    console.log(cmd ? `🎬 yt-dlp  ${YT.version() || 'ready'}` : '🎬 yt-dlp  ❌ not available (will retry while running)');
+    console.log(cmd ? `🎬 yt-dlp  ${YT.version() || 'ready'}` : '🎬 yt-dlp  optional local engine unavailable');
   }).catch(() => {});
-  YT.startWatchdog({ everyMinutes: 30 });
   nm3u8dl.ensureInstalled().then((bin) => {
     console.log(
       bin

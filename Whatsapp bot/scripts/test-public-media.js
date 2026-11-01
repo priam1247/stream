@@ -79,6 +79,22 @@ test('only HTTPS DNS names on allowed ports and optional exact hosts are accepte
   assert.throws(() => safeUrl('https://upload.wikimedia.org.evil.test/file', allowed), { code: 'UNSAFE_SOURCE' });
 });
 
+test('public downloads allow a browser agent but discard supplied credentials and unsafe headers', async (t) => {
+  const dest = tempFile(t);
+  const request = async (_url, opts) => {
+    assert.equal(opts.headers['User-Agent'], 'Public browser');
+    assert.equal(opts.headers.Referer, 'https://www.youtube.com/');
+    assert.equal(opts.headers.Cookie, undefined);
+    assert.equal(opts.headers.Authorization, undefined);
+    assert.equal(opts.headers['X-Api-Key'], undefined);
+    return response(200, Buffer.alloc(12000), { 'content-length': '12000' });
+  };
+  await downloadPublicFile('https://media.example.org/file', dest, {
+    maxBytes: 20000, request,
+    headers: { 'User-Agent': 'Public browser', Referer: 'https://www.youtube.com/', Cookie: 'secret', Authorization: 'secret', 'X-Api-Key': 'secret' },
+  });
+});
+
 test('a permitted public redirect is streamed to disk with hardened request options', async (t) => {
   const dest = tempFile(t);
   const calls = [];
