@@ -9,6 +9,7 @@ import {
   BotCommandRecord,
   BotConnectionConfig,
   BotHeartbeatRecord,
+  ConfirmedMemberLink,
   MemberRecord,
   PanelConnectionConfig,
   ScribdConnectionConfig,
@@ -991,31 +992,45 @@ export async function deleteStoredWhatsAppUser(
 ): Promise<ApprovedUser[]> {
   if (await ensureD1Tables()) {
     const rows = await queryD1(`DELETE FROM portal_whatsapp_access WHERE number = ? RETURNING claim_id, added_at, added_by`, [number]);
-    if (rows?.length) await revokeBackupForClaim(`linked:${number}`, claimFromRow(rows[0]));
+    if (rows?.length) {
+      const claim = claimFromRow(rows[0]);
+      await revokeBackupForClaim(`linked:${number}`, claim);
+      await deleteConfirmedMemberLink(number, claim);
+    }
     return listStoredWhatsAppUsers();
   }
 
   const store = readDiskStore();
+  const removed = store.whatsappUsers.find((u) => u.number === number);
+  if (removed) delete store.settings[memberLinkKey(number, sessionBackupClaim(removed).token)];
   store.whatsappUsers = store.whatsappUsers.filter((u) => u.number !== number);
   writeDiskStore(store);
   return store.whatsappUsers;
 }
 
 /** Three-minute resend protection, keyed by phone and atomic across D1 workers. */
-export async function claimPairCooldown(number: string, now = Date.now()): Promise<{ ok: boolean; retryAt: number }> {
+export async function claimPairCooldown(number: string, now = Date.now(), claim?: SessionBackupClaim): Promise<{ ok: boolean; retryAt: number }> {
   const retryAt = now + 180_000;
   if (await ensureD1Tables()) {
+    const guard = `EXISTS (SELECT 1 FROM portal_whatsapp_access WHERE number = ?
+      AND COALESCE(NULLIF(claim_id, ''), added_at, '') = ? AND lower(COALESCE(added_by, '')) = ?)`;
+    const guardParams = claim ? [number, claim.key, claim.owner] : [];
     const rows = await queryD1(
-      `INSERT INTO portal_pair_cooldowns (number, retry_at) VALUES (?, ?)
-       ON CONFLICT(number) DO UPDATE SET retry_at = excluded.retry_at
-       WHERE portal_pair_cooldowns.retry_at <= ? RETURNING retry_at`,
-      [number, retryAt, now],
+      claim ? `INSERT INTO portal_pair_cooldowns (number, retry_at) SELECT ?, ? WHERE ${guard}
+        ON CONFLICT(number) DO UPDATE SET retry_at = excluded.retry_at
+        WHERE portal_pair_cooldowns.retry_at <= ? AND ${guard} RETURNING retry_at`
+        : `INSERT INTO portal_pair_cooldowns (number, retry_at) VALUES (?, ?)
+        ON CONFLICT(number) DO UPDATE SET retry_at = excluded.retry_at
+        WHERE portal_pair_cooldowns.retry_at <= ? RETURNING retry_at`,
+      claim ? [number, retryAt, ...guardParams, now, ...guardParams] : [number, retryAt, now],
     );
     if (rows?.length) return { ok: true, retryAt };
     return { ok: false, retryAt: await getPairCooldown(number) };
   }
   const store = readDiskStore();
   const previous = Number(store.pairCooldowns[number]) || 0;
+  if (claim && !store.whatsappUsers.some((user) => user.number === number && sessionBackupClaim(user).identity.key === claim.key &&
+      sessionBackupClaim(user).identity.owner === claim.owner)) return { ok: false, retryAt: previous };
   if (previous > now) return { ok: false, retryAt: previous };
   store.pairCooldowns[number] = retryAt;
   // Keep the local development store bounded; a new accepted attempt replaces
@@ -1057,15 +1072,44 @@ export async function deleteWhatsAppUserIfOwned(number: string, ownerEmail: stri
        AND (? IS NULL OR COALESCE(NULLIF(claim_id, ''), added_at, '') = ?) RETURNING claim_id, added_at, added_by`,
       [number, owner, expectedClaim ?? null, expectedClaim ?? null],
     );
-    if (rows?.length) await revokeBackupForClaim(`linked:${number}`, claimFromRow(rows[0]));
+    if (rows?.length) {
+      const claim = claimFromRow(rows[0]);
+      await revokeBackupForClaim(`linked:${number}`, claim);
+      await deleteConfirmedMemberLink(number, claim);
+    }
     return Boolean(rows?.length);
   }
   const store = readDiskStore();
-  const before = store.whatsappUsers.length;
-  store.whatsappUsers = store.whatsappUsers.filter((user) =>
-    !(user.number === number && (user.addedBy || '').toLowerCase() === owner &&
-      (expectedClaim === undefined || String(user.claimId || user.addedAt || '') === expectedClaim)));
-  if (store.whatsappUsers.length === before) return false;
+  const removed = store.whatsappUsers.find((user) => user.number === number && (user.addedBy || '').toLowerCase() === owner &&
+    (expectedClaim === undefined || String(user.claimId || user.addedAt || '') === expectedClaim));
+  if (!removed) return false;
+  store.whatsappUsers = store.whatsappUsers.filter((user) => user !== removed);
+  delete store.settings[memberLinkKey(number, sessionBackupClaim(removed).token)];
+  writeDiskStore(store);
+  return true;
+}
+
+/** Remove an unlinked pending claim only when no pairing attempt is active. */
+export async function cancelPendingWhatsAppUser(number: string, ownerEmail: string, expectedClaim: string, now = Date.now()): Promise<boolean> {
+  const owner = ownerEmail.trim().toLowerCase();
+  if (await ensureD1Tables()) {
+    const rows = await queryD1(`DELETE FROM portal_whatsapp_access WHERE number = ? AND lower(added_by) = ?
+      AND approval_status = 'pending' AND COALESCE(NULLIF(claim_id, ''), added_at, '') = ?
+      AND NOT EXISTS (SELECT 1 FROM portal_pair_cooldowns WHERE number = ? AND retry_at > ?)
+      RETURNING claim_id, added_at, added_by`, [number, owner, expectedClaim, number, now]);
+    if (rows?.length) {
+      const claim = claimFromRow(rows[0]);
+      await revokeBackupForClaim(`linked:${number}`, claim);
+      await deleteConfirmedMemberLink(number, claim);
+    }
+    return Boolean(rows?.length);
+  }
+  const store = readDiskStore();
+  const removed = store.whatsappUsers.find((user) => user.number === number && (user.addedBy || '').toLowerCase() === owner &&
+    user.approval === 'pending' && String(user.claimId || user.addedAt || '') === expectedClaim);
+  if (!removed || (Number(store.pairCooldowns[number]) || 0) > now) return false;
+  store.whatsappUsers = store.whatsappUsers.filter((user) => user !== removed);
+  delete store.settings[memberLinkKey(number, sessionBackupClaim(removed).token)];
   writeDiskStore(store);
   return true;
 }
@@ -1337,8 +1381,117 @@ export async function savePanelConnectionConfig(patch: {
   return result;
 }
 
+// Link evidence is stored per ownership claim, separately from the heartbeat.
+// Independent rows cannot overwrite another member's link during concurrent polls.
+const MEMBER_LINK_PREFIX = 'member_confirmed_link:';
+function memberLinkKey(number: string, claimToken: string): string {
+  return `${MEMBER_LINK_PREFIX}${number}:${claimToken}`;
+}
+
+export async function listConfirmedMemberLinks(users: ApprovedUser[]): Promise<ConfirmedMemberLink[]> {
+  const claims = new Map(users.slice(0, 101).map((user) => [memberLinkKey(user.number, sessionBackupClaim(user).token), user]));
+  if (!claims.size) return [];
+  const values: { key: string; value: string }[] = [];
+  if (await ensureD1Tables()) {
+    const keys = [...claims.keys()];
+    for (let i = 0; i < keys.length; i += 80) {
+      const batch = keys.slice(i, i + 80);
+      const rows = await queryD1(`SELECT key, value FROM portal_settings WHERE key IN (${batch.map(() => '?').join(', ')})`, batch);
+      values.push(...(rows || []).map((row) => ({ key: String(row.key), value: String(row.value) })));
+    }
+  } else {
+    const settings = readDiskStore().settings;
+    for (const key of claims.keys()) if (typeof settings[key] === 'string') values.push({ key, value: settings[key] });
+  }
+  const now = Date.now();
+  return values.flatMap(({ key, value }) => {
+    try {
+      const link = JSON.parse(value) as ConfirmedMemberLink;
+      const user = claims.get(key);
+      if (!user || link.number !== user.number || link.claimToken !== sessionBackupClaim(user).token ||
+          key !== memberLinkKey(link.number, link.claimToken) || !/^[a-f0-9]{24}$/.test(link.sessionId) ||
+          !Number.isSafeInteger(link.observedAt) || link.observedAt <= 0 || link.observedAt > now + 60_000) return [];
+      const linkedAt = Number.isSafeInteger(link.linkedAt) && link.linkedAt! > 0 && link.linkedAt! <= now + 60_000 ? link.linkedAt : undefined;
+      return [{ number: link.number, sessionId: link.sessionId, claimToken: link.claimToken, observedAt: link.observedAt, ...(linkedAt ? { linkedAt } : {}) }];
+    } catch { return []; }
+  });
+}
+
+/** Save only completed links while the same owner still holds the claim. */
+export async function saveConfirmedMemberLinks(links: ConfirmedMemberLink[], users: ApprovedUser[]): Promise<void> {
+  const byNumber = new Map(users.map((user) => [user.number, user]));
+  const unique = new Map<string, { link: ConfirmedMemberLink; user: ApprovedUser }>();
+  const now = Date.now();
+  for (const link of links.slice(0, 101)) {
+    const user = byNumber.get(link.number);
+    if (!user || sessionBackupClaim(user).token !== link.claimToken || !/^[a-f0-9]{24}$/.test(link.sessionId) ||
+        !Number.isSafeInteger(link.observedAt) || link.observedAt <= 0 || link.observedAt > now + 60_000) continue;
+    const linkedAt = Number.isSafeInteger(link.linkedAt) && link.linkedAt! > 0 && link.linkedAt! <= now + 60_000 ? link.linkedAt : undefined;
+    const clean = { number: link.number, sessionId: link.sessionId, claimToken: link.claimToken, observedAt: link.observedAt, ...(linkedAt ? { linkedAt } : {}) };
+    const key = memberLinkKey(link.number, link.claimToken);
+    if (!unique.has(key) || unique.get(key)!.link.observedAt <= clean.observedAt) unique.set(key, { link: clean, user });
+  }
+  const entries = [...unique.entries()];
+  if (!entries.length) return;
+  if (await ensureD1Tables()) {
+    // Each row's claim is checked at the SQL snapshot. A delayed observation
+    // cannot recreate evidence after a number is unlinked or transferred.
+    for (let i = 0; i < entries.length; i += 16) {
+      const batch = entries.slice(i, i + 16);
+      const select = batch.map(() => `SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM portal_whatsapp_access
+        WHERE number = ? AND COALESCE(NULLIF(claim_id, ''), added_at, '') = ? AND lower(COALESCE(added_by, '')) = ?)`).join(' UNION ALL ');
+      const params = batch.flatMap(([key, { link, user }]) => {
+        const identity = sessionBackupClaim(user).identity;
+        return [key, JSON.stringify(link), new Date(link.observedAt).toISOString(), user.number, identity.key, identity.owner];
+      });
+      await queryD1(`INSERT INTO portal_settings (key, value, updated_at) ${select}
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        WHERE excluded.updated_at >= portal_settings.updated_at`, params);
+    }
+    return;
+  }
+  const store = readDiskStore();
+  let changed = false;
+  for (const [key, { link }] of entries) {
+    const current = store.whatsappUsers.find((user) => user.number === link.number);
+    if (!current || sessionBackupClaim(current).token !== link.claimToken) continue;
+    let old: ConfirmedMemberLink | undefined;
+    try { old = JSON.parse(store.settings[key] || 'null') || undefined; } catch { /* replace malformed evidence */ }
+    if (old && old.observedAt > link.observedAt) continue;
+    const value = JSON.stringify(link);
+    if (store.settings[key] !== value) { store.settings[key] = value; changed = true; }
+  }
+  if (changed) writeDiskStore(store);
+}
+
+async function deleteConfirmedMemberLink(number: string, claimToken: string): Promise<void> {
+  if (await ensureD1Tables()) await queryD1(`DELETE FROM portal_settings WHERE key = ?`, [memberLinkKey(number, claimToken)]);
+}
+
 export async function saveBotHeartbeat(hb: BotHeartbeatRecord): Promise<void> {
   await setSettingValue('botkeep_heartbeat_json', JSON.stringify(hb));
+}
+
+/** A delayed overlapping poll must not replace a more recently received status. */
+export async function saveBotHeartbeatIfNewer(hb: BotHeartbeatRecord): Promise<void> {
+  const key = 'botkeep_heartbeat_json';
+  const value = JSON.stringify(hb);
+  if (await ensureD1Tables()) {
+    await queryD1(`INSERT INTO portal_settings (key, value, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      WHERE CASE WHEN json_valid(portal_settings.value)
+        THEN COALESCE(CAST(json_extract(portal_settings.value, '$.lastSeenAt') AS INTEGER), 0) ELSE 0 END <= ?
+        OR CASE WHEN json_valid(portal_settings.value)
+        THEN COALESCE(CAST(json_extract(portal_settings.value, '$.lastSeenAt') AS INTEGER), 0) ELSE 0 END > ?`,
+    [key, value, new Date().toISOString(), hb.lastSeenAt, Date.now() + 60_000]);
+    return;
+  }
+  const store = readDiskStore();
+  let previous = 0;
+  try { previous = Number(JSON.parse(store.settings[key] || '{}').lastSeenAt) || 0; } catch { /* replace invalid transient status */ }
+  if (previous > hb.lastSeenAt && previous <= Date.now() + 60_000) return;
+  store.settings[key] = value;
+  writeDiskStore(store);
 }
 
 export async function getBotHeartbeat(): Promise<BotHeartbeatRecord | null> {
@@ -1347,7 +1500,7 @@ export async function getBotHeartbeat(): Promise<BotHeartbeatRecord | null> {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed.lastSeenAt !== 'number') return null;
+    if (!parsed || !Number.isSafeInteger(parsed.lastSeenAt) || parsed.lastSeenAt <= 0 || parsed.lastSeenAt > Date.now() + 60_000) return null;
     return parsed as BotHeartbeatRecord;
   } catch {
     return null;
@@ -1535,6 +1688,28 @@ export async function claimPendingBotCommands(): Promise<BotCommandRecord[]> {
   }
   if (claimed.length > 0) writeDiskStore(store);
   return claimed;
+}
+
+/** Return only this request's undelivered claims to the queue if building a
+ * response fails. A completed/expired command is never made pending again. */
+export async function releaseClaimedBotCommands(ids: string[]): Promise<void> {
+  const safe = [...new Set(ids.filter((id) => typeof id === 'string' && id.length > 0 && id.length <= 100))];
+  if (!safe.length) return;
+  const now = Date.now();
+  if (await ensureD1Tables()) {
+    for (let i = 0; i < safe.length; i += 80) {
+      const batch = safe.slice(i, i + 80);
+      await queryD1(`UPDATE portal_bot_commands SET status = 'pending' WHERE status = 'claimed' AND expires_at >= ? AND id IN (${batch.map(() => '?').join(', ')})`, [now, ...batch]);
+    }
+    return;
+  }
+  const store = readDiskStore();
+  const set = new Set(safe);
+  let changed = false;
+  for (const command of store.botCommands) {
+    if (set.has(command.id) && command.status === 'claimed' && command.expiresAt >= now) { command.status = 'pending'; changed = true; }
+  }
+  if (changed) writeDiskStore(store);
 }
 
 export async function completeBotCommand(params: {

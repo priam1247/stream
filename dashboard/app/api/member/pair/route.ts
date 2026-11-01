@@ -7,7 +7,7 @@ import {
   normalizePhoneNumber,
   requestLiveBotPairingCode,
 } from '@/lib/bot-proxy';
-import { claimPairCooldown, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, releasePairCooldown, saveCompletedPairResult } from '@/lib/storage';
+import { claimPairCooldown, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, releasePairCooldown, saveCompletedPairResult, sessionBackupClaim } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 const privateHeaders = { 'Cache-Control': 'private, no-store' };
@@ -96,8 +96,14 @@ export async function POST(req: NextRequest) {
   }
 
   const requestedAt = Date.now();
-  const cooldown = await claimPairCooldown(number, requestedAt);
+  const claim = sessionBackupClaim(existing).identity;
+  const cooldown = await claimPairCooldown(number, requestedAt, claim);
   if (!cooldown.ok) {
+    const current = await getStoredWhatsAppUser(number);
+    if (!current || sessionBackupClaim(current).identity.key !== claim.key ||
+        sessionBackupClaim(current).identity.owner !== claim.owner) {
+      return NextResponse.json({ error: 'This number no longer belongs to your account.' }, { status: 409, headers: privateHeaders });
+    }
     return NextResponse.json({ error: 'Please wait before requesting another code.', retryAt: cooldown.retryAt },
       { status: 429, headers: { ...privateHeaders, 'Retry-After': String(Math.max(1, Math.ceil((cooldown.retryAt - Date.now()) / 1000))) } });
   }

@@ -2,8 +2,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BOTKEEP_API_BASE } from '../lib/botkeep-config';
-import { claimPendingBotCommands, completeBotCommand, getBotConnectionConfig, getBotHeartbeat, getPanelConnectionConfig,
-  importLocalWhatsAppUser, saveBotConnectionConfig, saveBotHeartbeat, savePanelConnectionConfig } from '../lib/storage';
+import { cancelPendingWhatsAppUser, claimPairCooldown, claimPendingBotCommands, completeBotCommand, deleteWhatsAppUserIfOwned, getBotConnectionConfig, getBotHeartbeat, getPanelConnectionConfig,
+  importLocalWhatsAppUser, listConfirmedMemberLinks, releaseClaimedBotCommands, saveBotConnectionConfig, saveBotHeartbeat,
+  saveBotHeartbeatIfNewer, saveConfirmedMemberLinks, savePanelConnectionConfig, sessionBackupClaim } from '../lib/storage';
+import type { ApprovedUser, ConfirmedMemberLink } from '../lib/types';
 
 let db: DatabaseSync;
 beforeEach(() => {
@@ -13,6 +15,8 @@ beforeEach(() => {
       status TEXT NOT NULL, result_json TEXT, error_text TEXT, requested_by TEXT, created_at INTEGER, expires_at INTEGER);
     CREATE TABLE portal_whatsapp_access (number TEXT PRIMARY KEY, label TEXT, enabled INTEGER, added_by TEXT,
       added_at TEXT, approval_status TEXT, claim_id TEXT);
+    CREATE TABLE portal_session_backups (slot TEXT PRIMARY KEY, generation TEXT, claim_token TEXT, revision INTEGER, ciphertext TEXT, revoked INTEGER, updated_at INTEGER);
+    CREATE TABLE portal_pair_cooldowns (number TEXT PRIMARY KEY, retry_at INTEGER NOT NULL);
     CREATE TABLE portal_bot_failover (id TEXT PRIMARY KEY, owner_role TEXT, owner_instance TEXT, expires_at INTEGER, epoch INTEGER);`);
   globalThis.__zafarD1SchemaV6Ready = true;
   vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test'); vi.stubEnv('D1_DATABASE_ID', 'test'); vi.stubEnv('CLOUDFLARE_API_TOKEN', 'test');
@@ -48,6 +52,18 @@ describe('single Botkeep storage with old database values', () => {
     expect(await getBotHeartbeat()).toMatchObject({ connected: false });
     expect(db.prepare("SELECT value FROM portal_settings WHERE key = 'bot_heartbeat_json'").get()).toBeTruthy();
   });
+  it('does not replace a newer heartbeat with a delayed older poll', async () => {
+    const now = Date.now();
+    await saveBotHeartbeatIfNewer({ lastSeenAt: now, connected: false, botNumber: null });
+    await saveBotHeartbeatIfNewer({ lastSeenAt: now - 1_000, connected: true, botNumber: '15550009999' });
+    expect(await getBotHeartbeat()).toMatchObject({ lastSeenAt: now, connected: false, botNumber: null });
+    await saveBotHeartbeatIfNewer({ lastSeenAt: now + 1, connected: true, botNumber: '15550009999' });
+    expect(await getBotHeartbeat()).toMatchObject({ lastSeenAt: now + 1, connected: true });
+    await saveBotHeartbeat({ lastSeenAt: now + 600_000, connected: true, botNumber: null });
+    expect(await getBotHeartbeat()).toBeNull();
+    await saveBotHeartbeatIfNewer({ lastSeenAt: now + 2, connected: false, botNumber: null });
+    expect(await getBotHeartbeat()).toMatchObject({ lastSeenAt: now + 2, connected: false });
+  });
   it('honors only explicitly configured Botkeep bridge values, including clearing environment defaults', async () => {
     vi.stubEnv('BOTKEEP_BOT_API_URL', 'https://botkeep-service.example'); vi.stubEnv('BOTKEEP_BOT_ADMIN_TOKEN', 'new-bridge-token');
     expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: 'https://botkeep-service.example', botAdminToken: 'new-bridge-token' });
@@ -81,6 +97,66 @@ describe('single Botkeep storage with old database values', () => {
     expect(db.prepare('SELECT enabled, added_by, claim_id FROM portal_whatsapp_access WHERE number = ?').get('15550001111'))
       .toMatchObject({ enabled: 0, added_by: 'member@example.com', claim_id: 'claim' });
     expect(await importLocalWhatsAppUser('15550002222', 'Local', 'owner@example.com')).toBe(true);
+  });
+  it('stores independently claimed links in batches, without creating a heartbeat', async () => {
+    const users: ApprovedUser[] = Array.from({ length: 20 }, (_, i) => ({ number: `26599${String(i).padStart(7, '0')}`,
+      label: `Member ${i}`, enabled: false, approval: 'pending', addedBy: `member${i}@example.com`,
+      addedAt: '2026-01-01T00:00:00.000Z', claimId: `claim-${i}` }));
+    for (const user of users) db.prepare(`INSERT INTO portal_whatsapp_access VALUES (?, ?, 0, ?, ?, 'pending', ?)`)
+      .run(user.number, user.label!, user.addedBy!, user.addedAt!, user.claimId!);
+    const links: ConfirmedMemberLink[] = users.map((user, i) => ({ number: user.number, sessionId: i.toString(16).padStart(24, '0'),
+      claimToken: sessionBackupClaim(user).token, observedAt: Date.now() - 1_000, linkedAt: Date.now() - 2_000 }));
+    await Promise.all([saveConfirmedMemberLinks(links.slice(0, 17), users), saveConfirmedMemberLinks(links.slice(17), users)]);
+    expect(await listConfirmedMemberLinks(users)).toHaveLength(20);
+    expect(await getBotHeartbeat()).toBeNull();
+
+    // A slow old observation must not replace a newer generation.
+    const newer = { ...links[0], sessionId: 'f'.repeat(24), observedAt: Date.now() };
+    await saveConfirmedMemberLinks([newer], users);
+    await saveConfirmedMemberLinks([links[0]], users);
+    expect((await listConfirmedMemberLinks([users[0]]))[0].sessionId).toBe(newer.sessionId);
+  });
+  it('removes link evidence on unlink and rejects a delayed write after a claim transfer', async () => {
+    const old: ApprovedUser = { number: '265991234567', label: 'Old', enabled: true, approval: 'approved',
+      addedBy: 'old@example.com', addedAt: '2026-01-01', claimId: 'old-claim' };
+    db.prepare(`INSERT INTO portal_whatsapp_access VALUES (?, ?, 1, ?, ?, 'approved', ?)`)
+      .run(old.number, old.label!, old.addedBy!, old.addedAt!, old.claimId!);
+    const evidence: ConfirmedMemberLink = { number: old.number, sessionId: 'a'.repeat(24),
+      claimToken: sessionBackupClaim(old).token, observedAt: Date.now() };
+    await saveConfirmedMemberLinks([evidence], [old]);
+    expect(await listConfirmedMemberLinks([old])).toHaveLength(1);
+    expect(await deleteWhatsAppUserIfOwned(old.number, old.addedBy!, old.claimId)).toBe(true);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM portal_settings WHERE key LIKE 'member_confirmed_link:%'").get()).toMatchObject({ n: 0 });
+    const next = { ...old, addedBy: 'new@example.com', claimId: 'new-claim' };
+    db.prepare(`INSERT INTO portal_whatsapp_access VALUES (?, ?, 1, ?, ?, 'approved', ?)`)
+      .run(next.number, next.label!, next.addedBy!, next.addedAt!, next.claimId!);
+    await saveConfirmedMemberLinks([evidence], [old]);
+    expect(await listConfirmedMemberLinks([old, next])).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM portal_settings WHERE key LIKE 'member_confirmed_link:%'").get()).toMatchObject({ n: 0 });
+  });
+  it('atomically excludes cancellation and a new pairing attempt for the same pending claim', async () => {
+    const number = '265991234567', owner = 'member@example.com', key = 'pending-claim', now = Date.now();
+    const add = () => db.prepare(`INSERT INTO portal_whatsapp_access VALUES (?, 'Member', 0, ?, '2026-01-01', 'pending', ?)`)
+      .run(number, owner, key);
+    add();
+    expect(await cancelPendingWhatsAppUser(number, owner, key, now)).toBe(true);
+    expect((await claimPairCooldown(number, now, { key, owner })).ok).toBe(false);
+    add();
+    expect((await claimPairCooldown(number, now, { key, owner })).ok).toBe(true);
+    expect(await cancelPendingWhatsAppUser(number, owner, key, now)).toBe(false);
+    expect(db.prepare('SELECT claim_id FROM portal_whatsapp_access WHERE number = ?').get(number)).toMatchObject({ claim_id: key });
+  });
+  it('releases only unexpired claims belonging to an undelivered response', async () => {
+    const statement = db.prepare(`INSERT INTO portal_bot_commands VALUES (?, 'pair', '{}', ?, NULL, NULL, '', ?, ?)`);
+    statement.run('own', 'claimed', Date.now(), Date.now() + 60_000);
+    statement.run('other', 'claimed', Date.now(), Date.now() + 60_000);
+    statement.run('finished', 'completed', Date.now(), Date.now() + 60_000);
+    statement.run('expired', 'claimed', Date.now() - 60_000, Date.now() - 1);
+    await releaseClaimedBotCommands(['own', 'finished', 'expired']);
+    expect(db.prepare('SELECT id, status FROM portal_bot_commands ORDER BY id').all()).toEqual([
+      { id: 'expired', status: 'claimed' }, { id: 'finished', status: 'completed' },
+      { id: 'other', status: 'claimed' }, { id: 'own', status: 'pending' },
+    ]);
   });
   it('claims a queued command once even with stale previous coordination rows', async () => {
     db.prepare(`INSERT INTO portal_bot_failover VALUES ('whatsapp', 'old', 'instance', ?, 8)`).run(Date.now() + 60_000);

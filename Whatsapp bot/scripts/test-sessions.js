@@ -640,3 +640,28 @@ test('disconnect diagnostics omit raw errors and coalesce duplicate retry notice
   assert.match(warnings[0], /status unknown.*retrying in 500ms/i);
   assert.doesNotMatch(warnings[0], /private-disconnect-fixture|private-status-fixture/);
 });
+
+test('personal usage scope follows the approved session and its current ownership claim', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-usage-scope-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let claim = 'a'.repeat(64);
+  let approved = false;
+  const fx = fixture(root, {
+    enforceClaims: true,
+    getClaim: () => claim,
+    canPair: () => true,
+    isAllowed: () => approved,
+  });
+  t.after(() => fx.manager.stop());
+  await fx.manager.start();
+  const { sock } = await request(fx, '265991111111');
+  open(sock, '265991111111');
+  assert.equal(sock.__memberUsageScope(), null, 'linking alone does not enable usage');
+  approved = true; fx.manager.refreshPermissions();
+  const scope = sock.__memberUsageScope();
+  assert.equal(scope.number, '265991111111');
+  assert.equal(scope.claimToken, claim);
+  assert.match(scope.sessionId, /^[a-f0-9]{24}$/);
+  claim = 'b'.repeat(64);
+  assert.equal(sock.__memberUsageScope(), null, 'an ownership change immediately removes the old scope');
+});
