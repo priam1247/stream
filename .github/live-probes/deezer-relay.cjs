@@ -4,7 +4,7 @@ const net=require('node:net');
 const WebSocket=require('../../Whatsapp bot/node_modules/ws');
 const hosts=/^(?:[a-z0-9-]+\.)*(?:deezer\.com|dzcdn\.net)$/i;
 const sockets=new Map();
-const ws=new WebSocket(process.env.RELAY_URL,{headers:{Authorization:`Bearer ${process.env.WORKFLOW_TOKEN}`,'X-Run-Id':process.env.GITHUB_RUN_ID},handshakeTimeout:20000});
+const ws=new WebSocket(process.env.RELAY_URL,{headers:{'X-Relay-Token':process.env.WORKFLOW_TOKEN,'X-Run-Id':process.env.GITHUB_RUN_ID},handshakeTimeout:20000});
 function sendBinary(id,data){if(ws.readyState!==WebSocket.OPEN)return;const h=Buffer.alloc(4);h.writeUInt32BE(id);ws.send(Buffer.concat([h,data]));}
 ws.on('open',()=>console.log('Encrypted relay active.'));
 ws.on('message',(data,binary)=>{

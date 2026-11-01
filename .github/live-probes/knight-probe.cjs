@@ -8,6 +8,8 @@ const vm = require('node:vm');
 const { pipeline } = require('node:stream/promises');
 const { Transform } = require('node:stream');
 const { execFileSync } = require('node:child_process');
+const { probeMedia } = require(path.resolve('Whatsapp bot/utils/mediaTransfer'));
+const ffmpeg = require(path.resolve('Whatsapp bot/utils/ffmpeg'));
 const root = path.resolve(process.env.KNIGHT_DIR);
 const axios = require(path.resolve('Whatsapp bot/node_modules/axios'));
 const boundedAxios = {
@@ -77,17 +79,19 @@ async function fullFile(url, name, kind) {
   try {
     await pipeline(resp.data,meter,fs.createWriteStream(file));
     if (bytes < 10240) throw Object.assign(new Error('small'),{code:'BAD_MEDIA'});
-    let streams;
-    try {
-      streams=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','stream=codec_type','-of','json',file],{timeout:15000,stdio:['ignore','pipe','ignore']})).streams || [];
-    } catch (e) { const fd=fs.openSync(file,'r');const b=Buffer.alloc(8);fs.readSync(fd,b,0,8,0);fs.closeSync(fd);const ct=String(resp.headers['content-type']||'').split(';')[0].replace(/[^a-z0-9\/+.-]/gi,'').slice(0,60);const why=/^[A-Z_]+$/.test(e.code||'')?e.code:`exit_${Number.isInteger(e.status)?e.status:'unknown'}`;throw Object.assign(new Error('probe'),{code:'BAD_MEDIA',info:`bytes=${bytes} mime=${ct||'none'} magic=${b.toString('hex')} probe=${why}`}); }
-    if (!streams.some(s=>s.codec_type==='audio')) throw Object.assign(new Error('audio'),{code:'NO_AUDIO'});
-    if (kind==='video' && !streams.some(s=>s.codec_type==='video')) throw Object.assign(new Error('video'),{code:'NO_VIDEO'});
+    const info = await probeMedia(file);
+    if (!info.probed) {
+      const fd=fs.openSync(file,'r');const b=Buffer.alloc(8);fs.readSync(fd,b,0,8,0);fs.closeSync(fd);
+      const ct=String(resp.headers['content-type']||'').split(';')[0].replace(/[^a-z0-9\/+.-]/gi,'').slice(0,60);
+      throw Object.assign(new Error('probe'),{code:'BAD_MEDIA',info:`bytes=${bytes} mime=${ct||'none'} magic=${b.toString('hex')}`});
+    }
+    if (!info.hasAudio) throw Object.assign(new Error('audio'),{code:'NO_AUDIO'});
+    if (kind==='video' && !info.hasVideo) throw Object.assign(new Error('video'),{code:'NO_VIDEO'});
     try {
       const args = ['-v','error','-xerror','-i',file,'-map','0:a:0'];
       if (kind==='video') args.push('-map','0:v:0');
       args.push('-f','null','-');
-      execFileSync('ffmpeg',args,{timeout:90000,stdio:'ignore'});
+      execFileSync(ffmpeg(),args,{timeout:90000,stdio:'ignore'});
     } catch { throw Object.assign(new Error('decode'),{code:'DECODE_FAILED'}); }
     return bytes;
   } finally { fs.rmSync(file,{force:true}); }
