@@ -14,18 +14,11 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .paper <course-code> [module] [year]   Search & send past papers (capped per query, 3-day dedupe)
 .paper browse [letter|code] [page]     Paginated course/module directory
 .countpapers [course-code]             Count papers in the vault
-.song <name-or-track-link>             MP3: Deezer first when configured, then YouTube
-.deezer <title-or-track-link>          Deezer MP3 (.dz; optional audio or doc)
-.audius <title>                        Audius music enabled for public download
-.commons <title> [--audio|--video]     Open-licensed music or music videos
+.song <name-or-YouTube-link>           Download YouTube audio
 .ytv <name-or-YouTube-link> [quality]  Download YouTube MP4 with silent-audio verification
 .dl <URL> [audio|video] [quality]      Generic yt-dlp downloader (streamed to disk)
-.tiktok <URL>  .x <URL>  .pinterest <URL>  .instagram <URL>  .fb <URL>
-.bilibili <title>  .vimeo <title>  .dailymotion <title>
-.reddit <title>    .twitch <title>  .rumble <title>
-.odysee <title>    .weibo <title>   .douyin <title>
-.acfun <title>     .youku <title>   .vk <title>
-.xiaohongshu <title>  .niconico <title>
+.tiktok <URL>  .x <URL>  .instagram <URL>  .fb <URL>
+.reddit <title>                        Search Reddit videos by title
 .spotify <Spotify URL or artist - title>
 .sticker (reply to media)              512x512 WebP sticker
 .viewonce (reply to view-once media)   Unwrap view-once photo/video/audio (from the session owner)
@@ -34,138 +27,19 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 
 Interactive title and quality choices use a tap selector or a prefixed numbered reply, such as `.1`, `.2` or `.cancel`. Poll votes and replies without the prefix are ignored.
 
-### Deezer music
+### Video sites and YouTube
 
-Add `DEEZER_ARL` privately to the bot host's `.env` or environment settings,
-then restart the bot. Use the value of the `arl` cookie from your own Deezer
-account, **not the whole cookies file**. Treat it as a password: never commit
-it, paste it into WhatsApp, or share it. The account is shared by bot commands
-for approved members; it is not sent to the dashboard or YouTube. Leaving it
-blank preserves the existing YouTube behavior.
+`.reddit` searches by title, shows numbered results, and accepts `--first`,
+`--audio`, `--video`, a quality such as `480p`, or `--quality 480`. It uses
+Reddit's public search and, if necessary, site-filtered web indexes. Search
+results are discovery hints, not guaranteed downloads. To download a direct
+link, use `.dl <URL>`; the remaining social shortcuts also accept links.
 
-```text
-.deezer Daft Punk One More Time
-.dz https://www.deezer.com/track/3135553 audio
-.song Daft Punk One More Time
-.spotify Daft Punk - One More Time
-```
-
-`.deezer` accepts a title, track URL, or supported Deezer share link. Title
-searches may show a picker; `--first` skips it. Title-based `.song` and
-`.spotify` try Deezer first and fall back to YouTube if unavailable. Spotify
-track links use Deezer only when the title and artist match, with duration and
-ISRC checks when Spotify provides them. Explicit YouTube and Deezer links do not
-silently switch sources. This supports individual audio tracks only, not
-albums, playlists, video or movies. Dashboard switches control commands, not
-backends: disabling `.deezer` does not prevent `.song` or `.spotify` using the
-configured account. Deezer delivery requires a working ffmpeg to verify the
-track length; `.song` and `.spotify` can fall back to YouTube if it is missing.
-If the public Deezer API has a connection failure, search and track metadata
-can try Deezer's authenticated gateway once using the configured account. This
-does not bypass rate limits, access denials or unavailable tracks.
-Availability and MP3 quality depend on the account, region and Deezer;
-authentication and playback must be checked on the actual host. In the private
-owner chat, `.deezer --status` checks connectivity, account access, FFmpeg and
-the decoder without downloading audio. When a network fallback is eligible,
-the report also checks the gateway. Add a full track link or ID to test its
-availability. The report contains no cookies or tokens and does not confirm
-playback. Download only content you have permission to use.
-
-### Audius and Wikimedia Commons
-
-```text
-.audius artist song
-.commons piano sonata
-.commons Bach --video
-.1
-```
-
-Both shortcuts search titles only; reply with a numbered choice or use `--first`.
-Add `--as-audio` or `--as-document` for audio delivery. Audius results are
-limited to public downloads enabled by the creator; gated or disabled downloads
-are not bypassed. Wikimedia Commons searches open-licensed recordings and
-community videos, not a comprehensive catalog of commercial music videos.
-Only files with supported public-domain, CC0 or CC BY/CC BY-SA metadata are offered.
-Credits, license and the original file page accompany each delivery; check that
-page for full terms because Commons metadata can be incomplete. These sources
-require FFmpeg and working access from the bot host. Availability varies, and
-Commons can rate-limit hosting IPs. To check the deployed host without WhatsApp
-or account credentials, run
-`PUBLIC_MUSIC_LIVE=1 node scripts/test-public-music-live.js audius` (or use
-`commons-audio` / `commons-video`). These opt-in tests download public samples
-and use FFmpeg from `PATH` or the bot's installed package.
-
-### Video sites and YouTube troubleshooting
-
-The 14 site commands search by title only; pasted or quoted links are not
-accepted by those shortcuts. For example:
-
-```text
-.youku the blood of youth s01e1
-.1
-.vimeo mountain video --audio
-.bili a title 480p
-.nico a title --first
-```
-
-Search shows numbered results even when `SEARCH_PICKER` is off; reply with a
-prefixed number or `.cancel`. `--first` skips the list. For title searches use
-`--audio`, `--video`, `--image`, a trailing quality such as `480p`, or
-`--quality 480`; bare words such as `music` and `video` remain part of the
-search title. `SEARCH_RESULTS` (1–10, default 5) and `SEARCH_TTL_MINUTES` apply
-to the list. Searches use a separate four-slot queue and a 30-second deadline;
-waiting searches are queued rather than rejected.
-
-Bilibili, Youku, AcFun, Reddit, Odysee, Dailymotion and Niconico first
-try public site search or APIs. Niconico's snapshot index updates daily. All 14
-can fall back to DuckDuckGo, Brave Search and the Firecrawl keyless search API
-with a site filter.
-Those services receive the search words. Firecrawl's free access is capped per
-IP and may rate-limit requests. For an English Youku episode search with no
-usable native result, TVMaze may receive the series name to find an exact matching
-original Chinese title; that title is then searched on Youku. Searches do not
-send the bot's saved cookies or authorization to those services. Results are
-checked against the requested site's video/post URLs, but may be outdated,
-incomplete, unrelated or not downloadable. A site's original language may work
-better; `S01E01` is only a search hint, not an episode guarantee.
-Search and downloads can fail because of rate limits, sign-in, location, deleted
-videos, network blocks, DRM or site changes. A current system FFmpeg may be more
-reliable for Dailymotion HLS than the older packaged fallback. Search is not a
-filter for explicit material hosted on general-purpose sites.
-
-Selected results still use the existing yt-dlp pipeline, not separate extractors;
-`.bili`, `.daily`, `.xhs`, and `.nico` are aliases. To download a direct link,
-use `.dl <URL>`. The older `.tiktok`, `.x`, `.pinterest`, `.instagram` and `.fb`
-shortcuts continue accepting links. The bot does not intentionally download
-whole playlists. Dashboard command switches apply to
-individual commands, not whole websites: turning off `.bilibili` for members
-does not stop `.dl` accepting a Bilibili URL.
-
-For a YouTube access check, use `.ytdl` to see the installed version and whether
-OAuth or cookies are configured; `.ytdl update` can update an old binary.
-`.ytdl test <video link>` checks metadata or URL resolution only, not a media
-download. Try `.ytv <video link>` or `.song <video link>` to check an actual
-download from the deployed host. A successful update or metadata test does not
-mean YouTube will accept a download. The bot uses Node and the installed or
-official yt-dlp EJS component where supported.
-
-The owner can try `.ytlogin` in their own private WhatsApp chat and follow its
-device-authorization prompt. OAuth is used by the local Innertube fallback, not
-by yt-dlp, and login or playback may still fail. Alternatively, a fresh export of
-the owner's own Netscape `cookies.txt` may help: upload it privately to the host
-and set `YOUTUBE_COOKIES_FILE`, or attach it to the owner-only `.cookies set`
-command in the owner's private chat. Cookies can expire, and even valid cookies
-cannot guarantee that YouTube will accept a hosting IP. Treat the file as a
-password; never commit it or send it to support or anyone else. Inline cookies
-take priority over `.cookies set`, which takes priority over
-`YOUTUBE_COOKIES_FILE`. Check `.ytdl` for the active source if a different file
-is being used. For export guidance see the
-[yt-dlp FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp).
-
-If local methods fail, the existing remote fallbacks may receive the video URL;
-their availability is independent of the bot. TLS certificates are verified:
-if verification fails, fix the host's clock or CA store instead of disabling
-verification. Run `.ytdl` for the installed version and supported runtime flags.
+`.song` and `.ytv` try the keyless Hector provider first, followed by the
+installed local and other remote engines if needed. Availability depends on
+the host and the video. `.ytdl test <video link>` checks metadata or URL
+resolution only; `.song` or `.ytv` performs an actual download. Download only
+content you have permission to use.
 
 ## Background link jobs
 
@@ -181,7 +55,7 @@ RCLONE_PATH=bot/uploads    folder inside that remote
 DRM-protected services are not supported.
 
 Owner/admin commands (hidden from non-owners in `.menu` and error hints):
-`.status` (alias `.update`), `.restart`, `.broadcast`, `.on`, `.off`, `.allow`, `.disallow`, `.listusers`, `.cookies`, `.ytlogin`, `.ytdl` (`status` | `update` | `repair` | `proxy` | `test`), and `.refreshpapers`.
+`.status` (alias `.update`), `.restart`, `.on`, `.off`, `.allow`, `.disallow`, `.listusers`, `.cookies`, `.ytlogin`, `.ytdl` (`status` | `update` | `repair` | `proxy` | `test`), and `.refreshpapers`.
 
 ## Bot folder layout
 

@@ -2,8 +2,6 @@ const config = require('../../config');
 const spotify = require('../../utils/spotify');
 const YT = require('../../utils/youtubedl');
 const youtubeSearch = require('../../utils/youtubeSearch');
-const deezer = require('../../utils/deezer');
-const deezerCommand = require('./deezer');
 const { downloadAndSend } = require('../../utils/mediaPipeline');
 
 module.exports = {
@@ -27,21 +25,6 @@ module.exports = {
     try {
       const track = await spotify.resolveTrack(input);
       const shown = track.artists ? `${track.artists} — ${track.title}` : track.title;
-
-      // Reduce cross-platform mismatches with title, artist, duration and ISRC
-      // when Spotify provides it; otherwise retain the YouTube fallback.
-      if (deezer.configured() && (track.source === 'query' || (track.type === 'track' && track.artists))) {
-        await update(`🎧 *${shown}*`);
-        const expected = track.source === 'query' ? null : {
-          title: track.title, artist: track.artists, duration: (track.durationMs || 0) / 1000,
-          isrc: track.isrc || '',
-        };
-        const handled = await deezerCommand.attempt(sock, msg, extra, {
-          input: track.searchQuery, sendAs: String(config.song?.sendAs || 'document').toLowerCase(),
-          firstHit: true, fallback: true, expected,
-        });
-        if (handled) return;
-      }
 
       const results = await youtubeSearch.searchYouTube(track.searchQuery, { limit: 3 });
       if (!results.length) {

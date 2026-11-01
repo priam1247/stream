@@ -73,13 +73,6 @@ module.exports = {
     deadlineMs: Number(env.YTDLP_DEADLINE_MS || 45 * 60 * 1000),
   },
 
-  // ─── Deezer (.deezer / title-based .song) ────────────────────────────────
-  // ARL is an account credential. Keep it in the host's private .env/panel;
-  // never paste it into WhatsApp or commit it. No cookie is sent to other sites.
-  deezer: {
-    arl: env.DEEZER_ARL || env.DEEZER_COOKIE_ARL || '',
-  },
-
   // ─── Spotify (.spotify) ──────────────────────────────────────────────────
   // Optional. Without credentials the bot uses Spotify's public oEmbed endpoint
   // for the track title/artist (no key needed); with them it gets the album and

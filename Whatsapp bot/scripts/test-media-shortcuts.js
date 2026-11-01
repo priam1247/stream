@@ -21,20 +21,7 @@ pipeline.downloadAndSend = async (sock, msg, extra, options) => { last = { sock,
 const commands = require(path.join(ROOT, 'commands/media/shortcuts'));
 const menu = require(path.join(ROOT, 'commands/general/menu'));
 const cases = [
-  ['bilibili', 'https://www.bilibili.com/video/BV1xx411c7mD'],
-  ['vimeo', 'https://vimeo.com/76979871'],
-  ['dailymotion', 'https://www.dailymotion.com/video/x7xyz'],
   ['reddit', 'https://www.reddit.com/r/test/comments/abc123/example/'],
-  ['twitch', 'https://www.twitch.tv/videos/123456789'],
-  ['rumble', 'https://rumble.com/v1xyz-example.html'],
-  ['odysee', 'https://odysee.com/@example:1/title:2'],
-  ['weibo', 'https://www.weibo.com/1234567890/ABCxyz123'],
-  ['douyin', 'https://www.douyin.com/video/1234567890123456789'],
-  ['acfun', 'https://www.acfun.cn/v/ac12345678'],
-  ['youku', 'https://v.youku.com/v_show/id_XNTk2Mzc2OT.html'],
-  ['vk', 'https://vk.com/video-123456_789012'],
-  ['xiaohongshu', 'https://www.xiaohongshu.com/explore/123456789012345678901234'],
-  ['niconico', 'https://www.nicovideo.jp/watch/sm9'],
 ];
 const find = (name) => commands.find((c) => c.name === name || c.aliases.includes(name));
 const msg = { key: { remoteJid: 'self@s.whatsapp.net' }, message: {} };
@@ -62,7 +49,6 @@ for (const [name, url] of cases) {
 const linkCases = [
   ['tiktok', 'https://www.tiktok.com/@creator/video/123456789'],
   ['x', 'https://x.com/creator/status/123456789'],
-  ['pinterest', 'https://www.pinterest.com/pin/123456789/'],
   ['instagram', 'https://www.instagram.com/reel/Example/'],
   ['fb', 'https://www.facebook.com/watch/?v=123456789'],
 ];
@@ -77,19 +63,19 @@ for (const [name, url] of linkCases) {
   });
 }
 
-test('aliases are unique and point to their canonical commands', () => {
-  assert.equal(find('bili').name, 'bilibili');
-  assert.equal(find('daily').name, 'dailymotion');
-  assert.equal(find('xhs').name, 'xiaohongshu');
-  assert.equal(find('nico').name, 'niconico');
+test('remaining aliases are unique and point to their canonical commands', () => {
+  assert.equal(find('tt').name, 'tiktok');
+  assert.equal(find('twitter').name, 'x');
+  assert.equal(find('ig').name, 'instagram');
+  assert.equal(find('facebook').name, 'fb');
   const allNames = commands.flatMap((c) => [c.name, ...c.aliases]);
   assert.equal(new Set(allNames).size, allNames.length);
 });
 
 test('new shortcuts do not download quoted or scheme-less links', async () => {
-  const cmd = find('bili');
-  const quoted = { ...msg, message: { extendedTextMessage: { contextInfo: { quotedMessage: { conversation: 'https://b23.tv/abcdefg' } } } } };
-  for (const [message, args] of [[quoted, []], [quoted, ['--audio']], [msg, ['www.bilibili.com/video/BV1xx411c7mD']]]) {
+  const cmd = find('reddit');
+  const quoted = { ...msg, message: { extendedTextMessage: { contextInfo: { quotedMessage: { conversation: 'https://www.reddit.com/r/test/comments/abc123/example/' } } } } };
+  for (const [message, args] of [[quoted, []], [quoted, ['--audio']], [msg, ['www.reddit.com/r/test/comments/abc123/example/']]]) {
     last = null;
     sock.sent.length = 0;
     await cmd.execute(sock, message, args, extra);
@@ -114,8 +100,8 @@ test('older shortcuts apply explicit flags before or after links, including quot
     assert.equal(last.lane, 'light');
   }
   sock.sent.length = 0;
-  await find('bilibili').execute(sock, msg, [], extra);
-  assert.match(sock.sent[0].text, /!bilibili/);
+  await find('reddit').execute(sock, msg, [], extra);
+  assert.match(sock.sent[0].text, /!reddit/);
 });
 
 test('invalid explicit link quality never starts an older shortcut download', async () => {
@@ -137,11 +123,9 @@ test('an older shortcut still forwards a lookalike host but reports the mismatch
   assert.equal(last.attempts[0].code, 'HOST_MISMATCH');
 });
 
-test('media menu exposes the new shortcuts without exposing admin commands', () => {
+test('media menu exposes Reddit without exposing admin commands', () => {
   const groups = menu._buildGroups('!', { isOwner: false });
   const text = menu._buildCard(groups, null, { prefix: '!' });
-  for (const name of ['bilibili', 'vimeo', 'dailymotion', 'reddit', 'twitch', 'rumble', 'odysee', 'weibo', 'douyin', 'acfun', 'youku', 'vk', 'xhs', 'niconico']) {
-    assert.ok(text.includes(`!${name}`), name);
-  }
+  assert.ok(text.includes('!reddit'));
   assert.doesNotMatch(text, /!cookies|!ytdl/);
 });

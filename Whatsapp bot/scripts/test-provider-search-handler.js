@@ -38,29 +38,14 @@ const searches = [];
 let disabled = new Set();
 let outcome = 'ok';
 
-const urls = {
-  bilibili: 'https://www.bilibili.com/video/BV1xx411c7mD',
-  vimeo: 'https://vimeo.com/76979871',
-  dailymotion: 'https://www.dailymotion.com/video/x7xyz',
-  reddit: 'https://www.reddit.com/r/test/comments/abc123/example/',
-  twitch: 'https://www.twitch.tv/videos/123456789',
-  rumble: 'https://rumble.com/v1xyz-example.html',
-  odysee: 'https://odysee.com/@example:1/title:2',
-  weibo: 'https://www.weibo.com/1234567890/ABCxyz123',
-  douyin: 'https://www.douyin.com/video/1234567890123456789',
-  acfun: 'https://www.acfun.cn/v/ac12345678',
-  youku: 'https://v.youku.com/v_show/id_XNTk2Mzc2OT.html',
-  vk: 'https://vk.com/video-123456_789012',
-  xiaohongshu: 'https://www.xiaohongshu.com/explore/123456789012345678901234',
-  niconico: 'https://www.nicovideo.jp/watch/sm9',
-};
+const urls = { reddit: 'https://www.reddit.com/r/test/comments/abc123/example/' };
 
 pipeline.downloadAndSend = async (_sock, _msg, extra, options) => { downloads.push({ ...options, extra }); };
 providerSearch.searchProvider = async (site, query, opts) => {
   searches.push({ site, query, opts });
   if (outcome !== 'ok') return { status: outcome, source: '', results: [] };
   return { status: 'ok', source: 'fixture', results: [
-    { url: urls[site], title: `${site} first`, author: 'Creator', duration: 63, episode: site === 'youku' ? 1 : 0 },
+    { url: urls[site], title: `${site} first`, author: 'Creator', duration: 63 },
     { url: urls[site], title: `${site} second`, author: '', duration: 0 },
   ] };
 };
@@ -111,62 +96,43 @@ for (const [site, url] of Object.entries(urls)) {
   });
 }
 
-test('the example keeps episode text intact; title words are not mistaken for download options', async () => {
-  const sock = socket('example');
-  await handler.handleMessage(sock, msg('.youku the blood of youth s01e1 --audio 480p'));
-  assert.equal(searches[0].query, 'the blood of youth s01e1');
-  assert.match(sock.sent.map((s) => s.text || '').join('\n'), /Episode 1/);
-  await handler.handleMessage(sock, msg('.2'));
-  assert.equal(downloads[0].kind, 'audio');
-  assert.equal(downloads[0].height, 480);
-  assert.equal(downloads[0].lane, 'light');
-  await handler.handleMessage(sock, msg('.youku the music video --first'));
-  assert.equal(searches[1].query, 'the music video');
-  assert.equal(downloads.length, 2);
-  assert.equal(downloads[1].kind, 'video');
-});
-
-test('aliases, explicit quality and --first preserve the requested provider and options', async () => {
-  const sock = socket('aliases');
-  await handler.handleMessage(sock, msg('.bili example --quality 360 --audio --first'));
-  assert.equal(searches[0].site, 'bilibili');
-  assert.equal(searches[0].query, 'example');
-  assert.equal(downloads[0].url, urls.bilibili);
+test('title words, explicit quality and --first keep the requested search options', async () => {
+  const sock = socket('search-options');
+  await handler.handleMessage(sock, msg('.reddit the music video --quality 360 --audio --first'));
+  assert.deepEqual(searches.map((s) => [s.site, s.query]), [['reddit', 'the music video']]);
+  assert.equal(downloads[0].url, urls.reddit);
   assert.equal(downloads[0].kind, 'audio');
   assert.equal(downloads[0].height, 360);
-  await handler.handleMessage(sock, msg('.daily another title --first'));
-  await handler.handleMessage(sock, msg('.xhs another title --first'));
-  await handler.handleMessage(sock, msg('.nico another title --first'));
-  assert.deepEqual(searches.map((s) => s.site), ['bilibili', 'dailymotion', 'xiaohongshu', 'niconico']);
+  assert.equal(downloads[0].lane, 'light');
 });
 
 test('new shortcuts reject pasted and quoted links, while typed one-word titles always search', async () => {
   const sock = socket('title-only');
-  await handler.handleMessage(sock, msg(`.youku ${urls.youku} --audio --quality 480`));
-  await handler.handleMessage(sock, msg('.youku --audio --quality=360', { quoted: urls.youku }));
+  await handler.handleMessage(sock, msg(`.reddit ${urls.reddit} --audio --quality 480`));
+  await handler.handleMessage(sock, msg('.reddit --audio --quality=360', { quoted: urls.reddit }));
   assert.equal(searches.length, 0);
   assert.equal(downloads.length, 0);
   assert.match(sock.sent.at(-1).text, /searches titles only.*\.dl/i);
 
-  await handler.handleMessage(sock, msg('.vimeo video', { quoted: urls.vimeo }));
-  await handler.handleMessage(sock, msg('.vimeo music', { quoted: urls.vimeo }));
-  assert.deepEqual(searches.map(({ site, query }) => [site, query]), [['vimeo', 'video'], ['vimeo', 'music']]);
+  await handler.handleMessage(sock, msg('.reddit video', { quoted: urls.reddit }));
+  await handler.handleMessage(sock, msg('.reddit music', { quoted: urls.reddit }));
+  assert.deepEqual(searches.map(({ site, query }) => [site, query]), [['reddit', 'video'], ['reddit', 'music']]);
   assert.equal(downloads.length, 0);
   await handler.handleMessage(sock, msg('.1'));
-  assert.equal(downloads[0].url, urls.vimeo);
+  assert.equal(downloads[0].url, urls.reddit);
 });
 
 test('cancel, expiry, unrelated quotes and other sessions cannot pick an outstanding search', async () => {
   const first = socket('scope:first');
   const second = socket('scope:second');
-  await handler.handleMessage(first, msg('.youku a title'));
+  await handler.handleMessage(first, msg('.reddit a title'));
   await handler.handleMessage(second, msg('.1'));
   assert.equal(downloads.length, 0);
   const entry = selections.peek('group@g.us', ['15550001111@s.whatsapp.net'], { scope: first.__sessionId });
   assert.equal(selections.match('group@g.us', ['15550001111@s.whatsapp.net'], '1', { scope: first.__sessionId, quotedMessageId: 'other-message' }), null);
   await handler.handleMessage(first, msg('.cancel'));
   assert.equal(selections.peek('group@g.us', ['15550001111@s.whatsapp.net'], { scope: first.__sessionId }), null);
-  await handler.handleMessage(first, msg('.youku another title'));
+  await handler.handleMessage(first, msg('.reddit another title'));
   const expiring = selections.peek('group@g.us', ['15550001111@s.whatsapp.net'], { scope: first.__sessionId });
   expiring.at -= expiring.ttlMs + 1;
   await handler.handleMessage(first, msg('.1'));
@@ -174,18 +140,18 @@ test('cancel, expiry, unrelated quotes and other sessions cannot pick an outstan
   assert.equal(entry.consumed, true);
 });
 
-test('member policy is rechecked for an outstanding aliased search; owner remains able to test', async () => {
+test('member policy is rechecked for an outstanding search; owner remains able to test', async () => {
   const member = socket('member');
   const owner = socket('owner', '15550000001');
-  await handler.handleMessage(member, msg('.bili title'));
+  await handler.handleMessage(member, msg('.reddit title'));
   const entry = selections.peek('group@g.us', ['15550001111@s.whatsapp.net'], { scope: member.__sessionId });
-  assert.equal(entry.commandName, 'bili');
-  disabled.add('bilibili');
+  assert.equal(entry.commandName, 'reddit');
+  disabled.add('reddit');
   await handler.handleMessage(member, msg('.1'));
   assert.equal(downloads.length, 0);
   assert.match(member.sent.map((m) => m.text || '').join(' '), /temporarily unavailable/i);
-  await handler.handleMessage(owner, msg('.bili title --first'));
-  assert.equal(downloads[0].url, urls.bilibili);
+  await handler.handleMessage(owner, msg('.reddit title --first'));
+  assert.equal(downloads[0].url, urls.reddit);
 });
 
 test('a full search lane queues searches without occupying a light download slot', async () => {
@@ -237,15 +203,15 @@ test('a search waiting for memory retries until memory recovers', async () => {
 test('no results, service failures, invalid quality and long titles give useful errors without downloads', async () => {
   const sock = socket('errors');
   outcome = 'empty';
-  await handler.handleMessage(sock, msg('.youku a title'));
-  assert.match(sock.sent.at(-1).text, /No Youku videos found/);
+  await handler.handleMessage(sock, msg('.reddit a title'));
+  assert.match(sock.sent.at(-1).text, /No Reddit videos found/);
   outcome = 'unavailable';
-  await handler.handleMessage(sock, msg('.youku another title'));
+  await handler.handleMessage(sock, msg('.reddit another title'));
   assert.match(sock.sent.at(-1).text, /search is unavailable/i);
   const count = searches.length;
-  await handler.handleMessage(sock, msg('.youku a title --quality=999'));
+  await handler.handleMessage(sock, msg('.reddit a title --quality=999'));
   assert.match(sock.sent.at(-1).text, /Quality must be/);
-  await handler.handleMessage(sock, msg(`.youku ${'a'.repeat(201)}`));
+  await handler.handleMessage(sock, msg(`.reddit ${'a'.repeat(201)}`));
   assert.match(sock.sent.at(-1).text, /200 characters/);
   assert.equal(searches.length, count);
   assert.equal(downloads.length, 0);

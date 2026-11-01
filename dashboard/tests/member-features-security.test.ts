@@ -59,14 +59,17 @@ describe('new management routes', () => {
     expect(response.status).toBe(200); expect((await response.json()).sync).toBe('pending');
     expect(calls.updatePolicy).toHaveBeenCalledWith('movie', true);
   });
-  it('allows only admins to control the new canonical media commands', async () => {
+  it('allows only admins to control remaining media commands and rejects retired ones', async () => {
     const patch = (name: string) => commandsPatch(request('/api/admin/commands', { name, disabled: true }, 'PATCH'));
-    expect((await patch('bilibili')).status).toBe(403);
+    expect((await patch('reddit')).status).toBe(403);
     state.role = 'admin';
-    expect((await patch('bili')).status).toBe(400);
-    for (const name of ['bilibili', 'vimeo', 'dailymotion', 'reddit', 'twitch', 'rumble', 'odysee', 'weibo', 'douyin', 'acfun', 'youku', 'vk', 'xiaohongshu', 'niconico', 'audius', 'commons']) {
+    expect((await patch('ig')).status).toBe(400);
+    for (const name of ['reddit', 'tiktok', 'song', 'ytv']) {
       expect((await patch(name)).status).toBe(200);
       expect(calls.updatePolicy).toHaveBeenCalledWith(name, true);
+    }
+    for (const name of ['bilibili', 'audius', 'commons', 'deezer', 'youku']) {
+      expect((await patch(name)).status).toBe(400);
     }
   });
   it('keeps support available to a restricted member and refreshes owner unread after reading', async () => {

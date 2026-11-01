@@ -1,6 +1,6 @@
 # Complete repository file and connection index
 
-This snapshot lists **all 353 repository files**, including the current single-Botkeep refactor.
+This index documents repository files and the single-Botkeep architecture.
 The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, complete tree, runtime flows, route list, and scope.
 
 ## How to read an entry
@@ -1571,7 +1571,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
   - **Outside modules:** `vitest`.
 
-- [`member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — Tests admin command controls, alias search, the canonical Bilibili switch, and all 14 title-search catalog entries.
+- [`member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — Tests admin command controls, alias search, and the remaining media catalog.
   - **References:**
     - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — import.
     - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
@@ -2566,7 +2566,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 ### `Whatsapp bot/commands/admin/`
 
-- [`botmanage.js`](../Whatsapp%20bot/commands/admin/botmanage.js) — Owner commands for status, restart, and broadcast.
+- [`botmanage.js`](../Whatsapp%20bot/commands/admin/botmanage.js) — Owner commands for status and restart.
   - **References:**
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
     - [`Whatsapp bot/utils/diskSpace.js`](../Whatsapp%20bot/utils/diskSpace.js) — require.
@@ -3582,6 +3582,9 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — CI invocation.
   - **Outside modules:** `sys`, `unittest`, `yt_dlp`, `yt_dlp.extractor`.
 
+- [`test-command-removal.js`](../Whatsapp%20bot/scripts/test-command-removal.js) — Verifies retired commands and aliases are absent and remaining music searches work.
+  - **References:** command loader, menu, YouTube search, Spotify and system JID filters.
+
 - [`test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — Tests shortcut dispatch, aliases, quality options, quoted URLs and menu discovery with a stubbed pipeline.
   - **References:**
     - [`Whatsapp bot/commands/general/menu.js`](../Whatsapp%20bot/commands/general/menu.js) — computed bot-root path.
@@ -3609,7 +3612,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `node:assert`, `node:fs`, `node:os`, `node:path`, `node:sqlite`, `node:test`.
 
-- [`test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — Offline real-handler tests for all provider searches, numbered choices, session isolation, options and member policy.
+- [`test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — Offline real-handler tests for Reddit searches, numbered choices, session isolation, options and member policy.
   - **References:**
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require and test-only instrumentation.
     - [`Whatsapp bot/database.js`](../Whatsapp%20bot/database.js) — require and test-only instrumentation.
@@ -3622,7 +3625,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
   - **Outside modules:** `node:assert/strict`, `node:fs`, `node:os`, `node:path`, `node:test`.
 
-- [`test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — Offline mocked tests for provider search, URL validation, public indexes and metadata fallback.
+- [`test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — Offline mocked tests for Reddit search, URL validation, and public indexes.
   - **References:**
     - [`Whatsapp bot/utils/providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — require and test-only instrumentation.
   - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
@@ -4022,7 +4025,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/persistentJobs.js`](../Whatsapp%20bot/utils/persistentJobs.js) — require.
   - **Outside modules:** `fs`, `path`.
 
-- [`providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — Provider-scoped title discovery, public search sources, safe result parsing, and Youku original-title fallback.
+- [`providerSearch.js`](../Whatsapp%20bot/utils/providerSearch.js) — Reddit title discovery, public search sources, and safe result parsing.
   - **References:** none detected in this snapshot.
   - **Referenced by:**
     - [`Whatsapp bot/commands/media/shortcuts.js`](../Whatsapp%20bot/commands/media/shortcuts.js) — require.

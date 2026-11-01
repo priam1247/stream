@@ -2,7 +2,7 @@
  * ZaFar Bot — generic media pipeline
  *
  * One implementation of "download a link and send it to WhatsApp", shared by
- * `.dl`, `.tiktok`, `.x`, `.pinterest` and `.spotify`. Everything the YouTube
+ * `.dl`, `.tiktok`, `.x`, `.instagram`, `.fb` and `.spotify`. Everything the YouTube
  * commands learned applies here too:
  *
  *   engine 1 — yt-dlp (site-aware, cookie/proxy aware, streaming to disk)
@@ -11,7 +11,7 @@
  *   then     — sniff the real container and send it the way WhatsApp can play it
  *
  * Supported inputs: any URL yt-dlp understands (~1000 sites) plus whatever the
- * remote providers cover. Images are sent as images (Pinterest, Instagram …).
+ * remote providers cover. Images are sent as images.
  */
 
 const fs = require('fs');
@@ -266,7 +266,7 @@ async function downloadAndSend(sock, msg, extra, {
     }
     const viaText = via !== 'yt-dlp' ? ` • via ${via}` : '';
 
-    // ── Images (Pinterest pins, Instagram photos …) ────────────────────────
+    // ── Images ─────────────────────────────────────────────────────────────
     if (sniffed.kind === 'image') {
       const size = fs.statSync(file).size;
       if (size > MAX_VIDEO_MB * 1024 * 1024) throw Object.assign(new Error('image too large'), { code: 'TOO_BIG' });

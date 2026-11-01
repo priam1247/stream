@@ -244,8 +244,6 @@ test('DRM subscription services are refused with a reason', () => {
     'https://www.disneyplus.com/video/abc',
     'https://tv.apple.com/us/show/abc',
     'https://music.apple.com/us/album/abc',
-    'https://www.deezer.com/track/123',
-    'https://deezer.page.link/abc',
   ];
   for (const url of cases) {
     const target = router.route(url);

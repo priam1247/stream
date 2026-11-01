@@ -64,7 +64,6 @@ async function viaWebApi(parsed) {
     artists,
     album: d.album?.name || d.show?.name || '',
     durationMs: d.duration_ms || 0,
-    isrc: String(d.external_ids?.isrc || ''),
     cover: d.album?.images?.[0]?.url || d.images?.[0]?.url || '',
     source: 'spotify-api',
   };

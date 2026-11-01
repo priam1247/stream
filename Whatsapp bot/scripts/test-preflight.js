@@ -1244,28 +1244,28 @@ test('offline bot fixture copies source without copying private runtime data', (
   }
 });
 
-test('safe logging masks Deezer credentials in text, URLs and structured data', () => {
+test('safe logging masks sensitive credentials in text, URLs and structured data', () => {
   const { redactSecrets, safeText, redactArg } = botRequire('../utils/safeLog');
-  const previous = process.env.DEEZER_ARL;
+  const previous = process.env.TEST_LEGACY_ARL;
   const secrets = {
-    arl: 'syntheticDeezerArl123456', sid: 'syntheticDeezerSid123456', csrf: 'syntheticCheckForm123456',
+    arl: 'syntheticLegacyArl123456', sid: 'syntheticSessionSid123456', csrf: 'syntheticCheckForm123456',
     license: 'syntheticLicenseToken123456', track: 'syntheticTrackToken123456', api: 'syntheticApiToken123456',
   };
-  process.env.DEEZER_ARL = secrets.arl;
+  process.env.TEST_LEGACY_ARL = secrets.arl;
   try {
     const message = `failed with ${secrets.arl} sid=${secrets.sid} checkForm=${secrets.csrf} license_token=${secrets.license} TRACK_TOKEN=${secrets.track} api_token=${secrets.api}`;
     const err = new Error(message);
     err.config = { headers: { Cookie: `arl=${secrets.arl}` }, body: secrets.license };
     const safe = redactArg(err);
     assert.equal(safe.config, undefined);
-    const output = [redactSecrets(message), redactSecrets(`https://www.deezer.com/?sid=${secrets.sid}&api_token=${secrets.api}`),
-      safeText({ deezerArl: secrets.arl, sessionId: secrets.sid, checkForm: secrets.csrf, license_token: secrets.license, track_token: secrets.track }),
+    const output = [redactSecrets(message), redactSecrets(`https://service.example.org/?sid=${secrets.sid}&api_token=${secrets.api}`),
+      safeText({ accountArl: secrets.arl, sessionId: secrets.sid, checkForm: secrets.csrf, license_token: secrets.license, track_token: secrets.track }),
       safe.message, safe.stack].join('\n');
-    for (const secret of Object.values(secrets)) assert.equal(output.includes(secret), false, 'Deezer credential leaked');
+    for (const secret of Object.values(secrets)) assert.equal(output.includes(secret), false, 'private credential leaked');
     assert.match(output, /failed with/);
   } finally {
-    if (previous === undefined) delete process.env.DEEZER_ARL;
-    else process.env.DEEZER_ARL = previous;
+    if (previous === undefined) delete process.env.TEST_LEGACY_ARL;
+    else process.env.TEST_LEGACY_ARL = previous;
   }
 });
 

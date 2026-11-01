@@ -36,7 +36,7 @@ test('public HTTP never inherits global credentials, headers or query parameters
       for (const key of ['Authorization', 'Cookie', 'X-Api-Key', 'Proxy-Authorization']) assert.equal(config.headers.has(key), false);
       return { status: 200, data: {}, headers: {}, config };
     });
-    await client.get('https://api.audius.co/v1/tracks/search', { params: { query: 'song' }, headers: { ...credentialHeaders } });
+    await client.get('https://media.example.org/v1/tracks/search', { params: { query: 'song' }, headers: { ...credentialHeaders } });
   } finally {
     for (const [key, value] of [['auth', old.auth], ['params', old.params]]) {
       if (value === undefined) delete axios.defaults[key]; else axios.defaults[key] = value;
@@ -110,10 +110,10 @@ test('a permitted public redirect is streamed to disk with hardened request opti
       ? response(302, Buffer.alloc(0), { location: 'https://node.example.org/track' })
       : response(200, bytes, { 'content-length': String(bytes.length), 'content-type': 'audio/mpeg' });
   };
-  const result = await downloadPublicFile('https://api.audius.co/download', dest, {
+  const result = await downloadPublicFile('https://media.example.org/download', dest, {
     maxBytes: 20000, request, resolve: async () => [{ address: '8.8.8.8', family: 4 }],
   });
-  assert.deepEqual(calls, ['https://api.audius.co/download', 'https://node.example.org/track']);
+  assert.deepEqual(calls, ['https://media.example.org/download', 'https://node.example.org/track']);
   assert.equal(result.bytes, bytes.length);
   assert.deepEqual(fs.readFileSync(dest), bytes);
 });
@@ -148,7 +148,7 @@ test('disabled downloads, partial replies, pages and oversized bodies are refuse
     [response(200, Buffer.alloc(300)), 'BAD_SOURCE'],
   ]) {
     const dest = tempFile(t);
-    await assert.rejects(downloadPublicFile('https://api.audius.co/file', dest, { maxBytes: 20000, request: async () => res }), { code });
+    await assert.rejects(downloadPublicFile('https://media.example.org/file', dest, { maxBytes: 20000, request: async () => res }), { code });
     assert.equal(fs.existsSync(dest), false);
   }
 });
@@ -158,7 +158,7 @@ test('honors a short Retry-After once and never bypasses repeated or long rate l
   const bytes = Buffer.alloc(11000, 1);
   let calls = 0;
   const waits = [];
-  const result = await downloadPublicFile('https://api.audius.co/file', dest, {
+  const result = await downloadPublicFile('https://media.example.org/file', dest, {
     maxBytes: 20000, wait: async (ms) => { waits.push(ms); },
     request: async () => ++calls === 1 ? response(429, Buffer.alloc(0), { 'retry-after': '10' }) : response(200, bytes),
   });
@@ -168,14 +168,14 @@ test('honors a short Retry-After once and never bypasses repeated or long rate l
   for (const header of ['60', 'nonsense', '']) {
     const blocked = tempFile(t);
     let attempts = 0;
-    await assert.rejects(downloadPublicFile('https://api.audius.co/file', blocked, {
+    await assert.rejects(downloadPublicFile('https://media.example.org/file', blocked, {
       maxBytes: 20000, wait: async () => { throw new Error('must not retry'); },
       request: async () => { attempts++; return response(429, Buffer.alloc(0), { 'retry-after': header }); },
     }), { code: 'MEDIA_RATE_LIMIT' });
     assert.equal(attempts, 1);
   }
   let attempts = 0;
-  await assert.rejects(downloadPublicFile('https://api.audius.co/file', tempFile(t), {
+  await assert.rejects(downloadPublicFile('https://media.example.org/file', tempFile(t), {
     maxBytes: 20000, wait: async () => {},
     request: async () => { attempts++; return response(429, Buffer.alloc(0), { 'retry-after': '1' }); },
   }), { code: 'MEDIA_RATE_LIMIT' });
@@ -187,7 +187,7 @@ test('honors a short Retry-After once and never bypasses repeated or long rate l
 
 test('unexpected HTTP status diagnostics expose only the status', async (t) => {
   const dest = tempFile(t);
-  await assert.rejects(downloadPublicFile('https://api.audius.co/file?signature=secret', dest, {
+  await assert.rejects(downloadPublicFile('https://media.example.org/file?signature=secret', dest, {
     maxBytes: 20000, request: async () => response(503),
   }), (err) => err.code === 'MEDIA_NETWORK' && err.status === 503 && !err.message.includes('secret'));
 });
@@ -195,6 +195,6 @@ test('unexpected HTTP status diagnostics expose only the status', async (t) => {
 test('a pre-existing destination is never overwritten or deleted', async (t) => {
   const dest = tempFile(t);
   fs.writeFileSync(dest, 'do not delete');
-  await assert.rejects(downloadPublicFile('https://api.audius.co/file', dest, { maxBytes: 20000, request: async () => response(200) }), { code: 'EEXIST' });
+  await assert.rejects(downloadPublicFile('https://media.example.org/file', dest, { maxBytes: 20000, request: async () => response(200) }), { code: 'EEXIST' });
   assert.equal(fs.readFileSync(dest, 'utf8'), 'do not delete');
 });
