@@ -28,6 +28,7 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/fftools" --no-save --no-audit --no-fund --ignore-scripts @ffmpeg-installer/linux-x64@4.1.0 @ffprobe-installer/linux-x64@5.2.0
           echo "$RUNNER_TEMP/fftools/node_modules/@ffmpeg-installer/linux-x64" >> "$GITHUB_PATH"
+          chmod u+x "$RUNNER_TEMP/fftools/node_modules/@ffprobe-installer/linux-x64/ffprobe"
           echo "$RUNNER_TEMP/fftools/node_modules/@ffprobe-installer/linux-x64" >> "$GITHUB_PATH"
       - name: Check ffmpeg availability
         run: command -v ffmpeg && command -v ffprobe
@@ -46,6 +47,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+      - name: Search public music videos
+        shell: bash
+        run: |
+          curl -fsSG --max-time 35 -A 'ZaFarBot source verification/1.0' 'https://commons.wikimedia.org/w/api.php' \
+            --data-urlencode 'action=query' --data-urlencode 'generator=search' --data-urlencode 'gsrsearch=bach filetype:video' \
+            --data-urlencode 'gsrnamespace=6' --data-urlencode 'gsrlimit=5' --data-urlencode 'prop=imageinfo' \
+            --data-urlencode 'iiprop=url|size|mime|mediatype|extmetadata' \
+            --data-urlencode 'iiextmetadatafilter=ObjectName|Artist|Credit|Attribution|AttributionRequired|LicenseShortName|LicenseUrl|Restrictions|License|Copyrighted' \
+            --data-urlencode 'format=json' --data-urlencode 'formatversion=2' > "$RUNNER_TEMP/commons-search.json"
+          node -e "const d=require(process.argv[1]);if(!d.query?.pages?.some(p=>p.imageinfo?.[0]?.mediatype==='VIDEO'))process.exit(1)" "$RUNNER_TEMP/commons-search.json"
       - name: Fetch creator and license metadata
         shell: bash
         run: |
@@ -60,6 +71,7 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/fftools" --no-save --no-audit --no-fund --ignore-scripts @ffmpeg-installer/linux-x64@4.1.0 @ffprobe-installer/linux-x64@5.2.0
           echo "$RUNNER_TEMP/fftools/node_modules/@ffmpeg-installer/linux-x64" >> "$GITHUB_PATH"
+          chmod u+x "$RUNNER_TEMP/fftools/node_modules/@ffprobe-installer/linux-x64/ffprobe"
           echo "$RUNNER_TEMP/fftools/node_modules/@ffprobe-installer/linux-x64" >> "$GITHUB_PATH"
       - name: Check ffmpeg availability
         run: command -v ffmpeg && command -v ffprobe
@@ -84,9 +96,15 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/fftools" --no-save --no-audit --no-fund --ignore-scripts @ffmpeg-installer/linux-x64@4.1.0 @ffprobe-installer/linux-x64@5.2.0
           echo "$RUNNER_TEMP/fftools/node_modules/@ffmpeg-installer/linux-x64" >> "$GITHUB_PATH"
+          chmod u+x "$RUNNER_TEMP/fftools/node_modules/@ffprobe-installer/linux-x64/ffprobe"
           echo "$RUNNER_TEMP/fftools/node_modules/@ffprobe-installer/linux-x64" >> "$GITHUB_PATH"
       - name: Check ffmpeg availability
         run: command -v ffmpeg && command -v ffprobe
+      - name: Install newer system FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          echo /usr/bin >> "$GITHUB_PATH"
       - name: Download short video clip with yt-dlp
         run: |
           if ! "$RUNNER_TEMP/yt/bin/yt-dlp" --quiet --no-warnings --no-playlist --no-cache-dir --retries 1 --socket-timeout 20 \
