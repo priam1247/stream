@@ -15,8 +15,21 @@ const META_FIELDS = 'ObjectName|Artist|Credit|Attribution|AttributionRequired|Li
 
 function text(value, max = 400) {
   const raw = String(value || '');
-  // Treat API fields as untrusted markup, not HTML to be rendered in chat.
-  const clean = cheerio.load(`<body>${raw}</body>`, null, false).text()
+  // Preserve safe attribution links as text; they are never fetched. Invalid
+  // links make the record unusable rather than silently dropping a condition.
+  const $ = cheerio.load(`<body>${raw}</body>`, null, false);
+  $('script, style, noscript').remove();
+  let invalidLink = false;
+  $('a[href]').each((_i, element) => {
+    const href = $(element).attr('href');
+    let url;
+    try { url = new URL(href, 'https://commons.wikimedia.org/'); } catch { invalidLink = true; return; }
+    if (url.protocol !== 'https:' || url.username || url.password || url.href.length > 300) { invalidLink = true; return; }
+    const label = $(element).text().trim();
+    $(element).text(label && label !== url.href ? `${label} (${url.href})` : url.href);
+  });
+  if (invalidLink) return '';
+  const clean = $.text()
     .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ')
     .replace(/\s+/g, ' ').trim();
   return clean.length <= max ? clean : '';

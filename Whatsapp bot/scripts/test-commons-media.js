@@ -44,6 +44,7 @@ test('rejects missing, disputed, restricted, unsafe or incomplete metadata', () 
     (m) => { m.License.value = 'different'; }, (m) => { m.LicenseUrl.value = 'https://creativecommons.org.evil.test/'; },
     (m) => { m.Restrictions.value = 'some restriction'; }, (m) => { m.Restrictions.value = 'x'.repeat(500); },
     (m) => { m.Attribution = { value: 'x'.repeat(401) }; }, (m) => { m.Credit.value = 'x'.repeat(401); },
+    (m) => { m.Attribution = { value: '<a href="javascript:alert(1)">bad</a>' }; },
   ]) {
     const m = metadata(); mutate(m);
     assert.equal(commons.normalizePage(page({ extmetadata: m }), 'video'), null);
@@ -60,11 +61,12 @@ test('rejects missing, disputed, restricted, unsafe or incomplete metadata', () 
 
 test('credit text includes custom attribution, source, license and conversion notice', () => {
   const meta = metadata();
-  meta.Attribution = { value: '<b>Credit the performer</b>' };
+  meta.Attribution = { value: '<b>Credit the performer</b> <a href="https://commons.wikimedia.org/wiki/User:Musician">profile</a>' };
   meta.Credit = { value: 'Recording by performer' };
   const credit = commons.attributionFor(commons.normalizePage(page({ extmetadata: meta }), 'video'));
   assert.match(credit, /Gérard Janot/);
   assert.match(credit, /Attribution: Credit the performer/);
+  assert.match(credit, /profile \(https:\/\/commons\.wikimedia\.org\/wiki\/User:Musician\)/);
   assert.match(credit, /Credit: Recording by performer/);
   assert.match(credit, /License: CC BY-SA 3\.0/);
   assert.match(credit, /creativecommons\.org\/licenses\/by-sa\/3\.0/);

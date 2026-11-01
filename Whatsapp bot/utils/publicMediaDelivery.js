@@ -53,6 +53,7 @@ async function sendPublicMedia(sock, msg, extra, {
   const maxMB = kind === 'audio' ? MAX_AUDIO_MB : MAX_VIDEO_MB;
   const maxSeconds = kind === 'audio' ? AUDIO_SECONDS : VIDEO_SECONDS;
   let delivered = false;
+  let stage = 'queue';
 
   try {
     await queue.runInLane(kind === 'audio' ? 'light' : 'heavy', async () => {
@@ -65,14 +66,19 @@ async function sendPublicMedia(sock, msg, extra, {
       const release = holdTemp(stamp);
       let reservation;
       try {
+        stage = 'ffmpeg';
         if (!ffmpeg.works()) throw fail('MEDIA_VERIFY', 'FFmpeg unavailable');
+        stage = 'storage';
         reservation = disk.reserveMediaSpace(getTempDir(), config.media || {}, {
           label: `public:${kind}`, tagDir: getTempDir(), tagPrefix: stamp,
         });
         await react('📥');
+        stage = 'download';
         const item = await download(raw, { maxBytes: Math.floor(maxMB * 1024 * 1024), maxSeconds });
+        stage = 'storage';
         if (!fs.existsSync(raw) || fs.statSync(raw).size < 10240) throw fail('BAD_SOURCE', 'Missing media');
         disk.requireMediaCopySpace(getTempDir(), fs.statSync(raw).size / 1048576, config.media || {});
+        stage = 'verify';
         const info = await probeMedia(raw);
         if (!verified(info, item, kind, maxSeconds)) throw fail('MEDIA_VERIFY', 'Incomplete media');
         const credit = typeof attribution === 'function' ? String(attribution(item) || '') : '';
@@ -80,6 +86,7 @@ async function sendPublicMedia(sock, msg, extra, {
         const artist = safeName(item.artist, '');
         let file, mime, caption;
 
+        stage = 'convert';
         if (kind === 'audio') {
           const sniffed = sniffFile(raw);
           if (sniffed.ext === 'mp3' && info.audioCodec === 'mp3') file = raw;
@@ -95,6 +102,7 @@ async function sendPublicMedia(sock, msg, extra, {
           if (credit && ((sendAs === 'audio' && credit.length > 4000) || (sendAs !== 'audio' && caption.length > 1024))) {
             throw fail('MEDIA_CREDIT', 'Required credit is too long to include');
           }
+          stage = 'delivery';
           try {
             if (sendAs === 'audio') {
               if (credit) await reply(credit);
@@ -115,6 +123,7 @@ async function sendPublicMedia(sock, msg, extra, {
           if (size > maxMB * 1024 * 1024) throw fail('TOO_BIG', 'Video exceeds limit');
           caption = `🎬 *${item.title}*${item.artist ? `\n👤 ${item.artist}` : ''}\n📦 ${fmtMB(size)} • via ${label}${credit ? `\n\n${credit}` : ''}`;
           if (credit && caption.length > 1024) throw fail('MEDIA_CREDIT', 'Required credit is too long to include');
+          stage = 'delivery';
           try {
             const body = size > AS_DOCUMENT_ABOVE
               ? { document: { url: file }, mimetype: 'video/mp4', fileName: `${title}.mp4`, caption }
@@ -136,7 +145,7 @@ async function sendPublicMedia(sock, msg, extra, {
     if (delivered) return { sent: true, kind };
     const code = KNOWN.has(err?.code) ? err.code : 'MEDIA_NETWORK';
     // Never log raw provider errors or signed URLs.
-    console.warn(`[public-media] ${code}`);
+    console.warn(`[public-media] ${code} (${stage})`);
     telemetry.recordFailure('public-media');
     await reply(errorMessage(code, label, Boolean(extra?.isOwner)));
     await react('❌');
