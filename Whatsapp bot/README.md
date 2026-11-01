@@ -84,8 +84,9 @@ community videos, not a comprehensive catalog of commercial music videos.
 Only files with supported public-domain or CC BY/CC BY-SA metadata are offered.
 Credits, license and the original file page accompany each delivery; check that
 page for full terms because Commons metadata can be incomplete. These sources
-require FFmpeg and working access from the bot host. Availability varies. To
-check the deployed host without WhatsApp or account credentials, run
+require FFmpeg and working access from the bot host. Availability varies, and
+Commons can rate-limit hosting IPs. To check the deployed host without WhatsApp
+or account credentials, run
 `PUBLIC_MUSIC_LIVE=1 node scripts/test-public-music-live.js audius` (or use
 `commons-audio` / `commons-video`). These opt-in tests download public samples.
 

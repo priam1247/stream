@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
-const { isPublicAddress, publicLookup, safeUrl, downloadPublicFile } = require('../utils/publicMediaDownload');
+const { isPublicAddress, publicLookup, retryDelay, safeUrl, downloadPublicFile } = require('../utils/publicMediaDownload');
 const { createPublicHttp, credentialHeaders } = require('../utils/publicHttp');
 
 const response = (status, body = Buffer.alloc(11000), headers = {}) => ({ status, data: Readable.from([body]), headers });
@@ -135,6 +135,38 @@ test('disabled downloads, partial replies, pages and oversized bodies are refuse
     await assert.rejects(downloadPublicFile('https://api.audius.co/file', dest, { maxBytes: 20000, request: async () => res }), { code });
     assert.equal(fs.existsSync(dest), false);
   }
+});
+
+test('honors a short Retry-After once and never bypasses repeated or long rate limits', async (t) => {
+  const dest = tempFile(t);
+  const bytes = Buffer.alloc(11000, 1);
+  let calls = 0;
+  const waits = [];
+  const result = await downloadPublicFile('https://api.audius.co/file', dest, {
+    maxBytes: 20000, wait: async (ms) => { waits.push(ms); },
+    request: async () => ++calls === 1 ? response(429, Buffer.alloc(0), { 'retry-after': '10' }) : response(200, bytes),
+  });
+  assert.equal(result.bytes, bytes.length);
+  assert.equal(calls, 2);
+  assert.deepEqual(waits, [10000]);
+  for (const header of ['60', 'nonsense', '']) {
+    const blocked = tempFile(t);
+    let attempts = 0;
+    await assert.rejects(downloadPublicFile('https://api.audius.co/file', blocked, {
+      maxBytes: 20000, wait: async () => { throw new Error('must not retry'); },
+      request: async () => { attempts++; return response(429, Buffer.alloc(0), { 'retry-after': header }); },
+    }), { code: 'MEDIA_RATE_LIMIT' });
+    assert.equal(attempts, 1);
+  }
+  let attempts = 0;
+  await assert.rejects(downloadPublicFile('https://api.audius.co/file', tempFile(t), {
+    maxBytes: 20000, wait: async () => {},
+    request: async () => { attempts++; return response(429, Buffer.alloc(0), { 'retry-after': '1' }); },
+  }), { code: 'MEDIA_RATE_LIMIT' });
+  assert.equal(attempts, 2);
+  assert.equal(retryDelay('10'), 10000);
+  assert.equal(retryDelay('60'), null);
+  assert.equal(retryDelay(new Date(101000).toUTCString(), 100000), 1000);
 });
 
 test('unexpected HTTP status diagnostics expose only the status', async (t) => {

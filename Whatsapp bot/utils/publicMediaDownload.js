@@ -9,11 +9,19 @@ const net = require('net');
 const https = require('https');
 const { Transform } = require('stream');
 const { pipeline } = require('stream/promises');
+const { setTimeout: sleep } = require('timers/promises');
 const { publicGet, credentialHeaders } = require('./publicHttp');
 const ipaddr = require('ipaddr.js');
 
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 const fail = (code, message) => Object.assign(new Error(message), { code });
+
+function retryDelay(value, now = Date.now()) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const ms = /^\d+$/.test(text) ? Number(text) * 1000 : Date.parse(text) - now;
+  return Number.isFinite(ms) && ms >= 0 && ms <= 30000 ? Math.ceil(ms) : null;
+}
 
 function isPublicAddress(value) {
   try { return ipaddr.process(String(value)).range() === 'unicast'; }
@@ -64,6 +72,7 @@ async function downloadPublicFile(initialUrl, dest, {
   maxRedirects = 5,
   request = publicGet,
   resolve = dns.promises.lookup,
+  wait = sleep,
 } = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 10240 || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw fail('BAD_SOURCE', 'Invalid media download limits');
@@ -72,6 +81,7 @@ async function downloadPublicFile(initialUrl, dest, {
   const signal = AbortSignal.timeout(Math.min(Math.floor(timeoutMs), 2 ** 31 - 1));
   let current = safeUrl(initialUrl, hosts);
   let ownedFile = false;
+  let rateRetries = 0;
 
   try {
     for (let hop = 0; hop <= maxRedirects; hop++) {
@@ -102,6 +112,15 @@ async function downloadPublicFile(initialUrl, dest, {
         }
         if (status === 429) {
           response.data.destroy();
+          const delay = retryDelay(response.headers?.['retry-after']);
+          // Respect the server's Retry-After exactly, once at most. A longer
+          // wait or a missing header is surfaced instead of hammering it.
+          if (!rateRetries && delay !== null && delay < timeoutMs) {
+            rateRetries++;
+            await wait(delay, undefined, { signal });
+            hop--;
+            continue;
+          }
           throw Object.assign(fail('MEDIA_RATE_LIMIT', 'Media source is rate limiting downloads'), { status: 429 });
         }
         if (status !== 200) {
@@ -148,4 +167,4 @@ async function downloadPublicFile(initialUrl, dest, {
   }
 }
 
-module.exports = { isPublicAddress, publicLookup, safeUrl, downloadPublicFile };
+module.exports = { isPublicAddress, publicLookup, retryDelay, safeUrl, downloadPublicFile };
