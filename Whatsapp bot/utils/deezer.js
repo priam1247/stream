@@ -23,8 +23,54 @@ const BLOCK = 2048;
 const STRIPE_KEY = Buffer.from('g4el58wc0zvf9na1', 'ascii');
 const IV = Buffer.from('0001020304050607', 'hex');
 
-function failure(code, message) {
-  return Object.assign(new Error(message), { code });
+// Diagnostics are restricted to these fixed labels; never copy a request,
+// response body, URL, cookie, token, or arbitrary upstream error into logs.
+const DIAGNOSTIC_STAGES = new Set(['search', 'metadata', 'account', 'track-token', 'media', 'cdn', 'stream', 'decoder', 'storage', 'share']);
+const DIAGNOSTIC_REASONS = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNABORTED', 'ECONNRESET', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'EPIPE', 'ERR_NETWORK',
+  'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'ERR_TLS_CERT_ALTNAME_INVALID', 'ERR_SSL_WRONG_VERSION_NUMBER', 'ERR_MODULE_NOT_FOUND', 'ERR_PACKAGE_PATH_NOT_EXPORTED',
+  'EACCES', 'EPERM', 'ENOENT', 'EEXIST', 'EROFS', 'ENOSPC', 'EDQUOT', 'ENOTDIR', 'EISDIR', 'ENAMETOOLONG',
+  'EMFILE', 'ENFILE', 'EFBIG', 'EIO', 'EBADF', 'ABORT_ERR', 'RATE_LIMIT', 'INVALID_RESPONSE',
+]);
+const STORAGE_CODES = new Set(['EACCES', 'EPERM', 'ENOENT', 'EEXIST', 'EROFS', 'ENOSPC', 'EDQUOT', 'ENOTDIR', 'EISDIR', 'ENAMETOOLONG', 'EMFILE', 'ENFILE', 'EFBIG', 'EIO', 'EBADF']);
+const STORAGE_SYSCALLS = new Set(['open', 'write', 'writev', 'stat', 'fstat', 'fsync', 'close']);
+const DIAGNOSTIC_CODES = new Set([
+  'DEEZER_CONFIG', 'DEEZER_AUTH', 'DEEZER_NETWORK', 'DEEZER_TRACK', 'DEEZER_UNAVAILABLE', 'DEEZER_DECODER',
+  'DEEZER_STORAGE', 'DEEZER_VERIFY', 'DEEZER_ERROR', 'BAD_SOURCE', 'TOO_BIG', 'TOO_LONG', 'NOT_ENOUGH_DISK',
+]);
+
+function diagnosticDetails(value) {
+  const info = {};
+  if (DIAGNOSTIC_STAGES.has(value?.stage)) info.stage = value.stage;
+  if (Number.isInteger(value?.status) && value.status >= 100 && value.status <= 599) info.status = value.status;
+  if (DIAGNOSTIC_REASONS.has(value?.reason)) info.reason = value.reason;
+  return info;
+}
+
+function diagnosticCode(value) {
+  return typeof value === 'string' && DIAGNOSTIC_CODES.has(value) ? value : 'DEEZER_ERROR';
+}
+
+function failure(code, message, details = {}) {
+  return Object.assign(new Error(message), { code }, diagnosticDetails(details));
+}
+
+function errorReason(err) {
+  for (const value of [err?.code, err?.cause?.code]) {
+    if (DIAGNOSTIC_REASONS.has(value)) return value;
+  }
+  return undefined;
+}
+
+function isStorageCode(code) {
+  return STORAGE_CODES.has(code);
+}
+
+function storageFailure(err) {
+  const full = err?.code === 'ENOSPC' || err?.code === 'EDQUOT';
+  return failure(full ? 'NOT_ENOUGH_DISK' : 'DEEZER_STORAGE', full ? 'Server storage is full' : 'Deezer could not write the audio file',
+    { stage: 'storage', reason: errorReason(err) });
 }
 
 function hasErrors(value) {
@@ -134,19 +180,24 @@ function normalizedTrack(row) {
   };
 }
 
-function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
+function createClient({ http = axios, arl = config.deezer?.arl || '', makeDecoder = stripeDecoder } = {}) {
   const cookie = String(arl).trim();
   const headers = { 'User-Agent': UA, Accept: 'application/json' };
   const options = { timeout: 15_000, maxRedirects: 0, maxContentLength: 2 * 1024 * 1024, validateStatus: () => true };
 
-  async function request(method, url, body, extra = {}) {
+  async function request(method, url, body, { stage, ...extra } = {}) {
     let response;
     try {
       const opts = { ...options, ...extra, headers: { ...headers, ...(extra.headers || {}) } };
       response = method === 'post' ? await http.post(url, body, opts) : await http.get(url, opts);
-    } catch { throw failure('DEEZER_NETWORK', 'Deezer request failed'); }
-    if (response.status === 401 || response.status === 403) throw failure('DEEZER_AUTH', 'Deezer did not accept the account');
-    if (response.status < 200 || response.status >= 300) throw failure('DEEZER_NETWORK', 'Deezer request failed');
+    } catch (err) { throw failure('DEEZER_NETWORK', 'Deezer request failed', { stage, reason: errorReason(err) }); }
+    const status = response?.status;
+    if (!Number.isInteger(status)) throw failure('DEEZER_NETWORK', 'Deezer request failed', { stage, reason: 'INVALID_RESPONSE' });
+    if (status === 401 || status === 403) {
+      const code = ['account', 'track-token', 'media'].includes(stage) ? 'DEEZER_AUTH' : 'DEEZER_NETWORK';
+      throw failure(code, 'Deezer rejected the request', { stage, status });
+    }
+    if (status < 200 || status >= 300) throw failure('DEEZER_NETWORK', 'Deezer request failed', { stage, status });
     return response.data;
   }
 
@@ -154,8 +205,11 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
     const text = String(query || '').trim().slice(0, 300);
     if (!text) return [];
     const params = new URLSearchParams({ q: text, limit: String(Math.max(1, Math.min(10, Number(limit) || 5))) });
-    const data = await request('get', `${API}/search/track?${params}`);
-    if (!data || data.error || !Array.isArray(data.data)) throw failure('DEEZER_NETWORK', 'Deezer search failed');
+    const data = await request('get', `${API}/search/track?${params}`, null, { stage: 'search' });
+    if (!data || data.error || !Array.isArray(data.data)) {
+      const reason = Number(data?.error?.code) === 4 ? 'RATE_LIMIT' : 'INVALID_RESPONSE';
+      throw failure('DEEZER_NETWORK', 'Deezer search failed', { stage: 'search', reason });
+    }
     return data.data.map(normalizedTrack).filter(Boolean).slice(0, 10);
   }
 
@@ -170,8 +224,11 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
       try {
         // Do not follow a share link automatically: it could redirect anywhere.
         response = await http.get(url.href, { ...options, responseType: 'stream', headers });
-      } catch { throw failure('DEEZER_NETWORK', 'Deezer link could not be opened'); }
-      response.data?.destroy?.();
+      } catch (err) { throw failure('DEEZER_NETWORK', 'Deezer link could not be opened', { stage: 'share', reason: errorReason(err) }); }
+      response?.data?.destroy?.();
+      if (!Number.isInteger(response?.status) || response.status >= 400) {
+        throw failure('DEEZER_NETWORK', 'Deezer link could not be opened', { stage: 'share', status: response?.status });
+      }
       if (response.status < 300 || response.status >= 400 || !response.headers?.location) break;
       try { url = deezerUrl(new URL(response.headers.location, url).href); } catch { url = null; }
       if (!url || url.protocol !== 'https:') break;
@@ -183,18 +240,19 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
 
   async function getTrack(id) {
     if (!/^\d{1,16}$/.test(String(id))) throw failure('DEEZER_TRACK', 'Invalid track ID');
-    const data = await request('get', `${API}/track/${id}`);
+    const data = await request('get', `${API}/track/${id}`, null, { stage: 'metadata' });
+    if (Number(data?.error?.code) === 4) throw failure('DEEZER_NETWORK', 'Deezer track lookup was rate limited', { stage: 'metadata', reason: 'RATE_LIMIT' });
     const track = normalizedTrack(data);
-    if (!track || track.id !== String(id)) throw failure('DEEZER_TRACK', 'Track unavailable');
+    if (!track || track.id !== String(id)) throw failure('DEEZER_TRACK', 'Track unavailable', { stage: 'metadata' });
     return track;
   }
 
   async function session() {
-    if (!cookie) throw failure('DEEZER_CONFIG', 'Deezer is not configured');
+    if (!cookie) throw failure('DEEZER_CONFIG', 'Deezer is not configured', { stage: 'account' });
     // Restrict cookie syntax so a misconfigured value cannot inject headers or
     // append additional cookies. Never include the value in an error.
-    if (!/^[A-Za-z0-9_-]{10,512}$/.test(cookie)) throw failure('DEEZER_AUTH', 'Invalid Deezer cookie');
-    const data = await request('get', USER_URL, null, { headers: {
+    if (!/^[A-Za-z0-9_-]{10,512}$/.test(cookie)) throw failure('DEEZER_AUTH', 'Invalid Deezer cookie', { stage: 'account' });
+    const data = await request('get', USER_URL, null, { stage: 'account', headers: {
       Cookie: `arl=${cookie}; comeback=1`, Origin: 'https://www.deezer.com',
       Referer: 'https://www.deezer.com/', 'X-Requested-With': 'XMLHttpRequest',
     } });
@@ -209,7 +267,7 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
         typeof licenseToken !== 'string' || !licenseToken || licenseToken.length > 4096 || /\s/.test(licenseToken) ||
         typeof apiToken !== 'string' || !apiToken || apiToken.length > 4096 || /\s/.test(apiToken) ||
         typeof sessionId !== 'string' || !/^[A-Za-z0-9._~-]{1,512}$/.test(sessionId)) {
-      throw failure('DEEZER_AUTH', 'Deezer did not accept the account');
+      throw failure('DEEZER_AUTH', 'Deezer did not accept the account', { stage: 'account' });
     }
     const quality = user.OPTIONS.web_sound_quality;
     return { licenseToken, apiToken, sessionId, premium: quality?.high === true || quality?.lossless === true };
@@ -217,14 +275,14 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
 
   async function trackToken(id, auth) {
     const params = new URLSearchParams({ method: 'song.getData', input: '3', api_version: '1.0', api_token: auth.apiToken });
-    const data = await request('post', `${GATEWAY}?${params}`, { sng_id: String(id) }, { headers: {
+    const data = await request('post', `${GATEWAY}?${params}`, { sng_id: String(id) }, { stage: 'track-token', headers: {
       Cookie: `arl=${cookie}; comeback=1; sid=${auth.sessionId}`, Origin: 'https://www.deezer.com',
       Referer: 'https://www.deezer.com/', 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json',
     } });
     const result = data?.results;
     if (hasErrors(data?.error) || String(result?.SNG_ID || '') !== String(id) ||
         typeof result?.TRACK_TOKEN !== 'string' || !result.TRACK_TOKEN || result.TRACK_TOKEN.length > 4096 || /\s/.test(result.TRACK_TOKEN)) {
-      throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account');
+      throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account', { stage: 'track-token' });
     }
     return result.TRACK_TOKEN;
   }
@@ -234,14 +292,50 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
       license_token: auth.licenseToken,
       media: [{ type: 'FULL', formats: [{ cipher: 'BF_CBC_STRIPE', format }] }],
       track_tokens: [token],
-    }, { headers: { 'Content-Type': 'application/json' } });
+    }, { stage: 'media', headers: { 'Content-Type': 'application/json' } });
     const item = data?.data?.[0];
     const candidate = Array.isArray(item?.media) ? item.media.find((m) => Array.isArray(m?.sources) && m.sources.length) : null;
     const cipher = typeof candidate?.cipher === 'string' ? candidate.cipher : candidate?.cipher?.type;
-    if (!candidate || hasErrors(item.errors) || (cipher && cipher !== 'BF_CBC_STRIPE')) throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account');
+    if (!candidate || hasErrors(item.errors) || (cipher && cipher !== 'BF_CBC_STRIPE')) throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account', { stage: 'media' });
     const source = candidate.sources.find((s) => validMediaUrl(s?.url));
-    if (!source) throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account');
+    if (!source) throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account', { stage: 'media' });
     return source.url;
+  }
+
+  async function resolveMedia(token, auth) {
+    // High-quality accounts can use 320 kbps; if unavailable, try 128 kbps.
+    try { return await media(token, auth, auth.premium ? 'MP3_320' : 'MP3_128'); }
+    catch (err) {
+      if (!auth.premium || err.code !== 'DEEZER_UNAVAILABLE') throw err;
+      return media(token, auth, 'MP3_128');
+    }
+  }
+
+  /** Read-only checks; the returned report never includes credentials or URLs. */
+  async function diagnose(id = '3135553') {
+    const report = {};
+    const check = async (name, fn) => {
+      try {
+        const value = await fn();
+        report[name] = { ok: true };
+        return value;
+      } catch (err) {
+        report[name] = { ok: false, code: diagnosticCode(err?.code), ...diagnosticDetails(err) };
+        return null;
+      }
+    };
+    const [, track, auth] = await Promise.all([
+      check('search', () => search('Daft Punk One More Time', { limit: 1 })),
+      check('metadata', () => getTrack(id)),
+      check('account', () => session()),
+    ]);
+    if (track && auth) {
+      const token = await check('trackToken', () => trackToken(track.id, auth));
+      if (token) await check('media', () => resolveMedia(token, auth));
+    }
+    if (!report.trackToken) report.trackToken = { skipped: true };
+    if (!report.media) report.media = { skipped: true };
+    return report;
   }
 
   async function download(id, dest, { maxBytes = 120 * 1024 * 1024, maxSeconds = 0, expected = null } = {}) {
@@ -252,13 +346,7 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
     // Public track metadata does not reliably contain a usable token. Obtain a
     // fresh token for this exact track within the authenticated session.
     const token = await trackToken(track.id, auth);
-    let url;
-    // High-quality accounts can use 320 kbps; if unavailable, try 128 kbps.
-    try { url = await media(token, auth, auth.premium ? 'MP3_320' : 'MP3_128'); }
-    catch (e) {
-      if (!auth.premium || e.code !== 'DEEZER_UNAVAILABLE') throw e;
-      url = await media(token, auth, 'MP3_128');
-    }
+    const url = await resolveMedia(token, auth);
     const signal = AbortSignal.timeout(180_000);
     let response;
     let nextUrl = url;
@@ -266,16 +354,22 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
       try {
         response = await http.get(nextUrl, { ...options, timeout: 180_000, signal, responseType: 'stream',
           headers: { 'User-Agent': UA, Accept: '*/*', 'Accept-Encoding': 'identity' } });
-      } catch { throw failure('DEEZER_NETWORK', 'Deezer download failed'); }
+      } catch (err) { throw failure('DEEZER_NETWORK', 'Deezer download failed', { stage: 'cdn', reason: errorReason(err) }); }
+      if (!Number.isInteger(response?.status)) {
+        response?.data?.destroy?.();
+        throw failure('DEEZER_NETWORK', 'Deezer download failed', { stage: 'cdn', reason: 'INVALID_RESPONSE' });
+      }
       if (response.status < 300 || response.status >= 400) break;
       response.data?.destroy?.();
-      if (redirects === 3 || !response.headers?.location) throw failure('DEEZER_UNAVAILABLE', 'Invalid Deezer redirect');
+      if (redirects === 3 || !response.headers?.location) throw failure('DEEZER_UNAVAILABLE', 'Invalid Deezer redirect', { stage: 'cdn', status: response.status });
       try { nextUrl = new URL(response.headers.location, nextUrl).href; } catch { nextUrl = ''; }
-      if (!validMediaUrl(nextUrl)) throw failure('DEEZER_UNAVAILABLE', 'Invalid Deezer redirect');
+      if (!validMediaUrl(nextUrl)) throw failure('DEEZER_UNAVAILABLE', 'Invalid Deezer redirect', { stage: 'cdn', status: response.status });
     }
     if (response.status < 200 || response.status >= 300) {
       response.data?.destroy?.();
-      throw failure('DEEZER_UNAVAILABLE', 'Track unavailable for this account');
+      const network = response.status === 429 || response.status >= 500;
+      throw failure(network ? 'DEEZER_NETWORK' : 'DEEZER_UNAVAILABLE', network ? 'Deezer download failed' : 'Track unavailable for this account',
+        { stage: 'cdn', status: response.status });
     }
     const type = String(response.headers?.['content-type'] || '').toLowerCase();
     const length = Number(response.headers?.['content-length']) || 0;
@@ -283,25 +377,40 @@ function createClient({ http = axios, arl = config.deezer?.arl || '' } = {}) {
       response.data?.destroy?.();
       throw failure(length > maxBytes ? 'TOO_BIG' : 'BAD_SOURCE', 'Invalid track response');
     }
+    let decoder;
+    try { decoder = await makeDecoder(track.id, maxBytes); }
+    catch (err) {
+      response.data?.destroy?.();
+      throw failure('DEEZER_DECODER', 'Deezer decoder is unavailable', { stage: 'decoder', reason: errorReason(err) });
+    }
     let created = false;
+    let fd, output;
     try {
-      const decoder = await stripeDecoder(track.id, maxBytes);
-      const fd = fs.openSync(dest, 'wx', 0o600);
+      try { fd = fs.openSync(dest, 'wx', 0o600); }
+      catch (err) { throw storageFailure(err); }
       created = true;
-      await pipeline(response.data, decoder, fs.createWriteStream(dest, { fd, autoClose: true }), { signal });
-      const bytes = fs.statSync(dest).size;
+      try { output = fs.createWriteStream(dest, { fd, autoClose: true }); }
+      catch (err) { throw storageFailure(err); }
+      fd = undefined; // the stream now owns the descriptor
+      await pipeline(response.data, decoder, output, { signal });
+      let bytes;
+      try { bytes = fs.statSync(dest).size; }
+      catch (err) { throw storageFailure(err); }
       if (bytes < 10 * 1024) throw failure('BAD_SOURCE', 'Track is too small');
       return { ...track, file: dest, bytes };
-    } catch (e) {
+    } catch (err) {
       response.data?.destroy?.();
+      decoder?.destroy?.();
+      output?.destroy?.();
+      if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* best effort */ } }
       if (created) { try { fs.rmSync(dest, { force: true }); } catch { /* best effort */ } }
-      if (['TOO_BIG', 'BAD_SOURCE'].includes(e.code)) throw e;
-      if (e.code === 'ENOSPC' || e.code === 'EDQUOT') throw failure('NOT_ENOUGH_DISK', 'Server storage is full');
-      throw failure('DEEZER_NETWORK', 'Deezer download failed');
+      if (['TOO_BIG', 'BAD_SOURCE', 'DEEZER_STORAGE', 'NOT_ENOUGH_DISK'].includes(err.code)) throw err;
+      if (isStorageCode(err?.code) || STORAGE_SYSCALLS.has(err?.syscall)) throw storageFailure(err);
+      throw failure('DEEZER_NETWORK', 'Deezer download failed', { stage: 'stream', reason: errorReason(err) });
     }
   }
 
-  return { search, getTrack, resolveTrackId, session, download };
+  return { search, getTrack, resolveTrackId, session, diagnose, download };
 }
 
-module.exports = { configured, deezerUrl, trackId, validMediaUrl, createClient, songKey, stripeDecoder, sameRecording };
+module.exports = { configured, deezerUrl, trackId, validMediaUrl, createClient, songKey, stripeDecoder, sameRecording, diagnosticDetails, diagnosticCode, isStorageCode };

@@ -2,6 +2,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { Readable, Writable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const config = require('../../config');
 const deezer = require('../../utils/deezer');
 const settings = require('../../utils/mediaSettings');
@@ -14,26 +16,38 @@ const { sniffFile, tagMp3, safeName, fmtMB, probeMedia } = require('../../utils/
 const getFfmpeg = require('../../utils/ffmpeg');
 const telemetry = require('../../utils/telemetry');
 const { redactArg, redactSecrets, safeText } = require('../../utils/safeLog');
+const { jidVariants } = require('../../utils/jid');
 const log = require('../../utils/logger')('deezer');
 
 const MAX_MB = Number(config.song?.maxMB) || 120;
 const MAX_SECONDS = Number(config.song?.maxMinutes ? config.song.maxMinutes * 60 : 3 * 60 * 60);
-const RECOVERABLE = new Set(['DEEZER_CONFIG', 'DEEZER_AUTH', 'DEEZER_NETWORK', 'DEEZER_TRACK', 'DEEZER_UNAVAILABLE', 'DEEZER_VERIFY', 'BAD_SOURCE', 'DEEZER_ERROR']);
-const ERROR_CODES = new Set([...RECOVERABLE, 'DEEZER_SEND', 'TOO_BIG', 'TOO_LONG', 'NOT_ENOUGH_DISK']);
+const RECOVERABLE = new Set(['DEEZER_CONFIG', 'DEEZER_AUTH', 'DEEZER_NETWORK', 'DEEZER_TRACK', 'DEEZER_UNAVAILABLE', 'DEEZER_DECODER', 'DEEZER_VERIFY', 'BAD_SOURCE', 'DEEZER_ERROR']);
+const ERROR_CODES = new Set([...RECOVERABLE, 'DEEZER_SEND', 'DEEZER_STORAGE', 'TOO_BIG', 'TOO_LONG', 'NOT_ENOUGH_DISK']);
+
+function diagnosticText(value) {
+  const { stage, status, reason } = deezer.diagnosticDetails(value);
+  return [stage, status ? `HTTP ${status}` : '', reason].filter(Boolean).join(', ');
+}
 
 function messageFor(err, isOwner) {
+  let message;
   switch (err?.code) {
-    case 'DEEZER_CONFIG': return isOwner ? 'Deezer is not configured. Set DEEZER_ARL privately in the bot environment.' : 'Deezer is not configured yet.';
-    case 'DEEZER_AUTH': return isOwner ? 'Deezer rejected the account. Check DEEZER_ARL privately in the bot environment.' : 'Deezer is temporarily unavailable.';
-    case 'DEEZER_TRACK': return 'No Deezer track found. Try a title or a full Deezer track link.';
-    case 'DEEZER_UNAVAILABLE': return 'This track is not available from Deezer for the configured account.';
-    case 'DEEZER_VERIFY': return isOwner ? 'Could not verify the full Deezer track. Check that ffmpeg is installed and working.' : 'Could not verify the full Deezer track.';
-    case 'TOO_BIG': return 'That track is larger than the maximum send size.';
-    case 'TOO_LONG': return 'That track exceeds the audio duration limit.';
-    case 'NOT_ENOUGH_DISK': return 'Server storage is temporarily full. Please try again shortly.';
-    case 'DEEZER_SEND': return 'Could not send the audio. Please try again.';
-    default: return 'Deezer is temporarily unavailable. Please try again shortly.';
+    case 'DEEZER_CONFIG': message = isOwner ? 'Deezer is not configured. Set DEEZER_ARL privately in the bot environment.' : 'Deezer is not configured yet.'; break;
+    case 'DEEZER_AUTH': message = isOwner ? 'Deezer rejected the request. Check the private ARL and host access.' : 'Deezer is temporarily unavailable.'; break;
+    case 'DEEZER_NETWORK': message = isOwner ? 'Deezer request failed. Check the hosting connection and access.' : 'Deezer is temporarily unavailable. Please try again shortly.'; break;
+    case 'DEEZER_TRACK': message = 'No Deezer track found. Try a title or a full Deezer track link.'; break;
+    case 'DEEZER_UNAVAILABLE': message = 'This track is not available from Deezer for the configured account.'; break;
+    case 'DEEZER_DECODER': message = isOwner ? 'Deezer audio decoding is unavailable. Install the bot dependencies and restart.' : 'Deezer is temporarily unavailable.'; break;
+    case 'DEEZER_STORAGE': message = isOwner ? 'Deezer could not write its audio file. Check host storage and permissions.' : 'Server storage is temporarily unavailable.'; break;
+    case 'DEEZER_VERIFY': message = isOwner ? 'Could not verify the full Deezer track. Check that ffmpeg is installed and working.' : 'Could not verify the full Deezer track.'; break;
+    case 'TOO_BIG': message = 'That track is larger than the maximum send size.'; break;
+    case 'TOO_LONG': message = 'That track exceeds the audio duration limit.'; break;
+    case 'NOT_ENOUGH_DISK': message = 'Server storage is temporarily full. Please try again shortly.'; break;
+    case 'DEEZER_SEND': message = 'Could not send the audio. Please try again.'; break;
+    default: message = 'Deezer is temporarily unavailable. Please try again shortly.';
   }
+  const details = isOwner ? diagnosticText(err) : '';
+  return details ? `${message}\nStep: ${details}.` : message;
 }
 
 // Preserve useful diagnostics without ever rendering an HTTP request object.
@@ -43,12 +57,68 @@ function logUnexpected(err) {
     let text = redactSecrets(value);
     const arl = String(config.deezer?.arl || '').trim();
     if (arl.length >= 10) text = text.split(arl).join('[REDACTED]');
-    // Gateway/license tokens can also appear as unlabeled opaque values in a
-    // third-party error. Preserve the surrounding message and stack frames.
+    // Unexpected third-party errors may contain signed media URLs or unlabeled
+    // tokens. Keep surrounding messages/stack frames, but never log URLs.
+    text = text.replace(/\bhttps?:\/\/[^\s<>"']+/gi, '[URL REDACTED]');
+    text = text.replace(/(\b(?:signature|sig|hmac|policy|key-pair-id)\b["']?\s*[:=]\s*)[^\s,;&"'}]+/gi, '$1[REDACTED]');
     return text.replace(/\b[A-Za-z0-9_-]{24,}\b/g, '[REDACTED]');
   };
   log.error('Unexpected Deezer failure:', clean(safeText(safe)));
   if (safe instanceof Error && safe.stack) log.error('Stack:', clean(safe.stack));
+}
+
+function isPrivateOwnerChat(sock, extra, chat) {
+  if (!extra?.isOwner || !/@(s\.whatsapp\.net|c\.us|lid|hosted|hosted\.lid)$/i.test(String(chat))) return false;
+  const senderIds = jidVariants(extra?.senderIds || extra?.sender, sock.__sessionDir);
+  return [...jidVariants(chat, sock.__sessionDir)].some((id) => senderIds.has(id));
+}
+
+function statusLine(result) {
+  if (result?.ok === true) return 'ok';
+  if (result?.skipped === true) return 'skipped';
+  if (result?.ok !== false) return 'not checked';
+  const code = deezer.diagnosticCode(result.code);
+  const details = diagnosticText(result);
+  return `failed (${code}${details ? `, ${details}` : ''})`;
+}
+
+async function showStatus(sock, msg, extra, id) {
+  const chat = extra?.from || msg.key.remoteJid;
+  let ffmpeg = false;
+  try { ffmpeg = getFfmpeg.works(); } catch { /* show unavailable */ }
+  const decoderCheck = async () => {
+    let decoder;
+    try {
+      decoder = await deezer.stripeDecoder(id, 2048);
+      // Exercise a synthetic stripe locally; merely importing the package does
+      // not prove the Blowfish constructor/transform works on this host.
+      await pipeline(Readable.from([Buffer.alloc(2048)]), decoder,
+        new Writable({ write(_chunk, _encoding, done) { done(); } }), { signal: AbortSignal.timeout(5000) });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, code: 'DEEZER_DECODER', ...deezer.diagnosticDetails({ stage: 'decoder', reason: err?.code }) };
+    } finally { decoder?.destroy?.(); }
+  };
+  let decoder, report;
+  try {
+    [decoder, report] = await Promise.all([decoderCheck(), deezer.createClient().diagnose(id)]);
+  } catch (err) {
+    logUnexpected(err);
+    return sock.sendMessage(chat, { text: 'Deezer diagnostics could not be completed.' }, { quoted: msg });
+  }
+  const lines = [
+    '*Deezer diagnostics*',
+    `FFmpeg: ${ffmpeg ? 'ok' : 'missing'}`,
+    `Decoder: ${statusLine(decoder)}`,
+    `ARL: ${deezer.configured() ? 'configured' : 'not configured'}`,
+    `Search: ${statusLine(report?.search)}`,
+    `Track metadata: ${statusLine(report?.metadata)}`,
+    `Account: ${statusLine(report?.account)}`,
+    `Track token: ${statusLine(report?.trackToken)}`,
+    `Media URL: ${statusLine(report?.media)}`,
+    'Audio download and playback not tested.',
+  ];
+  return sock.sendMessage(chat, { text: lines.join('\n') }, { quoted: msg });
 }
 
 /**
@@ -151,15 +221,21 @@ async function attempt(sock, msg, extra, {
     return true;
   } catch (err) {
     const rawCode = String(err?.code || '');
-    const code = rawCode === 'ENOSPC' || rawCode === 'EDQUOT' ? 'NOT_ENOUGH_DISK' : (ERROR_CODES.has(rawCode) ? rawCode : 'DEEZER_ERROR');
-    // Expected errors contain no useful request diagnostics. Unexpected errors
-    // retain a redacted message and stack, never Axios config/headers/response.
+    const full = rawCode === 'ENOSPC' || rawCode === 'EDQUOT';
+    const localStorage = deezer.isStorageCode(rawCode);
+    const code = full ? 'NOT_ENOUGH_DISK' : (localStorage ? 'DEEZER_STORAGE' : (ERROR_CODES.has(rawCode) ? rawCode : 'DEEZER_ERROR'));
+    const details = deezer.diagnosticDetails(localStorage ? { stage: 'storage', reason: rawCode } : err);
+    // Only fixed step/status/reason labels are logged; never request data.
+    // Unexpected errors retain a redacted message and stack instead.
     if (code === 'DEEZER_ERROR') logUnexpected(err);
-    else log.warn(code);
+    else {
+      const description = diagnosticText(details);
+      log.warn(description ? `${code} (${description})` : code);
+    }
     if (deliverySucceeded) return true;
     if (fallback && (!explicit || selectedFromSearch) && !deliveryStarted && RECOVERABLE.has(code)) return false;
     telemetry.recordFailure('deezer');
-    await reply(messageFor({ code }, Boolean(extra?.isOwner)));
+    await reply(messageFor({ code, ...details }, Boolean(extra?.isOwner)));
     await react('❌');
     return true;
   }
@@ -171,6 +247,18 @@ module.exports = {
   usage: '.deezer <title or track link> [audio|doc]',
   async execute(sock, msg, args, extra) {
     const rest = [...args];
+    if (String(rest[0] || '').toLowerCase() === '--status') {
+      const chat = extra?.from || msg.key.remoteJid;
+      // fromMe commands can be sent to somebody else's DM as well as to self.
+      // Only report account/host state in the owner's own private chat.
+      if (!isPrivateOwnerChat(sock, extra, chat)) {
+        return sock.sendMessage(chat, { text: 'Run Deezer diagnostics in your private owner chat.' }, { quoted: msg });
+      }
+      const target = rest.slice(1).join(' ').trim();
+      const id = !target ? '3135553' : (/^\d{1,16}$/.test(target) ? target : deezer.trackId(target));
+      if (!id) return sock.sendMessage(chat, { text: `Usage: ${config.prefix}deezer --status [track ID or full Deezer track link]` }, { quoted: msg });
+      return showStatus(sock, msg, extra, id);
+    }
     let sendAs = String(settings.get('songSendAs', config.song?.sendAs || 'document')).toLowerCase();
     const last = String(rest.at(-1) || '').toLowerCase();
     if (['audio', 'mp3'].includes(last)) { sendAs = 'audio'; rest.pop(); }

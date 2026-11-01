@@ -59,8 +59,11 @@ backends: disabling `.deezer` does not prevent `.song` or `.spotify` using the
 configured account. Deezer delivery requires a working ffmpeg to verify the
 track length; `.song` and `.spotify` can fall back to YouTube if it is missing.
 Availability and MP3 quality depend on the account, region and Deezer;
-authentication and playback must be checked on the actual host. Download only
-content you have permission to use.
+authentication and playback must be checked on the actual host. In the private
+owner chat, `.deezer --status` checks connectivity, account access, FFmpeg and
+the decoder without downloading audio. Add a full track link or ID to test its
+availability. The report contains no cookies or tokens and does not confirm
+playback. Download only content you have permission to use.
 
 ### Video sites and YouTube troubleshooting
 
