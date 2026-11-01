@@ -55,6 +55,25 @@ await Promise.all(registry.providers.map(async (p) => {
     catch(e) { console.log(`AUDIT ${p.id}: popular-search=failed ${e.code || e.name}`); }
   }
 }));
+// Additional catalog checks distinguish outdated extractors from one absent
+// title. Only public metadata/search responses are requested for these titles.
+await Promise.all(['vixsrc', 'videasy', 'vidsrc', 'apibay', 'solidtorrents'].map(async (id) => {
+  const p = registry.get(id);
+  const more = [
+    { type: 'movie', title: 'Inception', year: '2010', imdbId: 'tt1375666', tmdbId: 27205 },
+    { type: 'series', title: 'Breaking Bad', year: '2008', imdbId: 'tt0903747', tmdbId: 1396 },
+  ];
+  for (const sample of more) {
+    try {
+      const c = await bounded(p.search(sample, { ...opts(sample), season: 1, episode: 1 }), 30000);
+      console.log(`AUDIT diagnostic ${id} ${sample.type}: count=${c.length}`);
+    } catch(e) { console.log(`AUDIT diagnostic ${id} ${sample.type}: error=${e.code || e.name} cause=${e.cause?.cause?.code || e.cause?.code || 'none'}`); }
+  }
+}));
+for (const sample of samples) {
+  try { const item = await bounded(metadata.cinemeta.byImdb(sample.imdbId, 'movie'), 12000); console.log(`AUDIT cinemeta by-id ${sample.title}: found=${Boolean(item)} imdb=${Boolean(item?.imdbId)} tmdb=${Boolean(item?.tmdbId)}`); }
+  catch(e) { console.log(`AUDIT cinemeta by-id ${sample.title}: error=${e.code || e.name}`); }
+}
 for (const sample of samples) {
   try {
     const hits = await bounded(metadata.cinemeta.search(sample.title, 'movie'), 12000);
