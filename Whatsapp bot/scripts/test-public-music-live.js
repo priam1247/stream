@@ -41,7 +41,7 @@ const sock = { async sendMessage(_chat, body) {
     assert.match(body.caption, /commons\.wikimedia\.org\/wiki\/File/);
   }
   if (mode === 'commons-audio') {
-    assert.match(body.caption, /CC BY-SA 4\.0/);
+    assert.match(body.caption, /Public domain/);
     assert.match(body.caption, /commons\.wikimedia\.org\/wiki\/File/);
   }
   // Decode the whole downloaded output; metadata and headers alone are not a playback test.
@@ -64,8 +64,8 @@ async function run() {
   } else {
     const client = commons.createClient();
     const kind = mode === 'commons-video' ? 'video' : 'audio';
-    const id = kind === 'video' ? 4284283 : 78943371;
-    const query = kind === 'video' ? 'Bach' : 'Moonlight Sonata';
+    const id = kind === 'video' ? 4284283 : 93713006;
+    const query = kind === 'video' ? 'Bach' : 'Bach prelude';
     const found = await client.search(query, { kind, limit: 10 });
     const item = found.find((row) => row.id === id);
     assert.ok(item, 'Commons sample must appear in filtered search');
