@@ -21,6 +21,6 @@ ws.on('message',(data,binary)=>{
   socket.on('error',()=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({t:'error',id:msg.id}));});
   socket.on('close',()=>{if(sockets.delete(msg.id)&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({t:'close',id:msg.id}));});
 });
-ws.on('error',()=>{console.log('Relay connection failed.');process.exitCode=1;});
+ws.on('error',(err)=>{const status=String(err.message||'').match(/Unexpected server response: (\d+)/)?.[1];const code=/^[A-Z_]+$/.test(err.code||'')?err.code:'UNKNOWN';console.log(`::error title=Relay failed::${status ? 'HTTP_'+status : code}`);process.exitCode=1;});
 ws.on('close',()=>{for(const s of sockets.values())s.destroy();sockets.clear();console.log('Relay stopped.');});
 setTimeout(()=>{console.log('Relay time limit reached.');ws.close();},8*60*1000).unref();

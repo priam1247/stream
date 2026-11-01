@@ -80,7 +80,7 @@ async function fullFile(url, name, kind) {
     let streams;
     try {
       streams=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','stream=codec_type','-of','json',file],{timeout:15000,stdio:['ignore','pipe','ignore']})).streams || [];
-    } catch { const fd=fs.openSync(file,'r');const b=Buffer.alloc(8);fs.readSync(fd,b,0,8,0);fs.closeSync(fd);const ct=String(resp.headers['content-type']||'').split(';')[0].replace(/[^a-z0-9\/+.-]/gi,'').slice(0,60);throw Object.assign(new Error('probe'),{code:'BAD_MEDIA',info:`bytes=${bytes} mime=${ct||'none'} magic=${b.toString('hex')}`}); }
+    } catch (e) { const fd=fs.openSync(file,'r');const b=Buffer.alloc(8);fs.readSync(fd,b,0,8,0);fs.closeSync(fd);const ct=String(resp.headers['content-type']||'').split(';')[0].replace(/[^a-z0-9\/+.-]/gi,'').slice(0,60);const why=/^[A-Z_]+$/.test(e.code||'')?e.code:`exit_${Number.isInteger(e.status)?e.status:'unknown'}`;throw Object.assign(new Error('probe'),{code:'BAD_MEDIA',info:`bytes=${bytes} mime=${ct||'none'} magic=${b.toString('hex')} probe=${why}`}); }
     if (!streams.some(s=>s.codec_type==='audio')) throw Object.assign(new Error('audio'),{code:'NO_AUDIO'});
     if (kind==='video' && !streams.some(s=>s.codec_type==='video')) throw Object.assign(new Error('video'),{code:'NO_VIDEO'});
     try {
@@ -103,6 +103,6 @@ async function attempt([name, kind, resolve]) {
 }
 (async()=>{
   const results = await Promise.all(providers.map(attempt));
-  for(const result of results) console.log(`::notice title=Live KnightBot probe::${result}`);
+  console.log(`::notice title=Live KnightBot probe::${results.join(' | ')}`);
   console.log('Keyed calls used only the supplied upstream repository configuration; nothing copied into this bot.');
 })().catch(()=>{console.log('probe failed'); process.exitCode=1;}).finally(()=>fs.rmSync(tmp,{recursive:true,force:true}));
