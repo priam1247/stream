@@ -139,7 +139,9 @@ test('gateway metadata never accepts a different track id or repeats the version
   const matching = fixture({ metadata: 'timeout', rows: [track({ SNG_TITLE: 'Example (Live)', VERSION: '(Live)' })] });
   assert.equal((await deezer.createClient({ http: matching.http, arl: ARL }).getTrack(ID)).title, 'Example (Live)');
   const different = fixture({ metadata: 'timeout', rows: [track({ SNG_TITLE: 'Live It Up', VERSION: 'Live' })] });
-  assert.equal((await deezer.createClient({ http: different.http, arl: ARL }).getTrack(ID)).title, 'Live It Up (Live)');
+  const live = await deezer.createClient({ http: different.http, arl: ARL }).getTrack(ID);
+  assert.equal(live.title, 'Live It Up (Live)');
+  assert.equal(deezer.sameRecording(live, { title: 'Live It Up', artist: 'Artist', duration: 200 }), false);
   const wrong = fixture({ metadata: 'timeout', rows: [track({ SNG_ID: '999999' })] });
   await assert.rejects(deezer.createClient({ http: wrong.http, arl: ARL }).getTrack(ID),
     { code: 'DEEZER_NETWORK', stage: 'metadata', reason: 'ETIMEDOUT' });
@@ -218,4 +220,15 @@ test('status distinguishes public failures from working gateway without download
   assert.deepEqual(report.media, { ok: true });
   assert.equal(f.calls.some((call) => call.url === CDN), false);
   assert.doesNotMatch(JSON.stringify(report), /SYNTHETIC_|cdn\.deezer\.com/);
+});
+
+test('status reports gateway denial without retrying or exposing credentials', async () => {
+  const f = fixture({ search: 'reset', metadata: 'timeout', gatewayStatus: 403 });
+  const report = await deezer.createClient({ http: f.http, arl: ARL }).diagnose(ID);
+  assert.deepEqual(report.gatewaySearch, { ok: false, code: 'DEEZER_AUTH', stage: 'gateway-search', status: 403 });
+  assert.deepEqual(report.gatewayMetadata, { ok: false, code: 'DEEZER_AUTH', stage: 'gateway-metadata', status: 403 });
+  assert.deepEqual(report.trackToken, { skipped: true });
+  assert.deepEqual(report.media, { skipped: true });
+  assert.deepEqual(names(f), ['search.music', 'song.getListData']);
+  assert.doesNotMatch(JSON.stringify(report), /SYNTHETIC_|evil\.test/);
 });

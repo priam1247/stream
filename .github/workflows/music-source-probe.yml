@@ -30,6 +30,9 @@ jobs:
         env:
           MUFFON_CHECKOUT: ${{ runner.temp }}/muffon-api
         run: ruby .github/scripts/muffon-deezer-probe.rb
+      - name: Test the bot gateway fallback with anonymous metadata
+        working-directory: Whatsapp bot
+        run: node scripts/probe-deezer-guest.js
       - name: Test the bot public API anonymously
         working-directory: Whatsapp bot
         run: |
