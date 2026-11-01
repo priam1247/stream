@@ -24,6 +24,11 @@ jobs:
         run: |
           curl -fsSL --max-time 90 --max-filesize 20000000 -A 'ZaFarBot source verification/1.0' 'https://api.audius.co/v1/tracks/xd8gY/download?app_name=stream-bot' -o "$RUNNER_TEMP/audius.mp3"
           [ "$(wc -c < "$RUNNER_TEMP/audius.mp3")" -ge 10240 ]
+      - name: Install FFmpeg and FFprobe
+        run: |
+          npm install --prefix "$RUNNER_TEMP/fftools" --no-save --no-audit --no-fund --ignore-scripts @ffmpeg-installer/linux-x64@4.1.0 @ffprobe-installer/linux-x64@5.2.0
+          echo "$RUNNER_TEMP/fftools/node_modules/@ffmpeg-installer/linux-x64" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/fftools/node_modules/@ffprobe-installer/linux-x64" >> "$GITHUB_PATH"
       - name: Check ffmpeg availability
         run: command -v ffmpeg && command -v ffprobe
       - name: Decode complete audio
@@ -51,6 +56,11 @@ jobs:
           node -e "const p=require(process.argv[1]).query.pages[0];let i=p.imageinfo[0];if(!i.extmetadata.Artist||!i.extmetadata.LicenseShortName||!i.descriptionurl||!i.url.startsWith('https://upload.wikimedia.org/'))process.exit(1)" "$RUNNER_TEMP/commons.json"
       - name: Download Commons file
         run: curl -fsSL --max-time 90 --max-filesize 20000000 -A 'ZaFarBot source verification/1.0' 'https://upload.wikimedia.org/wikipedia/commons/6/60/Bach_BWV_939.ogv' -o "$RUNNER_TEMP/commons.ogv"
+      - name: Install FFmpeg and FFprobe
+        run: |
+          npm install --prefix "$RUNNER_TEMP/fftools" --no-save --no-audit --no-fund --ignore-scripts @ffmpeg-installer/linux-x64@4.1.0 @ffprobe-installer/linux-x64@5.2.0
+          echo "$RUNNER_TEMP/fftools/node_modules/@ffmpeg-installer/linux-x64" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/fftools/node_modules/@ffprobe-installer/linux-x64" >> "$GITHUB_PATH"
       - name: Check ffmpeg availability
         run: command -v ffmpeg && command -v ffprobe
       - name: Decode Commons audio
@@ -70,6 +80,11 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/yt"
           "$RUNNER_TEMP/yt/bin/python" -m pip -q install 'yt-dlp==2026.10.26'
+      - name: Install FFmpeg and FFprobe
+        run: |
+          npm install --prefix "$RUNNER_TEMP/fftools" --no-save --no-audit --no-fund --ignore-scripts @ffmpeg-installer/linux-x64@4.1.0 @ffprobe-installer/linux-x64@5.2.0
+          echo "$RUNNER_TEMP/fftools/node_modules/@ffmpeg-installer/linux-x64" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/fftools/node_modules/@ffprobe-installer/linux-x64" >> "$GITHUB_PATH"
       - name: Check ffmpeg availability
         run: command -v ffmpeg && command -v ffprobe
       - name: Download short video clip with yt-dlp
