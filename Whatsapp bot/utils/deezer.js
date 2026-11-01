@@ -25,7 +25,7 @@ const IV = Buffer.from('0001020304050607', 'hex');
 
 // Diagnostics are restricted to these fixed labels; never copy a request,
 // response body, URL, cookie, token, or arbitrary upstream error into logs.
-const DIAGNOSTIC_STAGES = new Set(['search', 'metadata', 'account', 'track-token', 'media', 'cdn', 'stream', 'decoder', 'storage', 'share']);
+const DIAGNOSTIC_STAGES = new Set(['search', 'metadata', 'gateway-search', 'gateway-metadata', 'account', 'track-token', 'media', 'cdn', 'stream', 'decoder', 'storage', 'share']);
 const DIAGNOSTIC_REASONS = new Set([
   'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNABORTED', 'ECONNRESET', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'EPIPE', 'ERR_NETWORK',
   'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
@@ -35,6 +35,13 @@ const DIAGNOSTIC_REASONS = new Set([
 ]);
 const STORAGE_CODES = new Set(['EACCES', 'EPERM', 'ENOENT', 'EEXIST', 'EROFS', 'ENOSPC', 'EDQUOT', 'ENOTDIR', 'EISDIR', 'ENAMETOOLONG', 'EMFILE', 'ENFILE', 'EFBIG', 'EIO', 'EBADF']);
 const STORAGE_SYSCALLS = new Set(['open', 'write', 'writev', 'stat', 'fstat', 'fsync', 'close']);
+// A different authenticated Deezer endpoint can help when only the public API
+// is unreachable. Never use it to get around a quota, access denial or an
+// unavailable track.
+const PUBLIC_API_TRANSPORT_FAILURES = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNABORTED', 'ECONNRESET', 'ECONNREFUSED',
+  'ENETUNREACH', 'EHOSTUNREACH', 'EPIPE', 'ERR_NETWORK',
+]);
 const DIAGNOSTIC_CODES = new Set([
   'DEEZER_CONFIG', 'DEEZER_AUTH', 'DEEZER_NETWORK', 'DEEZER_TRACK', 'DEEZER_UNAVAILABLE', 'DEEZER_DECODER',
   'DEEZER_STORAGE', 'DEEZER_VERIFY', 'DEEZER_ERROR', 'BAD_SOURCE', 'TOO_BIG', 'TOO_LONG', 'NOT_ENOUGH_DISK',
@@ -180,6 +187,25 @@ function normalizedTrack(row) {
   };
 }
 
+// The account gateway uses a different response shape from the public API.
+// Keep only display metadata; in particular, never return its track token.
+function normalizedGatewayTrack(row) {
+  const title = String(row?.SNG_TITLE || '').trim();
+  const version = String(row?.VERSION || '').trim().slice(0, 150);
+  const versionText = version.replace(/^\((.*)\)$/, '$1').trim();
+  const fullTitle = title && versionText && !title.toLowerCase().includes(versionText.toLowerCase())
+    ? `${title} (${versionText})` : title;
+  const primaryArtist = Array.isArray(row?.ARTISTS) ? row.ARTISTS[0]?.ART_NAME : '';
+  return normalizedTrack({
+    id: row?.SNG_ID,
+    title: fullTitle,
+    artist: { name: row?.ART_NAME || primaryArtist || '' },
+    album: { title: row?.ALB_TITLE || '' },
+    isrc: row?.ISRC,
+    duration: row?.DURATION,
+  });
+}
+
 function createClient({ http = axios, arl = config.deezer?.arl || '', makeDecoder = stripeDecoder } = {}) {
   const cookie = String(arl).trim();
   const headers = { 'User-Agent': UA, Accept: 'application/json' };
@@ -194,23 +220,62 @@ function createClient({ http = axios, arl = config.deezer?.arl || '', makeDecode
     const status = response?.status;
     if (!Number.isInteger(status)) throw failure('DEEZER_NETWORK', 'Deezer request failed', { stage, reason: 'INVALID_RESPONSE' });
     if (status === 401 || status === 403) {
-      const code = ['account', 'track-token', 'media'].includes(stage) ? 'DEEZER_AUTH' : 'DEEZER_NETWORK';
+      const code = ['account', 'gateway-search', 'gateway-metadata', 'track-token', 'media'].includes(stage) ? 'DEEZER_AUTH' : 'DEEZER_NETWORK';
       throw failure(code, 'Deezer rejected the request', { stage, status });
     }
-    if (status < 200 || status >= 300) throw failure('DEEZER_NETWORK', 'Deezer request failed', { stage, status });
+    if (status < 200 || status >= 300) {
+      const retryAfter = response?.headers?.['retry-after'] || response?.headers?.['Retry-After'];
+      const reason = retryAfter && (status === 429 || status === 503) ? 'RATE_LIMIT' : undefined;
+      throw failure('DEEZER_NETWORK', 'Deezer request failed', { stage, status, reason });
+    }
     return response.data;
   }
 
-  async function search(query, { limit = 5 } = {}) {
-    const text = String(query || '').trim().slice(0, 300);
-    if (!text) return [];
-    const params = new URLSearchParams({ q: text, limit: String(Math.max(1, Math.min(10, Number(limit) || 5))) });
+  function canTryGateway(err) {
+    return Boolean(cookie) && err?.code === 'DEEZER_NETWORK' && err.reason !== 'RATE_LIMIT' &&
+      (PUBLIC_API_TRANSPORT_FAILURES.has(err.reason) || [502, 503, 504].includes(err.status));
+  }
+
+  async function gatewayRequest(method, payload, auth, stage) {
+    const params = new URLSearchParams({ method, input: '3', api_version: '1.0', api_token: auth.apiToken });
+    const data = await request('post', `${GATEWAY}?${params}`, payload, { stage, headers: {
+      Cookie: `arl=${cookie}; comeback=1; sid=${auth.sessionId}`, Origin: 'https://www.deezer.com',
+      Referer: 'https://www.deezer.com/', 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json',
+    } });
+    if (!data || hasErrors(data.error) || !Array.isArray(data?.results?.data)) {
+      throw failure('DEEZER_NETWORK', 'Deezer gateway lookup failed', { stage, reason: 'INVALID_RESPONSE' });
+    }
+    return data.results.data;
+  }
+
+  async function publicSearch(text, count) {
+    const params = new URLSearchParams({ q: text, limit: String(count) });
     const data = await request('get', `${API}/search/track?${params}`, null, { stage: 'search' });
     if (!data || data.error || !Array.isArray(data.data)) {
       const reason = Number(data?.error?.code) === 4 ? 'RATE_LIMIT' : 'INVALID_RESPONSE';
       throw failure('DEEZER_NETWORK', 'Deezer search failed', { stage: 'search', reason });
     }
-    return data.data.map(normalizedTrack).filter(Boolean).slice(0, 10);
+    return data.data.map(normalizedTrack).filter(Boolean).slice(0, count);
+  }
+
+  async function gatewaySearch(text, count, auth) {
+    const rows = await gatewayRequest('search.music', {
+      query: text, output: 'TRACK', filter: 'all', start: 0, nb: count,
+    }, auth, 'gateway-search');
+    return rows.map(normalizedGatewayTrack).filter(Boolean).slice(0, count);
+  }
+
+  async function search(query, { limit = 5 } = {}) {
+    const text = String(query || '').trim().slice(0, 300);
+    if (!text) return [];
+    const count = Math.max(1, Math.min(10, Math.floor(Number(limit) || 5)));
+    try { return await publicSearch(text, count); }
+    catch (err) {
+      if (!canTryGateway(err)) throw err;
+      // Preserve the public-API diagnostic if the account gateway also fails.
+      try { return await gatewaySearch(text, count, await session()); }
+      catch { throw err; }
+    }
   }
 
   async function resolveTrackId(input) {
@@ -238,13 +303,30 @@ function createClient({ http = axios, arl = config.deezer?.arl || '', makeDecode
     throw failure('DEEZER_TRACK', 'Use a Deezer track link');
   }
 
-  async function getTrack(id) {
+  async function publicTrack(id) {
     if (!/^\d{1,16}$/.test(String(id))) throw failure('DEEZER_TRACK', 'Invalid track ID');
     const data = await request('get', `${API}/track/${id}`, null, { stage: 'metadata' });
     if (Number(data?.error?.code) === 4) throw failure('DEEZER_NETWORK', 'Deezer track lookup was rate limited', { stage: 'metadata', reason: 'RATE_LIMIT' });
     const track = normalizedTrack(data);
     if (!track || track.id !== String(id)) throw failure('DEEZER_TRACK', 'Track unavailable', { stage: 'metadata' });
     return track;
+  }
+
+  async function gatewayTrack(id, auth) {
+    const rows = await gatewayRequest('song.getListData', { sng_ids: [String(id)] }, auth, 'gateway-metadata');
+    const track = rows.map(normalizedGatewayTrack).find((item) => item?.id === String(id));
+    if (!track) throw failure('DEEZER_TRACK', 'Track unavailable', { stage: 'gateway-metadata' });
+    return track;
+  }
+
+  async function getTrack(id) {
+    if (!/^\d{1,16}$/.test(String(id))) throw failure('DEEZER_TRACK', 'Invalid track ID');
+    try { return await publicTrack(id); }
+    catch (err) {
+      if (!canTryGateway(err)) throw err;
+      try { return await gatewayTrack(id, await session()); }
+      catch { throw err; }
+    }
   }
 
   async function session() {
@@ -324,11 +406,19 @@ function createClient({ http = axios, arl = config.deezer?.arl || '', makeDecode
         return null;
       }
     };
-    const [, track, auth] = await Promise.all([
-      check('search', () => search('Daft Punk One More Time', { limit: 1 })),
-      check('metadata', () => getTrack(id)),
+    let [, track, auth] = await Promise.all([
+      check('search', () => publicSearch('Daft Punk One More Time', 1)),
+      check('metadata', () => publicTrack(id)),
       check('account', () => session()),
     ]);
+    // Show public failures separately; use the same verified account to report
+    // whether the narrow network fallback is actually reachable on this host.
+    if (auth && canTryGateway(report.search)) {
+      await check('gatewaySearch', () => gatewaySearch('Daft Punk One More Time', 1, auth));
+    }
+    if (auth && !track && canTryGateway(report.metadata)) {
+      track = await check('gatewayMetadata', () => gatewayTrack(id, auth));
+    }
     if (track && auth) {
       const token = await check('trackToken', () => trackToken(track.id, auth));
       if (token) await check('media', () => resolveMedia(token, auth));

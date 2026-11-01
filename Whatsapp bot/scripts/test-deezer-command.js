@@ -430,7 +430,9 @@ test('owner-only private status reports safe checks and never exposes raw fields
     const secret = process.env.DEEZER_ARL;
     statusReport = {
       search: { ok: false, code: 'DEEZER_NETWORK', stage: 'search', status: 403, reason: 'EAI_AGAIN', url: `https://example.test/?arl=${secret}` },
+      gatewaySearch: { ok: true, token: secret },
       metadata: { ok: true, token: secret },
+      gatewayMetadata: { ok: false, code: 'DEEZER_AUTH', stage: 'gateway-metadata', status: 403, token: secret },
       account: { ok: false, code: 'DEEZER_NETWORK', stage: secret, status: secret, reason: secret },
       trackToken: { skipped: true, token: secret }, media: { skipped: true, url: secret },
     };
@@ -442,7 +444,9 @@ test('owner-only private status reports safe checks and never exposes raw fields
     assert.match(text, /FFmpeg: missing/);
     assert.match(text, /Decoder: ok/);
     assert.match(text, /Search: failed \(DEEZER_NETWORK, search, HTTP 403, EAI_AGAIN\)/);
+    assert.match(text, /Gateway search: ok/);
     assert.match(text, /Track metadata: ok/);
+    assert.match(text, /Gateway metadata: failed \(DEEZER_AUTH, gateway-metadata, HTTP 403\)/);
     assert.match(text, /Account: failed \(DEEZER_NETWORK\)/);
     assert.match(text, /Track token: skipped/);
     assert.match(text, /Media URL: skipped/);
