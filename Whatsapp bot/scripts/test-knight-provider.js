@@ -77,6 +77,29 @@ test('whole media files are checked for tracks, duration and safe cleanup', asyn
     assert.deepEqual(fs.readdirSync(temp).filter((name) => name.startsWith('out_remote_')), []);
   }
   await assert.rejects(providers.fetchCandidate({ url: 'https://127.0.0.1/file' }, { outBase: base, maxBytes: 20000 }), { code: 'BAD_SOURCE' });
+  await assert.rejects(providers.fetchCandidate(hit, {
+    outBase: base, kind: 'audio', maxBytes: 20000, maxSeconds: 120, transfer,
+    inspect: async () => ({ probed: false }), hasFfmpeg: () => false,
+  }), { code: 'BAD_SOURCE' });
+  await assert.rejects(providers.fetchCandidate(hit, {
+    outBase: base, kind: 'audio', maxBytes: 20000, inspect,
+    transfer: async (_url, file) => { fs.writeFileSync(file, '<html>not media</html>'); return { bytes: 22 }; },
+  }), { code: 'BAD_SOURCE' });
+  assert.deepEqual(fs.readdirSync(temp).filter((name) => name.startsWith('out_remote_')), []);
+});
+
+test('an exclusive-open collision never deletes a file the transfer did not create', async () => {
+  let existing;
+  await assert.rejects(providers.fetchCandidate({ url: 'https://media.example.org/audio.mp3' }, {
+    outBase: path.join(temp, 'collision'), maxBytes: 20000,
+    transfer: async (_url, file) => {
+      existing = file;
+      fs.writeFileSync(file, 'pre-existing user data');
+      throw Object.assign(new Error('file exists'), { code: 'EEXIST' });
+    },
+  }), { code: 'EEXIST' });
+  assert.equal(fs.readFileSync(existing, 'utf8'), 'pre-existing user data');
+  fs.rmSync(existing);
 });
 
 test('a provider with an unusable file does not prevent trying another provider or mirror', async () => {

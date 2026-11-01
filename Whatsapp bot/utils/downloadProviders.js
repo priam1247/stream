@@ -181,8 +181,12 @@ async function fetchCandidate(hit, {
     throw fail('BAD_SOURCE', 'Unsafe or IP-bound media URL');
   }
   const dest = `${outBase}_remote_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.bin`;
+  let downloaded = false;
   try {
+    // The transfer owns cleanup until it returns. In particular, never remove
+    // an existing file if its exclusive open fails with EEXIST.
     const got = await transfer(hit.url, dest, { maxBytes, timeoutMs, headers: hit.headers || {} });
+    downloaded = true;
     const sniff = sniffFile(dest);
     if (sniff.kind === 'unknown' || sniff.kind === 'image') throw fail('BAD_SOURCE', 'Media has an unsupported container');
     const info = await inspect(dest);
@@ -196,14 +200,16 @@ async function fetchCandidate(hit, {
         throw fail('BAD_SOURCE', 'Media is shorter than the selected recording');
       }
     } else {
-      if (hasFfmpeg() || (kind === 'audio' ? sniff.kind !== 'audio' : sniff.kind !== 'video')) {
+      if (maxSeconds || expectedSeconds || hasFfmpeg() || (kind === 'audio' ? sniff.kind !== 'audio' : sniff.kind !== 'video')) {
         throw fail('BAD_SOURCE', 'Media could not be verified');
       }
     }
     const audioInMp4 = kind === 'audio' && info.probed && info.hasAudio && !info.hasVideo && sniff.ext === 'mp4';
     return { file: dest, bytes: got.bytes, sniff: audioInMp4 ? { kind: 'audio', ext: 'm4a', mime: 'audio/mp4' } : sniff, metadata: info };
   } catch (err) {
-    try { fs.rmSync(dest, { force: true }); } catch { /* best effort */ }
+    if (downloaded) {
+      try { fs.rmSync(dest, { force: true }); } catch { /* best effort */ }
+    }
     throw err;
   }
 }
