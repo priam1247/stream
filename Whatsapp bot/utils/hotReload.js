@@ -74,11 +74,6 @@ function reloadRuntime() {
   try {
     require('./telemetry').flushNow();
   } catch { /* ignore */ }
-  let hadWatchdog = false;
-  try {
-    hadWatchdog = Boolean(require('./youtubedl').stopWatchdog());
-  } catch { /* ignore */ }
-
   let evicted = 0;
   for (const key of Object.keys(require.cache)) {
     if (shouldEvict(key)) {
@@ -88,11 +83,6 @@ function reloadRuntime() {
   }
 
   const freshHandler = require(path.join(ROOT, 'handler.js'));
-  if (hadWatchdog) {
-    try {
-      require('./youtubedl').startWatchdog({ everyMinutes: 30 });
-    } catch { /* ignore */ }
-  }
   if (!process.env.FAKE_YTDLP && !process.env.NM3U8DL_DISABLE_AUTOINSTALL) {
     try {
       require('./nm3u8dl').ensureInstalled({ quiet: true }).catch(() => {});

@@ -605,9 +605,13 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
         stderr: 'ERROR: [youtube] x: Sign in to confirm you’re not a bot. Use --cookies for the authentication',
       });
     };
-    providersMod.resolveMedia = async () => ({
-      provider: 'cobalt (test)', url: `http://127.0.0.1:${stubPort}/media.mp3`, ext: 'mp3', title: 'Fallback Song', headers: {},
-    });
+    providersMod.resolveMedia = async () => {
+      // This is a local, synthetic fixture; real provider downloads are tested
+      // separately and use the public-address-checked transfer path.
+      const file = path.join(require(path.join(REPO, 'utils/tempManager')).getTempDir(), `fallback-${Date.now()}.mp3`);
+      const got = await MT.downloadToFile(`http://127.0.0.1:${stubPort}/media.mp3`, file, { maxBytes: 1024 * 1024 });
+      return { provider: 'cobalt (test)', file, sniff: got.sniff, title: 'Fallback Song' };
+    };
 
     const sock = mockSock();
     await songCmd.execute(sock, mockMsg('.song https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ'], makeExtra(sock));
@@ -636,7 +640,8 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     const ownerSock = mockSock();
     await songCmd.execute(ownerSock, mockMsg('.song https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ'], makeExtra(ownerSock));
     const ownerError = ownerSock.sent.map(textOf).find((t) => /automated access/i.test(t));
-    assert.ok(ownerError && /cookies/i.test(ownerError), 'owner missing cookies hint');
+    assert.ok(ownerError);
+    assert.doesNotMatch(ownerError, /\.ytlogin|\.cookies|\.ytdl\s+repair/i);
     assert.match(ownerError, /Tried: yt-dlp/i, 'short owner message must include the attempted engines, not an empty heading');
   });
 
@@ -661,7 +666,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
         const ownerSock = mockSock();
         await command.execute(ownerSock, mockMsg(`${command.name} ${url}`), [url], makeExtra(ownerSock));
         const ownerText = ownerSock.sent.map(textOf).find((text) => /automated access/i.test(text));
-        assert.match(ownerText, /\.ytlogin.*\.cookies set/i);
+        assert.doesNotMatch(ownerText, /\.ytlogin|\.cookies|\.ytdl\s+repair/i);
         assert.match(ownerText, /Tried: yt-dlp, Innertube, yt1d, Cobalt\./);
         const memberSock = mockSock();
         await command.execute(memberSock, mockMsg(`${command.name} ${url}`), [url], { ...makeExtra(memberSock), isOwner: false });
@@ -2562,12 +2567,12 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       assert.strictEqual(fs.existsSync(file), false, 'the file survived release()');
     });
 
-    await test('yt-dlp can repair itself and is watched while running', () => {
+    await test('yt-dlp availability checks do not start an automatic repair watchdog', () => {
       const YT = require(path.join(REPO, 'utils', 'youtubedl'));
-      assert.strictEqual(typeof YT.selfHeal, 'function');
       assert.strictEqual(typeof YT.healthCheck, 'function');
-      assert.strictEqual(typeof YT.startWatchdog, 'function');
-      assert.strictEqual(typeof YT.stopWatchdog, 'function');
+      assert.strictEqual(YT.selfHeal, undefined);
+      assert.strictEqual(YT.startWatchdog, undefined);
+      assert.strictEqual(YT.scheduleAutoUpdate, undefined);
     });
 
     await test('.ytv never sends a silent video', async () => {
@@ -2927,6 +2932,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     const ytAuth = require(path.join(REPO, 'utils/ytAuth.js'));
     const ytInnertube = require(path.join(REPO, 'utils/ytInnertube.js'));
     const yt1d = require(path.join(REPO, 'utils/yt1d.js'));
+    const providers24 = require(path.join(REPO, 'utils/downloadProviders.js'));
     const ytdlCmd = require(path.join(REPO, 'commands/admin/ytdl.js'));
     const ytloginCmd = require(path.join(REPO, 'commands/admin/ytlogin.js'));
     const songCmd24 = require(path.join(REPO, 'commands/media/song.js'));
@@ -3124,6 +3130,14 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       const origDlAudio = YT24.downloadAudio;
       const origDlVideo = YT24.downloadVideo;
       const origGetInfo = YT24.getInfo;
+      const origFetchCandidate = providers24.fetchCandidate;
+      // The production fetch rejects private hosts. This local-only test
+      // deliberately injects a transfer for its loopback fixture server.
+      providers24.fetchCandidate = async (hit, opts) => {
+        const file = `${opts.outBase}_fixture_remote.bin`;
+        const got = await MT24.downloadToFile(hit.url, file, { maxBytes: opts.maxBytes });
+        return { file, sniff: got.sniff, metadata: await probeMedia(file) };
+      };
       process.env.YT1D_BASE_URL = `http://127.0.0.1:${httpPort}`;
       process.env.YT1D_BALANCER_URL = `http://127.0.0.1:${httpPort}/get-server`;
       cfg24.cobalt.useDefaultInstances = false;
@@ -3190,6 +3204,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
         YT24.downloadAudio = origDlAudio;
         YT24.downloadVideo = origDlVideo;
         YT24.getInfo = origGetInfo;
+        providers24.fetchCandidate = origFetchCandidate;
         cfg24.cobalt.useDefaultInstances = true;
         delete process.env.YT1D_BASE_URL;
         delete process.env.YT1D_BALANCER_URL;

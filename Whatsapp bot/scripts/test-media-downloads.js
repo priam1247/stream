@@ -425,18 +425,22 @@ test('EJS and Node are enabled on the first attempt without disabling TLS checks
   assert.equal(YT.classify({ stderr: 'ERROR: certificate verify failed' }).code, 'TLS_ERROR');
 });
 
-test('after a real version change, the updated default profile is retried', async () => {
+test('a bot check does not automatically update or repair yt-dlp', async () => {
   resetFake();
   process.env.TEST_FAIL_FIRST = '1';
   process.env.TEST_UPDATE_VERSION = '2026.10.26';
-  const result = await YT.runWithProfiles('https://youtu.be/dQw4w9WgXcQ', () => ['fixture'], { deadlineMs: 60000 });
-  assert.equal(result.profile, 'default');
-  assert.equal(result.attempts[0].engine, 'yt-dlp:default');
-  const calls = fs.readFileSync(callsFile, 'utf8').trim().split('\n').map(JSON.parse);
-  assert.equal(calls.length, 2);
-  assert.ok(calls.every((args) => !args.includes('--extractor-args')));
-  delete process.env.TEST_UPDATE_VERSION;
-  delete process.env.TEST_FAIL_FIRST;
+  const before = fs.readFileSync(versionFile, 'utf8');
+  try {
+    const result = await YT.runWithProfiles('https://youtu.be/dQw4w9WgXcQ', () => ['fixture'], { deadlineMs: 60000 });
+    assert.equal(result.profile, 'tv');
+    assert.equal(result.attempts[0].engine, 'yt-dlp:default');
+    const calls = fs.readFileSync(callsFile, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(calls.length, 2);
+    assert.equal(fs.readFileSync(versionFile, 'utf8'), before);
+  } finally {
+    delete process.env.TEST_UPDATE_VERSION;
+    delete process.env.TEST_FAIL_FIRST;
+  }
 });
 
 test('unauthenticated retry cap includes distinct iOS and impersonation profiles', async () => {
@@ -472,11 +476,13 @@ test('a failed update is not reported as successful just because the old version
   finally { delete process.env.TEST_UPDATE_FAIL; }
 });
 
-test('owner-only hints use the configured prefix and non-YouTube errors do not blame YouTube', () => {
-  const err = { code: 'BOT_CHECK' };
-  assert.doesNotMatch(YT.friendlyError(err), /\.ytdl|\.ytlogin|\.cookies/);
-  assert.match(YT.friendlyError(err, { isOwner: true }), /\.ytdl.*\.ytlogin.*\.cookies set/);
-  assert.doesNotMatch(YT.friendlyError(err, { isYouTube: false, isOwner: true }), /YouTube|\.ytlogin|\.cookies/);
+test('YouTube failures never ask owners or members for login, cookies or repair', () => {
+  for (const code of ['BOT_CHECK', 'NO_YTDLP', 'AGE_RESTRICTED', 'PO_TOKEN', 'BAD_ARGS']) {
+    for (const isOwner of [false, true]) {
+      assert.doesNotMatch(YT.friendlyError({ code }, { isOwner }), /\.ytlogin|\.cookies|\.ytdl\s+repair|sign.?in/i);
+    }
+  }
+  assert.doesNotMatch(YT.friendlyError({ code: 'BOT_CHECK' }, { isYouTube: false, isOwner: true }), /YouTube|\.ytlogin|\.cookies/);
 });
 
 test('owner engine summary is concise, grouped, and contains no provider error text', () => {

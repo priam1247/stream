@@ -61,18 +61,13 @@ module.exports = {
     apiKey: env.GIFTED_API_KEY || '',
   },
 
-  // ─── yt-dlp / YouTube (used by .song and .ytv) ────────────────────────────
-  // YouTube may challenge hosting IPs. An up-to-date downloader and the owner's
-  // own browser cookies can help, but cannot guarantee access. Treat a cookies
-  // file like a password; keep it private and never commit it to the repository.
+  // ─── Optional local media engine (other sites and YouTube fallback) ───────
   ytdlp: {
     cookiesFile: env.YOUTUBE_COOKIES_FILE || '', // path to cookies.txt
     cookies: env.YOUTUBE_COOKIES || '',          // raw Netscape text, base64, or JSON export
     proxy: env.YTDLP_PROXY || '',                // e.g. http://user:pass@host:port
     ipv4: true,                                  // force IPv4 (IPv6 egress is often blocked)
-    updateOnBotCheck: true,                      // self-update yt-dlp once per run after a bot-check
     fragments: Number(env.YTDLP_FRAGMENTS || 4),
-    autoUpdateHours: Number(env.YTDLP_AUTO_UPDATE_HOURS ?? 24),
     // Total time one .song/.ytv job may spend trying player clients before it
     // gives up (prevents a hopeless download from hanging for an hour).
     deadlineMs: Number(env.YTDLP_DEADLINE_MS || 45 * 60 * 1000),

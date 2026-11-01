@@ -12,7 +12,7 @@
  *      Updates and different supported clients may help.
  *
  * This module does the work properly:
- *   • finds (or auto-installs) a runnable yt-dlp,
+ *   • finds a runnable local yt-dlp without automatically installing it,
  *   • detects which options the *installed* build actually supports, so an old
  *     build never dies with "no such option",
  *   • escalates through several YouTube player clients with a global deadline,
@@ -238,12 +238,7 @@ async function ensureInstalled() {
   return _ensurePromise;
 }
 
-/**
- * Self-update (standalone binary) or pip upgrade. Returns the new version.
- * `quick: true` (used automatically after a bot-check) only does the fast
- * standalone-binary update, so a user's .song request is never stuck waiting
- * for a slow pip install.
- */
+/** Manually update the optional local engine. Returns the new version. */
 async function update({ quick = false } = {}) {
   const cmd = resolveCommand();
   const isLocal = cmd && cmd[0] === LOCAL_BIN;
@@ -713,7 +708,6 @@ function spawnYtdlp(args, { timeout = 120000, onProgress } = {}) {
 
 /** One-shot yt-dlp run (metadata, diagnostics). */
 async function run(args, { timeout = 120000 } = {}) {
-  if (!resolveCommand()) await ensureInstalled();
   return spawnYtdlp(args, { timeout });
 }
 
@@ -817,13 +811,8 @@ const USER_HINTS = {
 
 const OWNER_HINTS = {
   PROXY_ERROR: 'Admin: clear or fix the proxy with `{p}ytdl proxy off`.',
-  NO_YTDLP: 'Admin: run `{p}ytdl repair` or install `yt-dlp[default]` on the host.',
-  BOT_CHECK: 'Admin: check `{p}ytdl` for auth status. Try `{p}ytlogin` for Innertube or private `{p}cookies set` for yt-dlp; the host IP may still be challenged.',
-  AGE_RESTRICTED: 'Admin: access may require an eligible signed-in account and private cookies (`{p}cookies set`).',
   GEO_BLOCK: 'Admin: check regional availability; an appropriate proxy can be configured with `{p}ytdl proxy <url>`. Restrictions may still apply.',
-  PO_TOKEN: 'Admin: try `{p}ytdl update` and check Node/EJS with `{p}ytdl`. Access may still be restricted.',
   FFMPEG_MISSING: 'Admin: install `ffmpeg` on the host.',
-  BAD_ARGS: 'Admin: try `{p}ytdl update` or `{p}ytdl repair`.',
   TLS_ERROR: 'Admin: check the host’s clock and trusted CA certificates; certificate verification is required.',
   NETWORK: 'Admin: check the host’s internet connection and proxy configuration.',
   UNKNOWN: 'Admin: run `{p}ytdl` to inspect the last failure.',
@@ -837,10 +826,8 @@ const OTHER_SITE_HINTS = {
 };
 
 /**
- * Accurate, safe message for any error thrown by this module.
- * Admin-only hints (`.cookies set`, `.ytdl proxy`) are ONLY shown when
- * `opts.isOwner === true`; regular users get plain non-technical messages and
- * never see raw yt-dlp stderr lines.
+ * Accurate, safe message for any error thrown by this module. Optional
+ * diagnostic hints are only shown to owners; raw downloader output is hidden.
  *
  * @param {any} err
  * @param {{ isOwner?: boolean }} [opts]
@@ -864,7 +851,8 @@ function attemptsSummary(attempts) {
   const names = new Set();
   for (const attempt of attempts) {
     const engine = typeof attempt?.engine === 'string' ? attempt.engine : '';
-    if (/^yt-dlp(?::|$)/i.test(engine)) names.add('yt-dlp');
+    if (/^hector$/i.test(engine)) names.add('Hector');
+    else if (/^yt-dlp(?::|$)/i.test(engine)) names.add('yt-dlp');
     else if (/^innertube(?::|$)/i.test(engine)) names.add('Innertube');
     else if (/^yt1d$/i.test(engine)) names.add('yt1d');
     else if (/^gifted$/i.test(engine)) names.add('Gifted');
@@ -1137,99 +1125,10 @@ function assertProduced(outBase, stdout, what) {
   throw Object.assign(new Error(`yt-dlp produced no ${what} file`), { code: 'NO_FORMATS' });
 }
 
-let _autoUpdated = false;
-let _autoUpdateScheduled = false;
-
-let _healedThisRun = false;
-
-function scheduleAutoUpdate() {
-  if (_autoUpdateScheduled) return false;
-  const hours = Number(config.ytdlp?.autoUpdateHours ?? 24);
-  if (!Number.isFinite(hours) || hours <= 0) return false;
-  _autoUpdateScheduled = true;
-
-  const runUpdate = async () => {
-    try {
-      const command = resolveCommand();
-      const result = command ? await update({ quick: true }) : await ensureInstalled();
-      if (!result) console.warn('[ytdlp] scheduled auto-update/install did not find a working version');
-    } catch (error) {
-      console.warn('[ytdlp] scheduled auto-update failed:', error.message || error);
-    }
-  };
-  const timer = setTimeout(() => {
-    void runUpdate();
-    const interval = setInterval(() => { void runUpdate(); }, hours * 60 * 60 * 1000);
-    interval.unref?.();
-  }, 5 * 60 * 1000);
-  timer.unref?.();
-  return true;
-}
-
-let _repairPromise = null;
-let _lastRepairAt = 0;
-const REPAIR_COOLDOWN_MS = 5 * 60 * 1000;
-
-/**
- * Put a working yt-dlp back on the host.
- *
- * The standalone binary is deleted first (a half-written download, a bad
- * chmod or a corrupted file is the usual reason a previously working binary
- * stops running), then `ensureInstalled()` re-downloads it and falls back to
- * pip. Concurrent callers share one attempt and a 5-minute cooldown stops a
- * broken network from turning every command into a reinstall.
- *
- * @returns {Promise<string[]|null>} the working command, or null
- */
-async function selfHeal(reason = '') {
-  if (_repairPromise) return _repairPromise;
-  if (Date.now() - _lastRepairAt < REPAIR_COOLDOWN_MS) return resolveCommand({ force: true });
-  _lastRepairAt = Date.now();
-
-  _repairPromise = (async () => {
-    console.warn(`[ytdlp] self-repair${reason ? ` · ${reason}` : ''}`);
-    try { if (fs.existsSync(LOCAL_BIN)) fs.unlinkSync(LOCAL_BIN); } catch { /* ignore */ }
-    _cmd = undefined;
-    let cmd = null;
-    try { cmd = await ensureInstalled(); } catch (e) { _installError = e.message; }
-    if (!cmd) { _cmd = undefined; cmd = resolveCommand({ force: true }); }
-    capabilities({ force: true });
-    if (cmd) console.log(`[ytdlp] self-repair OK · ${probeCommand(cmd) || 'runnable'}`);
-    else console.warn(`[ytdlp] self-repair failed · ${_installError || 'no working binary'}`);
-    return cmd;
-  })().finally(() => { _repairPromise = null; });
-
-  return _repairPromise;
-}
-
-/**
- * Is yt-dlp actually runnable? Repairs it when it is not.
- * Called at boot and by the watchdog below, so a host whose binary disappears
- * (image rebuild, disk cleanup, failed auto-update) heals itself.
- */
-async function healthCheck({ heal = true } = {}) {
+/** Report local availability without installing, deleting or updating anything. */
+async function healthCheck() {
   const cmd = resolveCommand({ force: true });
-  if (cmd && probeCommand(cmd)) return cmd;
-  if (!heal) return null;
-  return selfHeal(cmd ? 'binary is not runnable' : 'binary is missing');
-}
-
-let _watchdog = null;
-
-/** Re-check yt-dlp in the background (default: every 30 minutes). */
-function startWatchdog({ everyMinutes = 30 } = {}) {
-  if (_watchdog) return false;
-  const minutes = Math.max(5, Number(everyMinutes) || 30);
-  _watchdog = setInterval(() => { void healthCheck(); }, minutes * 60 * 1000);
-  _watchdog.unref?.();
-  return true;
-}
-
-function stopWatchdog() {
-  if (!_watchdog) return false;
-  clearInterval(_watchdog);
-  _watchdog = null;
-  return true;
+  return cmd && probeCommand(cmd) ? cmd : null;
 }
 
 /**
@@ -1290,13 +1189,6 @@ async function runWithProfiles(url, buildArgs, {
         // A build that cannot impersonate will not learn to: drop that profile.
         if (info.code === 'IMPERSONATE' && profile.name === 'impersonate') disableImpersonation();
 
-        // Broken/missing binary mid-flight: repair it once and retry the profile.
-        if (info.code === 'NO_YTDLP' && !_healedThisRun) {
-          _healedThisRun = true;
-          const repaired = await selfHeal(`download failed with ${info.code}`);
-          if (repaired) { i--; continue; }
-        }
-
         // Some builds reject one of the optional flags (usually because they are
         // much older than expected). Drop them and retry the same profile once
         // instead of failing every download with "no such option".
@@ -1305,23 +1197,6 @@ async function runWithProfiles(url, buildArgs, {
           setMinimalBaseArgs(true);
           i--;
           continue;
-        }
-
-        // YouTube silently breaks older yt-dlp builds: a bot-check on a stale
-        // version is worth one self-update per process before giving up.
-        if (info.code === 'BOT_CHECK' && !_autoUpdated && config.ytdlp?.updateOnBotCheck !== false) {
-          _autoUpdated = true;
-          const previousVersion = capabilities().version;
-          console.log('[ytdlp] bot-check detected — checking for a yt-dlp update');
-          try {
-            const updatedVersion = await update({ quick: true });
-            // The newly updated default client deserves a fresh attempt. Do not
-            // retry it if the update failed or the version did not change.
-            if (updatedVersion && previousVersion && updatedVersion !== previousVersion) {
-              i--;
-              continue;
-            }
-          } catch (e) { console.warn('[ytdlp] auto-update failed:', e.message); }
         }
 
         // Bound repeated unauthenticated bot-checks, but allow the distinct iOS
@@ -1552,11 +1427,11 @@ module.exports = {
   // helpers
   isYouTubeUrl, extractVideoId, youtubeId, extractUrl, normalizeYouTubeUrl,
   // engine
-  resolveCommand, version, ensureInstalled, update, scheduleAutoUpdate, run, spawnYtdlp,
+  resolveCommand, version, ensureInstalled, update, run, spawnYtdlp,
   getInfo, probeRaw, searchVideos, downloadAudio, downloadVideo, runWithProfiles, findProduced,
   ffmpegLocationArgs, assertProduced,
   capabilities, disableImpersonation, setMinimalBaseArgs, usingMinimalBaseArgs,
-  selfHeal, healthCheck, startWatchdog, stopWatchdog,
+  healthCheck,
   // cookies & proxy
   setCookies, clearCookies, cookieInfo, cookieFile, hasCookies, normaliseCookieText, proxyUrl, invalidProxyReason,
   // errors

@@ -117,7 +117,7 @@ async function downloadAndSend(sock, msg, extra, {
     });
 
     // Best-effort metadata (the download attempt reports the real problems).
-    if (!title) {
+    if (!title && !(YT.isYouTubeUrl(url) && providers.preferredEnabled())) {
       try {
         const info = await YT.getInfo(url, { timeout: 45000 });
         title = info.title; author = author || info.uploader;
@@ -133,9 +133,29 @@ async function downloadAndSend(sock, msg, extra, {
     const deadlineAt = Date.now() + JOB_DEADLINE;
     let file = null;
     let via = 'yt-dlp';
+    let providerSniff = null;
 
-    // ── Engine 1: yt-dlp ───────────────────────────────────────────────────
-    try {
+    // Match .song/.ytv for exact YouTube links, without changing other sites.
+    if (YT.isYouTubeUrl(url) && kind !== 'image' && providers.preferredEnabled()) {
+      try {
+        const hit = await providers.resolveMedia(url, {
+          kind, quality: height, only: ['hector'], timeoutMs: 55000,
+          onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
+          accept: (candidate) => providers.fetchCandidate(candidate, {
+            outBase, kind, maxBytes: (kind === 'audio' ? MAX_AUDIO_MB : MAX_VIDEO_MB) * 1024 * 1024,
+            maxSeconds: kind === 'video' ? MAX_MINUTES * 60 : Number(config.song?.maxMinutes || 0) * 60,
+          }),
+        });
+        file = hit.file; files.push(file); via = hit.provider; providerSniff = hit.sniff; title = title || hit.title;
+        if (hit.quality) height = hit.quality;
+      } catch (error) {
+        if (['TOO_LONG', 'NOT_ENOUGH_DISK', 'ENOSPC', 'EDQUOT', 'EACCES', 'EPERM', 'EROFS'].includes(error?.code)) throw error;
+        console.warn(`[media] Hector unavailable (${error.code || 'FAILED'})`);
+      }
+    }
+
+    // Installed local engines remain fallbacks.
+    if (!file) try {
       const onAttempt = (name, err, info) => {
         console.log(`[media] yt-dlp profile "${name}" failed (${info.code})`);
         attempts.push({ engine: `yt-dlp:${name}`, code: info.code });
@@ -157,7 +177,7 @@ async function downloadAndSend(sock, msg, extra, {
     } catch (ytErr) {
       const info = YT.classify(ytErr);
       attempts.push({ engine: 'yt-dlp', code: info.code });
-      console.warn(`[media] yt-dlp failed (${info.code}): ${info.detail}`);
+      console.warn(`[media] yt-dlp failed (${info.code})`);
 
       const direct = ['UNSUPPORTED_URL', 'NO_FORMATS', 'UNKNOWN'].includes(info.code)
         ? await downloadDirect(url, `${outBase}_direct.bin`, kind === 'audio' ? MAX_AUDIO_MB : MAX_VIDEO_MB,
@@ -213,8 +233,12 @@ async function downloadAndSend(sock, msg, extra, {
           let remoteHit;
           try {
             remoteHit = await providers.resolveMedia(url, {
-              kind, quality: height, timeoutMs: 20000,
+              kind, quality: height, timeoutMs: 20000, exclude: ['hector'],
               onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
+              accept: (candidate) => providers.fetchCandidate(candidate, {
+                outBase, kind, maxBytes: (kind === 'audio' ? MAX_AUDIO_MB : MAX_VIDEO_MB) * 1024 * 1024,
+                maxSeconds: kind === 'video' ? MAX_MINUTES * 60 : Number(config.song?.maxMinutes || 0) * 60,
+              }),
             });
           } catch (providerErr) {
             console.warn('[media] backup sources failed:', providerErr.message);
@@ -223,15 +247,11 @@ async function downloadAndSend(sock, msg, extra, {
           }
 
           via = remoteHit.provider;
-          const dest = path.join(getTempDir(), `${stamp}_remote.${remoteHit.ext || (kind === 'audio' ? 'mp3' : 'mp4')}`);
-          const got = await downloadToFile(remoteHit.url, dest, {
-            maxBytes: (kind === 'audio' ? MAX_AUDIO_MB : MAX_VIDEO_MB) * 1024 * 1024,
-            headers: remoteHit.headers,
-          });
-          files.push(dest);
-          file = dest;
+          file = remoteHit.file;
+          files.push(file);
+          providerSniff = remoteHit.sniff;
           title = title || remoteHit.title;
-          console.log(`[media] downloaded via ${via} (${got.sniff.kind}/${got.sniff.ext})`);
+          console.log(`[media] downloaded via ${via} (${remoteHit.sniff.kind}/${remoteHit.sniff.ext})`);
         }
       }
     }
@@ -240,7 +260,7 @@ async function downloadAndSend(sock, msg, extra, {
       throw Object.assign(new Error('downloaded file is empty'), { code: 'NO_FORMATS' });
     }
 
-    const sniffed = sniffFile(file);
+    const sniffed = providerSniff || sniffFile(file);
     if (sniffed.kind !== 'image') {
       diskSpace.requireMediaCopySpace(getTempDir(), fs.statSync(file).size / 1048576, config.media || {});
     }

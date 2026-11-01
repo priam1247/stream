@@ -73,9 +73,19 @@ async function downloadPublicFile(initialUrl, dest, {
   request = publicGet,
   resolve = dns.promises.lookup,
   wait = sleep,
+  headers = {},
 } = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 10240 || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw fail('BAD_SOURCE', 'Invalid media download limits');
+  }
+  // Some public media CDNs require a browser user agent or a public referer.
+  // Never let a provider supply credentials or arbitrary request headers.
+  const safeHeaders = {};
+  for (const [key, value] of Object.entries(headers || {})) {
+    const normalized = String(key).toLowerCase();
+    if (!['user-agent', 'referer'].includes(normalized) || typeof value !== 'string' ||
+        value.length > 1024 || /[\r\n]/.test(value)) continue;
+    safeHeaders[normalized === 'user-agent' ? 'User-Agent' : 'Referer'] = value;
   }
   const hosts = allowedHosts ? new Set(allowedHosts.map((host) => String(host).toLowerCase())) : null;
   const signal = AbortSignal.timeout(Math.min(Math.floor(timeoutMs), 2 ** 31 - 1));
@@ -91,7 +101,7 @@ async function downloadPublicFile(initialUrl, dest, {
         response = await request(current.href, {
           responseType: 'stream', timeout: 30000, signal, maxRedirects: 0,
           httpsAgent: agent, proxy: false, auth: null, decompress: false,
-          headers: { 'User-Agent': 'ZaFarBot/2.2 public media', Accept: '*/*', 'Accept-Encoding': 'identity', ...credentialHeaders },
+          headers: { 'User-Agent': 'ZaFarBot/2.2 public media', Accept: '*/*', 'Accept-Encoding': 'identity', ...safeHeaders, ...credentialHeaders },
           validateStatus: () => true,
         });
         if (!response?.data || typeof response.data.destroy !== 'function') {

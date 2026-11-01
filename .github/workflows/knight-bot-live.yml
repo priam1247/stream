@@ -1,0 +1,28 @@
+name: Temporary real bot media probe
+on:
+  push:
+    branches: [arena/afda50e9-stream]
+    paths: ['.github/workflows/knight-bot-live.yml', 'Whatsapp bot/scripts/test-knight-live.js']
+permissions:
+  contents: read
+jobs:
+  commands:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [song, video, dl-audio, title]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install bot dependencies
+        working-directory: Whatsapp bot
+        run: npm ci --no-audit --no-fund
+      - name: Run real bot command and fully decode the delivered media
+        working-directory: Whatsapp bot
+        env:
+          KNIGHT_LIVE: '1'
+        run: node scripts/test-knight-live.js '${{ matrix.mode }}'

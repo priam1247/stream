@@ -3,16 +3,10 @@
  *
  *   .song <name or link> [audio|doc]     [audio|doc] overrides config.song.sendAs
  *
- * Quiet by design: reactions and one file message; long jobs get a progress card.
- * Highest-quality audio yt-dlp can get (m4a/aac first), converted to MP3 at
- * LAME V0 and sent as a document unless the caller explicitly asks for `audio`.
- *
  * Title searches try configured Deezer first; explicit YouTube links stay on
- * YouTube. If Deezer is unavailable, the existing YouTube pipeline takes over.
- * Pipeline (first engine that works wins):
- *   1. yt-dlp   — local, best quality, retries with several YouTube player
- *                 clients, converts to MP3 with ffmpeg (raw stream if no ffmpeg).
- *   2. remote   — Gifted / cobalt providers (only when yt-dlp cannot do it).
+ * YouTube. The keyless KnightBot provider is tried first for YouTube, followed
+ * by installed local and other remote engines. Each remote file is downloaded
+ * and checked before it is accepted. Audio is sent as a document by default.
  *
  * Everything is streamed to disk: a 2-hour mix never lands in RAM, and the file
  * is deleted right after it is sent.
@@ -35,7 +29,7 @@ const deezer = require('../../utils/deezer');
 const deezerCommand = require('./deezer');
 const jobQueue = require('../../utils/jobQueue');
 const {
-  downloadToFile, sniffFile, audioToMp3, tagMp3, safeName, fmtMB,
+  sniffFile, audioToMp3, tagMp3, safeName, fmtMB,
 } = require('../../utils/mediaTransfer');
 const log = require('../../utils/logger')('song');
 const { getTempDir, deleteTempFile, holdTemp } = require('../../utils/tempManager');
@@ -126,8 +120,6 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
         const results = await youtubeSearch.searchYouTube(text, { limit: maxResults });
 
         if (!results.length) {
-          const engine = YT.resolveCommand() || await YT.ensureInstalled();
-          if (!engine) return reply(YT.friendlyError({ code: 'NO_YTDLP' }, { isOwner: Boolean(extra?.isOwner) }));
           return reply('❌ No results found.');
         }
 
@@ -160,7 +152,9 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
       }
 
 
-      if (!title || !duration) {
+      // A direct link can go straight to the keyless provider. Its returned
+      // file is probed for duration before delivery, even without yt-dlp.
+      if ((!title || !duration) && !providers.preferredEnabled()) {
         try {
           const info = await YT.getInfo(url, { timeout: 35000 });
           title = title || info.title; artist = artist || info.uploader;
@@ -192,12 +186,33 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
       try {
       await react('📥');
 
-      // ── 3. Engine 1: yt-dlp ───────────────────────────────────────────────
+      // KnightBot's keyless provider first; a URL is only accepted after the
+      // entire file has been fetched and its audio stream checked.
       let file = null;
       let ext = 'mp3';
       let via = 'yt-dlp';
+      let verifiedSniff = null;
+      if (providers.preferredEnabled() && YT.isYouTubeUrl(url)) {
+        try {
+          const hit = await providers.resolveMedia(url, {
+            kind: 'audio', only: ['hector'], timeoutMs: 55000,
+            onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
+            accept: (candidate) => providers.fetchCandidate(candidate, {
+              outBase, kind: 'audio', maxBytes: MAX_AUDIO_MB * 1024 * 1024, maxSeconds: MAX_AUDIO_SECONDS,
+            }),
+          });
+          file = hit.file; ext = hit.sniff.ext; verifiedSniff = hit.sniff;
+          via = hit.provider; title = title || hit.title; duration = duration || hit.metadata?.duration || 0;
+          files.push(file);
+        } catch (error) {
+          if (['TOO_LONG', 'NOT_ENOUGH_DISK', 'ENOSPC', 'EDQUOT', 'EACCES', 'EPERM', 'EROFS'].includes(error?.code)) throw error;
+          log.warn(`Hector audio unavailable · ${error.code || 'FAILED'}`);
+        }
+      }
 
-      try {
+      // Other installed engines remain fallbacks; they are never installed or
+      // repaired automatically by a song request.
+      if (!file) try {
         const res = await YT.downloadAudio(url, {
           outBase,
           maxMB: MAX_AUDIO_MB,
@@ -214,7 +229,7 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
       } catch (ytErr) {
         const info = YT.classify(ytErr);
         attempts.push({ engine: 'yt-dlp', code: info.code });
-        log.warn(`yt-dlp failed · ${info.code} · ${info.detail}`);
+        log.warn(`yt-dlp failed · ${info.code}`);
 
         // ── 4. Engine 2 (Innertube + PoToken/SABR) & Engine 3 (yt1d/remote) ──
         const fallbackWorthTrying = ['BOT_CHECK', 'NO_YTDLP', 'NO_FORMATS', 'FFMPEG_MISSING', 'UNKNOWN',
@@ -258,9 +273,11 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
           let remoteHit;
           try {
             remoteHit = await providers.resolveMedia(url, {
-              kind: 'audio',
-              timeoutMs: 55000,
+              kind: 'audio', timeoutMs: 55000, exclude: ['hector'],
               onAttempt: (name, err, st) => { if (st.code !== 'OK') attempts.push({ engine: name, code: st.code }); },
+              accept: (candidate) => providers.fetchCandidate(candidate, {
+                outBase, kind: 'audio', maxBytes: MAX_AUDIO_MB * 1024 * 1024, maxSeconds: MAX_AUDIO_SECONDS,
+              }),
             });
           } catch (providerErr) {
             log.warn(`backup sources failed · ${providerErr.message}`);
@@ -269,14 +286,10 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
           }
 
           via = remoteHit.provider;
-          const dest = `${outBase}_remote.${remoteHit.ext || 'mp3'}`;
-          const got = await downloadToFile(remoteHit.url, dest, {
-            maxBytes: MAX_AUDIO_MB * 1024 * 1024,
-            headers: remoteHit.headers
-          });
-          files.push(dest);
-          file = dest;
-          ext = got.sniff.kind === 'audio' ? got.sniff.ext : (remoteHit.ext || 'mp3');
+          file = remoteHit.file;
+          files.push(file);
+          verifiedSniff = remoteHit.sniff;
+          ext = verifiedSniff.ext;
           title = title || remoteHit.title;
         }
       }
@@ -285,7 +298,7 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
         throw Object.assign(new Error('empty audio file'), { code: 'NO_FORMATS' });
       }
 
-      const sniffed = sniffFile(file);
+      const sniffed = verifiedSniff || sniffFile(file);
       if (sniffed.kind === 'unknown' || sniffed.ext === 'bin') {
         throw Object.assign(new Error('the source did not return an audio file'), { code: 'BAD_SOURCE' });
       }
@@ -359,7 +372,7 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
       });
     } catch (err) {
       require('../../utils/telemetry').recordFailure('song');
-      log.error(`${text || 'song'} · ${YT.classify(err).code} · ${String(err.message).split('\n')[0]}`);
+      log.error(`${text || 'song'} · ${YT.classify(err).code}`);
       const isOwner = Boolean(extra?.isOwner);
       if (err.code === 'NOT_ENOUGH_DISK') {
         const { safeErrorMessage } = require('../../utils/userErrors');

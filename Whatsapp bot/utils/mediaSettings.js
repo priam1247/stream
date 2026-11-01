@@ -1,10 +1,8 @@
 /**
  * ZaFar Bot — Media runtime settings
  *
- * Small JSON store (database/media_settings.json) for things the owner may want
- * to change *without* editing files on the host — the usual reason .song/.ytv
- * "just fail" is that the host has no cookies and no proxy, and the owner has
- * no way to add them from WhatsApp.
+ * Small JSON store (database/media_settings.json) for optional runtime media
+ * settings the owner can change without editing host files.
  *
  *   .ytdl proxy <url|off>     → settings.proxy
  *   .cookies set              → settings.cookiesSource (managed by youtubedl.js)
