@@ -94,6 +94,6 @@ async function attempt([name, kind, resolve]) {
 }
 (async()=>{
   const results = await Promise.all(providers.map(attempt));
-  for(const result of results) console.log(result);
+  for(const result of results) console.log(`::notice title=Live KnightBot probe::${result}`);
   console.log('Knight and Prince: skipped; external keys are not ours to copy or use.');
 })().catch(()=>{console.log('probe failed'); process.exitCode=1;}).finally(()=>fs.rmSync(tmp,{recursive:true,force:true}));
