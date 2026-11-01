@@ -144,7 +144,7 @@ jobs:
         if: matrix.source == 'commons-audio'
         working-directory: Whatsapp bot
         run: |
-          node -e "const c=require('./utils/commonsMedia').createClient();c.downloadItem(78943371,process.env.RUNNER_TEMP+'/sample.ogg',{kind:'audio',maxBytes:120*1024*1024,maxSeconds:10800}).then(()=>console.log('download passed')).catch(e=>{console.log('::error::download stage '+String(e.code||'UNKNOWN')+' '+String(e.message||''));process.exitCode=1;})"
+          node -e "const c=require('./utils/commonsMedia').createClient();c.downloadItem(78943371,process.env.RUNNER_TEMP+'/sample.ogg',{kind:'audio',maxBytes:120*1024*1024,maxSeconds:10800}).then(()=>console.log('download passed')).catch(e=>{console.log('::error::download stage '+String(e.code||'UNKNOWN')+' HTTP '+String(e.status||'unknown')+' '+String(e.message||''));process.exitCode=1;})"
       - name: Exercise actual bot search, delivery and full decode
         working-directory: Whatsapp bot
         env:

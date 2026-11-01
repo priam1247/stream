@@ -102,7 +102,9 @@ async function downloadPublicFile(initialUrl, dest, {
         }
         if (status !== 200) {
           response.data.destroy();
-          throw fail('MEDIA_NETWORK', 'Media source returned an unexpected status');
+          throw Object.assign(fail('MEDIA_NETWORK', 'Media source returned an unexpected status'), {
+            status: Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined,
+          });
         }
         const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
         const lengthText = String(response.headers?.['content-length'] || '');

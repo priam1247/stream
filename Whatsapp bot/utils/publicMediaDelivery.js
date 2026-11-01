@@ -15,6 +15,7 @@ const MAX_AUDIO_MB = Math.max(1, Number(config.song?.maxMB) || 120);
 const MAX_VIDEO_MB = Math.max(1, Number(config.video?.maxMB) || 2000);
 const AUDIO_SECONDS = (Number(config.song?.maxMinutes) || 180) * 60;
 const VIDEO_SECONDS = Math.max(0, Number(config.video?.maxMinutes) || 0) * 60;
+const DOWNLOAD_TIMEOUT = Math.max(60000, Math.min(30 * 60 * 1000, Number(config.ytdlp?.deadlineMs) || 10 * 60 * 1000));
 const AS_DOCUMENT_ABOVE = 50 * 1024 * 1024;
 const KNOWN = new Set(['MEDIA_NETWORK', 'MEDIA_UNAVAILABLE', 'UNSAFE_SOURCE', 'BAD_SOURCE', 'MEDIA_VERIFY', 'MEDIA_CREDIT', 'MEDIA_SEND',
   'TOO_BIG', 'TOO_LONG', 'NOT_ENOUGH_DISK', 'ENOSPC', 'EDQUOT', 'EACCES', 'EPERM', 'EROFS', 'EEXIST']);
@@ -74,7 +75,7 @@ async function sendPublicMedia(sock, msg, extra, {
         });
         await react('📥');
         stage = 'download';
-        const item = await download(raw, { maxBytes: Math.floor(maxMB * 1024 * 1024), maxSeconds });
+        const item = await download(raw, { maxBytes: Math.floor(maxMB * 1024 * 1024), maxSeconds, timeoutMs: DOWNLOAD_TIMEOUT });
         stage = 'storage';
         if (!fs.existsSync(raw) || fs.statSync(raw).size < 10240) throw fail('BAD_SOURCE', 'Missing media');
         disk.requireMediaCopySpace(getTempDir(), fs.statSync(raw).size / 1048576, config.media || {});
@@ -145,7 +146,8 @@ async function sendPublicMedia(sock, msg, extra, {
     if (delivered) return { sent: true, kind };
     const code = KNOWN.has(err?.code) ? err.code : 'MEDIA_NETWORK';
     // Never log raw provider errors or signed URLs.
-    console.warn(`[public-media] ${code} (${stage})`);
+    const status = Number.isInteger(err?.status) && err.status >= 100 && err.status <= 599 ? `, HTTP ${err.status}` : '';
+    console.warn(`[public-media] ${code} (${stage}${status})`);
     telemetry.recordFailure('public-media');
     await reply(errorMessage(code, label, Boolean(extra?.isOwner)));
     await react('❌');

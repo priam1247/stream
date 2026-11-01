@@ -123,8 +123,9 @@ checked against the requested site's video/post URLs, but may be outdated,
 incomplete, unrelated or not downloadable. A site's original language may work
 better; `S01E01` is only a search hint, not an episode guarantee.
 Search and downloads can fail because of rate limits, sign-in, location, deleted
-videos, network blocks, DRM or site changes. Search is not a filter for explicit
-material hosted on general-purpose sites.
+videos, network blocks, DRM or site changes. A current system FFmpeg may be more
+reliable for Dailymotion HLS than the older packaged fallback. Search is not a
+filter for explicit material hosted on general-purpose sites.
 
 Selected results still use the existing yt-dlp pipeline, not separate extractors;
 `.bili`, `.daily`, `.xhs`, and `.nico` are aliases. To download a direct link,

@@ -105,6 +105,13 @@ test('disabled downloads, partial replies, pages and oversized bodies are refuse
   }
 });
 
+test('unexpected HTTP status diagnostics expose only the status', async (t) => {
+  const dest = tempFile(t);
+  await assert.rejects(downloadPublicFile('https://api.audius.co/file?signature=secret', dest, {
+    maxBytes: 20000, request: async () => response(503),
+  }), (err) => err.code === 'MEDIA_NETWORK' && err.status === 503 && !err.message.includes('secret'));
+});
+
 test('a pre-existing destination is never overwritten or deleted', async (t) => {
   const dest = tempFile(t);
   fs.writeFileSync(dest, 'do not delete');
