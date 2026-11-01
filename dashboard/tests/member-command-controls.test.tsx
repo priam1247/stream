@@ -19,26 +19,21 @@ it('shows site shortcuts, searches aliases, and toggles the canonical member com
   expect(await screen.findByText('Service synced')).toBeTruthy();
   expect(screen.getByText(/Site shortcuts do not block \.dl/)).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'media' }));
-  expect(screen.getByRole('switch', { name: 'Allow .bilibili for members' }).getAttribute('aria-checked')).toBe('true');
-  fireEvent.change(screen.getByRole('searchbox', { name: 'Search member commands' }), { target: { value: 'bili' } });
-  fireEvent.click(screen.getByRole('switch', { name: 'Allow .bilibili for members' }));
-  await waitFor(() => expect(screen.getByRole('switch', { name: 'Allow .bilibili for members' }).getAttribute('aria-checked')).toBe('false'));
+  expect(screen.getByRole('switch', { name: 'Allow .tiktok for members' }).getAttribute('aria-checked')).toBe('true');
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Search member commands' }), { target: { value: 'tt' } });
+  fireEvent.click(screen.getByRole('switch', { name: 'Allow .tiktok for members' }));
+  await waitFor(() => expect(screen.getByRole('switch', { name: 'Allow .tiktok for members' }).getAttribute('aria-checked')).toBe('false'));
   const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH');
-  expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ name: 'bilibili', disabled: true });
+  expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ name: 'tiktok', disabled: true });
 });
 
-it('documents title-only search for all 14 site shortcuts', () => {
-  const sites = ['bilibili', 'vimeo', 'dailymotion', 'reddit', 'twitch', 'rumble', 'odysee', 'weibo', 'douyin', 'acfun', 'youku', 'vk', 'xiaohongshu', 'niconico'];
-  for (const name of sites) {
-    const command = BOT_COMMANDS.find((item) => item.name === name);
-    const member = MEMBER_COMMANDS.find((item) => item.name === name);
-    expect(command?.usage).toContain('<title>');
-    expect(member?.usage).toBe(command?.usage);
-  }
-  expect(BOT_COMMANDS.find((item) => item.name === 'youku')?.example).toBe('.youku the blood of youth s01e1');
-  for (const name of ['audius', 'commons']) {
-    const command = BOT_COMMANDS.find((item) => item.name === name);
-    expect(command?.usage).toContain('<title>');
-    expect(MEMBER_COMMANDS.find((item) => item.name === name)?.usage).toBe(command?.usage);
+it('keeps Reddit title search and removes the retired commands from the catalog', () => {
+  const reddit = BOT_COMMANDS.find((item) => item.name === 'reddit');
+  expect(reddit?.usage).toContain('<title>');
+  expect(MEMBER_COMMANDS.find((item) => item.name === 'reddit')?.usage).toBe(reddit?.usage);
+  for (const name of ['audius', 'deezer', 'bilibili', 'vimeo', 'dailymotion', 'xiaohongshu', 'acfun',
+    'twitch', 'rumble', 'niconico', 'commons', 'broadcast', 'weibo', 'pinterest', 'pintrest', 'douyin', 'odysee', 'vk', 'youku']) {
+    expect(BOT_COMMANDS.some((item) => item.name === name || item.aliases.includes(name))).toBe(false);
+    expect(MEMBER_COMMANDS.some((item) => item.name === name || item.aliases.includes(name))).toBe(false);
   }
 });

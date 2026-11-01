@@ -1,5 +1,5 @@
 /**
- * ZaFar Bot — site shortcuts: .tiktok / .x / .pinterest / .instagram / .fb
+ * ZaFar Bot — site shortcuts: .tiktok / .x / .instagram / .fb / .reddit
  *
  * Thin wrappers around the shared pipeline (`utils/mediaPipeline.js`), which
  * streams every file directly to disk instead of buffering in RAM and cleans
@@ -7,9 +7,9 @@
  *
  *   .tiktok <link> [quality]      .tt
  *   .x <link> [quality]           .twitter .xtwitter
- *   .pinterest <link>             .pin     (sends the image when it is an image)
  *   .instagram <link>             .ig .insta .igdl .reels
  *   .fb <link> [quality]          .fbdl .facebookdl .facebook
+ *   .reddit <title> [--first]     search Reddit videos
  */
 
 const config = require('../../config');
@@ -169,7 +169,7 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
 
     const lines = found.results.map((r, i) => {
       const time = r.duration ? ` (${Math.floor(r.duration / 60)}:${String(r.duration % 60).padStart(2, '0')})` : '';
-      return `*${i + 1}.* ${r.title}${r.episode ? ` · Episode ${r.episode}` : ''}${r.author ? ` — ${r.author}` : ''}${time}`;
+      return `*${i + 1}.* ${r.title}${r.author ? ` — ${r.author}` : ''}${time}`;
     });
     const text = `*${hostLabel} results*\n${lines.join('\n')}\n\nReply ${P}1–${P}${found.results.length} or ${P}cancel.`;
     return selections.sendTextPrompt(sock, msg, extra, {
@@ -202,15 +202,6 @@ module.exports = [
     hostLabel: 'X/Twitter',
   }),
   makeCommand({
-    name: 'pinterest',
-    aliases: ['pin'],
-    label: 'pinterest',
-    description: 'Download a Pinterest pin (image or video)',
-    usage: '.pinterest <Pinterest link>',
-    domains: ['pinterest.', 'pin.it'],
-    hostLabel: 'Pinterest',
-  }),
-  makeCommand({
     name: 'instagram',
     aliases: ['ig', 'insta', 'igdl', 'reels'],
     label: 'instagram',
@@ -228,26 +219,14 @@ module.exports = [
     domains: ['facebook.com', 'fb.watch', 'fb.com', 'm.facebook.com'],
     hostLabel: 'Facebook',
   }),
-  ...[
-    { name: 'bilibili', aliases: ['bili'], hostLabel: 'Bilibili', domains: ['bilibili.com', 'bilibili.tv', 'bili.tv', 'b23.tv'] },
-    { name: 'vimeo', aliases: [], hostLabel: 'Vimeo', domains: ['vimeo.com'] },
-    { name: 'dailymotion', aliases: ['daily'], hostLabel: 'Dailymotion', domains: ['dailymotion.com', 'dai.ly'] },
-    { name: 'reddit', aliases: [], hostLabel: 'Reddit', domains: ['reddit.com', 'redd.it'] },
-    { name: 'twitch', aliases: [], hostLabel: 'Twitch', domains: ['twitch.tv'] },
-    { name: 'rumble', aliases: [], hostLabel: 'Rumble', domains: ['rumble.com'] },
-    { name: 'odysee', aliases: [], hostLabel: 'Odysee', domains: ['odysee.com', 'lbry.tv'] },
-    { name: 'weibo', aliases: [], hostLabel: 'Weibo', domains: ['weibo.com', 'weibo.cn'] },
-    { name: 'douyin', aliases: [], hostLabel: 'Douyin', domains: ['douyin.com', 'iesdouyin.com'] },
-    { name: 'acfun', aliases: [], hostLabel: 'AcFun', domains: ['acfun.cn'] },
-    { name: 'youku', aliases: [], hostLabel: 'Youku', domains: ['youku.com'] },
-    { name: 'vk', aliases: [], hostLabel: 'VK', domains: ['vk.com', 'vkvideo.ru'] },
-    { name: 'xiaohongshu', aliases: ['xhs'], hostLabel: 'Xiaohongshu', domains: ['xiaohongshu.com', 'xhslink.com'] },
-    { name: 'niconico', aliases: ['nico'], hostLabel: 'Niconico', domains: ['nicovideo.jp', 'nico.ms'] },
-  ].map((site) => makeCommand({
-    ...site,
-    label: site.name,
+  makeCommand({
+    name: 'reddit',
+    aliases: [],
+    hostLabel: 'Reddit',
+    domains: ['reddit.com', 'redd.it'],
+    label: 'reddit',
     searchable: true,
-    description: `Search ${site.hostLabel} by title and download a result`,
-    usage: `.${site.name} <title> [--audio] [480p]`,
-  })),
+    description: 'Search Reddit by title and download a result',
+    usage: '.reddit <title> [--audio] [480p]',
+  }),
 ];

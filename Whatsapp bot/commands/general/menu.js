@@ -24,17 +24,10 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
         [`${p}song <name|url>`, 'MP3'],
         [`${p}ytv <name|url> [720]`, 'MP4'],
         [`${p}dl <url>`, 'any URL'],
-        [`${p}tiktok ${p}x ${p}pinterest`, 'social'],
+        [`${p}tiktok ${p}x`, 'social'],
         [`${p}instagram ${p}fb`, 'social'],
-        [`${p}bilibili ${p}vimeo ${p}dailymotion`, 'title search'],
-        [`${p}reddit ${p}twitch ${p}rumble`, 'title search'],
-        [`${p}odysee ${p}weibo ${p}douyin`, 'title search'],
-        [`${p}acfun ${p}youku ${p}vk`, 'title search'],
-        [`${p}xhs ${p}niconico`, 'title search'],
+        [`${p}reddit <title>`, 'title search'],
         [`${p}spotify <url|title>`, 'Spotify MP3'],
-        [`${p}deezer <url|title>`, 'Deezer MP3'],
-        [`${p}audius <title>`, 'permitted music'],
-        [`${p}commons <title> [--video]`, 'open-licensed media'],
         [`${p}sticker ${p}viewonce`, 'reply tools'],
       ],
     },
@@ -67,7 +60,7 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
       rows: [
         [`${p}allow ${p}disallow ${p}listusers`, 'whitelist'],
         [`${p}on ${p}off`, 'enable/disable the service globally'],
-        [`${p}restart ${p}status ${p}broadcast`, 'server'],
+        [`${p}restart ${p}status`, 'server'],
       ],
     });
   }
@@ -85,8 +78,7 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
 }
 
 const SECTION_ALIASES = {
-  movie: 'media', movies: 'media', song: 'media', ytv: 'media', dl: 'media', deezer: 'media', dz: 'media', audius: 'media', commons: 'media',
-  bilibili: 'media', bili: 'media', vimeo: 'media', reddit: 'media', twitch: 'media',
+  movie: 'media', movies: 'media', song: 'media', ytv: 'media', dl: 'media', reddit: 'media',
   paper: 'papers', papers: 'papers',
   engine: 'engine', sources: 'engine', status: 'engine',
   admin: 'admin', all: null, help: null,

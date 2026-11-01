@@ -1,10 +1,9 @@
 /**
- * ZaFar Bot — .song  (Deezer or YouTube → MP3)
+ * ZaFar Bot — .song  (YouTube → MP3)
  *
  *   .song <name or link> [audio|doc]     [audio|doc] overrides config.song.sendAs
  *
- * Title searches try configured Deezer first; explicit YouTube links stay on
- * YouTube. The keyless KnightBot provider is tried first for YouTube, followed
+ * The keyless KnightBot provider is tried first for YouTube, followed
  * by installed local and other remote engines. Each remote file is downloaded
  * and checked before it is accepted. Audio is sent as a document by default.
  *
@@ -25,8 +24,6 @@ const settings = require('../../utils/mediaSettings');
 const providers = require('../../utils/downloadProviders');
 const youtubeSearch = require('../../utils/youtubeSearch');
 const selections = require('../../utils/selections');
-const deezer = require('../../utils/deezer');
-const deezerCommand = require('./deezer');
 const jobQueue = require('../../utils/jobQueue');
 const {
   sniffFile, audioToMp3, tagMp3, safeName, fmtMB,
@@ -64,7 +61,7 @@ function splitArtist(title, uploader) {
   return { title: t || clean(title) || 'song', artist: a };
 }
 
-const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
+const execute = async (sock, msg, args, extra) => {
     const chatId = extra?.from || msg.key.remoteJid;
     const reply = (text) => sock.sendMessage(chatId, { text }, { quoted: msg });
     const react = (emoji) => sock.sendMessage(chatId, { react: { text: emoji, key: msg.key } }).catch(() => {});
@@ -87,22 +84,6 @@ const execute = async (sock, msg, args, extra, { skipDeezer = false } = {}) => {
     let text = args.join(' ').trim();
     if (text.startsWith('!')) { firstHit = true; text = text.slice(1).trim(); }
     if (!text) return reply('Usage: .song <name or YouTube link>');
-
-    // A named song can use the configured Deezer account first. A YouTube
-    // link always keeps its exact video; never silently substitute another
-    // recording for a specific URL.
-    if (!skipDeezer && (deezer.deezerUrl(text) || (deezer.configured() && !YT.isYouTubeUrl(text)))) {
-      const handled = await deezerCommand.attempt(sock, msg, extra, {
-        input: text, sendAs, firstHit, fallback: true,
-        onSelectionFallback: (s, m, e, item) => {
-          const query = [item.artist, item.title].filter(Boolean).join(' - ');
-          // The selection already identifies the recording. Search YouTube
-          // once for that artist/title; do not re-enter the Deezer picker.
-          return execute(s, m, [query, '--first', sendAs === 'audio' ? 'audio' : 'doc'], e, { skipDeezer: true });
-        },
-      });
-      if (handled) return;
-    }
 
     const id = stamp();
     const outBase = path.join(getTempDir(), id);
@@ -402,6 +383,6 @@ module.exports = {
   aliases: ['play', 'music', 'yta'],
   category: 'media',
   description: 'Download a song as MP3',
-  usage: '.song <song name or YouTube/Deezer track link> [audio|doc]',
+  usage: '.song <song name or YouTube link> [audio|doc]',
   execute,
 };

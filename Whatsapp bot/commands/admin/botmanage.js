@@ -1,4 +1,3 @@
-const config = require('../../config');
 const telemetry = require('../../utils/telemetry');
 
 const BOT_START = Date.now();
@@ -79,35 +78,4 @@ module.exports = [
     },
   },
 
-  {
-    name: 'broadcast',
-    aliases: ['bc', 'announce'],
-    category: 'admin',
-    description: 'Broadcast to groups',
-    usage: '.broadcast <message>',
-    ownerOnly: true,
-    async execute(sock, msg, args, extra) {
-      if (args.length < 1) return extra.reply(`Usage: ${config.prefix}broadcast <message>`);
-      const message = args.join(' ');
-      await react(sock, msg, '📢');
-
-      let chats = {};
-      try { chats = await sock.groupFetchAllParticipating(); } catch (_) {}
-
-      const ids = Object.keys(chats);
-      let sent = 0, failed = 0;
-      const text = `📢 ${message}`;
-
-      for (const jid of ids) {
-        try {
-          await sock.sendMessage(jid, { text });
-          sent++;
-          await new Promise(r => setTimeout(r, 500));
-        } catch (_) { failed++; }
-      }
-
-      await react(sock, msg, '✅');
-      return extra.reply(`📢 Sent: ${sent} · Failed: ${failed}`);
-    },
-  },
 ];

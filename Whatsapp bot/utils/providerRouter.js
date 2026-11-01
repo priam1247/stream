@@ -4,7 +4,7 @@
  * `route(url)` maps a link to a provider descriptor and `run(provider, req)`
  * executes it. Only sources that can be fetched as ordinary files are routed:
  * DRM-protected subscription services (Netflix, Disney+, Apple TV+, Apple
- * Music, Deezer, Prime Video, Hulu) are refused up front with a clear reason,
+ * Music, Prime Video, Hulu) are refused up front with a clear reason,
  * because their streams are encrypted and the bot does not decrypt them.
  *
  * Supported provider
@@ -29,8 +29,6 @@ const BLOCKED_HOSTS = new Map([
   ['disneyplus.com', 'Disney+'],
   ['tv.apple.com', 'Apple TV+'],
   ['music.apple.com', 'Apple Music'],
-  ['deezer.com', 'Deezer'],
-  ['deezer.page.link', 'Deezer'],
   ['primevideo.com', 'Prime Video'],
   ['hulu.com', 'Hulu'],
 ]);

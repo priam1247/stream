@@ -75,7 +75,7 @@ engine/media/index.js → metadata, registry, resolver, providers, downloaders
 
 The bot is CommonJS. The nested `engine/package.json` switches that subtree to ES modules; the bridge uses dynamic `import()`. The engine entry point statically registers its selected stream and torrent providers. The three files in `engine/providers/ddl/` register themselves if loaded, but are not imported by the current `engine/media/index.js`; their presence alone does not mean they are active.
 
-Media shortcuts and `.dl` use `utils/mediaPipeline.js` → yt-dlp, an Innertube fallback for YouTube, and optional existing remote resolvers. Shortcuts are wrappers rather than independent extractors. The 14 newer shortcuts search only by title: `commands/media/shortcuts.js` → `utils/providerSearch.js` → provider search or site-filtered web indexes, then `utils/selections.js` presents session-scoped choices. Searches use a separate bounded lane in `utils/jobQueue.js` and an overall deadline; direct links remain available through `.dl`. For an unsuccessful English Youku episode query, TVMaze may supply a matching original title before Youku is searched again. Search results are discovery hints, not verified downloads. `dashboard/lib/bot-data.ts` catalogs the canonical commands; member switches apply to individual commands, not website-wide blocking.
+Media shortcuts and `.dl` use `utils/mediaPipeline.js` → the keyless YouTube provider where applicable, installed local engines, and remote fallbacks. `.reddit` searches titles through `utils/providerSearch.js` using Reddit or site-filtered indexes, then `utils/selections.js` presents session-scoped choices. Searches use a bounded lane in `utils/jobQueue.js`; direct links remain available through `.dl`. Search results are discovery hints, not verified downloads. `dashboard/lib/bot-data.ts` catalogs canonical commands; member switches apply to commands, not website-wide blocking.
 
 ## Dashboard
 
@@ -596,7 +596,10 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── selftest.js
 │   │   ├── test-account-routing.js
 │   │   ├── test-bridge.js
+│   │   ├── test-command-removal.js
 │   │   ├── test-delivery.js
+│   │   ├── test-knight-live.js
+│   │   ├── test-knight-provider.js
 │   │   ├── test-media-downloads.js
 │   │   ├── test-media-extractors.py
 │   │   ├── test-media-shortcuts.js
@@ -605,6 +608,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── test-provider-core.js
 │   │   ├── test-provider-search-handler.js
 │   │   ├── test-provider-search.js
+│   │   ├── test-sandbox.js
 │   │   ├── test-service-startup.js
 │   │   ├── test-session-backup.js
 │   │   └── test-sessions.js
@@ -626,6 +630,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── jid.js
 │   │   ├── jobDelivery.js
 │   │   ├── jobQueue.js
+│   │   ├── knightYouTube.js
 │   │   ├── jsonStore.js
 │   │   ├── logger.js
 │   │   ├── mediaPipeline.js
@@ -639,6 +644,8 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── persistentJobs.js
 │   │   ├── providerRouter.js
 │   │   ├── providerSearch.js
+│   │   ├── publicHttp.js
+│   │   ├── publicMediaDownload.js
 │   │   ├── rcloneStore.js
 │   │   ├── reconnect.js
 │   │   ├── safeLog.js

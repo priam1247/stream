@@ -122,12 +122,12 @@ test('member maintenance policy covers aliases and outstanding selections, while
     await handler.handleMessage(member, msg('.1', 'disabled-selection'));
     assert.equal(ran, false);
     assert.match(member.sent.map((value) => value.text || '').join(' '), /temporarily unavailable/i);
-    policy.apply(['bilibili'], policy.versionFor(['bilibili']));
+    policy.apply(['instagram'], policy.versionFor(['instagram']));
     member.sent.length = 0;
     owner.sent.length = 0;
-    await handler.handleMessage(member, msg('.bili', 'member-bili-alias'));
+    await handler.handleMessage(member, msg('.ig', 'member-instagram-alias'));
     assert.match(member.sent.map((value) => value.text || '').join(' '), /temporarily unavailable/i);
-    await handler.handleMessage(owner, msg('.bili', 'owner-bili-alias'));
+    await handler.handleMessage(owner, msg('.ig', 'owner-instagram-alias'));
     assert.match(owner.sent.map((value) => value.text || '').join(' '), /usage/i);
     policy.apply([], policy.versionFor([]));
     await handler.handleMessage(member, msg('.p', 'enabled-alias'));
