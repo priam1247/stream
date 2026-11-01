@@ -3,13 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 const state = vi.hoisted(() => ({ authorized: true }));
 const calls = vi.hoisted(() => ({ claim: vi.fn(async () => [{ id: 'one', type: 'pair', payload: {}, expiresAt: Date.now() + 10_000 }]),
-  complete: vi.fn(async () => {}), heartbeat: vi.fn(async () => {}), importUser: vi.fn(async () => true) }));
+  complete: vi.fn(async () => {}), heartbeat: vi.fn(async () => {}), importUser: vi.fn(async () => true),
+  release: vi.fn(async (_ids: string[]) => {}),
+  snapshot: vi.fn(async () => ({ version: '0123456789abcdef', botEnabledForMembers: true, users: [] as { number: string; enabled: boolean; pairAllowed: boolean }[], numbers: [] as string[] })) }));
 vi.mock('../lib/auth-engine', () => ({ getAdminEmail: () => 'owner@example.com' }));
 vi.mock('../lib/bot-sync-auth', () => ({ verifyBotSyncRequest: async () => state.authorized ? { ok: true, status: 200 } : { ok: false, status: 401, error: 'Unauthorized' } }));
 vi.mock('../lib/rate-limit', () => ({ checkRateLimit: () => ({ allowed: true }), getClientIp: () => 'test', recordRateLimitHit: () => {} }));
 vi.mock('../lib/storage', () => ({ claimPendingBotCommands: calls.claim, completeBotCommand: calls.complete,
-  saveBotHeartbeat: calls.heartbeat, importLocalWhatsAppUser: calls.importUser, getBotHeartbeat: async () => null,
-  computeWhitelistSnapshot: async () => ({ version: '0123456789abcdef', botEnabledForMembers: true, users: [], numbers: [] }),
+  saveBotHeartbeatIfNewer: calls.heartbeat, saveConfirmedMemberLinks: vi.fn(async () => {}), importLocalWhatsAppUser: calls.importUser, getBotHeartbeat: async () => null,
+  computeWhitelistSnapshot: calls.snapshot, releaseClaimedBotCommands: calls.release,
   getMemberCommandPolicy: async () => ({ version: 'abcdef0123456789', disabled: [] }), getNextBotPollMs: async () => 10_000 }));
 import { POST } from '../app/api/bot/sync/route';
 const request = (data: unknown) => new NextRequest('https://dashboard.example/api/bot/sync', { method: 'POST', body: JSON.stringify(data) });
@@ -26,6 +28,23 @@ describe('single-service sync', () => {
     expect(response.status).toBe(409);
     expect(calls.importUser).not.toHaveBeenCalled(); expect(calls.heartbeat).not.toHaveBeenCalled();
     expect(calls.claim).not.toHaveBeenCalled(); expect(calls.complete).not.toHaveBeenCalled();
+  });
+  it('refreshes the permission snapshot after claiming commands, including a new member added during the tick', async () => {
+    calls.snapshot.mockResolvedValueOnce({ version: '0123456789abcdef', botEnabledForMembers: true, users: [], numbers: [] })
+      .mockResolvedValueOnce({ version: 'fedcba9876543210', botEnabledForMembers: true,
+        users: [{ number: '15550001111', enabled: false, pairAllowed: true }], numbers: [] });
+    const response = await POST(request({ connected: true, whitelistVersion: '0123456789abcdef' }));
+    const body = await response.json();
+    expect(body.whitelistChanged).toBe(true);
+    expect(body.whitelistVersion).toBe('fedcba9876543210');
+    expect(body.users).toEqual([{ number: '15550001111', enabled: false, pairAllowed: true }]);
+    expect(body.commands).toHaveLength(1);
+  });
+  it('releases claimed commands when a fresh response snapshot cannot be built', async () => {
+    calls.snapshot.mockResolvedValueOnce({ version: '0123456789abcdef', botEnabledForMembers: true, users: [], numbers: [] })
+      .mockRejectedValueOnce(new Error('Storage unavailable'));
+    await expect(POST(request({ connected: true }))).rejects.toThrow('Storage unavailable');
+    expect(calls.release).toHaveBeenCalledWith(['one']);
   });
   it('imports allowlist entries safely, reports results, returns snapshots and claims commands', async () => {
     const response = await POST(request({ connected: true, botNumber: '15550009999',

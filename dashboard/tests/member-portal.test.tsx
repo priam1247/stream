@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemberPortal } from '../components/member-portal';
 import { clearSavedSessionToken, setSavedSessionToken } from '../lib/client-session';
 import { normalizeMalawiNumber } from '../lib/member-link';
+import { MEMBER_COMMANDS } from '../lib/bot-data';
 
-const navigation = vi.hoisted(() => ({ replace: vi.fn() }));
+const navigation = vi.hoisted(() => ({ replace: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
 vi.mock('next/link', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));
 vi.mock('../components/scribd-desk', () => ({ ScribdDesk: () => <div>Scribd desk</div> }));
@@ -14,21 +15,37 @@ const number = '265991234567';
 const storeKey = 'zafar-member-link-v1:maya@example.com';
 const reply = (body: unknown, status = 200): Response => ({ ok: status >= 200 && status < 300, status, json: async () => body } as Response);
 
-function setup(options: { state?: string; reachable?: boolean; existing?: boolean; role?: 'admin' | 'member'; pair?: Record<string, unknown>; unlink?: Record<string, unknown> } = {}) {
+function setup(options: { state?: string; reachable?: boolean; existing?: boolean; confirmed?: boolean; approval?: 'pending' | 'approved' | 'rejected'; role?: 'admin' | 'member'; pair?: Record<string, unknown>; unlink?: Record<string, unknown>; usage?: unknown; scribd?: boolean } = {}) {
   const state = {
-    numbers: options.existing ? [{ number, enabled: true, label: 'Maya', addedBy: user.email }] : [] as { number: string; enabled: boolean; label: string; addedBy: string }[],
+    numbers: options.existing ? [{ number, enabled: options.approval !== 'pending', label: 'Maya', addedBy: user.email, approval: options.approval || 'approved' }] : [] as { number: string; enabled: boolean; label: string; addedBy: string; approval: string }[],
     accounts: options.state ? [{ number, state: options.state, sessionId: 'a'.repeat(24), linkedAt: Date.UTC(2026, 0, 2) }] : [],
     reachable: options.reachable !== false,
+    statusFails: false,
+    confirmedLinks: options.confirmed ? [{ number, linkedAt: Date.UTC(2026, 0, 2) }] : [] as { number: string; linkedAt: number }[],
   };
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url === '/api/auth/me' && init?.method === 'PATCH') {
+      const body = JSON.parse(String(init.body));
+      return reply({ user: { ...user, name: body.name }, token: 'new-test-session' });
+    }
     if (url === '/api/auth/me') return reply({ user: { ...user, isAdmin: options.role === 'admin' } });
-    if (url === '/api/member/status') return reply({ ok: true, memberAllowed: true, scribdAllowed: false, botEnabledForMembers: true,
-      botServerLinked: true, botReachable: state.reachable, botConnected: state.reachable, numbers: state.numbers, accounts: state.reachable ? state.accounts : null,
-      commandsTotal: 999 });
+    if (url === '/api/member/status') {
+      if (state.statusFails) return reply({ error: 'Status unavailable' }, 503);
+      if (state.reachable && state.accounts.some((account) => ['connected', 'connecting', 'paused'].includes(account.state))) {
+        state.confirmedLinks = [{ number, linkedAt: Date.UTC(2026, 0, 2) }];
+      }
+      return reply({ ok: true, memberAllowed: true, scribdAllowed: options.scribd === true, botEnabledForMembers: true,
+        botServerLinked: true, botReachable: state.reachable, botConnected: state.reachable, numbers: state.numbers, accounts: state.reachable ? state.accounts : null,
+        confirmedLinks: state.confirmedLinks, personalUsage: options.usage || null, commandsTotal: 999 });
+    }
+    if (url === '/api/member/cancel-pending' && init?.method === 'POST') {
+      state.numbers = [];
+      return reply({ ok: true, numbers: [] });
+    }
     if (url === '/api/member/numbers' && init?.method === 'POST') {
       const body = JSON.parse(String(init.body));
-      state.numbers = [{ number: body.number, enabled: true, label: body.label, addedBy: user.email }];
+      state.numbers = [{ number: body.number, enabled: false, label: body.label, addedBy: user.email, approval: 'pending' }];
       return reply({ ok: true, numbers: state.numbers }, 201);
     }
     if (url === '/api/member/pair' && init?.method === 'POST') {
@@ -47,6 +64,13 @@ beforeEach(() => { localStorage.clear(); setSavedSessionToken('test-session'); w
 afterEach(() => { cleanup(); clearSavedSessionToken(); localStorage.clear(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('member linking experience', () => {
+  it('shows accurate individual usage for commands split from the admin catalog', () => {
+    for (const [name, usage] of Object.entries({ ping: '.ping', menu: '.menu [section]', info: '.info [series] <title>',
+      debrid: '.debrid', providers: '.providers', moviestatus: '.moviestatus' })) {
+      expect(MEMBER_COMMANDS.find((command) => command.name === name)?.usage).toBe(usage);
+    }
+  });
+
   it('normalizes Malawi formats and rejects invalid input', () => {
     for (const input of ['099 123 4567', '+265 991234567', '265 099 123 4567']) {
       expect(normalizeMalawiNumber(input).number).toBe(number);
@@ -95,6 +119,16 @@ describe('member linking experience', () => {
     expect(await screen.findByText('ABCD1234')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Resend available in/ }).hasAttribute('disabled')).toBe(true);
     expect(screen.getByText(/Linked devices/)).toBeTruthy();
+  });
+
+  it('lets a member remove an expired pending request and enter a different number', async () => {
+    const { fetchMock } = setup({ existing: true, state: 'expired', approval: 'pending' });
+    render(<MemberPortal />);
+    const change = await screen.findByRole('button', { name: 'Use a different number' });
+    fireEvent.click(change);
+    expect(await screen.findByText('Pending request removed. You can enter another number.')).toBeTruthy();
+    expect((screen.getByLabelText('Phone number') as HTMLInputElement).value).toBe('');
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/api/member/cancel-pending' && init?.method === 'POST')).toBe(true);
   });
 
   it('recovers an accepted queued request after refresh', async () => {
@@ -146,8 +180,9 @@ describe('member linking experience', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: clipboard } });
     render(<MemberPortal />);
     expect(await screen.findByText('Bot active')).toBeTruthy();
-    expect(screen.getByText('Media')).toBeTruthy();
     expect(screen.queryByText('999')).toBeNull();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Console sections' })).getByRole('button', { name: 'Commands' }));
+    expect(screen.getByRole('region', { name: 'Media commands' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Copy .allow command/ })).toBeNull();
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search commands' }), { target: { value: 'song' } });
     fireEvent.click(screen.getByRole('button', { name: 'Copy .song command' }));
@@ -160,12 +195,23 @@ describe('member linking experience', () => {
   });
 
   it('distinguishes an offline service from a lost session and keeps the linked date', async () => {
-    setup({ existing: true, reachable: false });
-    localStorage.setItem(storeKey, JSON.stringify({ number, name: 'Maya Member', hadLink: true, linkedAt: Date.UTC(2026, 0, 2) }));
+    setup({ existing: true, reachable: false, confirmed: true });
+    // A fresh browser has no cached link state.
+    expect(localStorage.getItem(storeKey)).toBeNull();
     render(<MemberPortal />);
     expect(await screen.findByText('Bot offline')).toBeTruthy();
     expect(screen.getByText(/2026/)).toBeTruthy();
     expect(screen.queryByText('Your number got disconnected')).toBeNull();
+  });
+
+  it('does not call the bot offline when the dashboard status request fails', async () => {
+    const { state } = setup({ existing: true, state: 'connected' });
+    render(<MemberPortal />);
+    expect(await screen.findByText('Bot active')).toBeTruthy();
+    state.statusFails = true;
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(await screen.findByText('Status unavailable')).toBeTruthy();
+    expect(screen.queryByText('Bot offline')).toBeNull();
   });
 
   it('prefills a disconnected number and preserves the resend cooldown', async () => {
@@ -199,7 +245,9 @@ describe('member linking experience', () => {
       return original(input, init);
     });
     const view = render(<MemberPortal />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Unlink' }));
+    await screen.findByText('Bot active');
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Console sections' })).getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink' }));
     fireEvent.click(screen.getByRole('button', { name: 'Yes, unlink' }));
     expect(await screen.findByText('Still checking your unlink request.')).toBeTruthy();
     expect(JSON.parse(localStorage.getItem(storeKey) || '{}').unlinkRequestId).toBe('unlink-1');
@@ -217,6 +265,7 @@ describe('member linking experience', () => {
     const { fetchMock } = setup({ existing: true, state: 'connected' });
     render(<MemberPortal />);
     await screen.findByText('Bot active');
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Console sections' })).getByRole('button', { name: 'Settings' }));
     fireEvent.click(screen.getByRole('button', { name: 'Unlink' }));
     const dialog = screen.getByRole('alertdialog');
     expect(within(dialog).getByText('Unlink this number?')).toBeTruthy();
@@ -225,6 +274,91 @@ describe('member linking experience', () => {
     expect(await screen.findByText('Your number has been unlinked.')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Get code' })).toBeTruthy();
     expect(screen.queryByText('Bot active')).toBeNull();
+  });
+
+  it('ignores a status response started before unlink and adopts a later server-confirmed link', async () => {
+    const { fetchMock } = setup({ existing: true, state: 'connected' });
+    render(<MemberPortal />);
+    expect(await screen.findByText('Bot active')).toBeTruthy();
+    const original = fetchMock.getMockImplementation()!;
+    const stale = await original('/api/member/status');
+    let release: ((response: Response) => void) | undefined;
+    let hold = true;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input) === '/api/member/status' && hold) return new Promise<Response>((resolve) => { release = resolve; });
+      return original(input, init);
+    });
+    act(() => { window.dispatchEvent(new Event('focus')); });
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Console sections' })).getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, unlink' }));
+    expect(await screen.findByText('Your number has been unlinked.')).toBeTruthy();
+    await act(async () => { release!(stale); });
+    expect(screen.getByRole('button', { name: 'Get code' })).toBeTruthy();
+    expect(screen.queryByText('Bot active')).toBeNull();
+    // The status API now reports a new link made from another device.
+    hold = false;
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(await screen.findByText('Bot active')).toBeTruthy();
+  });
+
+  it('shows an approval-pending portal after linking and updates access only after approval', async () => {
+    const { state } = setup({ existing: true, state: 'paused', approval: 'pending' });
+    render(<MemberPortal />);
+    expect(await screen.findByText(/Commands unlock after administrator approval/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Get code' })).toBeNull();
+    state.numbers[0].approval = 'approved'; state.numbers[0].enabled = true;
+    state.accounts[0].state = 'connected';
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(await screen.findByText('Bot active')).toBeTruthy();
+    expect(screen.queryByText(/Commands unlock after administrator approval/)).toBeNull();
+  });
+
+  it('does not mistake a saved or approved number for a completed link on a fresh device', async () => {
+    setup({ existing: true, state: 'awaiting_link', approval: 'approved' });
+    render(<MemberPortal />);
+    expect(await screen.findByRole('heading', { name: 'Welcome, Maya' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /Good to see you/ })).toBeNull();
+  });
+
+  it('keeps a previously linked member in their portal after logout, with an explicit reconnect flow', async () => {
+    const { state } = setup({ existing: true, state: 'logged_out', confirmed: true });
+    render(<MemberPortal />);
+    expect(await screen.findByText('WhatsApp disconnected')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Get new code' })).toBeNull();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Console sections' })).getByRole('button', { name: 'Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Get new code' }));
+    expect(await screen.findByText('ABCD1234')).toBeTruthy();
+    state.accounts[0].state = 'paused';
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(await screen.findByRole('heading', { name: 'Good to see you, Maya.' })).toBeTruthy();
+    expect(screen.queryByText('ABCD1234')).toBeNull();
+  });
+
+  it('renders only personal measured activity, grouped commands, profile settings and permitted tools', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const { fetchMock } = setup({ existing: true, state: 'connected', scribd: true, usage: [{ number, trackedSince: Date.now() - 2 * 86_400_000, updatedAt: Date.now(),
+      days: [{ date: today, commands: { song: 4, paper: 2 } }], lastAt: Date.now(), lastCommand: 'paper' }] });
+    render(<MemberPortal />);
+    const activity = await screen.findByRole('region', { name: 'Command activity' });
+    expect(within(activity).getByText('6')).toBeTruthy();
+    expect(within(activity).getByRole('img', { name: /6/ })).toBeTruthy();
+    expect(screen.queryByText('999')).toBeNull();
+    expect(screen.getByText('Command mix')).toBeTruthy();
+    const nav = screen.getByRole('navigation', { name: 'Console sections' });
+    fireEvent.click(within(nav).getByRole('button', { name: 'Commands' }));
+    expect(screen.getByRole('region', { name: 'General commands' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Media commands' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Vault commands' })).toBeTruthy();
+    fireEvent.click(within(nav).getByRole('button', { name: 'Settings' }));
+    fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Maya Updated' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(await screen.findByText('Profile saved.')).toBeTruthy();
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/api/auth/me' && init?.method === 'PATCH')).toBe(true);
+    fireEvent.click(within(nav).getByRole('button', { name: 'Scribd' }));
+    expect(screen.getByText('Scribd desk')).toBeTruthy();
   });
 
   it('retains the existing tool navigation for an administrator', async () => {

@@ -9,6 +9,7 @@ const { loadCommands } = require('./utils/commandLoader');
 const { jidVariants, isSystemJid } = require('./utils/jid');
 const { safeErrorMessage } = require('./utils/userErrors');
 const telemetry = require('./utils/telemetry');
+const memberTelemetry = require('./utils/memberTelemetry');
 const accountSockets = require('./utils/accountSockets');
 const memberCommandPolicy = require('./utils/memberCommandPolicy');
 
@@ -112,6 +113,8 @@ async function runCommand(sock, msg, name, args, { from, sender, senderIds }) {
 
   console.log(`Executing command: ${invoked}`);
   telemetry.recordCommand(command.name || invoked);
+  try { memberTelemetry.recordCommand(command.name || invoked, sock.__memberUsageScope?.()); }
+  catch { /* personal analytics must not interrupt command execution */ }
   try {
     await command.execute(
       sock,

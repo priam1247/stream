@@ -19,6 +19,7 @@ const { readWL, writeWL } = require('./accessControl');
 const { inspectDisk } = require('./diskSpace');
 const jobQueue = require('./jobQueue');
 const telemetry = require('./telemetry');
+const memberTelemetry = require('./memberTelemetry');
 const log = require('./logger')('dashboardSync');
 
 const memberCommandPolicy = require('./memberCommandPolicy');
@@ -282,6 +283,7 @@ function startDashboardSync(opts = {}) {
         diskBudgetMB,
         whitelistVersion: lastWhitelistVersion,
         commandPolicyVersion: commandPolicy.version(),
+        memberUsage: memberTelemetry.snapshot(readWL({ force: true, filePath: wlFile }).users),
         ...(typeof opts.getBackupStatus === 'function' ? { sessionBackup: opts.getBackupStatus() } : {}),
         ...(localUsers.length ? { localUsers } : {}),
         completedResults: batchResults,

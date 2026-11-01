@@ -220,6 +220,13 @@ function createSessionManager(opts) {
       sock.__sessionId = entry.id;
       sock.__sessionDir = entry.dir;
       sock.__accountNumber = entry.number;
+      // Resolve the claim at dispatch time: legacy sessions may be bound after
+      // this socket starts, and a transferred claim must never inherit usage.
+      sock.__memberUsageScope = () => {
+        const record = entry.number && manifest.accounts[entry.number];
+        if (!record || record.attempt !== entry.attempt || !allowed(entry.number)) return null;
+        return { number: entry.number, sessionId: entry.attempt, claimToken: record.claim };
+      };
       sock.__canRespond = () => !stopped && (!entry.number || allowed(entry.number));
       entry.sock = sock;
       // A long-running command can finish after approval is revoked or after

@@ -3,7 +3,8 @@ import { getAuthenticatedSession } from '@/lib/auth-engine';
 import { fetchLiveBotStatus, getResolvedBotTarget } from '@/lib/bot-proxy';
 import { JwtConfigError } from '@/lib/jwt';
 import { whitelistSyncState } from '@/lib/sync-status';
-import { getMemberCommandPolicy, listStoredWhatsAppUsers, sessionBackupClaim } from '@/lib/storage';
+import { getBotHeartbeat, getMemberCommandPolicy, listConfirmedMemberLinks, listStoredWhatsAppUsers, saveConfirmedMemberLinks, sessionBackupClaim } from '@/lib/storage';
+import { changedConfirmedLinks, mergeConfirmedLinks, personalInsights } from '@/lib/member-insights-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,13 +26,23 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const [target, allNumbers, live, policy] = await Promise.all([
+  const [target, allNumbers, live, policy, heartbeat] = await Promise.all([
     getResolvedBotTarget(),
     listStoredWhatsAppUsers(),
     fetchLiveBotStatus(),
     getMemberCommandPolicy(),
+    getBotHeartbeat(),
   ]);
   const numbers = allNumbers.filter((item) => (item.addedBy || '').toLowerCase() === session.user.email.toLowerCase());
+
+  // A direct bridge can confirm links too. Store only the observed link, never
+  // a synthetic heartbeat; approval and liveness still require a fresh probe.
+  const persisted = await listConfirmedMemberLinks(numbers);
+  const observed = mergeConfirmedLinks(heartbeat,
+    live.reachable && live.connectionMode === 'direct' ? live.accounts : undefined,
+    numbers, Date.now(), persisted);
+  await saveConfirmedMemberLinks(changedConfirmedLinks(observed, persisted), numbers);
+  const insights = personalInsights(heartbeat, numbers, observed);
 
   const botLinked =
     live.connectionMode === 'heartbeat' ||
@@ -65,6 +76,8 @@ export async function GET(req: NextRequest) {
     queueLight: session.user.isAdmin ? (live.queueLight ?? null) : null,
     queueHeavy: session.user.isAdmin ? (live.queueHeavy ?? null) : null,
     numbers,
+    confirmedLinks: insights.confirmedLinks,
+    personalUsage: insights.personalUsage,
     disabledMemberCommands: policy.disabled,
-  });
+  }, { headers: { 'Cache-Control': 'private, no-store' } });
 }

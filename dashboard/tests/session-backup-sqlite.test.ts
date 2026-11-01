@@ -16,6 +16,7 @@ beforeEach(() => {
   db = new DatabaseSync(':memory:'); afterDelete = null;
   db.exec(`CREATE TABLE portal_whatsapp_access (number TEXT PRIMARY KEY, label TEXT, enabled INTEGER, added_by TEXT, added_at TEXT, approval_status TEXT, claim_id TEXT);
     CREATE TABLE portal_member_permissions (email TEXT PRIMARY KEY, allowed INTEGER);
+    CREATE TABLE portal_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE portal_session_backups (slot TEXT PRIMARY KEY, generation TEXT, claim_token TEXT, revision INTEGER, ciphertext TEXT, revoked INTEGER, updated_at INTEGER);`);
   globalThis.__zafarD1SchemaV6Ready = true;
   vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test'); vi.stubEnv('D1_DATABASE_ID', 'test'); vi.stubEnv('CLOUDFLARE_API_TOKEN', 'test');

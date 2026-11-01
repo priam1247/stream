@@ -1,13 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertCircle, ArrowRight, Check, ChevronRight, Copy, Link2, Loader2, LogOut, MessageSquare, Search, ShieldCheck, Smartphone, Unlink } from 'lucide-react';
-import { MEMBER_COMMANDS } from '@/lib/bot-data';
+import { AlertCircle, ArrowRight, Check, ChevronRight, Copy, Link2, Loader2, LogOut, MessageSquare, ShieldCheck } from 'lucide-react';
 import { authHeaders, performSignOut } from '@/lib/client-session';
-import { formatCountdown, maskMemberNumber, normalizeMalawiNumber } from '@/lib/member-link';
+import { formatCountdown, normalizeMalawiNumber } from '@/lib/member-link';
 import type { AuthUser, MemberOverviewPayload } from '@/lib/types';
 import { ZafarRobot } from './zafar-robot';
+import { MemberWorkspace } from './member-workspace';
 
 interface LinkCache {
   number?: string;
@@ -24,6 +24,7 @@ interface LinkCache {
   linkedAt?: number;
   unlinkRequestId?: string;
   unlinked?: boolean;
+  relinking?: boolean;
 }
 
 const storeKey = (user: AuthUser) => `zafar-member-link-v1:${String(user.email).toLowerCase()}`;
@@ -46,16 +47,12 @@ function readCache(key: string): LinkCache {
       ...(Number.isFinite(raw.linkedAt) ? { linkedAt: raw.linkedAt } : {}),
       ...(typeof raw.unlinkRequestId === 'string' ? { unlinkRequestId: raw.unlinkRequestId.slice(0, 100) } : {}),
       ...(raw.unlinked === true ? { unlinked: true } : {}),
+      ...(raw.relinking === true ? { relinking: true } : {}),
     };
   } catch { return {}; }
 }
 function writeCache(key: string, value: LinkCache) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* server cooldown still applies */ }
-}
-function friendlyDate(value: number | undefined) {
-  if (!value || !Number.isFinite(value)) return 'Date unavailable';
-  try { return new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value)); }
-  catch { return 'Date unavailable'; }
 }
 
 export function MemberConnection({ user }: { user: AuthUser }) {
@@ -69,13 +66,14 @@ export function MemberConnection({ user }: { user: AuthUser }) {
   const [statusError, setStatusError] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState(false);
-  const [confirmUnlink, setConfirmUnlink] = useState(false);
+  const [removingPending, setRemovingPending] = useState(false);
   const [notice, setNotice] = useState<{ text: string; bad?: boolean } | null>(null);
   const [copied, setCopied] = useState('');
   const [supportUnread, setSupportUnread] = useState(0);
-  const [search, setSearch] = useState('');
-  const [commandCategory, setCommandCategory] = useState<'media' | 'vault' | 'general'>('general');
   const checkedNumber = useRef('');
+  const statusSequence = useRef(0);
+  const statusApplied = useRef(0);
+  const statusEpoch = useRef(0);
   const codeCard = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -92,13 +90,20 @@ export function MemberConnection({ user }: { user: AuthUser }) {
   }, []);
 
   const refreshStatus = useCallback(async () => {
+    const sequence = ++statusSequence.current;
+    const epoch = statusEpoch.current;
+    const current = () => epoch === statusEpoch.current && sequence > statusApplied.current;
     try {
       const res = await fetch('/api/member/status', { headers: authHeaders(), cache: 'no-store' });
-      if (res.status === 401) { router.replace('/login'); return; }
+      if (!current()) return;
+      if (res.status === 401) { statusApplied.current = sequence; router.replace('/login'); return; }
       if (!res.ok) throw new Error('Status unavailable');
-      setOverview(await res.json());
+      const next = await res.json();
+      if (!current()) return;
+      statusApplied.current = sequence;
+      setOverview(next);
       setStatusError(false);
-    } catch { setStatusError(true); }
+    } catch { if (current()) { statusApplied.current = sequence; setStatusError(true); } }
   }, [router]);
 
   useEffect(() => {
@@ -117,28 +122,35 @@ export function MemberConnection({ user }: { user: AuthUser }) {
 
   // Adopt an existing connected number, without guessing that approval is a link.
   useEffect(() => {
-    if (!hydrated || !overview || cache.number || cache.unlinked) return;
-    const current = overview.numbers.find((item) => overview.accounts?.some((a) => a.number === item.number && ['connected', 'connecting', 'paused'].includes(a.state))) || overview.numbers[0];
+    if (!hydrated || !overview) return;
+    const confirmed = overview.numbers.find((item) => overview.confirmedLinks?.some((link) => link.number === item.number));
+    // A later link on another device may replace an earlier explicit unlink.
+    if (cache.unlinked && !confirmed) return;
+    if (!cache.unlinked && cache.number && overview.numbers.some((item) => item.number === cache.number)) return;
+    const current = confirmed ||
+      overview.numbers.find((item) => overview.accounts?.some((a) => a.number === item.number && a.sessionId && ['connected', 'connecting', 'paused'].includes(a.state))) || overview.numbers[0];
     if (!current) return;
     setPhone(current.number);
-    setCache((old) => ({ ...old, number: current.number, name: old.name || user.name }));
+    setCache((old) => ({ ...old, number: current.number, name: old.name || user.name, unlinked: false }));
   }, [hydrated, overview, cache.number, cache.unlinked, user.name]);
 
   const ownsNumber = Boolean(cache.number && overview?.numbers.some((item) => item.number === cache.number));
   const account = ownsNumber && !cache.unlinked ? overview?.accounts?.find((item) => item.number === cache.number) : undefined;
   const reachable = !statusError && overview?.botReachable === true;
-  const selectedNumber = overview?.numbers.find((item) => item.number === cache.number);
-  const approval = selectedNumber?.approval || 'approved';
-  const accountIsLinked = account?.state === 'connected' || account?.state === 'connecting' || account?.state === 'paused';
-  const isLinked = !cache.unlinked && (accountIsLinked || (ownsNumber && Boolean(cache.unlinkRequestId)) || (!reachable && ownsNumber && cache.hadLink === true));
+  const confirmed = ownsNumber ? overview?.confirmedLinks?.find((item) => item.number === cache.number) : undefined;
+  const accountIsLinked = Boolean(account?.sessionId) && (account?.state === 'connected' || account?.state === 'connecting' || account?.state === 'paused');
+  const pendingNumber = overview?.numbers.find((item) => item.number === cache.number && item.approval === 'pending');
+  // A saved number, approval or a code is not proof of linking. The server
+  // remembers only claim-matched, completed sessions across devices/outages.
+  const isLinked = !cache.unlinked && !cache.relinking && ownsNumber && (accountIsLinked || Boolean(confirmed) || Boolean(cache.unlinkRequestId));
   const disconnected = reachable && account?.state === 'logged_out';
 
   useEffect(() => {
     if (!account || !accountIsLinked || !cache.number) return;
     setCache((old) => {
       const linkedAt = account.linkedAt || old.linkedAt;
-      if (old.hadLink && !old.code && !old.starting && !old.requestId && old.linkedAt === linkedAt) return old;
-      return { ...old, hadLink: true, linkedAt, code: undefined, requestId: undefined, starting: false, expired: false, unlinked: false };
+      if (old.hadLink && !old.relinking && !old.code && !old.starting && !old.requestId && old.linkedAt === linkedAt) return old;
+      return { ...old, hadLink: true, linkedAt, code: undefined, requestId: undefined, starting: false, expired: false, unlinked: false, relinking: false };
     });
     setNotice(null);
   }, [account, accountIsLinked, cache.number]);
@@ -210,7 +222,7 @@ export function MemberConnection({ user }: { user: AuthUser }) {
         }
         if (json.pending) { timer = window.setTimeout(poll, 2000); return; }
         if (json.code) {
-          setCache((old) => old.hadLink && !old.unlinked ? old : ({ ...old, code: String(json.code), issuedAt: Math.min(Number(json.issuedAt) || Date.now(), Date.now()),
+          setCache((old) => old.hadLink && !old.unlinked && !old.relinking ? old : ({ ...old, code: String(json.code), issuedAt: Math.min(Number(json.issuedAt) || Date.now(), Date.now()),
             expiresInSeconds: Math.min(60, Math.max(1, Number(json.expiresInSeconds) || 60)), starting: false, requestId: undefined, expired: false }));
           setNotice(null);
           return;
@@ -228,10 +240,10 @@ export function MemberConnection({ user }: { user: AuthUser }) {
   }, [hydrated, cache.starting, cache.number, cache.requestId, cache.requestedAt, cache.unlinkRequestId, isLinked]);
 
   const finishUnlink = useCallback((numbers: MemberOverviewPayload['numbers']) => {
+    statusEpoch.current++;
     setCache((old) => ({ ...old, hadLink: false, linkedAt: undefined, unlinked: true, unlinkRequestId: undefined,
-      code: undefined, starting: false, requestId: undefined, expired: false }));
+      code: undefined, starting: false, requestId: undefined, expired: false, relinking: false }));
     setOverview((old) => old ? { ...old, numbers } : old);
-    setConfirmUnlink(false);
     setNotice({ text: 'Your number has been unlinked.' });
   }, []);
 
@@ -300,7 +312,7 @@ export function MemberConnection({ user }: { user: AuthUser }) {
       if (json.pending && json.requestId) {
         setCache((old) => ({ ...old, starting: true, requestId: String(json.requestId), retryAt: Number(json.retryAt) || old.retryAt }));
       } else if (json.code) {
-        setCache((old) => old.hadLink && !old.unlinked ? old : ({ ...old, starting: false, code: String(json.code), issuedAt: Math.min(Number(json.issuedAt) || Date.now(), Date.now()),
+        setCache((old) => old.hadLink && !old.unlinked && !old.relinking ? old : ({ ...old, starting: false, code: String(json.code), issuedAt: Math.min(Number(json.issuedAt) || Date.now(), Date.now()),
           expiresInSeconds: Math.min(60, Math.max(1, Number(json.expiresInSeconds) || 60)), retryAt: Number(json.retryAt) || old.retryAt }));
       } else { throw new Error('The service did not return a code.'); }
     } catch (err) {
@@ -308,6 +320,22 @@ export function MemberConnection({ user }: { user: AuthUser }) {
       if (started && err instanceof TypeError) setNotice({ text: 'Checking whether your code request reached the service.' });
       else { if (started) setCache((old) => ({ ...old, starting: false })); setNotice({ text: err instanceof Error ? err.message : 'Could not request a code.', bad: true }); }
     } finally { setBusy(false); }
+  };
+
+  const cancelPending = async () => {
+    if (!cache.number || busy || cache.starting || cache.unlinkRequestId) return;
+    setBusy(true); setRemovingPending(true); setNotice(null);
+    try {
+      const res = await fetch('/api/member/cancel-pending', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ number: cache.number }) });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Could not remove this request.');
+      statusEpoch.current++;
+      setOverview((old) => old ? { ...old, numbers: Array.isArray(json.numbers) ? json.numbers : [] } : old);
+      checkedNumber.current = '';
+      setCache({}); setPhone('');
+      setNotice({ text: 'Pending request removed. You can enter another number.' });
+    } catch (err) { setNotice({ text: err instanceof Error ? err.message : 'Could not remove this request.', bad: true }); }
+    finally { setBusy(false); setRemovingPending(false); }
   };
 
   const unlink = async () => {
@@ -319,7 +347,6 @@ export function MemberConnection({ user }: { user: AuthUser }) {
       if (!res.ok) throw new Error(json.error || 'Could not unlink your number.');
       if (json.pending && json.requestId) {
         setCache((old) => ({ ...old, unlinkRequestId: String(json.requestId) }));
-        setConfirmUnlink(false);
       } else finishUnlink(Array.isArray(json.numbers) ? json.numbers : []);
     } catch (err) { setNotice({ text: err instanceof Error ? err.message : 'Could not unlink your number.', bad: true }); }
     finally { setBusy(false); }
@@ -330,10 +357,6 @@ export function MemberConnection({ user }: { user: AuthUser }) {
     catch { setNotice({ text: 'Copy is unavailable. Select the text and copy it instead.', bad: true }); }
   };
   const signOut = async () => { try { localStorage.removeItem(key); } catch { /* ignore */ } await performSignOut(); router.replace('/login'); };
-  const matches = useMemo(() => {
-    const q = search.trim().toLowerCase().replace(/^\./, '');
-    return MEMBER_COMMANDS.filter((cmd) => !q || [cmd.name, cmd.summary, ...cmd.aliases].some((part) => part.toLowerCase().includes(q)));
-  }, [search]);
 
   const cooldownMs = Math.min(180_000, Math.max(0, (cache.retryAt || 0) - now));
   const codeMs = cache.code && cache.issuedAt ? Math.min((cache.expiresInSeconds || 60) * 1000, Math.max(0, cache.issuedAt + (cache.expiresInSeconds || 60) * 1000 - now)) : 0;
@@ -345,6 +368,17 @@ export function MemberConnection({ user }: { user: AuthUser }) {
   const loading = !hydrated || (!overview && !statusError);
   const headingName = (name.trim() || user.name || '').split(/\s+/)[0];
 
+  if (!loading && isLinked && overview && cache.number) {
+    return <MemberWorkspace user={user} overview={overview} number={cache.number} account={account}
+      linkedAt={account?.linkedAt || confirmed?.linkedAt} statusError={statusError} busy={busy}
+      unlinking={Boolean(cache.unlinkRequestId)} supportUnread={supportUnread} notice={notice}
+      onRefresh={() => void refreshStatus()} onReconnect={() => {
+        checkedNumber.current = '';
+        setNotice(null);
+        setCache((old) => ({ ...old, relinking: true, unlinked: false }));
+      }} onUnlink={() => void unlink()} onSignOut={signOut} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#f5f9f7] text-slate-900">
       <header className="border-b border-[#e2eee9] bg-white/90">
@@ -355,28 +389,7 @@ export function MemberConnection({ user }: { user: AuthUser }) {
       </header>
       <main className="mx-auto w-full max-w-[500px] px-4 pb-12 pt-7">
         {loading ? <div className="flex min-h-40 items-center justify-center gap-2 text-xs text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading your connection…</div> : <>
-          {isLinked ? <>
-            <div className="mb-5"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-teal-700">Your connection</p><h1 className="mt-2 text-[25px] font-bold tracking-tight">You’re linked, {headingName || 'welcome'}.</h1><p className="mt-1 text-xs leading-5 text-slate-500">{approval === 'pending' ? 'Your link is waiting for administrator approval.' : approval === 'rejected' ? 'Your link request was not approved.' : 'Your WhatsApp number is ready to use.'}</p></div>
-            <section aria-label="Linked number" className="overflow-hidden rounded-[22px] border border-[#d9ebe4] bg-white shadow-[0_12px_38px_-28px_rgba(15,80,65,.35)]">
-              <div className="flex items-start justify-between gap-3 border-b border-slate-100 p-4">
-                <div className="flex min-w-0 gap-3"><div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-teal-50 text-teal-700"><Smartphone className="h-5 w-5" /></div><div><p className="text-[11px] font-medium text-slate-500">WhatsApp number</p><p className="mt-1 font-mono text-[15px] font-bold tracking-tight">{maskMemberNumber(cache.number || '')}</p></div></div>
-                <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[10px] font-bold ${reachable && account?.state === 'connected' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}><span className={`h-1.5 w-1.5 rounded-full ${reachable && account?.state === 'connected' ? 'bg-emerald-500' : 'bg-slate-400'}`} />{approval === 'pending' ? 'Awaiting approval' : approval === 'rejected' ? 'Not approved' : reachable && account?.state === 'connected' ? 'Bot active' : reachable && account?.state === 'paused' ? 'Access syncing' : 'Bot offline'}</span>
-              </div>
-              <div className="flex items-center justify-between gap-2 px-4 py-3"><p className="text-xs text-slate-500">Linked <span className="font-semibold text-slate-700">{friendlyDate(account?.linkedAt || cache.linkedAt)}</span></p><button type="button" disabled={busy || Boolean(cache.unlinkRequestId)} onClick={() => setConfirmUnlink(true)} className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-slate-500 hover:text-rose-700 disabled:opacity-50"><Unlink className="h-3.5 w-3.5" />{cache.unlinkRequestId ? 'Unlinking…' : 'Unlink'}</button></div>
-            </section>
-            {confirmUnlink && <div role="alertdialog" aria-modal="true" aria-labelledby="unlink-title" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"><div className="w-full max-w-[360px] rounded-2xl bg-white p-5 shadow-xl"><h2 id="unlink-title" className="text-base font-bold">Unlink this number?</h2><p className="mt-2 text-xs leading-5 text-slate-600">The WhatsApp session will be disconnected. You can link it again later.</p><div className="mt-4 flex justify-end gap-2"><button type="button" onClick={() => setConfirmUnlink(false)} className="min-h-[44px] rounded-xl px-4 text-xs font-semibold text-slate-600">Cancel</button><button type="button" disabled={busy} onClick={() => void unlink()} className="min-h-[44px] rounded-xl bg-rose-700 px-4 text-xs font-semibold text-white disabled:opacity-50">{busy ? 'Unlinking…' : 'Yes, unlink'}</button></div></div></div>}
-            {approval !== 'approved' && <p role="status" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">{approval === 'pending' ? 'Your number is linked. Commands will be available after the administrator approves your request.' : 'Please contact the administrator or unlink this number.'}</p>}
-            <section className="mt-8" aria-label="Commands"><div className="flex items-end justify-between gap-2"><div><p className="text-[10px] font-bold uppercase tracking-[.18em] text-teal-700">Explore</p><h2 className="mt-1 text-lg font-bold tracking-tight">Commands</h2></div><span className="pb-1 text-[11px] text-slate-400">Tap to copy</span></div>
-              <div className="relative mt-3"><Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input type="search" aria-label="Search commands" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search commands" className="min-h-[46px] w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-base text-slate-900 outline-none focus:border-teal-600" /></div>
-              {!search.trim() && <div className="mt-3 flex gap-2" aria-label="Command categories">{(['general', 'media', 'vault'] as const).map((category) => <button key={category} type="button" aria-pressed={commandCategory === category} onClick={() => setCommandCategory(category)} className={`min-h-[40px] rounded-full px-4 text-xs font-semibold capitalize ${commandCategory === category ? 'bg-teal-700 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200'}`}>{category.charAt(0).toUpperCase() + category.slice(1)}</button>)}</div>}
-              {matches.length === 0 ? <p className="py-6 text-center text-xs text-slate-500">No commands found.</p> : (['general', 'media', 'vault'] as const).map((category) => {
-                if (!search.trim() && category !== commandCategory) return null;
-                const items = matches.filter((cmd) => cmd.category === category);
-                if (!items.length) return null;
-                return <div key={category} className="mt-5"><h3 className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">{category === 'media' ? 'Media' : category === 'vault' ? 'Vault' : 'General'}</h3><div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">{items.map((cmd) => <button type="button" key={cmd.name} onClick={() => void copy(`.${cmd.name}`)} aria-label={`Copy .${cmd.name} command`} className="flex min-h-[58px] w-full items-center gap-3 border-b border-slate-100 px-3.5 py-2 text-left last:border-0 hover:bg-teal-50/50"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-teal-50 font-mono text-xs font-bold text-teal-700">›_</span><span className="min-w-0 flex-1"><span className="block font-mono text-xs font-bold text-slate-800">.{cmd.name}</span><span className="mt-0.5 block truncate text-[11px] text-slate-500">{overview?.disabledMemberCommands?.includes(cmd.name) ? 'Temporarily unavailable' : cmd.summary}</span></span>{copied === `.${cmd.name}` ? <Check className="h-4 w-4 shrink-0 text-teal-600" /> : <Copy className="h-4 w-4 shrink-0 text-slate-400" />}</button>)}</div></div>;
-              })}
-            </section>
-          </> : <>
+            {cache.relinking && confirmed && <button type="button" onClick={() => setCache((old) => ({ ...old, relinking: false }))} className="mb-4 min-h-10 text-xs font-semibold text-teal-700">← Back to workspace</button>}
             <div className="mb-4"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-teal-700">Your WhatsApp connection</p><h1 className="mt-2 text-[25px] font-bold tracking-tight">{disconnected ? 'Your number got disconnected' : headingName ? `Welcome, ${headingName}` : 'Welcome to zAfAr'}</h1><p className="mt-1 text-xs leading-5 text-slate-500">{disconnected ? 'Let’s get your number connected again.' : 'One quick step to get started.'}</p></div>
             <div className="mb-5 flex items-center gap-3 rounded-[20px] border border-teal-100 bg-[#eaf8f2] px-3 py-2"><ZafarRobot /><div className="min-w-0"><p className="text-xs font-bold text-teal-900">{disconnected ? 'I’m ready when you are.' : 'Hi, I’m here to help.'}</p><p className="mt-1 text-xs leading-5 text-teal-800/80">{disconnected ? 'Get a new code to reconnect your number.' : 'Let’s link your number to the zAfAr WhatsApp bot.'}</p></div></div>
             <section className="rounded-[22px] border border-[#dfeae5] bg-white p-4 shadow-[0_12px_38px_-28px_rgba(15,80,65,.3)]"><div className="mb-4 flex items-start gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-50 text-teal-700"><Link2 className="h-4 w-4" /></div><div><h2 className="text-sm font-bold">Link your number</h2><p className="mt-1 text-[11px] text-slate-500">Enter your details to get a WhatsApp code.</p></div></div>
@@ -386,15 +399,15 @@ export function MemberConnection({ user }: { user: AuthUser }) {
               <form onSubmit={requestCode} className="space-y-3.5">
                 <div><label htmlFor="link-name" className="mb-1.5 block text-xs font-semibold text-slate-700">Name</label><input id="link-name" autoComplete="name" required maxLength={80} value={name} onChange={(e) => setName(e.target.value)} disabled={busy || cache.starting || Boolean(cache.unlinkRequestId) || codeVisible} placeholder="Your name" className="min-h-[48px] w-full rounded-xl border border-slate-200 bg-white px-3.5 text-base outline-none placeholder:text-slate-400 focus:border-teal-600 disabled:bg-slate-50" /></div>
                 <div><label htmlFor="link-phone" className="mb-1.5 block text-xs font-semibold text-slate-700">Phone number</label><input id="link-phone" type="tel" inputMode="tel" autoComplete="tel" required value={phone} onChange={(e) => setPhone(e.target.value)} disabled={busy || cache.starting || Boolean(cache.unlinkRequestId) || codeVisible} placeholder="265991234567" className="min-h-[48px] w-full rounded-xl border border-slate-200 bg-white px-3.5 text-base outline-none placeholder:text-slate-400 focus:border-teal-600 disabled:bg-slate-50" /><p className="mt-1.5 text-[11px] text-slate-400">Enter 265 followed by your WhatsApp number.</p></div>
-                <button type="submit" disabled={!canRequest || busy || Boolean(cache.starting) || Boolean(cache.unlinkRequestId) || cooldownMs > 0} className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-xs font-bold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500">{cache.unlinkRequestId ? <><Loader2 className="h-4 w-4 animate-spin" /> Unlinking…</> : busy || cache.starting ? <><Loader2 className="h-4 w-4 animate-spin" /> Requesting code…</> : cooldownMs > 0 ? <>Resend available in {formatCountdown(cooldownMs)}</> : <>{disconnected || cache.expired ? 'Get new code' : 'Get code'} <ArrowRight className="h-4 w-4" /></>}</button>
+                <button type="submit" disabled={!canRequest || busy || Boolean(cache.starting) || Boolean(cache.unlinkRequestId) || cooldownMs > 0} className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-xs font-bold text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500">{cache.unlinkRequestId ? <><Loader2 className="h-4 w-4 animate-spin" /> Unlinking…</> : busy || cache.starting ? <><Loader2 className="h-4 w-4 animate-spin" /> {removingPending ? 'Removing…' : 'Requesting code…'}</> : cooldownMs > 0 ? <>Resend available in {formatCountdown(cooldownMs)}</> : <>{disconnected || cache.expired ? 'Get new code' : 'Get code'} <ArrowRight className="h-4 w-4" /></>}</button>
                 {cooldownMs > 0 && <p className="text-center text-[11px] text-slate-500">Take your time. You can request another code when the timer ends.</p>}
               </form>
+              {pendingNumber && !confirmed && !accountIsLinked && !cache.relinking && <button type="button" onClick={() => void cancelPending()} disabled={busy || Boolean(cache.starting) || Boolean(cache.unlinkRequestId) || cooldownMs > 0} className="mt-2 flex min-h-11 w-full items-center justify-center rounded-xl text-xs font-semibold text-teal-700 hover:bg-teal-50 disabled:text-slate-400">{removingPending ? 'Removing…' : 'Use a different number'}</button>}
             </section>
             {(codeVisible || cache.expired || cache.starting) && <section ref={codeCard} aria-label="WhatsApp linking code" className="mt-4 rounded-[22px] border border-teal-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between gap-2"><div><p className="text-[10px] font-bold uppercase tracking-[.16em] text-teal-700">WhatsApp linking code</p><h2 className="mt-1 text-sm font-bold">{cache.expired ? 'Code expired, get a new one' : cache.starting ? 'Getting your code' : 'Your code is ready'}</h2></div><ShieldCheck className="h-5 w-5 text-teal-600" /></div>
               {codeVisible && <><div className="mt-4 flex items-center justify-between gap-2 rounded-xl border border-teal-100 bg-teal-50 px-3.5 py-3"><code className="min-w-0 break-all font-mono text-[24px] font-extrabold tracking-[.12em] text-teal-950">{cache.code}</code><button type="button" onClick={() => void copy(cache.code!)} className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-lg bg-white px-3 text-xs font-bold text-teal-800 shadow-sm">{copied === cache.code ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}{copied === cache.code ? 'Copied' : 'Copy'}</button></div><p className="mt-2 text-[11px] text-slate-500">Code valid for {formatCountdown(codeMs)}. Resend timer is separate.</p></>}
               {!cache.starting && <div className="mt-4 border-t border-slate-100 pt-3"><p className="text-xs font-semibold text-slate-700">On your phone</p><p className="mt-2 flex flex-wrap items-center gap-1 text-xs leading-5 text-slate-600">WhatsApp <ChevronRight className="h-3 w-3" /> Linked devices <ChevronRight className="h-3 w-3" /> Link with phone number</p><p className="mt-2 text-[11px] text-slate-400">This page updates automatically once connected.</p></div>}
             </section>}
-          </>}
           <button type="button" onClick={() => router.push('/support')} className="mt-6 flex min-h-[52px] w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 text-left text-xs font-bold text-slate-700"><MessageSquare className="h-4 w-4 text-teal-700"/> Report a problem {supportUnread > 0 && <span className="rounded-full bg-rose-50 px-2 py-1 text-[10px] text-rose-700">{supportUnread} new</span>}<ChevronRight className="ml-auto h-4 w-4 text-slate-400"/></button>
           {notice && <div role={notice.bad ? 'alert' : 'status'} className={`mt-4 flex items-start gap-2 rounded-xl border px-3.5 py-3 text-xs leading-5 ${notice.bad ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-teal-100 bg-teal-50 text-teal-800'}`}><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{notice.text}</div>}
         </>}

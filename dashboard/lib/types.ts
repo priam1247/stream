@@ -107,11 +107,50 @@ export interface WhatsAppAccountStatus {
   linkedAt?: number;
 }
 
+/** Private service-side evidence. Ownership tokens never leave member APIs. */
+export interface ConfirmedMemberLink {
+  number: string;
+  sessionId: string;
+  claimToken: string;
+  observedAt: number;
+  linkedAt?: number;
+}
+
+export interface MemberUsageDay {
+  date: string;
+  commands: Record<string, number>;
+}
+
+export interface ServiceMemberUsage {
+  startedAt: number;
+  updatedAt: number;
+  sessions: {
+    number: string;
+    sessionId: string;
+    claimToken: string;
+    days: MemberUsageDay[];
+    lastAt?: number;
+    lastCommand?: string;
+  }[];
+}
+
+export interface PersonalUsage {
+  number: string;
+  trackedSince: number;
+  updatedAt: number;
+  days: MemberUsageDay[];
+  lastAt?: number;
+  lastCommand?: string;
+}
+
 export interface BotHeartbeatRecord {
   lastSeenAt: number;
   connected: boolean | null;
   botNumber: string | null;
   accounts?: WhatsAppAccountStatus[];
+  /** Last confirmed links survive a service outage; they do not grant access. */
+  confirmedLinks?: ConfirmedMemberLink[];
+  memberUsage?: ServiceMemberUsage;
   botName?: string;
   version?: string;
   uptimeSeconds?: number;
@@ -197,6 +236,8 @@ export interface MemberOverviewPayload {
   botConnected: boolean | null;
   botNumber: string | null;
   accounts?: WhatsAppAccountStatus[] | null;
+  confirmedLinks?: { number: string; linkedAt?: number }[];
+  personalUsage?: PersonalUsage[] | null;
   uptimeSeconds?: number | null;
   commandsTotal?: number | null;
   downloadsSuccess?: number | null;

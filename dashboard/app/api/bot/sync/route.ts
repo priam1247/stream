@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAdminEmail } from '@/lib/auth-engine';
 import { verifyBotSyncRequest } from '@/lib/bot-sync-auth';
 import { readAccountStatuses } from '@/lib/whatsapp-accounts';
+import { changedConfirmedLinks, mergeConfirmedLinks, readServiceMemberUsage } from '@/lib/member-insights-server';
 import {
   checkRateLimit,
   getClientIp,
@@ -15,7 +16,9 @@ import {
   getMemberCommandPolicy,
   getNextBotPollMs,
   importLocalWhatsAppUser,
-  saveBotHeartbeat,
+  releaseClaimedBotCommands,
+  saveBotHeartbeatIfNewer,
+  saveConfirmedMemberLinks,
 } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -26,10 +29,12 @@ const SYNC_FIELDS = new Set([
   'connected', 'botNumber', 'accounts', 'botName', 'version', 'uptimeSeconds',
   'commandsTotal', 'downloadsSuccess', 'failedTotal', 'ramUsedMB', 'queueLight',
   'queueHeavy', 'diskUsedMB', 'diskBudgetMB', 'whitelistVersion',
-  'commandPolicyVersion', 'sessionBackup', 'localUsers', 'completedResults',
+  'commandPolicyVersion', 'sessionBackup', 'localUsers', 'completedResults', 'memberUsage',
 ]);
 
 export async function POST(req: NextRequest) {
+  // Record actual receipt, not the time a slow database write finally finishes.
+  const receivedAt = Date.now();
   const ipKey = `botsync:ip:${getClientIp(req)}`;
   const rate = checkRateLimit(ipKey, MAX_SYNC_PER_MINUTE, SYNC_WINDOW_MS);
   if (!rate.allowed) {
@@ -98,12 +103,18 @@ export async function POST(req: NextRequest) {
   }
 
   // 3. Store fresh bot heartbeat + live telemetry counters
-  const prevHb = await getBotHeartbeat();
-  await saveBotHeartbeat({
-    lastSeenAt: Date.now(),
+  const [prevHb, snapshot] = await Promise.all([getBotHeartbeat(), computeWhitelistSnapshot()]);
+  const accounts = readAccountStatuses(body.accounts);
+  const memberUsage = readServiceMemberUsage(body.memberUsage, snapshot.users, receivedAt) || prevHb?.memberUsage;
+  const confirmedLinks = mergeConfirmedLinks(prevHb, accounts, snapshot.users, receivedAt);
+  await saveConfirmedMemberLinks(changedConfirmedLinks(confirmedLinks, prevHb?.confirmedLinks), snapshot.users);
+  await saveBotHeartbeatIfNewer({
+    lastSeenAt: receivedAt,
     connected: typeof body.connected === 'boolean' ? body.connected : null,
     botNumber: body.botNumber ? String(body.botNumber) : null,
-    accounts: readAccountStatuses(body.accounts),
+    accounts,
+    confirmedLinks,
+    ...(memberUsage ? { memberUsage } : {}),
     botName: typeof body.botName === 'string' ? body.botName : prevHb?.botName,
     version: typeof body.version === 'string' ? body.version : prevHb?.version,
     uptimeSeconds:
@@ -135,31 +146,40 @@ export async function POST(req: NextRequest) {
     })(),
   });
 
-  // 4. Compute versioned whitelist delta + claim queued commands + poll interval
-  const [snapshot, commands, nextPollMs, policy] = await Promise.all([
-    computeWhitelistSnapshot(),
-    claimPendingBotCommands(),
-    getNextBotPollMs(),
-    getMemberCommandPolicy(),
-  ]);
-
+  // A member can register and enqueue pairing after the heartbeat snapshot was
+  // read but before this tick claims commands. Re-read after claiming so the
+  // bot receives the corresponding permission before it executes the request.
+  const commands = await claimPendingBotCommands();
+  let responseSnapshot: typeof snapshot;
+  let nextPollMs: number;
+  let policy: Awaited<ReturnType<typeof getMemberCommandPolicy>>;
+  try {
+    [responseSnapshot, nextPollMs, policy] = await Promise.all([
+      commands.length ? computeWhitelistSnapshot() : Promise.resolve(snapshot),
+      getNextBotPollMs(),
+      getMemberCommandPolicy(),
+    ]);
+  } catch (error) {
+    await releaseClaimedBotCommands(commands.map((command) => command.id)).catch(() => {});
+    throw error;
+  }
   const clientVersion =
     typeof body.whitelistVersion === 'string' ? body.whitelistVersion.trim() : '';
-  const whitelistChanged = importedAnyLocal || clientVersion !== snapshot.version;
+  const whitelistChanged = importedAnyLocal || clientVersion !== responseSnapshot.version;
 
   return NextResponse.json({
     ok: true,
     serverTime: Date.now(),
     nextPollMs: commands.length > 0 ? 2_000 : nextPollMs,
-    whitelistVersion: snapshot.version,
+    whitelistVersion: responseSnapshot.version,
     whitelistChanged,
     commandPolicyVersion: policy.version,
     disabledMemberCommands: policy.disabled,
     ...(whitelistChanged
       ? {
-          botEnabledForMembers: snapshot.botEnabledForMembers,
-          users: snapshot.users,
-          numbers: snapshot.numbers,
+          botEnabledForMembers: responseSnapshot.botEnabledForMembers,
+          users: responseSnapshot.users,
+          numbers: responseSnapshot.numbers,
         }
       : {}),
     commands: commands.map((c) => ({

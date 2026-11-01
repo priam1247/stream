@@ -205,14 +205,14 @@ export const BOT_COMMANDS: CommandEntry[] = [
 // entry must instead copy the actual command the user searched for.
 export const MEMBER_COMMANDS = BOT_COMMANDS.filter((command) => !command.ownerOnly).flatMap((command) => {
   if (command.name === 'ping') return [
-    { ...command, name: 'ping', aliases: ['p'], category: 'general', summary: 'Check response time' },
-    { ...command, name: 'menu', aliases: ['help', 'commands'], category: 'general', summary: 'Show the command menu' },
-    { ...command, name: 'info', aliases: ['meta', 'ids', 'lookup'], category: 'general', summary: 'Look up movie or series details' },
-    { ...command, name: 'debrid', aliases: ['rd', 'debridstatus'], category: 'general', summary: 'Check debrid status' },
+    { ...command, name: 'ping', aliases: ['p'], category: 'general', usage: '.ping', example: '.ping', summary: 'Check response time' },
+    { ...command, name: 'menu', aliases: ['help', 'commands'], category: 'general', usage: '.menu [section]', example: '.menu', summary: 'Show the command menu' },
+    { ...command, name: 'info', aliases: ['meta', 'ids', 'lookup'], category: 'general', usage: '.info [series] <title>', example: '.info Inception', summary: 'Look up movie or series details' },
+    { ...command, name: 'debrid', aliases: ['rd', 'debridstatus'], category: 'general', usage: '.debrid', example: '.debrid', summary: 'Check debrid status' },
   ];
   if (command.name === 'providers') return [
-    { ...command, aliases: ['sources'], category: 'general' },
-    { ...command, name: 'moviestatus', aliases: ['moviestats', 'enginestats'], category: 'general', summary: 'Check download engine status' },
+    { ...command, aliases: ['sources'], category: 'general', usage: '.providers', example: '.providers' },
+    { ...command, name: 'moviestatus', aliases: ['moviestats', 'enginestats'], category: 'general', usage: '.moviestatus', example: '.moviestatus', summary: 'Check download engine status' },
   ];
   const extraAliases: Record<string, string[]> = {
     paper: ['pastpaper'], countpapers: ['listpapers', 'papercount', 'vaultcount'],

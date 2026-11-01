@@ -10,9 +10,11 @@ import { POST } from '../app/api/bot/sync/route';
 import { enqueueBotCommand, getBotCommandById, getBotHeartbeat, isUsingCloudflareD1, saveBotConnectionConfig, saveMemberWhatsAppUser } from '../lib/storage';
 
 const require = createRequire(import.meta.url);
-const { startDashboardSync } = require('../../Whatsapp bot/utils/dashboardSync.js') as { startDashboardSync: (options: Record<string, unknown>) => { syncNow: () => Promise<{ ok: boolean }>; stop: () => void } };
+const { createBotFixture } = require('../../Whatsapp bot/scripts/test-sandbox.js') as { createBotFixture: (root: string) => string };
+let memberTelemetry: { _resetForTests: (file: string | null) => void } | undefined;
 let root = '';
 afterEach(() => {
+  memberTelemetry?._resetForTests(null); memberTelemetry = undefined;
   if (root) fs.rmSync(root, { recursive: true, force: true });
   vi.unstubAllEnvs(); vi.unstubAllGlobals(); globalThis.__zafarD1SchemaV6Ready = undefined;
   globalThis.__zafarD1SchemaV6Promise = undefined; globalThis.__zafarD1UnreachableInDev = undefined;
@@ -22,6 +24,11 @@ afterEach(() => {
 it('connects the actual signed bot sync client to the single-service route using SQLite-backed D1', async () => {
   const db = new DatabaseSync(':memory:');
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'botkeep-e2e-'));
+  const botRoot = createBotFixture(root);
+  const botRequire = createRequire(path.join(botRoot, 'scripts', 'test-sandbox.js'));
+  memberTelemetry = botRequire('../utils/memberTelemetry.js');
+  memberTelemetry!._resetForTests(path.join(root, 'member-usage.json'));
+  const { startDashboardSync } = botRequire('../utils/dashboardSync.js') as { startDashboardSync: (options: Record<string, unknown>) => { syncNow: () => Promise<{ ok: boolean }>; stop: () => void } };
   vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test'); vi.stubEnv('D1_DATABASE_ID', 'test'); vi.stubEnv('CLOUDFLARE_API_TOKEN', 'test');
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
     const { sql, params } = JSON.parse(String(init.body)) as { sql: string; params: (string | number | null)[] };
