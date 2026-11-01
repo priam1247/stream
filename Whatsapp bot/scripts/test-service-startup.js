@@ -125,7 +125,7 @@ for (const [signal, failBackup] of [['SIGTERM', false], ['SIGINT', false], ['SIG
         './utils/dashboardSync': { startDashboardSync: () => ({ enabled: true, stop() { mark('sync-stop'); if (process.env.TEST_FAIL_BACKUP) throw new Error(({ sensitive: 'closing session token=secret-filter-fixture registrationId=12345 chainKey=private-session-fixture', private: 'closing session privateKey=secret-private-key-fixture', binary: 'closing session: Buffer barebinarysecretfixturebarebinarysecretfixture12345678', benign: 'closing session: socket offline token=secret-filter-fixture' })[process.env.TEST_FAIL_BACKUP]); } }), triggerImmediateSync() {} },
         './utils/adminApi': { startAdminApi: () => { setImmediate(() => { process.emit('unhandledRejection', undefined); process.stdout.write('SERVICE_READY\\n'); }); return { stop: async () => { mark('api-stop'); } }; } },
         './utils/logger': logger,
-        './utils/youtubedl': { scheduleAutoUpdate() {}, healthCheck: async () => null, startWatchdog() {} },
+        './utils/youtubedl': {},
         './utils/ffmpeg': ffmpeg,
         './utils/nm3u8dl': { ensureInstalled: async () => null },
         './utils/telemetry': { flushNow() { mark('telemetry'); } },

@@ -64,17 +64,31 @@ begin
   uri = URI(url)
   path = '/tmp/muffon-bandcamp-sample.mp3'
   bytes = 0
-  Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 15, read_timeout: 40) do |http|
-    http.request(Net::HTTP::Get.new(uri.request_uri)) do |response|
-      raise "AUDIO_HTTP_#{response.code}" unless response.is_a?(Net::HTTPSuccess)
-      File.open(path, 'wb') do |file|
-        response.read_body do |chunk|
-          bytes += chunk.bytesize
-          raise 'TOO_LARGE' if bytes > 30 * 1024 * 1024
-          file.write(chunk)
+  4.times do |redirect|
+    raise 'UNEXPECTED_AUDIO_HOST' unless uri.scheme == 'https' && (uri.host == 'bcbits.com' || uri.host.end_with?('.bcbits.com'))
+    target = nil
+    Net::HTTP.start(uri.host, uri.port, use_ssl: true, open_timeout: 15, read_timeout: 40) do |http|
+      request = Net::HTTP::Get.new(uri.request_uri)
+      request['User-Agent'] = 'Mozilla/5.0 (compatible; public media test)'
+      request['Referer'] = 'https://alexandernakarada.bandcamp.com/'
+      http.request(request) do |response|
+        if response.is_a?(Net::HTTPRedirection) && redirect < 3 && response['location']
+          target = URI.join(uri, response['location'])
+          response.read_body { |_chunk| }
+        else
+          raise "AUDIO_HTTP_#{response.code}" unless response.is_a?(Net::HTTPSuccess)
+          File.open(path, 'wb') do |file|
+            response.read_body do |chunk|
+              bytes += chunk.bytesize
+              raise 'TOO_LARGE' if bytes > 30 * 1024 * 1024
+              file.write(chunk)
+            end
+          end
         end
       end
     end
+    break unless target
+    uri = target
   end
   raise 'TOO_SMALL' unless bytes > 10_000
   ok = system(ENV.fetch('FFMPEG_PATH'), '-v', 'error', '-i', path, '-map', '0:a:0', '-f', 'null', '-', out: File::NULL, err: File::NULL)
@@ -82,7 +96,8 @@ begin
   note("actual Muffon Bandcamp CC BY track fully downloaded and decoded, #{bytes} bytes")
 rescue => e
   # Do not print signed URLs, response bodies, request headers, or exception text.
-  note("probe failed safely (#{e.class})")
+  reason = e.message.to_s.match?(/\A(?:HTTP_\d{3}|AUDIO_HTTP_\d{3}|NO_AUDIO|UNEXPECTED_AUDIO_HOST|TOO_LARGE|TOO_SMALL|DECODE_FAILED|TRACK_LICENSE_NOT_CONFIRMED)\z/) ? e.message : e.class.to_s
+  note("probe failed safely (#{reason})")
   exit 1
 ensure
   FileUtils.rm_f('/tmp/muffon-bandcamp-sample.mp3')
