@@ -81,7 +81,7 @@ Add `--as-audio` or `--as-document` for audio delivery. Audius results are
 limited to public downloads enabled by the creator; gated or disabled downloads
 are not bypassed. Wikimedia Commons searches open-licensed recordings and
 community videos, not a comprehensive catalog of commercial music videos.
-Only files with supported public-domain or CC BY/CC BY-SA metadata are offered.
+Only files with supported public-domain, CC0 or CC BY/CC BY-SA metadata are offered.
 Credits, license and the original file page accompany each delivery; check that
 page for full terms because Commons metadata can be incomplete. These sources
 require FFmpeg and working access from the bot host. Availability varies, and

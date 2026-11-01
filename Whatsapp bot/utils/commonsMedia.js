@@ -42,6 +42,16 @@ function descriptionUrl(value) {
   } catch { return ''; }
 }
 
+function matchesLicenseUrl(value, expectedPath) {
+  try {
+    const url = new URL(String(value || ''));
+    if (!['http:', 'https:'].includes(url.protocol) || url.hostname !== 'creativecommons.org' ||
+        url.username || url.password || url.port) return false;
+    const path = url.pathname.replace(/\/$/, '');
+    return path === expectedPath || (path.startsWith(`${expectedPath}/`) && /^\/deed(?:\.[a-z-]+)?$/i.test(path.slice(expectedPath.length)));
+  } catch { return false; }
+}
+
 function licenseInfo(meta) {
   const short = text(meta?.LicenseShortName?.value, 80);
   const key = text(meta?.License?.value, 80).toLowerCase();
@@ -53,10 +63,14 @@ function licenseInfo(meta) {
   if (cc) {
     const slug = cc[1] ? 'by-sa' : 'by';
     if (key !== `cc-${slug}-${cc[2]}`) return null;
-    const expected = `https://creativecommons.org/licenses/${slug}/${cc[2]}/`;
-    const supplied = String(meta?.LicenseUrl?.value || '').replace(/\/$/, '');
-    if (supplied !== expected.replace(/\/$/, '')) return null;
-    return { license: `CC BY${cc[1] ? '-SA' : ''} ${cc[2]}`, licenseUrl: expected, attribution };
+    const expectedPath = `/licenses/${slug}/${cc[2]}`;
+    if (!matchesLicenseUrl(meta?.LicenseUrl?.value, expectedPath)) return null;
+    return { license: `CC BY${cc[1] ? '-SA' : ''} ${cc[2]}`, licenseUrl: `https://creativecommons.org${expectedPath}/`, attribution };
+  }
+  if (/^cc0$/i.test(short) && key === 'cc0' &&
+      String(meta?.AttributionRequired?.value).toLowerCase() === 'false' &&
+      matchesLicenseUrl(meta?.LicenseUrl?.value, '/publicdomain/zero/1.0')) {
+    return { license: 'CC0 1.0', licenseUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', attribution };
   }
   if (/^public domain$/i.test(short) && key === 'pd' &&
       String(meta?.Copyrighted?.value).toLowerCase() === 'false' &&

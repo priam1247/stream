@@ -34,6 +34,21 @@ test('strips Commons tracking parameters while keeping other download parameters
   assert.equal(item.url, 'https://upload.wikimedia.org/wikipedia/commons/6/60/Bach.ogv?other=1');
 });
 
+test('accepts canonical Creative Commons links and explicitly marked CC0', () => {
+  const meta = metadata();
+  meta.LicenseUrl.value = 'http://creativecommons.org/licenses/by-sa/3.0/deed.en';
+  assert.equal(commons.licenseInfo(meta).licenseUrl, 'https://creativecommons.org/licenses/by-sa/3.0/');
+  meta.LicenseShortName.value = 'CC0';
+  meta.License.value = 'cc0';
+  meta.LicenseUrl.value = 'http://creativecommons.org/publicdomain/zero/1.0/deed.en';
+  meta.AttributionRequired.value = 'false';
+  const info = commons.licenseInfo(meta);
+  assert.equal(info.license, 'CC0 1.0');
+  assert.equal(info.licenseUrl, 'https://creativecommons.org/publicdomain/zero/1.0/');
+  meta.LicenseUrl.value = 'https://creativecommons.org.evil.test/publicdomain/zero/1.0';
+  assert.equal(commons.licenseInfo(meta), null);
+});
+
 test('public-domain records need explicit machine-readable status', () => {
   const meta = metadata();
   meta.LicenseShortName.value = 'Public domain';
