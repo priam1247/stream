@@ -1,0 +1,16 @@
+{
+  "name": "toggle",
+  "aliases": [
+    "enable",
+    "disable"
+  ],
+  "category": "admin",
+  "description": "Enable or disable one command",
+  "usage": ".toggle <command>",
+  "role": "admin",
+  "cooldownSec": 2,
+  "timeoutSec": 20,
+  "lane": "light",
+  "limits": {},
+  "sample": "ping"
+}

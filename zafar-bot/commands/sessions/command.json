@@ -1,0 +1,16 @@
+{
+  "name": "sessions",
+  "aliases": [
+    "accounts",
+    "numbers"
+  ],
+  "category": "admin",
+  "description": "List linked numbers and link a new one",
+  "usage": ".sessions | .sessions link <number> | .sessions status",
+  "role": "owner",
+  "cooldownSec": 2,
+  "timeoutSec": 20,
+  "lane": "light",
+  "limits": {},
+  "sample": "status"
+}

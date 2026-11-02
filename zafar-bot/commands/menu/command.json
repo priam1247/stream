@@ -1,0 +1,18 @@
+{
+  "name": "menu",
+  "aliases": [
+    "help",
+    "commands"
+  ],
+  "category": "general",
+  "description": "Show all commands",
+  "usage": ".menu [section]",
+  "role": "user",
+  "cooldownSec": 2,
+  "timeoutSec": 20,
+  "lane": "light",
+  "limits": {
+    "maxSectionChars": 40
+  },
+  "sample": ""
+}

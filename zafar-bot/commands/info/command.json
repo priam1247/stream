@@ -1,0 +1,19 @@
+{
+  "name": "info",
+  "aliases": [
+    "meta",
+    "ids",
+    "lookup"
+  ],
+  "category": "general",
+  "description": "Title metadata",
+  "usage": ".info [series] <title>",
+  "role": "user",
+  "cooldownSec": 5,
+  "timeoutSec": 60,
+  "lane": "light",
+  "limits": {
+    "maxInputChars": 120
+  },
+  "sample": "Inception"
+}
