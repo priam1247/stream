@@ -215,16 +215,21 @@ test('search input selects the first YouTube result, as XJX does', async () => {
   assert.equal(hit.duration, 125);
 });
 
-test('XJX .song sends the first-hit audio URL as audio and then a document', async () => {
+test('.song sends one artist-titled MP3 document at the configured high bitrate', async () => {
   const { http } = fakeHttp(async (url, options) => {
     assert.equal(url, `${constants.KNIGHTBOT_API}/ytaudio`);
     assert.equal(options.params.url, sample);
+    assert.equal(options.params.format, '320kbps');
     return { data: { success: true, result: { download: 'https://cdn.example.org/song.mp3', title: 'Provider title' } } };
   });
   const client = media.createXjxMedia({
     http,
-    search: async ({ videoId }) => ({ title: 'Selected song', videoId }),
-    settings: {},
+    search: async ({ videoId }) => ({
+      title: 'Joji - Sanctuary (Official Video)',
+      author: { name: 'Joji - Topic' },
+      videoId,
+    }),
+    settings: { audioFormat: '320kbps' },
     logger: { warn() {} }, wait: noWait,
   });
   const bodies = [];
@@ -232,12 +237,15 @@ test('XJX .song sends the first-hit audio URL as audio and then a document', asy
   const msg = { key: { remoteJid: 'chat@s.whatsapp.net', id: 'm-song' } };
   const result = await client.downloadSongCommand(sock, msg, { from: msg.key.remoteJid }, sample);
   assert.equal(result.via, 'KnightBot');
-  assert.ok(bodies.some((body) => body.text === '_Selected song_'));
+  assert.equal(result.artist, 'Joji');
+  assert.equal(result.title, 'Sanctuary');
   const mediaBodies = bodies.filter((body) => body.audio || body.document);
-  assert.deepEqual(mediaBodies.map((body) => body.audio ? 'audio' : 'document'), ['audio', 'document']);
-  assert.equal(mediaBodies[0].audio.url, 'https://cdn.example.org/song.mp3');
-  assert.equal(mediaBodies[1].document.url, 'https://cdn.example.org/song.mp3');
-  assert.equal(mediaBodies[0].fileName, 'Selected song.mp3');
+  assert.equal(mediaBodies.length, 1);
+  assert.equal(mediaBodies[0].audio, undefined);
+  assert.equal(mediaBodies[0].document.url, 'https://cdn.example.org/song.mp3');
+  assert.equal(mediaBodies[0].fileName, 'Joji - Sanctuary.mp3');
+  assert.match(mediaBodies[0].caption, /Joji - Sanctuary/);
+  assert.equal(bodies.some((body) => body.text), false);
 });
 
 test('XJX .video sends the resolved video and falls back to a document if needed', async () => {

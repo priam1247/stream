@@ -16,8 +16,11 @@ process.chdir(TMP);
 process.env.PREFIX = '!';
 process.env.YT_AUTH_FILE = path.join(TMP, 'oauth.json');
 const pipeline = require(path.join(ROOT, 'utils/mediaPipeline'));
+const socialMedia = require(path.join(ROOT, 'utils/socialMedia'));
 let last;
+let lastSocial;
 pipeline.downloadAndSend = async (sock, msg, extra, options) => { last = { sock, msg, extra, ...options }; return { sent: true }; };
+socialMedia.downloadAndSend = async (sock, msg, extra, options) => { lastSocial = { sock, msg, extra, ...options }; return { sent: true }; };
 const commands = require(path.join(ROOT, 'commands/media/shortcuts'));
 const menu = require(path.join(ROOT, 'commands/general/menu'));
 const cases = [
@@ -49,8 +52,6 @@ for (const [name, url] of cases) {
 const linkCases = [
   ['tiktok', 'https://www.tiktok.com/@creator/video/123456789'],
   ['x', 'https://x.com/creator/status/123456789'],
-  ['instagram', 'https://www.instagram.com/reel/Example/'],
-  ['fb', 'https://www.facebook.com/watch/?v=123456789'],
 ];
 for (const [name, url] of linkCases) {
   test(`${name} keeps the existing link and legacy quality behavior`, async () => {
@@ -63,16 +64,22 @@ for (const [name, url] of linkCases) {
   });
 }
 
-test('Facebook defaults to 1080p with no captions, while explicit quality still works', async () => {
-  const url = 'https://www.facebook.com/watch/?v=123456789';
-  await find('fb').execute(sock, msg, [url], extra);
-  assert.equal(last.height, 1080);
-  assert.equal(last.stripCaption, true);
-  await find('fb').execute(sock, msg, [url, '480'], extra);
-  assert.equal(last.height, 480);
-  assert.equal(last.stripCaption, true);
-  await find('instagram').execute(sock, msg, ['https://www.instagram.com/reel/Example/'], extra);
-  assert.equal(last.stripCaption, false);
+test('Facebook and Instagram use their dedicated XJX-style resolvers', async () => {
+  const fbUrl = 'https://www.facebook.com/watch/?v=123456789';
+  const igUrl = 'https://www.instagram.com/reel/Example/';
+  last = null;
+  lastSocial = null;
+  await find('fb').execute(sock, msg, [fbUrl], extra);
+  assert.equal(last, null);
+  assert.equal(lastSocial.platform, 'facebook');
+  assert.equal(lastSocial.url, fbUrl);
+  assert.equal(lastSocial.quality, 1080);
+  await find('fb').execute(sock, msg, [fbUrl, '480'], extra);
+  assert.equal(lastSocial.quality, 480);
+  await find('ig').execute(sock, msg, [igUrl], extra);
+  assert.equal(last, null);
+  assert.equal(lastSocial.platform, 'instagram');
+  assert.equal(lastSocial.url, igUrl);
 });
 
 test('remaining aliases are unique and point to their canonical commands', () => {
