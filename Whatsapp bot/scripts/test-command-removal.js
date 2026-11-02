@@ -26,7 +26,7 @@ const retired = ['audius', 'deezer', 'dz', 'bilibili', 'bili', 'vimeo', 'dailymo
 test('retired commands and their aliases are not registered or listed in the menus', () => {
   const commands = bot('utils/commandLoader').loadCommands();
   for (const name of retired) assert.equal(commands.has(name), false, `${name} unexpectedly registered`);
-  for (const name of ['song', 'video', 'ytmp4', 'spotify', 'reddit', 'tiktok', 'x', 'instagram', 'fb', 'status', 'restart']) {
+  for (const name of ['song', 'video', 'ytmp4', 'spotify', 'reddit', 'tiktok', 'x', 'instagram', 'fb', 'dramabox', 'drama', 'dramastream', 'status', 'restart']) {
     assert.ok(commands.has(name), `${name} must remain registered`);
   }
   assert.equal(fs.existsSync(path.join(root, 'commands/media/dl.js')), false, '.dl source still exists');

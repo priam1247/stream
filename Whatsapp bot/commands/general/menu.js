@@ -21,6 +21,7 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
       rows: [
         [`${p}movie <title> [year]`, 'movie'],
         [`${p}series <title> s01e01`, 'series'],
+        [`${p}dramabox <bookId> [episode]`, 'DramaBox stream link'],
         [`${p}song <name|url>`, 'MP3'],
         [`${p}mfind <name|link>`, 'music search'],
         [`${p}embed <link>`, 'resolve an embed link'],
