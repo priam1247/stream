@@ -42,7 +42,7 @@ zafar-bot/
 ├── logs/               per-command and gateway logs (gitignored)
 ├── scripts/            check-all.js, backup.js, add-owner.js, isolation-proof.sh
 ├── docs/               this file, migration report
-├── test/               95 automated tests, node:test
+├── test/               102 automated tests, node:test
 └── ecosystem.config.js pm2 definition
 ```
 
@@ -223,7 +223,7 @@ Rule 4 and 5 are checked two ways, both kept in the repo:
 ```bash
 npm run test:isolation      # node --test test/isolation.test.js  (11 tests)
 ./scripts/isolation-proof.sh # grep evidence, 14 checks, exit 1 on any hit
-npm test                     # 95 tests, includes test/imports.test.js
+npm test                     # 102 tests, includes test/imports.test.js
 ```
 
 The grep script is the artifact for a human to read:
@@ -480,6 +480,58 @@ shown to a user or written to the board; the full stack stays in the log file.
 
 ---
 
+## 12a. Deploying it (read this before pasting the repo into a panel)
+
+**This is a monorepo.** The bot is NOT at the repository root. There are three
+different ways to deploy, and picking the wrong one is how the bot "exits 0 and
+gets stuck in a crash loop".
+
+### Preferred: run the bot folder
+
+Point the panel/container at `zafar-bot/` as its working directory.
+
+```bash
+cd zafar-bot
+npm install
+cp .env.example .env        # fill in PAIR_NUMBER + keys
+node scripts/add-owner.js <your number>
+npm start                   # node --expose-gc index.js
+```
+
+`zafar-bot/index.js` is the entry point. `node .`, `node index.js`, `npm start`
+and `pm2 start ecosystem.config.js` all work.
+
+### If the panel insists on the repository root
+
+```bash
+node zafar-bot/index.js
+```
+
+It works — `lib/paths.js` resolves storage relative to the project, not the
+current directory — but `npm install` at the repo root will NOT install the bot's
+dependencies, because the root has no `package.json`. Install them first:
+
+```bash
+npm --prefix zafar-bot install
+```
+
+### The failure this section exists for
+
+A panel started with the repo root as cwd runs `npm start`, finds no `start`
+script, and gives up. Earlier versions compounded this: with no linked numbers,
+nothing held the event loop open, so a direct `node gateway/index.js` **exited 0
+immediately**. A panel reads exit 0 as a crash and refuses to restart, so the bot
+looked dead with no error message.
+
+Fixed in three parts, each covered by `test/boot.test.js`:
+
+1. a service-lifetime timer keeps the process alive with zero sessions (the old
+   bot had this at `index.js:362`; the rebuild lost it);
+2. `gateway/index.js` exposes `start()`, and `index.js` calls it, so every entry
+   point actually boots;
+3. boot messages are mirrored to the console, so a panel shows what happened
+   instead of an empty screen (`LOG_CONSOLE=0` turns it off).
+
 ## 13. Running it
 
 ```bash
@@ -489,7 +541,7 @@ cp .env.example .env      # fill in PAIR_NUMBER and the provider keys
 node scripts/add-owner.js 265991234567
 
 # develop
-npm test                  # 95 tests
+npm test                  # 102 tests
 npm run check-all         # the board, exit 1 if anything failed
 ./scripts/isolation-proof.sh
 

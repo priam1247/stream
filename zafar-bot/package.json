@@ -2,11 +2,11 @@
   "name": "zafar-bot",
   "version": "3.0.0",
   "description": "WhatsApp service with one isolated folder per command",
-  "main": "gateway/index.js",
+  "main": "index.js",
   "type": "commonjs",
   "private": true,
   "scripts": {
-    "start": "node --expose-gc gateway/index.js",
+    "start": "node --expose-gc index.js",
     "check-all": "node scripts/check-all.js",
     "backup": "node scripts/backup.js",
     "add-owner": "node scripts/add-owner.js",

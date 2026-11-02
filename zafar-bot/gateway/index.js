@@ -108,24 +108,42 @@ async function boot({ withSessions = true } = {}) {
   return { manager, dashboard, loaded, owner };
 }
 
-if (require.main === module) {
+/**
+ * THIS IS A LONG-RUNNING SERVICE, EVEN WITH NOBODY LINKED.
+   *
+   * Without a handle the event loop empties as soon as boot() resolves and Node
+   * exits 0 — which is exactly what a panel reports as "crashed, exit code 0" and
+   * then refuses to restart. The old bot carried this same timer for the same
+   * reason (index.js:362); the rebuild lost it.
+   *
+   * It must NOT be unref'd. Nothing else is guaranteed to hold the loop open when
+   * there are zero sessions, and the bot has to stay up waiting for a pairing.
+   */
+let serviceLifetime = null;
+let bootContext = null;
+
+function start() {
+  if (serviceLifetime) return; // idempotent: two entry points must not double-boot
+  serviceLifetime = setInterval(() => {}, 24 * 60 * 60 * 1000);
+
   const shutdown = async (signal, ctx) => {
     gatewayLog.info('shutdown', { signal });
-    try { ctx?.dashboard?.stop(); } catch { /* already stopped */ }
-    try { await ctx?.manager?.stopAll(); } catch { /* already stopped */ }
+    clearInterval(serviceLifetime);
+    serviceLifetime = null;
+    try { ctx?.dashboard?.stop(); } catch (err) { gatewayLog.warn('dashboard stop failed', { error: err.message }); }
+    try { await ctx?.manager?.stopAll(); } catch (err) { gatewayLog.warn('session stop failed', { error: err.message }); }
     process.exit(0);
   };
 
-  let ctx = null;
   boot()
-    .then((result) => { ctx = result; })
+    .then((result) => { bootContext = result; })
     .catch((err) => {
       gatewayLog.error('boot failed', { error: err.stack || err.message });
       process.exit(1);
     });
 
-  process.on('SIGINT', () => { void shutdown('SIGINT', ctx); });
-  process.on('SIGTERM', () => { void shutdown('SIGTERM', ctx); });
+  process.on('SIGINT', () => { void shutdown('SIGINT', bootContext); });
+  process.on('SIGTERM', () => { void shutdown('SIGTERM', bootContext); });
 
   process.on('unhandledRejection', (err) => {
     gatewayLog.error('unhandled rejection', { error: err?.stack || String(err) });
@@ -135,4 +153,7 @@ if (require.main === module) {
   });
 }
 
-module.exports = { boot, ensureTree, purgeTmp, status, registry };
+// Started when this file is the entry point...
+if (require.main === module) start();
+
+module.exports = { boot, start, ensureTree, purgeTmp, status, registry };

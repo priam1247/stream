@@ -134,6 +134,17 @@ class Session {
     if (qr) {
       this.lastError = 'QR code issued; scan it to link this number';
       gatewayLog.warn('session issued a QR code', { number: this.number });
+      // Print it. Receiving the QR without showing it made manual linking
+      // impossible: the only way in was a pairing code, and that was broken too.
+      try {
+        // eslint-disable-next-line global-require
+        const qrcode = require('qrcode-terminal');
+        console.log(`\n  Scan this QR code for ${this.number} with WhatsApp → Linked devices:\n`);
+        qrcode.generate(qr, { small: true });
+        console.log('');
+      } catch (err) {
+        gatewayLog.warn('could not render the QR code', { number: this.number, error: err.message });
+      }
     }
 
     if (connection === 'open') {

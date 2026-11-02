@@ -7,7 +7,7 @@ test board that never claims a pass it cannot prove.
 - **Date:** 2026-11-02
 - **Old tree:** `Whatsapp bot/` — untouched, still the migration source
 - **New tree:** `zafar-bot/` — 22 commands, all loading
-- **Automated tests:** 95 / 95 passing (`npm test`)
+- **Automated tests:** 102 / 102 passing (`npm test`)
 - **Isolation proofs:** 14 / 14 passing (`./scripts/isolation-proof.sh`)
 - **Live board:** `12 passed · 10 failed · 22 checked` (`node scripts/check-all.js`, exit 1)
 
@@ -211,8 +211,8 @@ Two more non-bugs worth recording, because they looked like bugs and were not:
 ### 5.1 Automated suite — `npm test`
 
 ```
-# tests 95
-# pass 95
+# tests 102
+# pass 102
 # fail 0
 ```
 
@@ -222,6 +222,7 @@ Two more non-bugs worth recording, because they looked like bugs and were not:
 | `test/guards.test.js` | 18 | all 7 guards, their order, cooldown expiry, refusal wording |
 | `test/users.test.js` | 18 | CRUD, ban/unban, roles, block, audit log, `.bak` recovery, corrupt file, per-number isolation, single writer |
 | `test/imports.test.js` | 16 | no cross-command import, no `gateway/` import, no Baileys, no `users.json`, contract completeness, duplicate aliases, pinned Baileys, `.env.example` coverage, no secrets |
+| `test/boot.test.js` | 6 | process stays up with zero sessions; every entry point boots; console is not silent |
 | `test/access.test.js` | 13 | strangers refused, approved served, owner everywhere, one-responder in groups, echo suppression |
 | `test/commands.test.js` | 17 | `.ping .menu .status .users .toggle .botmanage .debrid .providers .sessions`, unknown command, no prefix, not-from-me |
 
@@ -291,6 +292,25 @@ checks only, and are **UNTESTED** against a live provider:
 No ❌ in section 5.3 is caused by code that failed a test. They are all "could not
 reach the provider from here". That distinction is the whole point of the board:
 a green tick on `.song` would have been a lie.
+
+### 5.4b Bugs found after the first deployment attempt
+
+These came from a real panel run, not from reading code. They are listed because
+the board was green while the bot could not start — the most important kind of
+gap.
+
+| # | bug | symptom | fix |
+|---|---|---|---|
+| 1 | nothing held the event loop open with zero sessions | process **exited 0** right after boot; the panel called it a crash and refused to restart | a service-lifetime timer, as the old bot had (`index.js:362`). Must not be `unref`'d |
+| 2 | `index.js` wrapper only `require`d the gateway | boot never ran at all; instant exit 0 | gateway exposes `start()`, the wrapper calls it |
+| 3 | `PAIR_NUMBER` was read into config and never used | a fresh install could never link a number | `startAll()` starts pairing for `PAIR_NUMBER` when nothing is linked |
+| 4 | the QR code was received but never printed | manual linking was impossible | `qrcode-terminal` renders it to the console |
+| 5 | logs went to a file only | the panel showed a blank screen while the bot "died" | boot messages mirror to the console (`LOG_CONSOLE=0` to disable) |
+| 6 | no root `package.json` | `npm start` at the repo root does nothing; `npm install` there does not install bot deps | documented in ARCHITECTURE §12a; use `zafar-bot/` as cwd, or `npm --prefix zafar-bot install` |
+
+Covered by `test/boot.test.js` (6 cases): the process stays alive with zero
+sessions, `node .`, `node index.js` and a pm2-style `node gateway/index.js` all
+boot and stay up, and boot says something useful on the console.
 
 ### 5.5 The 31 empty `catch {}` blocks are fixed
 
