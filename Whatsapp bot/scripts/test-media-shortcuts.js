@@ -63,6 +63,18 @@ for (const [name, url] of linkCases) {
   });
 }
 
+test('Facebook defaults to 1080p with no captions, while explicit quality still works', async () => {
+  const url = 'https://www.facebook.com/watch/?v=123456789';
+  await find('fb').execute(sock, msg, [url], extra);
+  assert.equal(last.height, 1080);
+  assert.equal(last.stripCaption, true);
+  await find('fb').execute(sock, msg, [url, '480'], extra);
+  assert.equal(last.height, 480);
+  assert.equal(last.stripCaption, true);
+  await find('instagram').execute(sock, msg, ['https://www.instagram.com/reel/Example/'], extra);
+  assert.equal(last.stripCaption, false);
+});
+
 test('remaining aliases are unique and point to their canonical commands', () => {
   assert.equal(find('tt').name, 'tiktok');
   assert.equal(find('twitter').name, 'x');

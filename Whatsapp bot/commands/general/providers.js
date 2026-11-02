@@ -3,9 +3,7 @@ const telemetry = require('../../utils/telemetry');
 
 const RELIABILITY_ORDER = [
   'moviebox',
-  'vixsrc',
   'vidlink',
-  'videasy',
   'vidsrc',
   'vaplayer',
   'yts',
@@ -91,11 +89,11 @@ const statusCommand = {
       const text = [
         '📊 *Engine*',
         `Uptime: ${minutes}m`,
-        `Queue: ${q.running} active · ${q.queued} waiting`,
+        `Downloads: ${q.running} active`,
         `HLS: ${hlsLabel}`,
         `Disk: ${d.folderUsedMB.toFixed(0)} / ${d.budgetMB} MB`,
         `Temp: ${tempMB.toFixed(1)} MB`,
-        `Downloads: ${t.downloadsSuccess} ok · ${t.failedTotal} failed`,
+        `Completed: ${t.downloadsSuccess} ok · ${t.failedTotal} failed`,
       ].join('\n');
 
       return extra.reply(text);

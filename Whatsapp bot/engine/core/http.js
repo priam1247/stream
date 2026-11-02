@@ -1,5 +1,5 @@
 // src/core/http.js — hardened fetch layer: retry with jitter, deadline hedging,
-// per-host inflight limits, shared cookie jar, tiny HTML helpers (replaces cheerio).
+// shared cookie jar, tiny HTML helpers (replaces cheerio).
 //
 // Diagnostics matter here: `fetch failed` on its own tells you nothing about
 // *why* every provider dies on a datacenter IP. Every failure is normalised to
@@ -57,35 +57,6 @@ export const nextUserAgent = () => UA_POOL[uaCursor++ % UA_POOL.length];
 // Only plain JSON calls are coalesced: raw responses can be read once.
 const INFLIGHT_JSON = new Map();
 
-// ── per-host inflight limiter (prevents hammering one site) ───────────────
-const inflight = new Map();           // host -> current count, including handed-off slots
-const rawMaxPerHost = Number(process.env.MAX_PER_HOST || 4);
-const MAX_PER_HOST = Number.isFinite(rawMaxPerHost) && rawMaxPerHost >= 1
-  ? Math.floor(rawMaxPerHost) : 4;
-const hostQueue = new Map();          // host -> [waiters]
-
-async function acquire(host) {
-  const n = inflight.get(host) || 0;
-  if (n < MAX_PER_HOST) { inflight.set(host, n + 1); return; }
-  let q = hostQueue.get(host);
-  if (!q) { q = []; hostQueue.set(host, q); }
-  // release() hands this waiter an already-reserved slot. Incrementing after
-  // waking would allow a newcomer to take the same slot in the meantime.
-  await new Promise(res => q.push(res));
-}
-function release(host) {
-  const q = hostQueue.get(host);
-  if (q?.length) {
-    const next = q.shift();
-    if (!q.length) hostQueue.delete(host);
-    next();
-    return;
-  }
-  const n = Math.max(0, (inflight.get(host) || 1) - 1);
-  if (n) inflight.set(host, n);
-  else inflight.delete(host);
-}
-
 // ── core request with retries + backoff jitter ────────────────────────────
 /**
  * GET/JSON a provider endpoint.
@@ -103,7 +74,7 @@ export async function req(url, opts = {}) {
     ...rest
   } = opts;
 
-  const shareable = coalesce && json === true
+  const shareable = coalesce && json === true && !rest.signal
     && (!rest.method || String(rest.method).toUpperCase() === 'GET');
   if (!shareable) return run(url, { timeout, retries, json, headers, cookies, ...rest });
 
@@ -125,14 +96,14 @@ async function run(url, { timeout, retries, json, headers, cookies, ...rest }) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     const started = Date.now();
     try {
-      await acquire(host);
-      try {
         const h = { 'user-agent': headers['user-agent'] || nextUserAgent(), accept: '*/*', ...headers };
         if (cookies) {
           const c = jar.headerFor(url);
           if (c) h.cookie = c;
         }
-        const res = await fetch(url, { ...rest, headers: h, signal: AbortSignal.timeout(timeout) });
+        const deadline = AbortSignal.timeout(timeout);
+        const signal = rest.signal ? AbortSignal.any([rest.signal, deadline]) : deadline;
+        const res = await fetch(url, { ...rest, headers: h, signal });
         // Fetch can follow redirects; Set-Cookie belongs to the final response
         // URL, not to the original request's host.
         if (cookies) jar.set(res.url || url, res.headers.getSetCookie?.());
@@ -156,7 +127,6 @@ async function run(url, { timeout, retries, json, headers, cookies, ...rest }) {
           hlog.debug(`${host} OK ${res.status} ${ms}ms`);
           return out;
         } catch { throw Object.assign(new Error('invalid JSON response'), { ms }); }
-      } finally { release(host); }
     } catch (e) {
       const { code, detail } = describeError(e);
       const ms = Date.now() - started;
@@ -168,7 +138,7 @@ async function run(url, { timeout, retries, json, headers, cookies, ...rest }) {
         code, detail, ms, host, cause: e,
         ...(e?.status ? { status: e.status } : {}),
       });
-      const retryable = !(e.status && e.status >= 400 && e.status < 500 && e.status !== 429)
+      const retryable = !rest.signal?.aborted && !(e.status && e.status >= 400 && e.status < 500 && e.status !== 429)
         && code !== 'CF_WALL' && code !== 'BAD_URL';
       if (!retryable) {
         hlog.debug(`${host} ${code} ${ms}ms — ${detail}`);

@@ -105,7 +105,6 @@ const execute = async (sock, msg, args, extra) => {
           return reply('❌ No results found.');
         }
         if (results.length > 1 && pickerOn && !firstHit) {
-          void YT.getInfo(results[0].url).catch(() => {});
           const listText = youtubeSearch.formatResults(results, {
             header: `🔎 *${text}*`,
             note: `Reply *${config.prefix}1*–*${config.prefix}${results.length}* or *${config.prefix}cancel*.`,
@@ -158,12 +157,13 @@ const execute = async (sock, msg, args, extra) => {
 
       return await jobQueue.runInLane('light', async () => {
       const releaseHold = holdTemp(id);
-      const diskReservation = diskSpace.reserveSpace(getTempDir(), MAX_AUDIO_MB * 2, {
+      let diskReservation = null;
+      try {
+      diskReservation = diskSpace.reserveSpace(getTempDir(), MAX_AUDIO_MB * 2, {
         label: 'song',
         tagDir: getTempDir(),
         tagPrefix: id,
       });
-      try {
       await react('📥');
 
       // KnightBot's keyless provider first; a URL is only accepted after the
@@ -344,11 +344,9 @@ const execute = async (sock, msg, args, extra) => {
       await react('✅');
       require('../../utils/telemetry').recordDownloadSuccess('audio');
       } finally {
-        diskReservation.release();
+        diskReservation?.release();
         releaseHold();
       }
-      }, async () => {
-        await react('⏳');
       });
     } catch (err) {
       require('../../utils/telemetry').recordFailure('song');

@@ -86,6 +86,20 @@ test('offline and paused accounts retain their files and deliver only through th
   sockets.setOffline('linked:11111111', linked);
 });
 
+test('delivered legacy jobs never unlink files through a symlinked parent outside the media root', async () => {
+  const outside = fs.mkdtempSync(path.join(TMP, 'outside-media-'));
+  const link = path.join(process.env.MEDIA_DIR, 'escape');
+  fs.symlinkSync(outside, link, 'dir');
+  const file = path.join(link, 'victim.bin');
+  const sock = { sendMessage: async () => ({}) };
+  sockets.setOnline('linked:55555555', sock);
+  try {
+    const id = jobs.enqueue({ provider: 'generic', req: { sessionId: 'linked:55555555', chatId: 'chat', file } });
+    await waitFor(() => jobs.get(id)?.status === 'done');
+    assert.equal(fs.existsSync(path.join(outside, 'victim.bin')), true);
+  } finally { sockets.setOffline('linked:55555555', sock); }
+});
+
 test('failed sends are retried without duplicating a concurrent delivery', async () => {
   const file = path.join(process.env.MEDIA_DIR, 'movie_retry.bin');
   let calls = 0;

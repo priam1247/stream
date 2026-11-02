@@ -12,10 +12,10 @@
 //   • anime titles route through the anime sources and get `anime: true`, which
 //     the ranker/nyaa provider use for absolute episode numbering
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import config from '../config.js';
 import cache from '../core/cache.js';
 import resolver from '../core/resolver.js';
-import debrid from '../providers/debrid/index.js';
 import registry from '../core/registry.js';
 import queue from '../core/queue.js';
 import { isOld, rank } from '../core/ranker.js';
@@ -32,9 +32,7 @@ const mlog = log.child('media');
 
 // provider registration in strict reliability order (#1 moviebox first)
 import '../providers/stream/moviebox.js';
-import '../providers/stream/vixsrc.js';
 import '../providers/stream/vidlink.js';
-import '../providers/stream/videasy.js';
 import '../providers/stream/vidsrc.js';
 import '../providers/stream/vaplayer.js';
 import '../providers/torrent/yts.js';
@@ -110,16 +108,12 @@ export async function qualityOptions({
     anime: metadata.looksAnime(meta), maxMB: config.maxDownloadMB, exclude,
   };
 
-  const tiers = debrid.active().length
-    ? [[1], [3]]
-    : config.torrentDirect
-      ? [[3], [1]]
-      : [[3]];
+  const tiers = config.torrentDirect ? [[3], [1]] : [[3]];
   const cands = [];
   for (const tier of tiers) {
     // When keyless, if Tier 3 (MovieBox / direct streams) already returned
     // candidates, skip probing slow torrent indexers just to build the picker.
-    if (!debrid.active().length && tier[0] === 1 && cands.length > 0) break;
+    if (tier[0] === 1 && cands.length > 0) break;
     // eslint-disable-next-line no-await-in-loop
     const raw = await resolver.searchTier(tier, media, opts).catch(() => []);
     cands.push(...raw);
@@ -280,12 +274,16 @@ export async function subtitles(meta, { season = null, episode = null, lang = 'e
 
 // ── file paths + cache bookkeeping ─────────────────────────────────────────
 export function targetFile(title, year, quality, season = null, episode = null) {
-  return path.join(config.tempDir, sanitize(`${title}.${year || ''}`, quality, season, episode));
+  // Two chats can request exactly the same title at once. They must not write,
+  // upload or delete each other's output or staging files.
+  const name = sanitize(`${title}.${year || ''}`, quality, season, episode);
+  const ext = path.extname(name);
+  return path.join(config.tempDir, `movie_${path.basename(name, ext)}.${randomBytes(8).toString('hex')}${ext}`);
 }
 
-export { boot, cache, config, tv, parseRelease, matchesEpisode, tmdb, metadata, debrid, resolver, registry, queue, mlog };
+export { boot, cache, config, tv, parseRelease, matchesEpisode, tmdb, metadata, resolver, registry, queue, mlog };
 export default {
   boot, identify, resolveMovie, resolveEpisode, resolveSeason, qualityOptions,
   targetFile, qualityLadder, subtitles,
-  cache, config, tmdb, metadata, resolver, debrid, registry, queue, mirrorReport
+  cache, config, tmdb, metadata, resolver, registry, queue, mirrorReport
 };

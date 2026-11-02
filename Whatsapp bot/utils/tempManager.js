@@ -76,9 +76,11 @@ function deleteTempFile(filePath) {
     if (filePath && fs.existsSync(filePath)) {
       // Only delete files in our temp directory for safety
       const resolvedPath = path.resolve(filePath);
-      const tempDirResolved = path.resolve(TEMP_DIR);
-      
-      const relative = path.relative(tempDirResolved, resolvedPath);
+      const tempDirResolved = fs.realpathSync(TEMP_DIR);
+      // Resolve the parent, not the leaf: unlinking a leaf symlink is safe,
+      // following a symlinked parent outside the managed root is not.
+      const actualPath = path.join(fs.realpathSync(path.dirname(resolvedPath)), path.basename(resolvedPath));
+      const relative = path.relative(tempDirResolved, actualPath);
       if (relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)) {
         fs.unlinkSync(filePath);
         return true;
@@ -125,8 +127,12 @@ function holdTemp(key) {
 }
 
 function isHeld(name) {
-  const base = path.basename(String(name || ''));
-  for (const k of held.keys()) if (base.startsWith(k)) return true;
+  // Downloads can own whole staging directories (torrent pieces and HLS
+  // segments). A hold on that directory must protect every descendant, too.
+  const parts = String(name || '').split(/[\\/]+/).filter(Boolean);
+  for (const key of held.keys()) {
+    if (parts.some((part) => part.startsWith(key))) return true;
+  }
   return false;
 }
 

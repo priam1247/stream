@@ -41,9 +41,6 @@ const cfg = {
   tmdbKey: process.env.TMDB_API_KEY || '',
   omdbKey: process.env.OMDB_API_KEY || '',
   traktClientId: process.env.TRAKT_CLIENT_ID || '',
-  // DEBRID_API_KEY is accepted as a generic alias (Real-Debrid by default)
-  realDebridKey: process.env.REALDEBRID_API_KEY || process.env.DEBRID_API_KEY || '',
-  allDebridKey: process.env.ALLDEBRID_API_KEY || '',
   openSubsKey: process.env.OPENSUBTITLES_API_KEY || '',
 
   // ── metadata sources ─────────────────────────────────────────────────────
@@ -70,8 +67,7 @@ const cfg = {
     anime: bool(process.env.META_ANIME, true),
   },
 
-  // Debrid is optional; direct torrent downloads are enabled by default.
-  skipTorrentWithoutDebrid: bool(process.env.SKIP_TORRENT_WITHOUT_DEBRID, true),
+  // Direct torrents are optional and do not use debrid accounts.
   torrentDirect: bool(process.env.TORRENT_DIRECT, true),
   torrentMinSeeds: num(process.env.TORRENT_MIN_SEEDS, 3),
   torrentMetadataTimeoutMs: num(process.env.TORRENT_METADATA_TIMEOUT_MS, 90_000),
@@ -151,16 +147,9 @@ const cfg = {
 // ── boot-time validation: fail loudly, not silently at runtime ─────────────
 const problems = [];
 if (!cfg.tmdbKey) problems.push('TMDB_API_KEY is not set — falling back to Cinemeta/IMDb/TVMaze for titles');
-if (!cfg.realDebridKey && !cfg.allDebridKey) {
-  problems.push(cfg.torrentDirect
-    ? 'no debrid key — direct torrents require a working optional WebTorrent installation.'
-    : 'no debrid key — torrent sources are skipped (DDL + stream tiers still work). Add REALDEBRID_API_KEY or ALLDEBRID_API_KEY for 4K/1080p torrents.');
-}
 if (problems.length && !cfg.quiet) {
   console.error('⚠️  movie engine configuration:');
   for (const p of problems) console.error(`   • ${p}`);
 }
-
-export const hasDebrid = () => Boolean(cfg.realDebridKey || cfg.allDebridKey);
 
 export default Object.freeze(cfg);

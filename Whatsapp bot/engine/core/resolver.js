@@ -1,7 +1,7 @@
 // engine/core/resolver.js — the tiered cascade.
 //
 // Fixed in the ZaFar Bot integration:
-//   • torrent candidates download directly when no debrid key is configured
+//   • torrent candidates download directly without account keys
 //   • the final error explains WHY nothing worked (config vs. content vs. dead
 //     links), so ".movie" never just says "no source"
 //   • successful resolves clear the negative cache; config-only failures no
@@ -13,7 +13,6 @@ import { rank } from './ranker.js';
 import { verify } from './verify.js';
 import { hedge } from './http.js';
 import cache from './cache.js';
-import debrid from '../providers/debrid/index.js';
 import { metrics } from './metrics.js';
 import { emit, EVENTS } from './events.js';
 import { log } from './log.js';
@@ -21,13 +20,12 @@ import { magnet as buildMagnet } from '../providers/torrent/_trackers.js';
 import { torrentEngineAvailable } from '../media/torrent.js';
 
 const rlog = log.child('resolver');
-// Streams lead for keyless users; torrents are the direct-download fallback.
-const DEBRID_TIERS = [[1], [3]];
+// Keyless streams lead; direct torrents are the fallback.
 const KEYLESS_TIERS = [[3], [1]];
 const MAX_PER_TIER = 6;
 
 // Not every source deserves the same patience:
-//   tier 1 debrid → two candidates, 40s each (a cached torrent answers fast)
+//   tier 1 torrent → two candidates, 40s each
 //   tier 3 stream → the whole tier is already capped by the hedge deadline
 const TIER_LIMITS = {
   1: { candidates: 2, perCandidateMs: 40_000 },
@@ -138,31 +136,20 @@ export async function resolveCandidate(cand, opts = {}) {
   if (cand.kind === 'hls') {
     direct = { url: cand.url, kind: 'hls', headers: cand.headers, sizeMB: 0 };
   } else if (isTorrent(cand)) {
-    if (!debrid.active().length) {
-      if (!config.torrentDirect) {
-        throw Object.assign(new Error('torrent skipped — no debrid key configured'), { configIssue: true });
-      }
-      if ((cand.seeds || 0) < config.torrentMinSeeds) {
-        throw new Error(`not enough torrent seeds (${cand.seeds || 0}, need ${config.torrentMinSeeds})`);
-      }
-      const magnetUri = cand.magnet || (cand.hash ? buildMagnet(cand.hash, cand.title) : null);
-      if (!magnetUri) throw new Error('torrent candidate has no magnet or info hash');
-      return {
-        kind: 'torrent',
-        url: magnetUri,
-        magnet: magnetUri,
-        fileIdx: cand.fileIdx,
-        season: opts.season,
-        episode: opts.episode,
-        sizeMB: cand.sizeMB,
-        provider: cand.provider,
-        title: cand.title,
-        quality: cand.quality || opts.quality,
-        verified: true
-      };
+    if (!config.torrentDirect) {
+      throw Object.assign(new Error('direct torrent downloads are disabled'), { configIssue: true });
     }
-    direct = await debrid.resolve(cand, opts);
-    direct.kind = 'file';
+    if ((cand.seeds || 0) < config.torrentMinSeeds) {
+      throw new Error(`not enough torrent seeds (${cand.seeds || 0}, need ${config.torrentMinSeeds})`);
+    }
+    const magnetUri = cand.magnet || (cand.hash ? buildMagnet(cand.hash, cand.title) : null);
+    if (!magnetUri) throw new Error('torrent candidate has no magnet or info hash');
+    return {
+      kind: 'torrent', url: magnetUri, magnet: magnetUri,
+      fileIdx: cand.fileIdx, season: opts.season, episode: opts.episode,
+      sizeMB: cand.sizeMB, provider: cand.provider, title: cand.title,
+      quality: cand.quality || opts.quality, verified: true,
+    };
   } else {
     direct = { url: cand.url, kind: cand.kind || 'file', headers: cand.headers, sizeMB: cand.sizeMB };
   }
@@ -199,23 +186,16 @@ async function resolve(media, opts = {}) {
   // is the truth. Kept aside so a normal verified source always wins.
   let lastResort = null;
 
-  const hasDebrid = debrid.active().length > 0;
-  const directTorrentAvailable = !hasDebrid && config.torrentDirect
-    ? await torrentEngineAvailable()
-    : false;
-  const noDebrid = !hasDebrid && (!config.torrentDirect || !directTorrentAvailable) && config.skipTorrentWithoutDebrid;
+  const directTorrentAvailable = config.torrentDirect && await torrentEngineAvailable();
   const torrentStatus = directTorrentAvailable
     ? 'download directly when seeded'
     : config.torrentDirect
-      ? 'unavailable — check optional WebTorrent installation and npm logs'
-      : 'need a debrid account — set REALDEBRID_API_KEY or ALLDEBRID_API_KEY';
+      ? 'unavailable — check the optional WebTorrent installation'
+      : 'disabled by configuration';
 
-  for (const tier of hasDebrid ? DEBRID_TIERS : KEYLESS_TIERS) {
-    // don't even hammer the indexers when their results could never be played
-    if (tier[0] === 1 && noDebrid) {
-      if (!reasons.includes('torrent sources skipped (no debrid key)')) {
-        reasons.push('torrent sources skipped (no debrid key)');
-      }
+  for (const tier of KEYLESS_TIERS) {
+    if (tier[0] === 1 && !directTorrentAvailable) {
+      reasons.push('direct torrent downloads unavailable');
       configIssue = true;
       continue;
     }
@@ -242,7 +222,7 @@ async function resolve(media, opts = {}) {
         cache.ndel(cacheKey);                       // it exists after all
         metrics.bump(`tier.${tier[0]}`);
         metrics.bump('resolve.ok');
-        rlog.info(`${media.type} via ${cand.provider} · tier ${tier[0]} · ${Math.round(out.sizeMB || 0)}MB`);
+        rlog.debug(`${media.type} via ${cand.provider} · tier ${tier[0]} · ${Math.round(out.sizeMB || 0)}MB`);
         emit(EVENTS.RESOLVED, { provider: cand.provider, tier: tier[0], sizeMB: out.sizeMB, title: cand.title });
         return { ...out, provider: cand.provider, tier: tier[0] };
       } catch (e) {
@@ -284,7 +264,7 @@ async function resolve(media, opts = {}) {
   if (sawCandidates && !configIssue) cache.nset(cacheKey);
 
   if (!sawCandidates) {
-    if (noDebrid) {
+    if (!directTorrentAvailable) {
       throw new Error([
         `no free source found for “${media.title}”.`,
         `• torrent sources ${torrentStatus}`,
@@ -293,7 +273,7 @@ async function resolve(media, opts = {}) {
     }
     throw new Error(`no provider returned results for “${media.title}” (all sources unreachable or empty)`);
   }
-  if (configIssue && !debrid.active().length) {
+  if (configIssue) {
     throw new Error([
       'found sources but none could be used.',
       `• torrent results ${torrentStatus}`,

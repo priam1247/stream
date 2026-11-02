@@ -347,16 +347,46 @@ async function probeMedia(file) {
 
 const WA_AUDIO_CODECS = new Set(['aac', 'mp3']);
 
+/** Inspect MP4 top-level atoms without reading the media into memory. */
+function hasFastStartMp4(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const fileSize = fs.fstatSync(fd).size;
+    const header = Buffer.alloc(16);
+    let offset = 0;
+    for (let boxes = 0; boxes < 1024 && offset + 8 <= fileSize; boxes++) {
+      const read = fs.readSync(fd, header, 0, 16, offset);
+      if (read < 8) return false;
+      let size = header.readUInt32BE(0);
+      const type = header.toString('ascii', 4, 8);
+      if (size === 1) {
+        if (read < 16) return false;
+        const bigSize = header.readBigUInt64BE(8);
+        if (bigSize > BigInt(Number.MAX_SAFE_INTEGER)) return false;
+        size = Number(bigSize);
+        if (size < 16) return false;
+      } else if (size === 0) size = fileSize - offset;
+      if (size < 8 || offset + size > fileSize) return false;
+      if (type === 'moov') return true;
+      if (type === 'mdat') return false;
+      offset += size;
+    }
+  } catch { /* unrecognised or unreadable: remux as before */ }
+  finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+  return false;
+}
+
 /**
  * Make a video file playable in WhatsApp (H.264 + AAC inside mp4).
  * Remuxes when already compatible; transcodes AV1/VP9/HEVC when not.
  * @returns {Promise<string>} path to a playable file (input when nothing to do)
  */
-async function ensureWhatsAppMp4(input, output, { timeoutMs = 90 * 60 * 1000 } = {}) {
+async function ensureWhatsAppMp4(input, output, { timeoutMs = 90 * 60 * 1000, info: verifiedInfo = null } = {}) {
   const ff = getFfmpeg();
   if (!getFfmpeg.works()) return input;
 
-  const info = await probeMedia(input);
+  const info = verifiedInfo?.probed ? verifiedInfo : await probeMedia(input);
   if (!info.probed) return input; // ffmpeg could not read it — send whatever we got
 
   const run = async (args, timeout) => {
@@ -377,6 +407,8 @@ async function ensureWhatsAppMp4(input, output, { timeoutMs = 90 * 60 * 1000 } =
   const maps = ['-map', '0:v:0', '-map', '0:a:0?'];
 
   if (isH264 && isMp4 && audioOk) {
+    // A playable, already-faststart file needs no full-file copy/remux.
+    if (hasFastStartMp4(input)) return input;
     return (await run([...maps, '-c', 'copy', '-movflags', '+faststart'], 180000)) || input;
   }
   if (isH264) {
@@ -401,4 +433,4 @@ const safeName = (s, fallback = 'media') => {
   return clean || fallback;
 };
 
-module.exports = { downloadToFile, sniff, sniffFile, headOf, audioToMp3, tagMp3, readId3, probeMedia, ensureWhatsAppMp4, safeName, fmtMB, UA };
+module.exports = { downloadToFile, sniff, sniffFile, headOf, audioToMp3, tagMp3, readId3, probeMedia, hasFastStartMp4, ensureWhatsAppMp4, safeName, fmtMB, UA };

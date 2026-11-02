@@ -11,6 +11,7 @@ import config from '../config.js';
 import { log } from './log.js';
 import { emit, EVENTS } from './events.js';
 import { metrics } from './metrics.js';
+import tempManager from '../../utils/tempManager.js';
 
 const clog = log.child('cache');
 const now = () => Date.now();
@@ -27,6 +28,20 @@ const files = new Map();  // cacheKey -> { file, sizeMB, title, quality, at }
 const active = new Set();                       // resolved absolute paths
 
 const MEDIA_EXT = /\.(mp4|mkv|webm|avi|ts|m4v|mov|m4a|mp3|ogg|opus|webp|jpg|jpeg|png|part|tmp)$/i;
+
+// A configured temp directory may contain unrelated user files or restored
+// cache entries. Only paths generated with our unique movie-job marker belong
+// to this cache's deletion machinery.
+function ownedMovieFile(file) {
+  if (!file) return false;
+  try {
+    const root = fs.realpathSync(config.tempDir);
+    const target = path.resolve(file);
+    const actual = path.join(fs.realpathSync(path.dirname(target)), path.basename(target));
+    return actual.startsWith(root + path.sep) && /^movie_.+\.[a-f0-9]{16}\./i.test(path.basename(actual));
+  } catch { return false; }
+}
+const inUse = (file) => isActive(file) || tempManager.isHeld(file);
 
 export const markActive = (f) => { try { active.add(path.resolve(f)); } catch { /* ignore */ } };
 export const unmarkActive = (f) => { try { active.delete(path.resolve(f)); } catch { /* ignore */ } };
@@ -60,9 +75,10 @@ function fset(k, v) { files.set(k, { ...v, at: now() }); dirty = true; }
 function fdel(k) {
   const v = files.get(k);
   if (!v) return false;
+  if (inUse(v.file)) return false;
   files.delete(k);
   dirty = true;
-  try { if (v.file && fs.existsSync(v.file)) fs.unlinkSync(v.file); } catch { /* locked */ }
+  try { if (ownedMovieFile(v.file) && fs.existsSync(v.file)) fs.unlinkSync(v.file); } catch { /* locked */ }
   return true;
 }
 
@@ -150,8 +166,11 @@ async function sweep() {
 
   // expired file entries
   for (const [k, v] of files) {
-    if (isActive(v.file)) continue;                // still downloading
-    if (now() - v.at > ttl) { try { fs.unlinkSync(v.file); } catch {} files.delete(k); dirty = true; }
+    if (inUse(v.file)) continue; // downloading or uploading
+    if (now() - v.at > ttl) {
+      try { if (ownedMovieFile(v.file)) fs.unlinkSync(v.file); } catch {}
+      files.delete(k); dirty = true;
+    }
   }
 
   // expired TTL maps
@@ -165,7 +184,7 @@ async function sweep() {
     const oldest = [...files.entries()].sort((a, b) => a[1].at - b[1].at);
     for (const [k, v] of oldest) {
       if (total <= config.cacheMaxMB) break;
-      if (isActive(v.file)) continue;
+      if (inUse(v.file) || !ownedMovieFile(v.file)) continue;
       let freedMB = 0;
       try { freedMB = fs.statSync(v.file).size / 1048576; } catch { freedMB = 0; }
       let gone = false;
@@ -180,7 +199,7 @@ async function sweep() {
     const known = new Set([...files.values()].map(f => path.resolve(f.file)));
     for (const name of fs.readdirSync(config.tempDir)) {
       const p = path.resolve(config.tempDir, name);
-      if (known.has(p) || active.has(p) || name.startsWith('.')) continue;
+      if (known.has(p) || inUse(p) || !ownedMovieFile(p)) continue;
       let st = null;
       try { st = fs.statSync(p); } catch { continue; }
       if (st.isDirectory()) continue;
@@ -202,8 +221,12 @@ function stats() {
 }
 
 function wipe() {
-  for (const v of files.values()) { try { fs.unlinkSync(v.file); } catch {} }
-  files.clear(); meta.clear(); links.clear(); neg.clear();
+  for (const [key, v] of files) {
+    if (inUse(v.file)) continue;
+    try { if (ownedMovieFile(v.file)) fs.unlinkSync(v.file); } catch {}
+    files.delete(key);
+  }
+  meta.clear(); links.clear(); neg.clear();
   dirty = true;
   persist();
 }

@@ -15,7 +15,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const config = require('../config');
-const { readWL, writeWL } = require('./accessControl');
+const { readWL, writeWL, isApprovedUser, canPairUser } = require('./accessControl');
 const { inspectDisk } = require('./diskSpace');
 const jobQueue = require('./jobQueue');
 const telemetry = require('./telemetry');
@@ -67,7 +67,7 @@ function collectUnsyncedLocalUsers(wlFile = WL_FILE) {
     if (num.length < 7 || num.length > 15) continue;
     const isUnsyncedLocal =
       !u.syncedToPortal && (!u.addedBy || u.addedBy === 'whatsapp');
-    if (isUnsyncedLocal && u.enabled !== false) {
+    if (isUnsyncedLocal && isApprovedUser(u)) {
       out.push({
         number: num,
         label: String(u.label || 'Added via WhatsApp .allow'),
@@ -98,8 +98,11 @@ function applyWhitelistSnapshot(users, wlFile = WL_FILE) {
       label: String(raw?.label || prev?.label || ''),
       addedBy: String(raw?.addedBy || prev?.addedBy || 'dashboard'),
       addedAt: Number(raw?.addedAt || prev?.addedAt || Date.now()),
-      enabled: raw?.enabled !== false,
-      pairAllowed: raw?.pairAllowed === true,
+      // Legacy approved rows omit approval; pending/rejected rows fail closed
+      // even if a malformed snapshot claims they are enabled.
+      enabled: raw?.enabled === true && isApprovedUser(raw),
+      pairAllowed: raw?.pairAllowed === true && canPairUser(raw),
+      ...(raw?.approval != null ? { approval: String(raw.approval) } : {}),
       backupClaim: crypto.createHash('sha256').update(JSON.stringify([raw?.claimId || raw?.addedAt || '', String(raw?.addedBy || '').toLowerCase()])).digest('hex'),
       syncedToPortal: true,
     });
@@ -173,7 +176,7 @@ function startDashboardSync(opts = {}) {
         }
         // Never re-enable a number from a stale queued request. The latest
         // dashboard snapshot must still explicitly allow it.
-        if (!readWL({ force: true, filePath: wlFile }).users.some((user) => String(user.number) === number && (user.enabled !== false || user.pairAllowed === true))) {
+        if (!readWL({ force: true, filePath: wlFile }).users.some((user) => String(user.number) === number && canPairUser(user))) {
           throw new Error('This number is no longer allowed to link.');
         }
         if (typeof opts.requestPairing !== 'function') {

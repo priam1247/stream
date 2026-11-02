@@ -36,7 +36,7 @@ function createSessionManager(opts) {
   // Leave most of the 20-second process shutdown budget for encrypted backup.
   const unlinkShutdownTimeoutMs = Math.max(1, Math.min(8000, Number(opts.unlinkShutdownTimeoutMs) || 2000));
   const retirementShutdownTimeoutMs = Math.max(1, Math.min(8000, Number(opts.retirementShutdownTimeoutMs) || 2000));
-  const log = opts.log || console;
+  const log = opts.log || require('./logger')('sessions');
   const allowed = (number) => {
     try {
       if (!opts.isAllowed?.(number)) return false;
@@ -96,7 +96,7 @@ function createSessionManager(opts) {
       dir: number ? path.join(linkedRoot, number, attempt) : primaryDir,
       status: state, pairNumber, sock: null, auth: null, connected: false,
       stopped: false, starting: null, requestStarted: false, pairResult: null,
-      waiters: [], expiryTimer: null, seen: new Map(), credentialWrites: new Set(),
+      waiters: [], expiryTimer: null, seen: new Map(), credentialWrites: new Set(), retryNoticeAt: 0,
     };
     entry.reconnector = createReconnector({
       baseMs: opts.reconnectBaseMs || 3000,
@@ -227,7 +227,10 @@ function createSessionManager(opts) {
         if (!record || record.attempt !== entry.attempt || !allowed(entry.number)) return null;
         return { number: entry.number, sessionId: entry.attempt, claimToken: record.claim };
       };
-      sock.__canRespond = () => !stopped && (!entry.number || allowed(entry.number));
+      sock.__canRespond = () => !stopped && (!entry.number || (
+        entry.connected && entry.status === 'active' &&
+        manifest.accounts[entry.number]?.attempt === entry.attempt && allowed(entry.number)
+      ));
       entry.sock = sock;
       // A long-running command can finish after approval is revoked or after
       // its socket is replaced. Recheck at send time as well as at dispatch.
@@ -269,6 +272,7 @@ function createSessionManager(opts) {
           if (entry.number) mark(entry, 'active');
           else entry.status = 'active';
           entry.reconnector.reset();
+          entry.retryNoticeAt = 0;
           sockets.setOnline(entry.id, sock);
           try { opts.onOpen?.(sock); } catch (err) { log.warn(`Connection handler failed: ${err.message}`); }
           notify();
@@ -288,7 +292,12 @@ function createSessionManager(opts) {
             if (delay !== false) {
               const code = Number.isInteger(statusCode) ? statusCode : 'unknown';
               // Do not log the raw disconnect object: it can contain session details.
-              log.warn(`WhatsApp connection closed (status ${code}); retrying in ${delay}ms.`);
+              const now = Date.now();
+              const message = `WhatsApp connection closed (status ${code}); retrying in ${delay}ms.`;
+              if (!entry.retryNoticeAt || now - entry.retryNoticeAt >= 5 * 60_000) {
+                entry.retryNoticeAt = now;
+                log.warn(message);
+              } else log.debug?.(message);
             }
           }
           notify();

@@ -7,9 +7,7 @@
 
 export const PROVIDER_RELIABILITY_ORDER = [
   'moviebox',
-  'vixsrc',
   'vidlink',
-  'videasy',
   'vidsrc',
   'vaplayer',
   'yts',
@@ -28,9 +26,7 @@ const RANK_INDEX = new Map(
 
 const BONUS_BY_ID = {
   moviebox: 36,
-  vixsrc: 28,
   vidlink: 24,
-  videasy: 20,
   vidsrc: 16,
   vaplayer: 12,
   yts: 22,

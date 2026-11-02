@@ -213,10 +213,10 @@ Shared container panels often report the entire host node's free space via `stat
 
 1. **Bot-Folder Quota (`DISK_BUDGET_MB=9000`)**: Tracks actual bytes inside the bot directory (including `session/`, `database/`, `node_modules/`, and `temp/`) plus **per-job byte reservations** so concurrent downloads can never over-commit a 10 GB plan.
 2. **Comparison Logging & Status**: Startup, periodic warnings, and `.status` print both `bot folder: X / 9000 MB` and `host statfs free: Y MB` so operators can compare against the panel's disk meter.
-3. **Zero Caching & Boot Sweep**:
-   - `QUEUE_LIGHT=20` (short social/music links) and `QUEUE_HEAVY=2` / `MOVIE_CONCURRENCY=2` (movies & episodes).
-   - Every delivered media/movie file is deleted immediately after WhatsApp accepts it; `utils/cleanup.js` sweeps leftover `.part`/`.ytdl` partials on boot and caps `temp/` at `TEMP_MAX_MB` (`2048` MB default).
-   - Direct torrent support requires both `TORRENT_DIRECT=true` and a working optional `webtorrent` install. npm can skip it if its native dependencies fail; run `npm ls webtorrent` and check the install log on the panel. Other sources can still work without it.
+3. **Concurrency & Temporary Files**:
+   - Commands start concurrently instead of waiting in media lanes. Requests can be rejected immediately if available memory or reserved disk is too low.
+   - Bot-generated media is deleted after WhatsApp accepts it. The boot/periodic sweeper removes recognizable abandoned job files but preserves sessions, databases, held transfers and unrelated files. An undelivered legacy background job retains its file for retry.
+   - Movie sources do not need debrid account tokens. Direct torrents require `TORRENT_DIRECT=true` and a working optional `webtorrent` install; other sources work without it.
 
 ## Deploying to a server
 

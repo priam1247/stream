@@ -59,6 +59,7 @@ await Promise.all(registry.providers.map(async (p) => {
 // title. Only public metadata/search responses are requested for these titles.
 await Promise.all(['vixsrc', 'videasy', 'vidsrc', 'apibay', 'solidtorrents'].map(async (id) => {
   const p = registry.get(id);
+  if (!p) return;
   const more = [
     { type: 'movie', title: 'Inception', year: '2010', imdbId: 'tt1375666', tmdbId: 27205 },
     { type: 'series', title: 'Breaking Bad', year: '2008', imdbId: 'tt0903747', tmdbId: 1396 },

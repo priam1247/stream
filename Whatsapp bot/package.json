@@ -8,7 +8,7 @@
     "start": "node --expose-gc index.js",
     "ytdlp:install": "bash scripts/install-ytdlp.sh",
     "selftest": "node scripts/selftest.js && npm run test:preflight",
-    "test:preflight": "node --test scripts/test-preflight.js",
+    "test:preflight": "node --test scripts/test-preflight.js scripts/test-readiness.js scripts/test-approval-readiness.js",
     "test:media": "node --test scripts/test-media-downloads.js scripts/test-knight-provider.js scripts/test-media-shortcuts.js scripts/test-command-removal.js scripts/test-provider-search.js scripts/test-provider-search-handler.js scripts/test-public-media.js",
     "test:jobs": "node --test scripts/test-provider-core.js",
     "test:sessions": "node --test scripts/test-sessions.js scripts/test-account-routing.js scripts/test-member-telemetry.js scripts/test-bridge.js scripts/test-delivery.js scripts/test-session-backup.js scripts/test-service-startup.js"

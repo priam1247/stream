@@ -47,7 +47,6 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
       rows: [
         [`${p}providers`, 'providers'],
         [`${p}moviestatus`, 'engine stats'],
-        [`${p}debrid`, 'debrid'],
         [`${p}info <title>`, 'metadata'],
       ],
     },
@@ -84,31 +83,12 @@ const SECTION_ALIASES = {
   admin: 'admin', all: null, help: null,
 };
 
-function buildCard(groups, _user, { prefix = config.prefix || '.' } = {}) {
-  const width = 34;
-  const line = '─'.repeat(width);
-  const out = [];
-
-  out.push(`╭${line}╮`);
-  out.push('│ *COMMANDS*');
-  out.push(`╰${line}╯`);
-
-  for (const g of groups) {
-    out.push('');
-    out.push(`▸ *${g.title}*`);
-    const pad = Math.min(30, Math.max(...g.rows.map(([cmd]) => cmd.length)) + 2);
-    for (const [cmd, hint] of g.rows) {
-      if (cmd.length >= pad) {
-        out.push(`  ${cmd}`);
-        out.push(`  ${' '.repeat(2)}${hint}`);
-      } else {
-        out.push(`  ${cmd}${' '.repeat(pad - cmd.length)}${hint}`);
-      }
-    }
+function buildCard(groups) {
+  const out = ['*COMMANDS*'];
+  for (const group of groups) {
+    out.push('', `*${group.title}*`);
+    for (const [command] of group.rows) out.push(command);
   }
-
-  out.push('');
-  out.push(`_prefix ${prefix}_`);
   return out.join('\n');
 }
 

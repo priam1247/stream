@@ -27,7 +27,7 @@ const config = get('config'); config.search.picker = false;
 const command = mode === 'fb' ? get('commands/media/shortcuts').find(c => c.name === 'fb') : get(mode === 'video' ? 'commands/media/ytv' : 'commands/media/song');
 const msg = { key: { remoteJid: 'fixture@s.whatsapp.net', id: 'test' }, message: {} };
 const extra = { from: msg.key.remoteJid, isOwner: true };
-let delivered = false, deliveryMs = 0, decodeMs = 0, caption = null, output, captured = '';
+let delivered = false, deliveryMs = 0, decodeMs = 0, caption = null, output, captured = '', dimensions = '';
 let start;
 const sock = { async sendMessage(_chat, body) {
   if (body.text) captured = String(body.text).slice(0, 200);
@@ -37,6 +37,7 @@ const sock = { async sendMessage(_chat, body) {
   deliveryMs = Date.now() - start;
   assert.ok(fs.existsSync(file));
   const maps = mode === 'song' || mode === 'title' ? ['-map', '0:a:0'] : ['-map', '0:v:0', '-map', '0:a:0'];
+  try { execFileSync(get('utils/ffmpeg')(), ['-hide_banner', '-i', file], { encoding: 'utf8' }); } catch(e) { dimensions = /Video: [^\n]*? (\d{2,5}x\d{2,5})/.exec(String(e.stderr || ''))?.[1] || 'unknown'; }
   const t = Date.now();
   execFileSync(get('utils/ffmpeg')(), ['-v', 'error', '-xerror', '-i', file, ...maps, '-f', 'null', '-'], { timeout: 180000, stdio: 'ignore' });
   decodeMs = Date.now() - t;
@@ -50,6 +51,13 @@ const sock = { async sendMessage(_chat, body) {
   await command.execute(sock, msg, args, extra);
   if (!delivered) { console.log(`TIMING ${mode}: no-delivery ${captured.replace(/[\r\n]/g, ' ').slice(0, 200)}`); if(mode !== 'fb') process.exitCode = 1; }
   else {
-    console.log(`TIMING ${mode}: delivery=${deliveryMs}ms decode=${decodeMs}ms caption=${caption} cleanup=${!fs.existsSync(output)} stages=${JSON.stringify(times)}`);
+    console.log(`TIMING ${mode}: delivery=${deliveryMs}ms decode=${decodeMs}ms resolution=${dimensions} caption=${caption} cleanup=${!fs.existsSync(output)} stages=${JSON.stringify(times)}`);
+    if (mode === 'fb' && caption) process.exitCode = 1;
+    if (mode === 'title') {
+      delivered = false; start = Date.now();
+      await command.execute(sock, msg, args, extra);
+      if (!delivered) throw new Error('repeat search did not deliver');
+      console.log(`TIMING title-repeat: delivery=${deliveryMs}ms decode=${decodeMs}ms cleanup=${!fs.existsSync(output)} stages=${JSON.stringify(times)}`);
+    }
   }
 })().catch(e => { console.log(`TIMING ${mode}: failed ${e.code || e.name}`); process.exitCode = 1; }).finally(() => fs.rmSync(tmp, { recursive: true, force: true }));

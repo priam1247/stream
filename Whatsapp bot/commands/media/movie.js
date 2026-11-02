@@ -14,7 +14,7 @@ const config = require('../../config');
 const engine = require('../../utils/movieEngine');
 const selections = require('../../utils/selections');
 const host = require('../../utils/movieHost');
-const { getTempDir } = require('../../utils/tempManager');
+const { getTempDir, createTempFilePath, deleteTempFile, holdTemp } = require('../../utils/tempManager');
 const diskSpace = require('../../utils/diskSpace');
 const { safeErrorMessage } = require('../../utils/userErrors');
 const { probeMedia } = require('../../utils/mediaTransfer');
@@ -128,15 +128,17 @@ async function fetchSource(meta, quality, attempts = 3) {
       tagDir: path.dirname(dest),
       tagPrefix: path.basename(dest, path.extname(dest)),
     });
+    const releaseHold = holdTemp(path.basename(dest, path.extname(dest)));
     try {
       const saved = await engine.download(resolved, dest);
       // HLS sources may land as .ts (no ffmpeg on the host) — use the real path
       const file = downloadedFile = (saved && saved.file) || dest;
       const full = resolved.meta || meta;
       await assertFullLength(file, full.runtime, 'movie');
-      return { res: resolved, file, reservation };
+      return { res: resolved, file, reservation, releaseHold };
     } catch (e) {
       reservation.release();
+      releaseHold();
       lastErr = e;
       log.warn(`${meta.title} ${quality}p · ${resolved.provider} download failed · ${e.message}`);
       exclude.push(resolved.provider);
@@ -258,10 +260,12 @@ async function trySubtitles(sock, chatId, msg, meta, { season = null, episode = 
   const base = season != null
     ? `${meta.title} S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
     : `${meta.title}${meta.year ? ` (${meta.year})` : ''}`;
-  const dest = path.join(getTempDir(), `${sanitize(base)}.${lang}.srt`);
+  const dest = createTempFilePath('movie_sub', 'srt');
+  const releaseHold = holdTemp(path.basename(dest, '.srt'));
+  let sub = null;
 
   try {
-    const sub = await engine.subtitles(meta, { season, episode, lang, dest });
+    sub = await engine.subtitles(meta, { season, episode, lang, dest });
     if (!sub?.file || !fs.existsSync(sub.file)) return null;
     await host.sendSubtitle(sock, chatId, msg, { file: sub.file, name: base, language: sub.language || lang });
     log.info(`${base} · subtitle ${sub.language || lang}`);
@@ -269,6 +273,11 @@ async function trySubtitles(sock, chatId, msg, meta, { season = null, episode = 
   } catch (e) {
     log.debug(`${base} · no subtitle (${e.message})`);
     return null;
+  } finally {
+    deleteTempFile(sub?.file);
+    deleteTempFile(dest);
+    deleteTempFile(dest.replace(/\.srt$/i, '.vtt'));
+    releaseHold();
   }
 }
 
@@ -283,11 +292,11 @@ async function deliver(sock, msg, extra, meta, job) {
   await react('⏳');
   let activeReservation = null;
   let activeFile = null;
+  let activeHold = null;
 
   try {
-    // resolve + download inside ONE queue slot: concurrency stays bounded, so a
-    // second movie cannot over-commit bandwidth or disk
-    log.info(`${meta.title}${meta.year ? ` (${meta.year})` : ''} · ${quality}p · start`);
+    // Start immediately; disk reservations protect concurrent downloads.
+    log.debug(`${meta.title}${meta.year ? ` (${meta.year})` : ''} · ${quality}p · start`);
     const t0 = Date.now();
     const jobResult = await engine.enqueue(
       chatId,
@@ -296,8 +305,9 @@ async function deliver(sock, msg, extra, meta, job) {
       { timeoutMs: MOVIES().jobTimeoutMs }
     );
 
-    const { res, file, reservation } = jobResult;
+    const { res, file, reservation, releaseHold } = jobResult;
     activeReservation = reservation || null;
+    activeHold = releaseHold || null;
     activeFile = file || null;
 
     if (MOVIES().dryRun) {
@@ -344,6 +354,7 @@ async function deliver(sock, msg, extra, meta, job) {
   } finally {
     if (activeFile) await host.release(activeFile).catch(() => false);
     activeReservation?.release?.();
+    activeHold?.();
   }
 }
 

@@ -75,20 +75,31 @@ const tempFile = (name) => path.join(tempDir(), name);
 /**
  * Delete a temp file through the bot's temp manager (best effort).
  *
- * deleteTempFile() refuses anything outside its own temp dir, and it can be
- * initialised against a different root than the one the engine used — so a
- * refusal falls through to a direct unlink. Both paths are inside the bot.
+ * The movie engine can use an explicitly configured TEMP_DIR outside the bot's
+ * normal temp root. Direct unlink is allowed there only for a uniquely named
+ * engine-created movie file, never for an arbitrary caller-supplied path.
  */
 function cleanup(file) {
-  if (!file) return;
+  if (!file) return false;
+  const target = path.resolve(file);
+  if (!fs.existsSync(target)) return true;
   const t = tempMod();
+  const botTemp = path.resolve(t?.getTempDir?.() || path.join(process.cwd(), 'temp'));
+  const botRelative = path.relative(botTemp, target);
+  if (botRelative && botRelative !== '..' && !botRelative.startsWith(`..${path.sep}`) && !path.isAbsolute(botRelative)) {
+    return Boolean(t?.deleteTempFile?.(target));
+  }
+
+  const configuredRoot = process.env.TEMP_DIR;
+  if (!configuredRoot || !/^movie_.+\.[a-f0-9]{16}\./i.test(path.basename(target))) return false;
   try {
-    if (t && typeof t.deleteTempFile === 'function') {
-      if (t.deleteTempFile(file) === true) return;
-      if (!fs.existsSync(file)) return true;
-    }
-  } catch { /* fall through */ }
-  try { fs.unlinkSync(file); return true; } catch { return false; }
+    const root = fs.realpathSync(configuredRoot);
+    const actual = path.join(fs.realpathSync(path.dirname(target)), path.basename(target));
+    const relative = path.relative(root, actual);
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false;
+    fs.unlinkSync(target);
+    return true;
+  } catch { return false; }
 }
 
 const fmtMB = (bytes) => `${(Number(bytes || 0) / MB).toFixed(1)} MB`;
@@ -314,8 +325,7 @@ async function deliverFile(sock, chatId, msg, { file, title = '', caption = '', 
  */
 async function release(file) {
   if (!file) return false;
-  cleanup(file);
-  return true;
+  return cleanup(file);
 }
 
 /** One-line capability summary used by `.moviestatus` / `.providers`. */

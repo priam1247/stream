@@ -131,10 +131,18 @@ const findUserIndex = (users, ids, sessionDir = null) => {
  * deleting the number, so the gate has to skip it — while `.disallow` (which
  * removes the entry) keeps using findUserIndex.
  */
+// Records predating approvals have no approval field and retain their access.
+// A pending pairing must never be treated as approved even if a malformed or
+// stale snapshot also says enabled=true.
+const isApprovedUser = (user) => Boolean(user && user.enabled !== false && user.pairAllowed !== true &&
+  (user.approval == null || user.approval === 'approved'));
+const canPairUser = (user) => Boolean(isApprovedUser(user) || (user?.pairAllowed === true &&
+  (user.approval == null || user.approval === 'pending')));
+
 const findAllowedUserIndex = (users, ids, sessionDir = null) => {
   const idx = findUserIndex(users, ids, sessionDir);
   if (idx === -1) return -1;
-  return users[idx].enabled === false ? -1 : idx;
+  return isApprovedUser(users[idx]) ? idx : -1;
 };
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
@@ -146,5 +154,7 @@ module.exports = {
   cleanNumber,
   findUserIndex,
   findAllowedUserIndex,
+  isApprovedUser,
+  canPairUser,
   _resetCacheForTests,
 };
