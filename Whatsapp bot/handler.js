@@ -127,9 +127,9 @@ async function runCommand(sock, msg, name, args, { from, sender, senderIds }) {
   }
 
   log.debug(`executing .${invoked}`);
-  // The XJX-style .song and .video handlers react at the same point as XJX;
-  // do not add the generic command reaction as a duplicate.
-  if (!['song', 'video'].includes(command.name)) await reactToCommand(sock, msg, from, command.name || invoked);
+  // These XJX-style handlers react at the same point as their source; do not
+  // add the generic command reaction as a duplicate.
+  if (!['song', 'video', 'dramabox'].includes(command.name)) await reactToCommand(sock, msg, from, command.name || invoked);
   telemetry.recordCommand(command.name || invoked);
   try { memberTelemetry.recordCommand(command.name || invoked, sock.__memberUsageScope?.()); }
   catch { /* personal analytics must not interrupt command execution */ }

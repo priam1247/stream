@@ -9,6 +9,7 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .series <title> s01e03 [quality]       Download one episode (supports titles like "9-1-1", "Full House")
 .series <title> s01 1-6 [quality]      Download an episode range
 .series <title> s01 full               Season pack (Drime link when oversized)
+.dramabox <bookId> [episode]           Get a DramaBox stream link
 .info <title> [series]                 Metadata + provider IDs + active catalogs
 .providers / .moviestatus              Source circuit-breakers, queue depth, and disk usage
 .paper <course-code> [module] [year]   Search & send past papers (capped per query, 3-day dedupe)
@@ -28,6 +29,8 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 ```
 
 Interactive title and quality choices use a tap selector or a prefixed numbered reply, such as `.1`, `.2` or `.cancel`. Poll votes and replies without the prefix are ignored.
+
+`.dramabox <bookId> [episode]` follows XJX's DramaBox command: it calls the `/dramabox/stream` resolver with the book ID and episode (default `1`) and returns a stream link. It does not download the episode to the bot host.
 
 ### Video sites and YouTube
 
@@ -218,7 +221,7 @@ cd "Whatsapp bot"
 cp .env.example .env   # configure privately, or use your host's startup variables
 npm ci
 npm run selftest       # offline checks, including preflight regressions; no WhatsApp connection
-npm run test:media     # offline YouTube, cookie, installer, and shortcut tests
+npm run test:media     # offline YouTube, social, DramaBox, installer, and shortcut tests
 npm run test:jobs      # offline background-job tests
 npm run test:sessions  # offline pairing, permissions, and delivery tests
 npm start
