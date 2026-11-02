@@ -7,7 +7,7 @@ test board that never claims a pass it cannot prove.
 - **Date:** 2026-11-02
 - **Old tree:** `Whatsapp bot/` — untouched, still the migration source
 - **New tree:** `zafar-bot/` — 22 commands, all loading
-- **Automated tests:** 76 / 76 passing (`npm test`)
+- **Automated tests:** 95 / 95 passing (`npm test`)
 - **Isolation proofs:** 14 / 14 passing (`./scripts/isolation-proof.sh`)
 - **Live board:** `12 passed · 10 failed · 22 checked` (`node scripts/check-all.js`, exit 1)
 
@@ -170,7 +170,7 @@ two different jobs chosen explicitly by the caller, not a retry ladder.
 
 | # | finding | status |
 |---|---|---|
-| 1 | `handler.js:203` requires `fromMe === true`; the bot is a self-bot | **preserved**, documented |
+| 1 | `handler.js:203` requires `fromMe === true`; the bot is a self-bot | **changed by decision**: now serves approved people only (see §9.2) |
 | 2 | 293 empty `catch` blocks — every failure silently swallowed | **fixed**: 0 bare catches anywhere in the tree, engine included (see §5.5) |
 | 3 | `whitelist.json` written from 3 places | **fixed**: one store, one writer |
 | 4 | `movieCapDefault` read `VIDEO_MAX_MB` | **preserved** (behaviour kept, noted) |
@@ -211,8 +211,8 @@ Two more non-bugs worth recording, because they looked like bugs and were not:
 ### 5.1 Automated suite — `npm test`
 
 ```
-# tests 76
-# pass 76
+# tests 95
+# pass 95
 # fail 0
 ```
 
@@ -222,7 +222,8 @@ Two more non-bugs worth recording, because they looked like bugs and were not:
 | `test/guards.test.js` | 18 | all 7 guards, their order, cooldown expiry, refusal wording |
 | `test/users.test.js` | 18 | CRUD, ban/unban, roles, block, audit log, `.bak` recovery, corrupt file, per-number isolation, single writer |
 | `test/imports.test.js` | 16 | no cross-command import, no `gateway/` import, no Baileys, no `users.json`, contract completeness, duplicate aliases, pinned Baileys, `.env.example` coverage, no secrets |
-| `test/commands.test.js` | 13 | `.ping .menu .status .users .toggle .botmanage .debrid .providers .sessions`, unknown command, no prefix, not-from-me |
+| `test/access.test.js` | 13 | strangers refused, approved served, owner everywhere, one-responder in groups, echo suppression |
+| `test/commands.test.js` | 17 | `.ping .menu .status .users .toggle .botmanage .debrid .providers .sessions`, unknown command, no prefix, not-from-me |
 
 `npm test` → 76 pass, exit 0. `npm run test:isolation` → 11 pass, exit 0.
 
@@ -492,43 +493,39 @@ these block running the bot.
    as its own folder, on its own provider, only if it is actually used — adding
    one command cannot affect the other 22. `.instagram` is **not** on this list;
    it was an alias of `.ig` and is migrated (see §2).
-2. **The self-bot gate — ANSWERED from the old code, not assumed.**
-   `handler.js:203` is `if (!msg?.message || msg?.key?.fromMe !== true) return;`
-   with the comment *"Each socket serves only commands sent by its own WhatsApp
-   account."* It is the **only** inbound path: one `messages.upsert` listener
-   (`utils/sessionManager.js:307`) feeds one `handleMessage`, and there is no
-   group or mention branch anywhere. Two lines later the sender is forced to the
-   socket's own account (`const sender = sock.__accountNumber ? ... : sock.user?.id`),
-   so the actor can only ever be the linked number.
+2. **Who the bot answers — DECIDED AND IMPLEMENTED.**
+   The old bot was owner-only: `handler.js:203` required `fromMe === true`, it was
+   the only inbound path, and the sender was forced to the socket's own account.
+   The whitelist was never consulted by the handler.
 
-   Consequences, verified line by line:
+   The owner's decision: *the bot serves students, but it is also mine.* So it
+   must answer **approved** users only, never the public, and when several linked
+   numbers share a group exactly **one** replies — the number that sent the
+   message.
 
-   - the old bot was **owner-only in production**; it never served students in
-     DMs. The migration did not break student access — there was none to break.
-   - `utils/accessControl.js` (the whitelist) is **never imported by
-     `handler.js`**. It is used for dashboard account management, i.e. which
-     numbers may be *linked*, not who may run a command. Its three writers were a
-     dashboard-sync race, not an access-control race.
-   - the old non-owner branches (`ownerOnly`, `memberCommandPolicy.isUnavailable`
-     at `handler.js:124` and `:167`) are **unreachable**: `isOwner(senderIds)` is
-     always true because `senderIds` is built from the socket's own account.
-   - `memberTelemetry` / `member-usage.json` counted the owner's own usage under a
-     "member" label; the dashboard's "member" is a **user/person who linked a
-     number**, not a WhatsApp contact who sends commands.
+   Implemented as three rules:
 
-   **What this means for the users mechanism.** Roles, bans, per-user blocks and
-   cooldowns are real and tested, but in production they govern *the owner and any
-   other linked account on that number* — not students messaging the bot. The
-   system is correct for multi-account operation and is overkill for a single
-   owner. It is not a security boundary for third parties, because no third party
-   can reach a command at all.
+   | rule | where | behaviour |
+   |---|---|---|
+   | strangers are never served | `users/access.js` | no record on that number → `not-approved` → **silent**. There is no "open" mode any more; setting `accessMode: "open"` does not admit anyone |
+   | our own numbers are always served | `users/access.js` | the owner and any linked number bypass approval |
+   | exactly one reply | `gateway/dedupe.js` | if the sender is one of our linked numbers, only that number's socket answers; otherwise the first socket to see the message claims it and the rest stand down |
 
-   **This is the one item that needs a product decision.** If students are meant
-   to use `.paper` from their own phones, the gate has to change: accept
-   `!fromMe`, resolve the actor from `participant`/`remoteJid`, and then the
-   guards, whitelist and roles become load-bearing. That is a deliberate redesign
-   with real abuse exposure, not a flag flip. It is **not** applied here, because
-   it would silently turn a private bot into a public one.
+   A group must also be switched on (`.users group on <jid>`) before the bot will
+   answer in it at all.
+
+   Two supporting mechanisms:
+
+   - **echo suppression** — every outbound message id is remembered for two
+     minutes. When one of our own replies arrives on another linked socket it is
+     dropped, so session B never tries to execute session A's answer.
+   - **sender resolution** — in a group the sender is `key.participant`, never
+     `remoteJid`, or every member would look like the same person.
+
+   Proven by `test/access.test.js` (13 cases) plus new cases in
+   `test/commands.test.js` and `test/guards.test.js`, including "the second socket
+   must stand down" and "the bot stays silent in a group that was not switched on".
+
 3. **`.providers` lost live health.** Accepted: static list, to keep rule 1.
    A per-provider health view would require importing another command's engine.
 4. **Paper duplication.** Three copies of a 863-line vault is a real maintenance

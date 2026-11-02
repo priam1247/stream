@@ -19,6 +19,7 @@ const jid = require('../lib/jid');
 const config = require('./config');
 const registry = require('./registry');
 const guards = require('./guards');
+const dedupe = require('./dedupe');
 const runner = require('./runner');
 const status = require('./status');
 const ctxBuilder = require('./ctx');
@@ -87,10 +88,14 @@ async function transport(sock, message, kind, payload, { deleteAfter = true } = 
   const chat = payload.chat || message.key.remoteJid;
 
   if (kind === 'text') {
-    return sock.sendMessage(chat, { text: payload.text }, { quoted: message });
+    const sent = await sock.sendMessage(chat, { text: payload.text }, { quoted: message });
+    dedupe.rememberSend(sent?.key?.id);
+    return sent;
   }
   if (kind === 'react') {
-    return sock.sendMessage(chat, { react: { text: payload.emoji, key: message.key } });
+    const sent = await sock.sendMessage(chat, { react: { text: payload.emoji, key: message.key } });
+    dedupe.rememberSend(sent?.key?.id);
+    return sent;
   }
 
   const type = fileTypeFor(kind);
@@ -109,7 +114,9 @@ async function transport(sock, message, kind, payload, { deleteAfter = true } = 
   }
 
   try {
-    return await sock.sendMessage(chat, content, { quoted: message });
+    const sent = await sock.sendMessage(chat, content, { quoted: message });
+    dedupe.rememberSend(sent?.key?.id);
+    return sent;
   } finally {
     if (deleteAfter) {
       try { fs.unlinkSync(payload.path); } catch { /* send already consumed it */ }
@@ -156,9 +163,15 @@ function laneAvailable(lane) {
  * @param {object} args.message raw WAMessage
  * @param {(text:string)=>void} [args.onRefusal]
  */
-async function handle({ number, sock, message, onRefusal }) {
+async function handle({ number, sock, message, onRefusal, linked = [] }) {
   if (!message?.message) return { handled: false, reason: 'no-message' };
   if (isEdited(message)) return { handled: false, reason: 'edited-message' };
+
+  // Our own reply arriving on one of our other sockets. Dropping it here is what
+  // stops session B from trying to execute session A's answer.
+  if (dedupe.isOwnSend(message.key?.id)) {
+    return { handled: false, reason: 'own-echo' };
+  }
 
   const unwrapped = unwrap(message);
   if (!unwrapped) return { handled: false, reason: 'empty-content' };
@@ -175,15 +188,50 @@ async function handle({ number, sock, message, onRefusal }) {
     return { handled: false, reason: 'unknown-command', trigger: parsed.trigger };
   }
 
-  const senderJid = message.key.participant || message.key.remoteJid;
+  // In a group the sender is `participant`; in a DM it is the other party, which
+  // is the chat jid itself. Never `remoteJid` for a group, or every member would
+  // look like the same person.
+  const chat = message.key.remoteJid || '';
+  const isGroup = chat.endsWith('@g.us');
+  // `linked` contains our own numbers. A message from one of them is "us", even
+  // when it arrives with fromMe false on another socket.
+  const ownNumbers = linked.map(String);
+  const senderRaw = isGroup
+    ? message.key.participant
+    : (message.key.fromMe ? `${number}@s.whatsapp.net` : chat);
+  const senderDigits = jid.digits(senderRaw);
+  const senderIsOurs = ownNumbers.includes(senderDigits) || (message.key.fromMe === true && !isGroup);
+
+  // A group must be switched on before the bot will say anything in it.
+  const settingsForGroup = store.readSettings(number);
+  const groupEnabled = isGroup
+    ? (settingsForGroup.groups || []).includes(chat)
+    : true;
+
+  // Exactly one socket answers when several of our numbers share the chat.
+  const responder = dedupe.claimResponder({
+    id: message.key?.id,
+    sender: senderDigits,
+    number,
+    linked: ownNumbers,
+  });
+  if (!responder.respond) {
+    gatewayLog.debug('not the responding socket', { reason: responder.reason, chat });
+    return { handled: false, reason: responder.reason };
+  }
+
   const decision = guards.evaluate({
     message: {
-      fromMe: message.key.fromMe === true,
-      chat: message.key.remoteJid,
-      sender: senderJid,
+      fromMe: senderIsOurs,
+      isGroup,
+      groupEnabled,
+      chatKind: isGroup ? 'group' : 'dm',
+      chat,
+      sender: senderRaw,
     },
     number,
     command,
+    linked: ownNumbers,
   });
 
   if (decision.mode === guards.MODE.IGNORE) {
@@ -194,7 +242,8 @@ async function handle({ number, sock, message, onRefusal }) {
   if (decision.mode === guards.MODE.NOT_AUTHORIZED) {
     const text = guards.refusalText(decision.reason, decision);
     try {
-      await sock.sendMessage(message.key.remoteJid, { text }, { quoted: message });
+      const sent = await sock.sendMessage(message.key.remoteJid, { text }, { quoted: message });
+      dedupe.rememberSend(sent?.key?.id);
     } catch (err) {
       gatewayLog.warn('could not send refusal', { error: err.message });
     }
@@ -205,9 +254,10 @@ async function handle({ number, sock, message, onRefusal }) {
   // ⛔ disabled: admin toggle or tripped breaker. Never runs, always explains.
   if (status.isDisabled(command.name)) {
     try {
-      await sock.sendMessage(message.key.remoteJid, {
+      const sent = await sock.sendMessage(message.key.remoteJid, {
         text: `⛔ .${command.name} is disabled (${status.snapshot()[command.name]?.reason || 'disabled'}).`,
       }, { quoted: message });
+      dedupe.rememberSend(sent?.key?.id);
     } catch (err) {
       gatewayLog.warn('could not send disabled notice', { error: err.message });
     }

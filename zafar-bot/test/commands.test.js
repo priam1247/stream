@@ -226,9 +226,48 @@ test('a plain chat message (no prefix) is ignored', async () => {
   assert.equal(sock.__sent.length, 0);
 });
 
-test('a message that is not from the linked account is ignored', async () => {
-  const message = fakesock.buildMessage({ body: '.ping', fromMe: false, sender: OWNER, chat: `${NUMBER}@s.whatsapp.net` });
-  const outcome = await router.handle({ number: NUMBER, sock, message });
-  assert.equal(outcome.reason, 'not-from-me');
+test('a stranger in a direct chat is ignored with no reply', async () => {
+  const stranger = '265900000399';
+  const message = fakesock.buildMessage({ body: '.ping', fromMe: false, sender: stranger, chat: `${stranger}@s.whatsapp.net` });
+  const outcome = await router.handle({ number: NUMBER, sock, message, linked: [NUMBER] });
+  assert.equal(outcome.reason, 'not-approved');
+  assert.equal(sock.__sent.length, 0, 'a stranger must get no message at all');
+});
+
+test('an approved stranger in a direct chat is served', async () => {
+  const student = '265900000311';
+  store.addUser(NUMBER, student, { role: 'user' });
+  const message = fakesock.buildMessage({ body: '.ping', fromMe: false, sender: student, chat: `${student}@s.whatsapp.net` });
+  const outcome = await router.handle({ number: NUMBER, sock, message, linked: [NUMBER] });
+  assert.equal(outcome.ok, true, JSON.stringify(outcome));
+  assert.match(texts(), /pong/i, 'an approved person must get an answer');
+});
+
+test('a second linked socket does not answer the same group message twice', async () => {
+  const shared = '120363000000000001@g.us';
+  store.setGroupEnabled(NUMBER, shared, true);
+  store.addUser(NUMBER, '265900000311', { role: 'user' });
+
+  const message = fakesock.buildMessage({
+    body: '.ping', fromMe: false, sender: '265900000311', chat: shared,
+  });
+  const first = await router.handle({ number: NUMBER, sock, message, linked: [NUMBER, OTHER] });
+  assert.equal(first.ok, true, 'the first socket answers');
+  const firstCount = sock.__sent.length;
+
+  // The same message arrives on the second linked socket.
+  const secondSock = fakesock.createFakeSocket();
+  const second = await router.handle({ number: OTHER, sock: secondSock, message, linked: [NUMBER, OTHER] });
+  assert.equal(second.handled, false, 'the second socket must stand down');
+  assert.equal(secondSock.__sent.length, 0, 'no duplicate reply in the group');
+  assert.equal(sock.__sent.length, firstCount, 'the first socket sent exactly once');
+});
+
+test('the bot stays silent in a group that was not switched on', async () => {
+  const shared = '120363000000000002@g.us';
+  store.addUser(NUMBER, '265900000311', { role: 'user' });
+  const message = fakesock.buildMessage({ body: '.ping', fromMe: false, sender: '265900000311', chat: shared });
+  const outcome = await router.handle({ number: NUMBER, sock, message, linked: [NUMBER] });
+  assert.equal(outcome.reason, 'group-not-enabled');
   assert.equal(sock.__sent.length, 0);
 });

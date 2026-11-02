@@ -12,7 +12,8 @@
     "add-owner": "node scripts/add-owner.js",
     "test": "node --test \"test/*.test.js\"",
     "test:isolation": "node --test test/isolation.test.js",
-    "smoke:paper": "node scripts/smoke-paper.js"
+    "smoke:paper": "node scripts/smoke-paper.js",
+    "demo:access": "node scripts/demo-access.js"
   },
   "engines": {
     "node": ">=22.13.0"

@@ -42,7 +42,7 @@ zafar-bot/
 ├── logs/               per-command and gateway logs (gitignored)
 ├── scripts/            check-all.js, backup.js, add-owner.js, isolation-proof.sh
 ├── docs/               this file, migration report
-├── test/               76 automated tests, node:test
+├── test/               95 automated tests, node:test
 └── ecosystem.config.js pm2 definition
 ```
 
@@ -223,7 +223,7 @@ Rule 4 and 5 are checked two ways, both kept in the repo:
 ```bash
 npm run test:isolation      # node --test test/isolation.test.js  (11 tests)
 ./scripts/isolation-proof.sh # grep evidence, 14 checks, exit 1 on any hit
-npm test                     # 76 tests, includes test/imports.test.js
+npm test                     # 95 tests, includes test/imports.test.js
 ```
 
 The grep script is the artifact for a human to read:
@@ -327,7 +327,8 @@ to lock the owner out of the bot.
 ### Guard order (fixed, tested)
 
 ```
-fromMe → banned → access mode → maintenance → command role → per-user block → cooldown
+scope (own number | approved DM | enabled group) → banned → approval → maintenance
+      → command role → per-user block → cooldown
 ```
 
 `test/guards.test.js` (18 cases) proves not only that each guard works, but that
@@ -335,20 +336,30 @@ they fire **in this order** — e.g. a banned user in whitelist mode requesting 
 owner command with a live cooldown is stopped by the ban (silence), not by the
 whitelist message, the role refusal, or the cooldown.
 
-### This is a self-bot
+### Who gets served
 
-Guard 1 requires `fromMe === true`, exactly as the old bot did
-(`handler.js:203`). In a direct chat the sender jid *is* the linked number, so:
+The old bot was a self-bot: `fromMe === true` only. It now serves **approved
+people**, which is what makes it usable by students while still being yours.
 
-- the actor of every message is the linked number itself;
-- commands that act **on other people** (`.users ban`, maintenance, access mode)
-  target *other members on that same number*, which in practice means other
-  people in groups, or additional linked numbers;
-- the realistic deployment is that each linked number is the owner's own phone.
+```
+message from one of our own linked numbers  → served
+message from a person approved on that number → served (role/cooldown/blocks apply)
+message from anyone else                     → NO REPLY AT ALL
+```
 
-This is a preserved old behaviour, not a bug introduced here, and it is called
-out in the report because it limits what the users system can do in a 1-to-1
-chat.
+No reply is deliberate: an unknown number must not learn the bot exists.
+`accessMode: "open"` still loads from an old settings file but admits nobody.
+
+### Several numbers in one group
+
+Both sockets receive the message; exactly one answers.
+
+- Sender is one of ours → only that number's socket answers. Order-independent.
+- Sender is an approved student → first socket to claim it answers, rest stand down.
+
+Outbound message ids are remembered for two minutes so a reply echoing back on
+another socket is dropped rather than executed. A group must be switched on
+(`.users group on <jid>`) before the bot speaks in it.
 
 ---
 
@@ -478,7 +489,7 @@ cp .env.example .env      # fill in PAIR_NUMBER and the provider keys
 node scripts/add-owner.js 265991234567
 
 # develop
-npm test                  # 76 tests
+npm test                  # 95 tests
 npm run check-all         # the board, exit 1 if anything failed
 ./scripts/isolation-proof.sh
 

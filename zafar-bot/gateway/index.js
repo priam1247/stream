@@ -74,7 +74,12 @@ async function boot({ withSessions = true } = {}) {
 
   const manager = new SessionManager({
     onMessage: async (number, sock, message) => {
-      await router.handle({ number, sock, message });
+      await router.handle({
+        number,
+        sock,
+        message,
+        linked: manager.list().map((entry) => String(entry.number)),
+      });
     },
   });
 

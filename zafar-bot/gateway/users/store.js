@@ -28,16 +28,20 @@ const jid = require('../../lib/jid');
 const OWNER_FILE = path.join(paths.storageCore, 'owner.json');
 
 const DEFAULT_SETTINGS = Object.freeze({
-  accessMode: 'open',        // 'open' | 'whitelist'
+  // Retained for the admin command, but no longer grants access to anyone:
+  // access is approved-users-only regardless (see users/access.js).
+  accessMode: 'whitelist',
   maintenance: false,
   prefix: null,              // null -> fall back to config.prefix
+  groups: [],                // group jids the bot may answer in
 });
 
 const isValidUsers = (data) => Boolean(data && typeof data === 'object' && Array.isArray(data.users));
 const isValidSettings = (data) => Boolean(
   data && typeof data === 'object' &&
   ['open', 'whitelist'].includes(data.accessMode) &&
-  typeof data.maintenance === 'boolean',
+  typeof data.maintenance === 'boolean' &&
+  (data.groups === undefined || (Array.isArray(data.groups) && data.groups.every((g) => typeof g === 'string'))),
 );
 
 function readOwner() {
@@ -259,6 +263,15 @@ const setAccessMode = (number, mode) => {
 
 const setMaintenance = (number, on) => writeSettings(number, { maintenance: Boolean(on) });
 
+/** Turn the bot on or off for one group, per linked number. */
+function setGroupEnabled(number, groupJid, enabled) {
+  const current = readSettings(number).groups || [];
+  const next = enabled
+    ? [...new Set([...current, groupJid])]
+    : current.filter((g) => g !== groupJid);
+  return writeSettings(number, { groups: next });
+}
+
 /* ── listing ─────────────────────────────────────────────────────────────── */
 
 function listNumbers() {
@@ -301,6 +314,7 @@ module.exports = {
   writeSettings,
   setAccessMode,
   setMaintenance,
+  setGroupEnabled,
   listNumbers,
   ensureNumber,
   isValidUsers,
