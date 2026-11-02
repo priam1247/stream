@@ -27,10 +27,11 @@ const https  = require('https');
 const fs     = require('fs');
 const path   = require('path');
 const { pipeline } = require('stream/promises');
-const paperConfig = require('./config');
-const sendLog   = require('./sendlog');
+const support     = require('./support');
+const paperConfig = { drime: support.drime };
+const sendLog   = support;
 // Paper owns its temp files: they live in the job folder the gateway deletes.
-const { createTempFilePath, deleteTempFile, holdTemp } = require('./tmp');
+const { createTempFilePath, deleteTempFile, holdTemp } = support;
 // Logging goes through ctx.log; this shim is filled in by index.js.
 let log = { debug() {}, info() {}, warn() {}, error() {} };
 function setLog(l) { log = l; }
@@ -140,7 +141,7 @@ function drimeClient(download = false) {
               (Buffer.isBuffer(data) ? Buffer.from(data).toString('utf-8').slice(0, 200) : JSON.stringify(data).slice(0, 200));
           } catch (_) { /* ignore */ }
           // Avoid echoing a configured token in other provider error bodies too.
-          detail = require('./redact').redactSecrets(String(detail || '').replaceAll(token, '[REDACTED]')).slice(0, 200);
+          detail = support.redactSecrets(String(detail || '').replaceAll(token, '[REDACTED]')).slice(0, 200);
           err.message = `Drime API ${status}${detail ? `: ${detail}` : ''}`;
         }
       }
@@ -193,7 +194,7 @@ const isFileRow = (r) => r.type !== 'folder' && !r.is_folder;
 
 // ─── SNAPSHOT (disk persistence) ──────────────────────────────────────────────
 // Compact tuple format: [id, hash, name, size, created_at] — ~1–2 MB for 11k files.
-const { writeRawAtomic, readJsonSafe } = require('./jsonstore');
+const { writeRawAtomic, readJsonSafe } = support;
 
 function loadSnapshot() {
   const res = readJsonSafe(SNAPSHOT_PATH, {

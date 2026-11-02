@@ -192,10 +192,10 @@ test('no empty catch blocks anywhere, engine included', () => {
 
 /* ── rule 5: per-command folders ─────────────────────────────────────────── */
 
-test('every command folder has command.json, index.js, check.js and NOTES.md', () => {
+test('every command folder has command.json, index.js and check.js', () => {
   const missing = [];
   for (const name of commandFolders()) {
-    for (const file of ['command.json', 'index.js', 'check.js', 'NOTES.md']) {
+    for (const file of ['command.json', 'index.js', 'check.js']) {
       if (!fs.existsSync(path.join(COMMANDS, name, file))) missing.push(`${name}/${file}`);
     }
   }

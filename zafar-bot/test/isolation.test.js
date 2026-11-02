@@ -46,7 +46,6 @@ function writeCommand(dir, name, { indexSource, meta = {} } = {}) {
   };
   fs.writeFileSync(path.join(folder, 'command.json'), JSON.stringify(base, null, 2));
   fs.writeFileSync(path.join(folder, 'check.js'), 'module.exports = {};');
-  fs.writeFileSync(path.join(folder, 'NOTES.md'), '# test');
   fs.writeFileSync(path.join(folder, 'index.js'), indexSource || 'module.exports = { async run(ctx) { await ctx.reply("ok"); } };');
   return folder;
 }
