@@ -4470,3 +4470,45 @@ files remain those of the generated snapshot.
     - [`Whatsapp bot/commands/media/mfind.js`](../Whatsapp%20bot/commands/media/mfind.js) — require.
     - [`Whatsapp bot/scripts/test-music-sources.js`](../Whatsapp%20bot/scripts/test-music-sources.js) — require.
 
+
+## Embed-source integration (addendum 2)
+
+A second pass ported the framework-independent parts of `spences10/sveltekit-embed`
+(MIT, Scott Spence) into the bot and dashboard. The full 190-file source snapshot
+is kept untracked in `reference/sveltekit-embed/` (see root `.gitignore`) with its
+own `EXTRACT_INDEX.md`, `ALL_FILES.txt` and `FILE_MANIFEST.csv`. No Svelte code,
+credentials, DRM logic or downloadable streams are included.
+
+### New files
+
+- [`Whatsapp bot/utils/musicSources/embeds.js`](../Whatsapp%20bot/utils/musicSources/embeds.js) — Public embed/player URL registry for all 21 sveltekit-embed providers plus a generic fallback; parses embed URLs into canonical + iframe forms.
+  - **References:** [`Whatsapp bot/utils/musicSources/constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+  - **Referenced by:** [`Whatsapp bot/utils/musicSources/index.js`](../Whatsapp%20bot/utils/musicSources/index.js), [`Whatsapp bot/utils/musicSources/deliver.js`](../Whatsapp%20bot/utils/musicSources/deliver.js), [`Whatsapp bot/commands/media/embed.js`](../Whatsapp%20bot/commands/media/embed.js), [`Whatsapp bot/scripts/test-embed-sources.js`](../Whatsapp%20bot/scripts/test-embed-sources.js) — require.
+
+- [`Whatsapp bot/commands/media/embed.js`](../Whatsapp%20bot/commands/media/embed.js) — `.embed` / `.linkinfo` / `.unembed`: report a link's canonical and embed URLs, list providers, or deliver audio/video.
+  - **References:** [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js), [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js), [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js), [`Whatsapp bot/utils/musicSources/deliver.js`](../Whatsapp%20bot/utils/musicSources/deliver.js) — require.
+  - **Referenced by:** [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
+
+- [`Whatsapp bot/scripts/test-embed-sources.js`](../Whatsapp%20bot/scripts/test-embed-sources.js) — Offline tests for the embed registry, canonicalisation, `.embed`, `.dl`, fuzzy scoring and loader registration.
+  - **References:** [`Whatsapp bot/scripts/test-sandbox.js`](../Whatsapp%20bot/scripts/test-sandbox.js) — static import.
+  - **Referenced by:** [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm `test:media` script.
+
+- [`dashboard/lib/embed-utils.ts`](../dashboard/lib/embed-utils.ts) — `getAspectRatio`, iframe defaults, `buildEmbedUrl`, `isEmbedUrl`, `isSubsequence`, `scoreCommandQuery`.
+  - **Referenced by:** [`dashboard/components/command-directory.tsx`](../dashboard/components/command-directory.tsx), [`dashboard/components/lazy-embed.tsx`](../dashboard/components/lazy-embed.tsx), [`dashboard/tests/embed-utils.test.ts`](../dashboard/tests/embed-utils.test.ts) — static import.
+
+- [`dashboard/components/lazy-embed.tsx`](../dashboard/components/lazy-embed.tsx) — React port of `in_view` (IntersectionObserver), `load_script` and `embed_loading`; renders a lazy iframe with a bounded loading state.
+  - **References:** [`dashboard/lib/embed-utils.ts`](../dashboard/lib/embed-utils.ts) — static import.
+
+- [`dashboard/tests/embed-utils.test.ts`](../dashboard/tests/embed-utils.test.ts) — Unit tests for the ported pure utilities.
+  - **References:** [`dashboard/lib/embed-utils.ts`](../dashboard/lib/embed-utils.ts) — static import.
+
+### Changed relationships (reverse-reference lists above remain the generated snapshot)
+
+- [`Whatsapp bot/utils/musicSources/constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — added `EMBED_IFRAME_DEFAULTS`, `EMBED_LOAD_GIVE_UP_MS`, `SEARCH_SCORE`, `SEARCH_SUBSEQUENCE_MIN_LENGTH`; widened `DEEZER_URL_RE` and `SPOTIFY_URL_RE` to accept widget/embed links and shows.
+- [`Whatsapp bot/utils/musicSources/index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — `isMusicLink`, `normalizeDirectUrl` and `resolveUrl` now canonicalise embed URLs before catalog resolution or direct delivery; exports `canonicalize`, `parseEmbed`, `toEmbed`.
+- [`Whatsapp bot/utils/musicSources/deliver.js`](../Whatsapp%20bot/utils/musicSources/deliver.js) — exposes `canonicalize`, `parseEmbed`, `toEmbed`, `describe`, `supportedProviders`.
+- [`Whatsapp bot/utils/musicSources/model.js`](../Whatsapp%20bot/utils/musicSources/model.js) — added `fuzzyScore` / `isSubsequence` (ported docs search) used as a relevance floor in `relevance`.
+- [`Whatsapp bot/utils/musicSources/spotifyEmbed.js`](../Whatsapp%20bot/utils/musicSources/spotifyEmbed.js), [`Whatsapp bot/utils/musicSources/deezer.js`](../Whatsapp%20bot/utils/musicSources/deezer.js), [`Whatsapp bot/utils/spotify.js`](../Whatsapp%20bot/utils/spotify.js) — accept `/embed/` links, locale prefixes and podcast shows.
+- [`Whatsapp bot/commands/media/dl.js`](../Whatsapp%20bot/commands/media/dl.js) — normalises embed URLs to canonical links before routing to music sources or yt-dlp.
+- [`dashboard/components/command-directory.tsx`](../dashboard/components/command-directory.tsx) — command filtering now uses ranked, typo-tolerant `scoreCommandQuery`.
+- [`Whatsapp bot/README.md`](../Whatsapp%20bot/README.md), [`Whatsapp bot/commands/general/menu.js`](../Whatsapp%20bot/commands/general/menu.js), [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts), [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md), [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json), [`.gitignore`](../.gitignore) — command list, catalog, tree and test-script updates.

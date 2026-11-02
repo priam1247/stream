@@ -150,6 +150,10 @@ async function resolve(text) {
     return makeCollection({ source: 'deezer', kind: 'album', name, owner, cover, url: canonical, tracks });
   }
 
+  if (kind === 'show') {
+    throw new http.MusicSourceError('NOT_FOUND', 'Deezer podcast shows have no music tracks', 'deezer');
+  }
+
   const playlist = await api(`/playlist/${id}`);
   const cover = playlist.picture_big || '';
   const items = await followPages(playlist.tracks || {});

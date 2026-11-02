@@ -21,6 +21,7 @@ const spotify = require('./spotifyEmbed');
 const soundcloud = require('./soundcloud');
 const youtubeMusic = require('./youtubeMusic');
 const lyrics = require('./lyrics');
+const embeds = require('./embeds');
 const YT = require('../youtubedl');
 const youtubeSearch = require('../youtubeSearch');
 
@@ -36,13 +37,22 @@ function isMusicLink(text) {
     || itunes.isAppleMusicUrl(raw)
     || spotify.isSpotifyUrl(raw)
     || soundcloud.isSoundCloudUrl(raw)
-    || youtubeMusic.isYouTubeMusicUrl(raw),
+    || youtubeMusic.isYouTubeMusicUrl(raw)
+    || embeds.isMusicEmbed(raw),
   );
 }
 
 /** YouTube / YouTube Music / SoundCloud links yt-dlp can read directly. */
 function normalizeDirectUrl(text) {
   const raw = rawUrl(text);
+  // Pasted embed/player URLs (Spotify embed, Deezer widget, SoundCloud
+  // player, youtube-nocookie, Vimeo/TikTok players, …) become the shared
+  // canonical URL first. Catalog embeds are deliberately left to resolveUrl()
+  // because yt-dlp cannot download a Spotify/Deezer page.
+  const embed = embeds.parseLink(raw);
+  if (embed?.isEmbed && embed.downloadable && embed.provider !== 'generic') {
+    return embed.canonical;
+  }
   if (youtubeMusic.isYouTubeMusicUrl(raw)) {
     // Only watch/playlist links carry a playable id; browse pages are not
     // something yt-dlp can download, so reject them with a clear error.
@@ -56,17 +66,21 @@ function normalizeDirectUrl(text) {
 /** Paste a link → either a direct upload URL or a collection of tracks. */
 async function resolveUrl(text) {
   const raw = rawUrl(text);
+  // An embed URL is just a differently-shaped link to the same media.
+  // Resolve metadata against the canonical form so a widget/player URL gets
+  // the same treatment as a shared link.
+  const canonical = embeds.toCanonical(raw) || raw;
 
-  if (deezer.isDeezerUrl(raw)) return { type: 'collection', collection: await deezer.resolve(raw) };
-  if (itunes.isAppleMusicUrl(raw)) return { type: 'collection', collection: await itunes.resolve(raw) };
-  if (spotify.isSpotifyUrl(raw)) return { type: 'collection', collection: await spotify.resolve(raw) };
+  if (deezer.isDeezerUrl(canonical)) return { type: 'collection', collection: await deezer.resolve(canonical) };
+  if (itunes.isAppleMusicUrl(canonical)) return { type: 'collection', collection: await itunes.resolve(canonical) };
+  if (spotify.isSpotifyUrl(canonical)) return { type: 'collection', collection: await spotify.resolve(canonical) };
 
-  if (soundcloud.isSoundCloudUrl(raw)) {
-    try { return { type: 'collection', collection: await soundcloud.resolve(raw) }; }
-    catch { return { type: 'direct', url: soundcloud.parseUrl(raw) }; }
+  if (soundcloud.isSoundCloudUrl(canonical)) {
+    try { return { type: 'collection', collection: await soundcloud.resolve(canonical) }; }
+    catch { return { type: 'direct', url: soundcloud.parseUrl(canonical) }; }
   }
 
-  const direct = normalizeDirectUrl(raw);
+  const direct = normalizeDirectUrl(canonical);
   if (direct) return { type: 'direct', url: direct };
   return null;
 }
@@ -192,8 +206,10 @@ async function findUpload(track, { video = false, exclude = [] } = {}) {
 }
 
 module.exports = {
-  C, http, model, deezer, itunes, spotify, soundcloud, youtubeMusic, lyrics,
+  C, http, model, deezer, itunes, spotify, soundcloud, youtubeMusic, lyrics, embeds,
   isMusicLink, normalizeDirectUrl, resolveUrl, resolveSearchItem, searchAll,
   resultToTrack, trackQuery, pickBest, findUpload,
+  canonicalize: embeds.canonicalize, parseEmbed: embeds.parseLink,
+  toEmbed: embeds.toEmbed, isEmbedUrl: embeds.isEmbedUrl,
   getLyrics: lyrics.getLyrics, fetchCover: lyrics.fetchCover,
 };

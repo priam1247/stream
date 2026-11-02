@@ -1,6 +1,6 @@
 # Complete repository map
 
-This map covers **367 repository files** in the current single-Botkeep snapshot. The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
+This map covers **386 Git-tracked repository files** in the current single-Botkeep snapshot (the untracked `reference/sveltekit-embed/` source snapshot is excluded). The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
 
 ## Contents
 
@@ -75,7 +75,7 @@ engine/media/index.js → metadata, registry, resolver, providers, downloaders
 
 The bot is CommonJS. The nested `engine/package.json` switches that subtree to ES modules; the bridge uses dynamic `import()`. The engine entry point statically registers its selected stream and torrent providers. The three files in `engine/providers/ddl/` register themselves if loaded, but are not imported by the current `engine/media/index.js`; their presence alone does not mean they are active.
 
-`.song`, `.ytv`, `.dl`, `.spotify` and `.mfind` recognise Deezer, Apple Music, Spotify, SoundCloud and YouTube Music links through `utils/musicSources/` (public JSON APIs and the Spotify embed page; no accounts, keys or DRM decryption), merge multi-catalog searches, match a catalog track to a public upload by duration, and hand the chosen URL to `utils/mediaPipeline.js`. Keyless lyrics and cover art are added to ID3 tags. The approach follows amiralibg/unstream (MIT) for metadata/duration matching and the public lyrics constants from sonorahq/sonora.
+`.song`, `.ytv`, `.dl`, `.spotify`, `.mfind` and `.embed` recognise Deezer, Apple Music, Spotify, SoundCloud and YouTube Music links (plus their share-sheet embed/player forms) through `utils/musicSources/` (public JSON APIs and the Spotify embed page; no accounts, keys or DRM decryption), merge multi-catalog searches, match a catalog track to a public upload by duration, and hand the chosen URL to `utils/mediaPipeline.js`. Keyless lyrics and cover art are added to ID3 tags. `utils/musicSources/embeds.js` holds the 21 public embed URL shapes from spences10/sveltekit-embed (MIT) and normalises player URLs to canonical links before resolution; the same project's lazy-load, aspect-ratio and fuzzy-search patterns are ported to `dashboard/lib/embed-utils.ts`, `dashboard/components/lazy-embed.tsx`, `dashboard/components/command-directory.tsx` and `utils/musicSources/model.js`. The untracked `reference/sveltekit-embed/` snapshot documents the source. The approach follows amiralibg/unstream (MIT) for metadata/duration matching and the public lyrics constants from sonorahq/sonora.
 
 Media shortcuts and `.dl` use `utils/mediaPipeline.js` → the keyless YouTube provider where applicable, installed local engines, and remote fallbacks. `.reddit` searches titles through `utils/providerSearch.js` using Reddit or site-filtered indexes, then `utils/selections.js` presents session-scoped choices. Searches start immediately through `utils/jobQueue.js`; direct links remain available through `.dl`. Search results are discovery hints, not verified downloads. `dashboard/lib/bot-data.ts` catalogs canonical commands; member switches apply to commands, not website-wide blocking.
 
@@ -354,6 +354,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── command-directory.tsx
 │   │   ├── control-room-activity.tsx
 │   │   ├── control-room-home.tsx
+│   │   ├── lazy-embed.tsx
 │   │   ├── live-analytics.tsx
 │   │   ├── media-vault-desk.tsx
 │   │   ├── member-command-controls.tsx
@@ -378,6 +379,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── client-session.ts
 │   │   ├── control-room.ts
 │   │   ├── email-service.ts
+│   │   ├── embed-utils.ts
 │   │   ├── jwt.ts
 │   │   ├── member-analytics.ts
 │   │   ├── member-insights-server.ts
@@ -414,6 +416,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── control-room-storage.test.ts
 │   │   ├── d1-initialization.test.ts
 │   │   ├── email-branding.test.ts
+│   │   ├── embed-utils.test.ts
 │   │   ├── member-cancel-pending.test.ts
 │   │   ├── member-command-controls.test.tsx
 │   │   ├── member-features-security.test.ts
@@ -529,6 +532,8 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   │   └── viewonce.js
 │   │   └── media/
 │   │       ├── dl.js
+│   │       ├── embed.js
+│   │       ├── mfind.js
 │   │       ├── movie.js
 │   │       ├── series.js
 │   │       ├── shortcuts.js
@@ -604,12 +609,14 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── test-bridge.js
 │   │   ├── test-command-removal.js
 │   │   ├── test-delivery.js
+│   │   ├── test-embed-sources.js
 │   │   ├── test-knight-live.js
 │   │   ├── test-knight-provider.js
 │   │   ├── test-media-downloads.js
 │   │   ├── test-media-extractors.py
 │   │   ├── test-media-shortcuts.js
 │   │   ├── test-member-telemetry.js
+│   │   ├── test-music-sources.js
 │   │   ├── test-nm3u8dl-live.js
 │   │   ├── test-preflight.js
 │   │   ├── test-provider-core.js
@@ -652,6 +659,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── musicSources/
 │   │   │   ├── constants.js
 │   │   │   ├── deezer.js
+│   │   │   ├── embeds.js
 │   │   │   ├── deliver.js
 │   │   │   ├── http.js
 │   │   │   ├── index.js
