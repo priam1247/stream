@@ -29,7 +29,9 @@ module.exports = Object.freeze({
   // ── Deezer public API ────────────────────────────────────────────────────
   DEEZER_API: 'https://api.deezer.com',
   DEEZER_PAGE_QUOTA: Object.freeze({ track: 30, album: 20, artist: 12, playlist: 12 }),
-  DEEZER_URL_RE: /deezer\.com\/(?:[a-z]{2}\/)?(track|album|playlist)\/(\d+)/i,
+  // Also accepts the public widget URLs used by sveltekit-embed's <Deezer>,
+  // e.g. https://widget.deezer.com/widget/auto/album/302127
+  DEEZER_URL_RE: /(?:widget\.)?deezer\.com\/(?:widget\/(?:auto|light|dark)\/)?(?:[a-z]{2}\/)?(track|album|playlist|show)\/(\d+)/i,
 
   // ── iTunes Search / Lookup (Apple Music links) ───────────────────────────
   ITUNES_API: 'https://itunes.apple.com',
@@ -39,7 +41,9 @@ module.exports = Object.freeze({
 
   // ── Spotify public embed player ──────────────────────────────────────────
   SPOTIFY_EMBED: 'https://open.spotify.com/embed',
-  SPOTIFY_URL_RE: /open\.spotify\.com\/(?:intl-[a-z-]+\/)?(track|album|playlist|episode)\/([A-Za-z0-9]+)/i,
+  // Accept both the shared link and the /embed/ player link (with an
+  // optional intl-xx locale), plus podcast shows.
+  SPOTIFY_URL_RE: /(?:open\.)?spotify\.com\/(?:embed\/)?(?:intl-[a-z-]+\/)?(track|album|playlist|show|episode)\/([A-Za-z0-9]+)/i,
   SPOTIFY_TOKEN_URLS: Object.freeze([
     'https://open.spotify.com/embed/api/token',
     'https://open.spotify.com/get_access_token?reason=transport&productType=web_player',
@@ -61,6 +65,20 @@ module.exports = Object.freeze({
 
   // ── YouTube Music / direct links ─────────────────────────────────────────
   YTMUSIC_URL_RE: /^https?:\/\/music\.youtube\.com\//i,
+
+  // ── Public embed/player URL shapes (spences10/sveltekit-embed, MIT) ───────
+  // Browser iframe defaults copied as data; the bot uses the canonical URLs,
+  // not the iframes. No accounts, tokens or cookies are involved.
+  EMBED_IFRAME_DEFAULTS: Object.freeze({
+    loading: 'lazy', width: '100%', height: '152px',
+    allow: 'encrypted-media; clipboard-write',
+  }),
+  EMBED_LOAD_GIVE_UP_MS: 8000,
+  SEARCH_SCORE: Object.freeze({
+    exact: 120, prefix: 100, includes: 70,
+    keywordPrefix: 50, keywordIncludes: 35, detail: 20, subsequence: 10,
+  }),
+  SEARCH_SUBSEQUENCE_MIN_LENGTH: 3,
 
   // ── Keyless lyrics catalogs ──────────────────────────────────────────────
   LRCLIB_API: 'https://lrclib.net/api',

@@ -68,3 +68,6 @@ tools/downloader/shooter-found.txt
 scribd/botkeep/node_modules/
 scribd/*/downloads/
 scribd/*/tmp/
+
+# Local, untracked reference snapshots fetched from third-party repos
+reference/

@@ -87,6 +87,55 @@ function dice(a, b) {
   return (2 * hits) / total;
 }
 
+/**
+ * Every query term must match somewhere in the item. Ported (MIT) from
+ * sveltekit-embed's docs search: exact/prefix/includes scores, keyword
+ * bonuses, a subsequence fallback that tolerates abbreviations like "ytb"
+ * for "youtube".
+ */
+function isSubsequence(term, text) {
+  let index = 0;
+  for (const character of text) {
+    if (character === term[index]) index++;
+    if (index === term.length) return true;
+  }
+  return false;
+}
+
+function scoreTerm(term, item) {
+  const S = C.SEARCH_SCORE;
+  const title = item.title.toLowerCase();
+  if (title === term) return S.exact;
+  if (title.startsWith(term)) return S.prefix;
+  if (title.includes(term)) return S.includes;
+  let best = 0;
+  for (const keyword of item.keywords || []) {
+    const value = String(keyword).toLowerCase();
+    if (value.startsWith(term)) best = Math.max(best, S.keywordPrefix);
+    else if (value.includes(term)) best = Math.max(best, S.keywordIncludes);
+  }
+  if (best) return best;
+  if (String(item.detail || '').toLowerCase().includes(term)) return S.detail;
+  if (term.length >= C.SEARCH_SUBSEQUENCE_MIN_LENGTH && isSubsequence(term, title)) return S.subsequence;
+  return 0;
+}
+
+function fuzzyScore(query, item) {
+  const terms = squash(query).split(/\s+/).filter(Boolean);
+  const ranked = {
+    title: squash(item?.title),
+    keywords: (item?.keywords || []).map((word) => squash(word)),
+    detail: squash(item?.detail),
+  };
+  let total = 0;
+  for (const term of terms) {
+    const value = scoreTerm(term, ranked);
+    if (!value) return 0; // all terms must match
+    total += value;
+  }
+  return total;
+}
+
 function relevance(result, query) {
   const q = squash(query);
   const name = squash(result.name);
@@ -98,10 +147,14 @@ function relevance(result, query) {
   else if (name.includes(q)) score = Math.max(score, 0.86);
   const tokens = q.split(/\s+/).filter(Boolean);
   if (tokens.length && tokens.every((t) => both.includes(t))) score = Math.max(score, 0.8);
+  // A term-by-term match rescues titles where the Dice coefficient is low
+  // (abbreviations, extra words, reordered artist names).
+  const fuzzy = fuzzyScore(query, { title: result.name, keywords: [result.subtitle], detail: '' });
+  if (fuzzy > 0) score = Math.max(score, Math.min(0.9, fuzzy / (C.SEARCH_SCORE.exact * 1.25)));
   return score * (C.SOURCE_WEIGHT[result.source] ?? 0.85);
 }
 
 module.exports = {
   clean, num, makeTrack, makeResult, makeCollection,
-  squash, dedupeKey, relevance,
+  squash, dedupeKey, relevance, fuzzyScore, isSubsequence,
 };

@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { Check, Copy, Lock, Search, Terminal } from 'lucide-react';
 import { BOT_COMMANDS } from '@/lib/bot-data';
+import { scoreCommandQuery } from '@/lib/embed-utils';
 
 type CategoryFilter = 'all' | 'media' | 'vault' | 'admin';
 
@@ -38,16 +39,17 @@ export function CommandDirectory({ hideOwnerCommands = false }: CommandDirectory
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return visibleCommands.filter((cmd) => {
-      if (category !== 'all' && cmd.category !== category) return false;
-      if (!q) return true;
-      return (
-        cmd.name.toLowerCase().includes(q) ||
-        cmd.aliases.some((a) => a.toLowerCase().includes(q)) ||
-        cmd.summary.toLowerCase().includes(q) ||
-        cmd.usage.toLowerCase().includes(q)
-      );
-    });
+    const inCategory = visibleCommands.filter(
+      (cmd) => category === 'all' || cmd.category === category,
+    );
+    if (!q) return inCategory;
+    // Ranked, typo-tolerant matching (ported from sveltekit-embed's docs
+    // search). Every query term must match name, an alias, summary or usage.
+    return inCategory
+      .map((cmd) => ({ cmd, score: scoreCommandQuery(q, cmd) }))
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((entry) => entry.cmd);
   }, [visibleCommands, query, category]);
 
   const copyExample = async (example: string) => {

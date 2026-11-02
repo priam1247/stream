@@ -32,6 +32,14 @@ export const BOT_COMMANDS: CommandEntry[] = [
     summary: 'Keyless music search → MP3 or music video',
   },
   {
+    name: 'embed',
+    aliases: ['linkinfo', 'unembed'],
+    category: 'media',
+    usage: '.embed <link> [--audio|--video] [720] [--first]',
+    example: '.embed https://open.spotify.com/embed/track/4cOdK2wGLETKBW3PvgPWqT',
+    summary: 'Resolve an embed/player link to its canonical URL (or deliver its audio/video)',
+  },
+  {
     name: 'ytv',
     aliases: ['ytvideo', 'ytmp4', 'video'],
     category: 'media',

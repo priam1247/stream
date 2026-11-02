@@ -21,7 +21,8 @@ const spotifyEmbed = require('./musicSources/spotifyEmbed');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-const SPOTIFY_RE = /https?:\/\/(?:open\.)?spotify\.com\/(?:intl-[a-z-]+\/)?(track|album|playlist|episode)\/([A-Za-z0-9]+)/i;
+// Accept the shared link, the /embed/ player link, locale prefixes and shows.
+const SPOTIFY_RE = /https?:\/\/(?:open\.)?spotify\.com\/(?:embed\/)?(?:intl-[a-z-]+\/)?(track|album|playlist|show|episode)\/([A-Za-z0-9]+)/i;
 
 const parseSpotifyUrl = (text) => {
   const m = String(text || '').match(SPOTIFY_RE);
@@ -97,7 +98,7 @@ async function viaOembed(parsed) {
  * match a YouTube upload to the correct recording.
  */
 async function viaEmbed(parsed) {
-  if (!parsed || !['track', 'album', 'playlist'].includes(parsed.type)) return null;
+  if (!parsed || !['track', 'album', 'playlist', 'show'].includes(parsed.type)) return null;
   try {
     const collection = await spotifyEmbed.resolve(parsed.url);
     const track = collection.tracks?.[0];

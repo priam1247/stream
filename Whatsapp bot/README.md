@@ -16,6 +16,7 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .countpapers [course-code]             Count papers in the vault
 .song <name-or-music-link>             Download audio (YouTube or keyless music sources)
 .mfind <name|music-link> [--video] [720]  Search every keyless catalog or resolve a music link
+.embed <link> [--audio|--video] [720]  Resolve an embed/player link to its canonical URL
 .ytv <name-or-music-link> [quality]    Download a music video / MP4 (audio verified)
 .dl <URL> [audio|video] [quality]      Generic yt-dlp downloader (streamed to disk)
 .tiktok <URL>  .x <URL>  .instagram <URL>  .fb <URL>
@@ -87,6 +88,34 @@ quality and send-mode options.
 Optional tuning (all have hard-coded defaults, no secrets):
 `MUSIC_REQUEST_TIMEOUT_MS`, `MUSIC_SEARCH_TIMEOUT_MS`, `MUSIC_TAG_TIMEOUT_MS`
 and `MUSIC_MAX_DURATION_DRIFT`.
+
+### Embed / player links
+
+Share sheets and "copy embed" buttons often give a *player* URL rather than
+the normal link. Every music command now normalises those to the shared URL
+before resolving metadata, so pasting any of these works:
+
+| Provider | Embed / player URL | Canonical link |
+| --- | --- | --- |
+| Spotify | `open.spotify.com/embed/{track\|album\|playlist\|show}/{id}` | `open.spotify.com/{kind}/{id}` |
+| Deezer | `widget.deezer.com/widget/{theme}/{kind}/{id}` | `deezer.com/{kind}/{id}` |
+| SoundCloud | `w.soundcloud.com/player/?url=<encoded>` | the `url=` parameter |
+| YouTube | `youtube-nocookie.com/embed/{id}` or `?videoseries&list=` | `youtube.com/watch?v=` / `playlist?list=` |
+| Vimeo / TikTok | `player.vimeo.com/video/{id}`, `tiktok.com/player/v1/{id}` | `vimeo.com/{id}` / the player URL |
+
+The same registry covers Anchor.fm, Buzzsprout, SimpleCast, Zencastr, Bluesky,
+Threads, Mastodon, X/Twitter, CodePen, GitHub Gist, StackBlitz, Slides, Relive,
+Guild and a generic fallback. `.embed <link>` prints the provider, kind, ID,
+canonical URL, embed URL and iframe attributes; `.embed --list` lists all of
+them. `.embed <link> --audio` / `--video 720` delivers the media directly, and
+`.dl`, `.song`, `.ytv`, `.mfind` handle embed links without extra flags.
+
+The URL shapes, iframe defaults (`loading="lazy"`, `allow`, heights) and the
+term-by-term fuzzy search scoring come from
+[spences10/sveltekit-embed](https://github.com/spences10/sveltekit-embed)
+(MIT, Scott Spence). That project renders browser iframes in SvelteKit; this
+bot uses only the public link data — WhatsApp cannot display an iframe and no
+Svelte code is included here.
 
 ## Background link jobs
 

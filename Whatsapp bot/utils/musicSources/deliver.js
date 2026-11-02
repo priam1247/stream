@@ -175,4 +175,13 @@ async function deliverMusic(sock, msg, extra, opts = {}) {
   return deliverSearch(text, sock, msg, extra);
 }
 
-module.exports = { deliverMusic, isMusicInput: sources.isMusicLink, friendly, mmss };
+module.exports = {
+  deliverMusic,
+  isMusicInput: sources.isMusicLink,
+  canonicalize: sources.canonicalize,
+  parseEmbed: sources.parseEmbed,
+  toEmbed: sources.toEmbed,
+  describe: sources.embeds.describe,
+  supportedProviders: sources.embeds.supportedProviders,
+  friendly, mmss,
+};

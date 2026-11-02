@@ -23,7 +23,7 @@ function parseUrl(text) {
   const m = String(text || '').match(C.SPOTIFY_URL_RE);
   if (!m) return null;
   const kind = m[1].toLowerCase();
-  if (!['track', 'album', 'playlist'].includes(kind)) return null; // episodes have no embed tracklist
+  if (!['track', 'album', 'playlist', 'show'].includes(kind)) return null; // episodes have no embed tracklist
   return { kind, id: m[2] };
 }
 const isSpotifyUrl = (text) => Boolean(parseUrl(text));
@@ -185,10 +185,14 @@ async function resolve(text) {
   const year = yearOf(entity);
   const owner = clean(entity.subtitle) || (entity.artists || []).map((a) => clean(a?.name)).filter(Boolean).join(', ');
 
-  if (kind === 'album') {
+  if (kind === 'album' || kind === 'show') {
+    // Shows (podcasts) have an embed tracklist but no playlist paging API.
     return makeCollection({
-      source: 'spotify', kind: 'album', name, owner, cover, url: canonical,
-      tracks: rows.map((item, i) => trackFromList(item, i + 1, { albumName: name, cover, year, owner })),
+      source: 'spotify', kind: kind === 'show' ? 'playlist' : 'album',
+      name, owner, cover, url: canonical,
+      tracks: rows.map((item, i) => trackFromList(item, i + 1, {
+        albumName: kind === 'album' ? name : '', cover, year, owner,
+      })),
     });
   }
 
