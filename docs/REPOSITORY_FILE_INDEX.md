@@ -10,6 +10,32 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - **Outside modules** are literal imports that resolve to the language runtime, a third-party package, or another external module rather than a tracked repository file.
 - Relationships for updated files were rescanned for literal references; the index is not a proof of every dynamic or remote runtime path. External services and runtime state are not tracked files.
 
+## Standalone ownMedia engine update (addendum)
+
+The `## Files` body below is the last full generated snapshot. Nine files were
+added when the failed downloader chain was replaced with a from-scratch
+engine. `Whatsapp bot/utils/mediaPipeline.js` now delegates YouTube, YouTube
+Music, YouTube-nocookie and SoundCloud URLs to it on hosts without a working
+`yt-dlp` binary; `.song` and `.ytv` do the same after their existing search
+and picker. The old `yt-dlp` → `youtubei.js`/Innertube → Hector → yt1d →
+cobalt chain is no longer reachable for music on those hosts.
+
+- `Whatsapp bot/utils/ownMedia/constants.js` — public endpoints, client matrix, limits and the HTTPS host allowlist; optional `YT_PO_TOKEN` / `YT_VISITOR_DATA` from env only.
+- `Whatsapp bot/utils/ownMedia/http.js` — allowlisted HTTPS with redirect re-checks, JSON/text helpers, a size-limited streamed downloader, `EngineError` and offline test hooks.
+- `Whatsapp bot/utils/ownMedia/clients.js` — direct public YouTube `/youtubei/v1/player` and `/youtubei/v1/search`, client rotation, format normalisation, video-id parsing.
+- `Whatsapp bot/utils/ownMedia/formats.js` — pick progressive MP4, audio-only stream, a video+audio pair to mux, or an HLS/DASH manifest.
+- `Whatsapp bot/utils/ownMedia/soundcloud.js` — scrape the public `client_id`, resolve/search tracks and follow `media.transcodings` to a progressive MP3.
+- `Whatsapp bot/utils/ownMedia/convert.js` — ffmpeg from `@ffmpeg-installer/ffmpeg` (MP3 extraction, mux, HLS/DASH remux, WhatsApp-compatible remux).
+- `Whatsapp bot/utils/ownMedia/engine.js` — orchestrates resolve → download → convert → tag → send, records per-brick failures, exports `shouldHandle` for the pipeline gate.
+- `Whatsapp bot/commands/media/mdiag.js` — `.mdiag` / `.mediadiag` / `.ownmedia`: one diagnostic line per brick.
+- `Whatsapp bot/scripts/test-own-media.js` — 23 offline tests added to `npm run test:media`.
+
+Modified alongside: `utils/mediaPipeline.js`, `utils/musicSources/deliver.js`,
+`commands/media/{song,ytv,mfind}.js`, `commands/general/menu.js`,
+`dashboard/lib/bot-data.ts`, `Whatsapp bot/README.md` and
+`Whatsapp bot/package.json`. No Svelte code, service credentials, DRM
+decryption or remote resolver APIs are involved.
+
 ## Keyless music-source update (addendum)
 
 The `## Files` body below is the last full generated snapshot. The following

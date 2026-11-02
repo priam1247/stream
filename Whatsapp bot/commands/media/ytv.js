@@ -27,6 +27,7 @@ const settings = require('../../utils/mediaSettings');
 const providers = require('../../utils/downloadProviders');
 const youtubeSearch = require('../../utils/youtubeSearch');
 const musicSources = require('../../utils/musicSources/deliver');
+const mediaPipeline = require('../../utils/mediaPipeline');
 const selections = require('../../utils/selections');
 const jobQueue = require('../../utils/jobQueue');
 const {
@@ -146,6 +147,16 @@ const execute = async (sock, msg, args, extra) => {
   }
   if (MAX_MINUTES && duration && duration > MAX_MINUTES * 60) {
     return say(`❌ Video is ${Math.round(duration / 60)} min — the limit is ${MAX_MINUTES} min.`);
+  }
+
+  // No yt-dlp binary on this host → use the standalone ownMedia engine.
+  // Search, picker and metadata above stay exactly as they were.
+  if (!YT.version()) {
+    return mediaPipeline.downloadAndSend(sock, msg, extra, {
+      url: query, kind: 'video', height, lane: 'heavy',
+      title: title || '', author: author || '',
+      track: { title: title || '', artists: author ? [author] : [], durationMs: duration * 1000 || 0 },
+    });
   }
 
   return await jobQueue.runInLane('light', async () => {

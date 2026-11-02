@@ -5,9 +5,9 @@
  *
  * Resolves a link or a search phrase, offers the existing scoped numbered
  * picker for collections/searches, finds a public upload and hands it to the
- * bot's normal media pipeline (yt-dlp → Innertube → remote providers → verify
- * → tag → send). Audio and music video use the same source; only `kind`
- * changes, so both work without any account or key.
+ * standalone `utils/ownMedia/` engine (direct player API → HTTPS stream →
+ * ffmpeg → tag → send). No yt-dlp binary, youtubei.js, Hector, yt1d or cobalt.
+ * Audio and music video use the same source; only `kind` changes.
  */
 
 const config = require('../../config');
@@ -68,13 +68,15 @@ async function deliverMusic(sock, msg, extra, opts = {}) {
     album: meta.album || '',
     lyrics: meta.lyrics || '',
     cover: meta.cover || null,
+    track: meta.track || null,
   });
 
   const deliverTrack = async (track, s, m, e) => {
     if (!track?.title) return say(s, m, '❌ That result has no track information.');
-    const found = await sources.findUpload(track, { video: kind === 'video' });
-    if (!found) return say(s, m, '❌ Could not find a public upload for that track.');
-    await react(s, m, '📥');
+    // A missing upload is no longer fatal: the ownMedia engine can search
+    // SoundCloud and the public YouTube endpoint itself using this metadata.
+    const found = await sources.findUpload(track, { video: kind === 'video' }).catch(() => null);
+    if (found) await react(s, m, '📥');
 
     let lyricsText = '';
     let cover = null;
@@ -86,12 +88,13 @@ async function deliverMusic(sock, msg, extra, opts = {}) {
       lyricsText = foundLyrics?.plain || '';
       cover = foundCover;
     }
-    return send(s, m, e, found.url, {
+    return send(s, m, e, found?.url || '', {
       title: track.title,
       author: (track.artists || []).join(', '),
       album: track.album || '',
       lyrics: lyricsText,
       cover,
+      track,
     });
   };
 
@@ -124,7 +127,7 @@ async function deliverMusic(sock, msg, extra, opts = {}) {
     if (resolved.type === 'direct') {
       const track = resolved.track || sources.resultToTrack(item);
       return send(s, m, e, resolved.url, {
-        title: track.title, author: (track.artists || []).join(', '),
+        title: track.title, author: (track.artists || []).join(', '), track,
       });
     }
     if (resolved.type === 'collection') return deliverCollection(resolved.collection, s, m, e);

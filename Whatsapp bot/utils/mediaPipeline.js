@@ -1,17 +1,16 @@
 /**
  * ZaFar Bot — generic media pipeline
  *
- * One implementation of "download a link and send it to WhatsApp", shared by
- * `.dl`, `.tiktok`, `.x`, `.instagram`, `.fb` and `.spotify`. Everything the YouTube
- * commands learned applies here too:
+ * YouTube / SoundCloud / YouTube Music links are handled by the standalone
+ * `utils/ownMedia/` engine (direct public player API → plain HTTPS stream →
+ * ffmpeg → send). The old yt-dlp → youtubei.js/Innertube → Hector → yt1d →
+ * cobalt chain is no longer reachable for those links: on the current host
+ * every one of those bricks fails (NO_YTDLP, NO_PROVIDERS, login-required,
+ * ENOTFOUND), which is why `.mfind` could list results but never download.
  *
- *   engine 1 — yt-dlp (site-aware, cookie/proxy aware, streaming to disk)
- *   engine 2 — local Innertube fallback for YouTube URLs
- *   engine 3 — existing remote providers when the earlier engines cannot do it
- *   then     — sniff the real container and send it the way WhatsApp can play it
- *
- * Supported inputs: any URL yt-dlp understands (~1000 sites) plus whatever the
- * remote providers cover. Images are sent as images.
+ * Everything below `downloadAndSend` is the legacy path, kept only for
+ * non-YouTube shortcuts and direct file links. `parseOptions`, `QUALITIES`
+ * and the size constants stay exported for those commands and their tests.
  */
 
 const fs = require('fs');
@@ -29,6 +28,7 @@ const {
 } = require('./mediaTransfer');
 const { getTempDir, deleteTempFile, holdTemp } = require('./tempManager');
 const diskSpace = require('./diskSpace');
+const ownMedia = require('./ownMedia/engine');
 
 const MAX_VIDEO_MB = Number(config.video?.maxMB) || 2000;
 const MAX_AUDIO_MB = Number(config.song?.maxMB) || 120;
@@ -88,10 +88,23 @@ async function downloadDirect(url, dest, maxMB, onProgress) {
 async function downloadAndSend(sock, msg, extra, {
   url, kind = 'video', height = 720, title = '', author = '', attempts = [],
   lane = null, stripCaption = false, album = '', lyrics = '', cover = null, sendAs = '',
+  track = null,
 } = {}) {
   const chatId = extra?.from || msg.key.remoteJid;
   const say = (text) => sock.sendMessage(chatId, { text }, { quoted: msg });
   const react = (emoji) => sock.sendMessage(chatId, { react: { text: emoji, key: msg.key } }).catch(() => {});
+
+  // Music links go straight to the standalone engine whenever the host has no
+  // working yt-dlp binary (the state reported in the failing host log), or
+  // when there is no URL at all and the engine must search by track metadata.
+  // Hosts with a healthy yt-dlp keep their original path; tests of that legacy
+  // path install a fake binary, so they stay valid too.
+  const hasUrl = Boolean(String(url || '').trim());
+  if (ownMedia.shouldHandle(url, kind, track) && (!hasUrl || !YT.resolveCommand())) {
+    return ownMedia.deliverMedia(sock, msg, extra, {
+      url, kind, height, title, author, album, lyrics, cover, sendAs, lane, track,
+    });
+  }
 
   if (lane) {
     return jobQueue.runInLane(lane, () => downloadAndSend(sock, msg, extra, {
