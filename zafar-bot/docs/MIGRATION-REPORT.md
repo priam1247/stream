@@ -90,7 +90,7 @@ passes. Read section 6 before trusting any ✅ below.
 | `.providers` | `commands/providers` | 12 providers, admin-only, static |
 | `.song` | `commands/song` | one provider |
 | `.video` | `commands/video` | one provider, 480p |
-| `.ig` | `commands/ig` | one scraper |
+| `.instagram` (alias `.ig`) | `commands/ig` | one scraper; **name and alias swapped** — see §6 item 13 |
 | `.fb` | `commands/fb` | one provider, own resolver copy |
 | `.movie` | `commands/movie` | own engine copy |
 | `.series` | `commands/series` | own engine copy |
@@ -103,7 +103,16 @@ passes. Read section 6 before trusting any ✅ below.
 | `.embed` | wrote an embed into the old engine's shared memory. No equivalent in an isolated design. |
 | `.mdiag`, `.mfind` | engine diagnostics over the shared engine. Superseded by `.check-all` and each command's `check.js`. |
 | `.dramabox` | dead in the old bot — no reachable provider, no working code path. |
-| `.tiktok`, `.x`, `.reddit`, `.spotify`, `.instagram` | each relied on a provider chain that no longer resolves. `.instagram`'s one surviving path is `.ig`. Listed as an open question, not silently dropped. |
+| `.tiktok`, `.x`, `.reddit`, `.spotify` | each relied on a provider chain that no longer resolves. Listed as an open question, not silently dropped. |
+
+**Correction (added after review):** this table previously listed `.instagram`
+here. That was wrong. `.instagram` was never a separate command — it was the
+`name` of the Instagram downloader and `.ig` was its first alias, declared on the
+same object in `commands/media/shortcuts.js:215`. It **is** migrated: the folder
+is `commands/ig/` and the command has `name: "ig"` with `instagram` kept as an
+alias. `.instagram` still works. The one real difference is that `.instagram` is
+now the alias rather than the canonical name, so it appears as `_also: .instagram_`
+in `.menu` instead of being the headline. See §6 item 13.
 | `.ytdl`, `.ytlogin`, `.cookies` | YouTube login/cookie management for a downloader that the old bot never actually shipped. |
 | `.restart` | replaced by `.botmanage restart` (pm2 owns the process now). |
 
@@ -137,7 +146,7 @@ first path's own error.**
 |---|---|---|
 | `.song` | ApisSupreme → KnightBot → yt-dlp → … | ApisSupreme `/media/ytmp3` only |
 | `.video` | several providers, several qualities | KnightBot 480p only |
-| `.ig` | 3 scrapers in sequence | `ruhend-scraper` only |
+| `.instagram` / `.ig` | 3 scrapers in sequence | `ruhend-scraper` only |
 | `.fb` | 2 providers + scraping | ApisSupreme `/media/facebook` only |
 | `.movie` / `.series` | quality ladder, `QUALITY_FALLBACK`, retry with `exclude` | one `resolve*()` call; `QUALITY_FALLBACK=0`; `exclude` unused |
 | `.sticker` | packaged ffmpeg → system `ffmpeg` → `ffprobe` | packaged binary only; `FFMPEG_MISSING` |
@@ -347,6 +356,15 @@ Preserved unless listed here.
     users files.** The old hardcoded numbers are gone.
 12. **One pm2 instance only.** Sessions, the breaker and per-number files are
     in-process state.
+13. **`.instagram` is now an alias, not the canonical name.** The old bot
+    declared `name: 'instagram'` with `aliases: ['ig', 'insta', 'igdl', 'reels']`;
+    the new folder is `commands/ig/` with `name: 'ig'` and `instagram` as an
+    alias. Both triggers work, and every alias is preserved. The visible
+    difference is presentation: `.menu` lists `.ig` as the headline with
+    `_also: .instagram, .insta, .igdl, .reels_`, whereas the old menu listed
+    `.instagram` with the others beneath it. If `.instagram` should stay the
+    primary name, rename the folder and swap the two fields in `command.json` —
+    it is a two-line change and nothing else depends on it.
 
 ---
 
@@ -378,6 +396,38 @@ provider SDKs for the commands that were not migrated (`.dramabox`, `.tiktok`,
 **Dev:** none. The tests use `node:test` and `node:assert` — no framework was
 added.
 
+### `overrides`
+
+```json
+{ "minimatch": "^3.1.5" }
+```
+
+This was present in the old `package.json` as `{"redstar": {"minimatch": "^3.1.5"}}`
+and was **accidentally dropped in the rebuild** — a real regression introduced
+here, caught during review and restored. Without it, `yt-search` → `node-fzf` →
+`redstar` resolves `minimatch@3.0.8` and `npm audit` reports 9 high-severity
+advisories; with it, 4 high and 5 moderate, which is exactly the old bot's
+posture. The override is left in place rather than replaced with a major-version
+bump, because forcing `minimatch@10` would change glob semantics under a
+transitive dependency that no test covers.
+
+### Known advisories (unchanged from the old bot)
+
+`npm audit --omit=dev`: **4 high, 5 moderate, 0 critical** — identical to the old
+tree, verified by running the audit in both.
+
+| package | advisory | reachable? |
+|---|---|---|
+| `minimatch` (via `yt-search`→`node-fzf`→`redstar`) | ReDoS (4 advisories) | pattern comes from library code, not from a user's input; not demonstrated reachable |
+| `ip` (via `bittorrent-tracker`→`torrent-discovery`→`webtorrent`) | SSRF (1 advisory) | only if the optional torrent engine is installed **and** a torrent path is used; `webtorrent` is an optional dependency and is **absent by default** |
+| `webtorrent` subtree | inherits the above | not installed unless the operator adds it |
+
+`webtorrent` is declared `optionalDependencies`, so a normal `npm install` leaves
+it out and `import('webtorrent')` fails with `ERR_MODULE_NOT_FOUND` — by design,
+the movie/series torrent path then reports `NO_TORRENT_ENGINE` loudly instead of
+booting with a broken native module. **Operators who install `webtorrent` to
+enable torrents inherit the `ip` SSRF advisory.**
+
 ---
 
 ## 8. Isolation, restated with evidence
@@ -405,10 +455,10 @@ The brief's hard requirements, and where each is proven:
 Answered by the safest assumption in code where an answer was needed. None of
 these block running the bot.
 
-1. **Six old media commands were not migrated** (`.dramabox`, `.tiktok`, `.x`,
-   `.reddit`, `.spotify`, `.instagram`). Should they be rebuilt against a current
-   provider, or formally dropped? *Assumption: dropped, and `.ig` covers the
-   Instagram case.*
+1. **Five old media commands were not migrated** (`.dramabox`, `.tiktok`, `.x`,
+   `.reddit`, `.spotify`). Should they be rebuilt against a current provider, or
+   formally dropped? *Assumption: dropped.* (`.instagram` is **not** on this
+   list — it was an alias of `.ig` and is migrated; see §2.)
 2. **The self-bot gate.** `fromMe === true` means the actor is always the linked
    number. Is that intended, or should the bot answer other people in groups?
    *Assumption: preserved as the old bot did.*

@@ -29,5 +29,8 @@
   },
   "optionalDependencies": {
     "webtorrent": "^3.0.21"
+  },
+  "overrides": {
+    "minimatch": "^3.1.5"
   }
 }
