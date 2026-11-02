@@ -198,10 +198,10 @@ async function audioToMp3(input, output = path.join(getTempDir(), `mp3_${Date.no
  *
  * @returns {Promise<string|null>} tagged copy, or null when nothing was done
  */
-async function tagMp3(input, output, { title = '', artist = '', album = '' } = {}) {
+async function tagMp3(input, output, { title = '', artist = '', album = '', lyrics = '', cover = null } = {}) {
   try {
     if (!input || !fs.existsSync(input)) return null;
-    if (!title && !artist) return null;
+    if (!title && !artist && !album && !lyrics && !cover) return null;
 
     // A UTF-16LE string with BOM is what ID3v2.3 specifies for encoding 0x01.
     const frame = (id, value) => {
@@ -214,11 +214,37 @@ async function tagMp3(input, output, { title = '', artist = '', album = '' } = {
       return Buffer.concat([head, body]);
     };
 
+    // USLT/APIC text fields follow the v2.3 header: encoding 0x01 = UTF-16LE
+    // with BOM, and empty descriptors are terminated by two null bytes.
+    const binaryFrame = (id, body) => {
+      const head = Buffer.alloc(10);
+      head.write(id, 0, 4, 'ascii');
+      head.writeUInt32BE(body.length, 4);
+      return Buffer.concat([head, body]);
+    };
+
     const frames = [
       frame('TIT2', title),
       frame('TPE1', artist),
       frame('TALB', album),
     ].filter(Boolean);
+    if (lyrics) {
+      frames.push(binaryFrame('USLT', Buffer.concat([
+        Buffer.from([0x01]), Buffer.from('eng', 'ascii'), Buffer.from([0x00, 0x00]),
+        Buffer.from(`\uFEFF${String(lyrics).trim()}`, 'utf16le'),
+      ])));
+    }
+    if (Buffer.isBuffer(cover) && cover.length > 16) {
+      const jpeg = cover[0] === 0xff && cover[1] === 0xd8;
+      const png = cover[0] === 0x89 && cover.toString('ascii', 1, 4) === 'PNG';
+      if (jpeg || png) {
+        const mime = png ? 'image/png' : 'image/jpeg';
+        frames.push(binaryFrame('APIC', Buffer.concat([
+          Buffer.from([0x01]), Buffer.from(`${mime}\0`, 'ascii'),
+          Buffer.from([0x03]), Buffer.from([0x00, 0x00]), cover,
+        ])));
+      }
+    }
     if (!frames.length) return null;
     const body = Buffer.concat(frames);
 

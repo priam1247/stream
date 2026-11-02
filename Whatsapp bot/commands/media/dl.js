@@ -1,4 +1,5 @@
 const YT = require('../../utils/youtubedl');
+const musicSources = require('../../utils/musicSources/deliver');
 const { downloadAndSend, parseOptions } = require('../../utils/mediaPipeline');
 
 module.exports = {
@@ -17,6 +18,15 @@ module.exports = {
 
     if (!url) {
       return say('Usage: .dl <link> [audio|video] [quality]');
+    }
+
+    // Music catalog links are metadata, not playable files. Resolve them to a
+    // public upload first instead of handing the service URL to yt-dlp.
+    if (kind !== 'image' && musicSources.isMusicInput(url)) {
+      return musicSources.deliverMusic(sock, msg, extra, {
+        input: url, kind: kind === 'audio' ? 'audio' : 'video', height,
+        maxResults: 5,
+      });
     }
 
     const attempts = [];

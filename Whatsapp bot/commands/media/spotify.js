@@ -1,5 +1,6 @@
 const config = require('../../config');
 const spotify = require('../../utils/spotify');
+const musicSources = require('../../utils/musicSources/index');
 const YT = require('../../utils/youtubedl');
 const youtubeSearch = require('../../utils/youtubeSearch');
 const { downloadAndSend } = require('../../utils/mediaPipeline');
@@ -26,13 +27,18 @@ module.exports = {
       const track = await spotify.resolveTrack(input);
       const shown = track.artists ? `${track.artists} — ${track.title}` : track.title;
 
-      const results = await youtubeSearch.searchYouTube(track.searchQuery, { limit: 3 });
+      // Keyless embed metadata carries a real duration: use it to reject live
+      // versions and hour-long mixes. Bare title queries keep the old top hit.
+      const hasDuration = Boolean(track.durationMs);
+      const results = await youtubeSearch.searchYouTube(track.searchQuery, { limit: hasDuration ? 8 : 3 });
       if (!results.length) {
         await react('❌');
         return update(`❌ Not found: *${shown}*`);
       }
 
-      const best = results[0];
+      const best = hasDuration
+        ? (musicSources.pickBest(results, track.durationMs) || results[0])
+        : results[0];
       await update(`🎧 *${shown}*`);
 
       return downloadAndSend(sock, msg, extra, {

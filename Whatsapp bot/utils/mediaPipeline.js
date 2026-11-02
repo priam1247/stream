@@ -87,7 +87,7 @@ async function downloadDirect(url, dest, maxMB, onProgress) {
  */
 async function downloadAndSend(sock, msg, extra, {
   url, kind = 'video', height = 720, title = '', author = '', attempts = [],
-  lane = null, stripCaption = false,
+  lane = null, stripCaption = false, album = '', lyrics = '', cover = null, sendAs = '',
 } = {}) {
   const chatId = extra?.from || msg.key.remoteJid;
   const say = (text) => sock.sendMessage(chatId, { text }, { quoted: msg });
@@ -96,6 +96,7 @@ async function downloadAndSend(sock, msg, extra, {
   if (lane) {
     return jobQueue.runInLane(lane, () => downloadAndSend(sock, msg, extra, {
       url, kind, height, title, author, attempts, stripCaption,
+      album, lyrics, cover, sendAs,
     }));
   }
   // Facebook descriptions can contain the post caption and engagement text.
@@ -291,7 +292,9 @@ async function downloadAndSend(sock, msg, extra, {
         if (mp3) { files.push(mp3); finalFile = mp3; ext = 'mp3'; mime = 'audio/mpeg'; }
       }
       if (ext === 'mp3') {
-        const tagged = await tagMp3(finalFile, `${outBase}_tagged.mp3`, { title: safeName(title, ''), artist: author });
+        const tagged = await tagMp3(finalFile, `${outBase}_tagged.mp3`, {
+          title: safeName(title, ''), artist: author, album, lyrics, cover,
+        });
         if (tagged) { files.push(tagged); finalFile = tagged; }
       }
 
@@ -302,7 +305,7 @@ async function downloadAndSend(sock, msg, extra, {
       const fileName = `${name}.${ext}`;
       const caption = `🎵 *${name}*${author ? `\n👤 ${author}` : ''}\n📦 ${fmtMB(size)}${viaText}`;
 
-      if (String(config.song?.sendAs || 'document').toLowerCase() === 'audio') {
+      if (String(sendAs || config.song?.sendAs || 'document').toLowerCase() === 'audio') {
         await sock.sendMessage(chatId, { audio: { url: finalFile }, mimetype: mime, ptt: false, fileName }, { quoted: msg });
       } else {
         await sock.sendMessage(chatId, { document: { url: finalFile }, mimetype: mime, fileName, ...(!stripCaption ? { caption } : {}) }, { quoted: msg });

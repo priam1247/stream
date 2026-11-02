@@ -24,6 +24,14 @@ export const BOT_COMMANDS: CommandEntry[] = [
     summary: 'Music MP3',
   },
   {
+    name: 'mfind',
+    aliases: ['findmusic', 'msearch'],
+    category: 'media',
+    usage: '.mfind <name|link> [--audio|--video] [720] [--first]',
+    example: '.mfind Alan Walker Faded --video',
+    summary: 'Keyless music search → MP3 or music video',
+  },
+  {
     name: 'ytv',
     aliases: ['ytvideo', 'ytmp4', 'video'],
     category: 'media',

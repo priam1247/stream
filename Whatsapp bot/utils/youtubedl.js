@@ -999,9 +999,15 @@ async function probeRaw(url, { timeout = 60000, client = null } = {}) {
  * scraping blocks that break yt-search on hosting IPs).
  * @returns {Promise<Array<{id,title,duration,uploader,thumbnail}>>}
  */
-async function searchVideos(query, { limit = 5, timeout = 60000 } = {}) {
+async function searchVideos(query, { limit = 5, timeout = 60000, prefix = 'ytsearch' } = {}) {
   const caps = capabilities();
   const n = Math.max(1, Math.min(20, Number(limit) || 5));
+  // `scsearch` rows are SoundCloud tracks, so their real page URL is needed
+  // instead of synthesising a YouTube watch link from a numeric id.
+  const searchPrefix = prefix === 'scsearch' ? 'scsearch' : 'ytsearch';
+  const printTemplate = searchPrefix === 'scsearch'
+    ? '%(id)s\t%(title)s\t%(duration)s\t%(uploader)s\t%(thumbnail)s\t%(webpage_url)s'
+    : '%(id)s\t%(title)s\t%(duration)s\t%(uploader)s\t%(thumbnail)s';
   const buildSearchArgs = (noProxy = false) => {
     const args = [
       // --no-playlist would collapse a search into a single entry
@@ -1010,7 +1016,7 @@ async function searchVideos(query, { limit = 5, timeout = 60000 } = {}) {
       '--skip-download',
     ];
     if (caps.noCheckFormats) args.push('--no-check-formats');
-    args.push('--print', '%(id)s\t%(title)s\t%(duration)s\t%(uploader)s\t%(thumbnail)s', `ytsearch${n}:${query}`);
+    args.push('--print', printTemplate, `${searchPrefix}${n}:${query}`);
     return args;
   };
 
@@ -1029,11 +1035,14 @@ async function searchVideos(query, { limit = 5, timeout = 60000 } = {}) {
     .split('\n')
     .map(line => line.split('\t'))
     .filter(parts => parts[0] && parts[0] !== 'NA')
-    .map(([id, title, duration, uploader, thumbnail]) => {
+    .map(([id, title, duration, uploader, thumbnail, webpageUrl]) => {
       const videoId = id.trim();
+      const page = String(webpageUrl || '').trim();
       return {
         id: videoId,
-        url: `https://www.youtube.com/watch?v=${videoId}`,
+        url: searchPrefix === 'scsearch' && /^https?:\/\//i.test(page)
+          ? page
+          : `https://www.youtube.com/watch?v=${videoId}`,
         title: (title || '').trim(),
         duration: Number(duration) || 0,
         uploader: (uploader || '').trim(),

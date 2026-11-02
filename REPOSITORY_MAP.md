@@ -75,6 +75,8 @@ engine/media/index.js → metadata, registry, resolver, providers, downloaders
 
 The bot is CommonJS. The nested `engine/package.json` switches that subtree to ES modules; the bridge uses dynamic `import()`. The engine entry point statically registers its selected stream and torrent providers. The three files in `engine/providers/ddl/` register themselves if loaded, but are not imported by the current `engine/media/index.js`; their presence alone does not mean they are active.
 
+`.song`, `.ytv`, `.dl`, `.spotify` and `.mfind` recognise Deezer, Apple Music, Spotify, SoundCloud and YouTube Music links through `utils/musicSources/` (public JSON APIs and the Spotify embed page; no accounts, keys or DRM decryption), merge multi-catalog searches, match a catalog track to a public upload by duration, and hand the chosen URL to `utils/mediaPipeline.js`. Keyless lyrics and cover art are added to ID3 tags. The approach follows amiralibg/unstream (MIT) for metadata/duration matching and the public lyrics constants from sonorahq/sonora.
+
 Media shortcuts and `.dl` use `utils/mediaPipeline.js` → the keyless YouTube provider where applicable, installed local engines, and remote fallbacks. `.reddit` searches titles through `utils/providerSearch.js` using Reddit or site-filtered indexes, then `utils/selections.js` presents session-scoped choices. Searches start immediately through `utils/jobQueue.js`; direct links remain available through `.dl`. Search results are discovery hints, not verified downloads. `dashboard/lib/bot-data.ts` catalogs canonical commands; member switches apply to commands, not website-wide blocking.
 
 ## Dashboard
@@ -647,6 +649,18 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── memberTelemetry.js
 │   │   ├── movieEngine.js
 │   │   ├── movieHost.js
+│   │   ├── musicSources/
+│   │   │   ├── constants.js
+│   │   │   ├── deezer.js
+│   │   │   ├── deliver.js
+│   │   │   ├── http.js
+│   │   │   ├── index.js
+│   │   │   ├── itunes.js
+│   │   │   ├── lyrics.js
+│   │   │   ├── model.js
+│   │   │   ├── soundcloud.js
+│   │   │   ├── spotifyEmbed.js
+│   │   │   └── youtubeMusic.js
 │   │   ├── nm3u8dl.js
 │   │   ├── paperSearch.js
 │   │   ├── persistentJobs.js

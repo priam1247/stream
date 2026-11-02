@@ -14,8 +14,9 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .paper <course-code> [module] [year]   Search & send past papers (capped per query, 3-day dedupe)
 .paper browse [letter|code] [page]     Paginated course/module directory
 .countpapers [course-code]             Count papers in the vault
-.song <name-or-YouTube-link>           Download YouTube audio
-.ytv <name-or-YouTube-link> [quality]  Download YouTube MP4 with silent-audio verification
+.song <name-or-music-link>             Download audio (YouTube or keyless music sources)
+.mfind <name|music-link> [--video] [720]  Search every keyless catalog or resolve a music link
+.ytv <name-or-music-link> [quality]    Download a music video / MP4 (audio verified)
 .dl <URL> [audio|video] [quality]      Generic yt-dlp downloader (streamed to disk)
 .tiktok <URL>  .x <URL>  .instagram <URL>  .fb <URL>
 .reddit <title>                        Search Reddit videos by title
@@ -41,6 +42,52 @@ the host and the video. `.ytdl test <video link>` checks metadata or URL
 resolution only; `.song` or `.ytv` performs an actual download. Download only
 content you have permission to use.
 
+### Music sources (keyless)
+
+`.song`, `.ytv`, `.dl`, `.spotify` and `.mfind` accept **track, album and
+playlist links** from Spotify, Deezer, Apple Music, SoundCloud and YouTube
+Music, and `.mfind <words>` searches several catalogs at once:
+
+| Source | What it provides | Credentials |
+| --- | --- | --- |
+| Deezer public API | search, tracks, albums, artists, playlists | none |
+| iTunes Search / Lookup | Apple Music search, albums and songs | none |
+| Spotify embed page | track / album / playlist metadata (first 100 rows, longer playlists best effort) | none |
+| SoundCloud web API | search and link metadata (public client id) | none |
+| LRCLIB / Netease / Kugou | plain + synced lyrics for ID3 tags | none |
+| YouTube / SoundCloud via yt-dlp | the actual audio or music video | none |
+
+A pasted link is resolved to `artist - title` plus its real duration, then the
+bot picks the public upload whose duration is within 20 seconds of the catalog
+value — that rejects live versions and hour-long mixes. The existing
+`utils/mediaPipeline.js` downloads, verifies, tags (title, artist, album,
+lyrics, cover art) and sends it. `--video` (or `.ytv`) sends the same upload as
+an MP4 instead of an MP3. Albums and playlists show the usual numbered picker,
+capped at ten tracks.
+
+No accounts, API keys, ARL cookies, bearer tokens or Widevine CDM are needed
+and none are stored in the repository. Streaming services are DRM-protected,
+so nothing is downloaded from them directly: **no DRM is circumvented**. The
+background download-job router (`utils/providerRouter.js`) still refuses
+`music.apple.com` and the other DRM hosts for the same reason; the music
+commands resolve those links to a public upload *before* any download is
+queued. `.spotify` keeps its single-track flow but now takes album, cover and
+duration from the embed page. The
+keyless metadata approach and duration matching follow
+[amiralibg/unstream](https://github.com/amiralibg/unstream) (MIT); the keyless
+lyrics constants come from [sonorahq/sonora](https://github.com/sonorahq/sonora).
+Those projects are not affiliated with the services named above. Only download
+content you have the rights to.
+
+`.mfind` defaults to MP3. Use `.mfind <name|link> --video [720]` (or
+`--quality 720`) for a music video, `--first` / a leading `!` to skip the picker,
+and `--audio` to force MP3. `.song`, `.ytv`, `.dl` and `.spotify` keep their own
+quality and send-mode options.
+
+Optional tuning (all have hard-coded defaults, no secrets):
+`MUSIC_REQUEST_TIMEOUT_MS`, `MUSIC_SEARCH_TIMEOUT_MS`, `MUSIC_TAG_TIMEOUT_MS`
+and `MUSIC_MAX_DURATION_DRIFT`.
+
 ## Background link jobs
 
 Bare links are ignored; use a prefixed command such as `.dl <URL>`. Previously queued bare-link jobs in `database/jobs.sqlite` are preserved but no longer run or send replies automatically.
@@ -52,7 +99,9 @@ RCLONE_REMOTE=gdrive       remote name from secrets/rclone.conf
 RCLONE_PATH=bot/uploads    folder inside that remote
 ```
 
-DRM-protected services are not supported.
+DRM-protected streams are not decrypted or delivered. Music-service links are
+used for metadata only (see "Music sources" above); the actual audio or video
+comes from public YouTube / SoundCloud pages.
 
 Owner/admin commands (hidden from non-owners in `.menu` and error hints):
 `.status` (alias `.update`), `.restart`, `.on`, `.off`, `.allow`, `.disallow`, `.listusers`, `.cookies`, `.ytlogin`, `.ytdl` (`status` | `update` | `repair` | `proxy` | `test`), and `.refreshpapers`.

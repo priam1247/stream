@@ -22,6 +22,7 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
         [`${p}movie <title> [year]`, 'movie'],
         [`${p}series <title> s01e01`, 'series'],
         [`${p}song <name|url>`, 'MP3'],
+        [`${p}mfind <name|link>`, 'music search'],
         [`${p}ytv <name|url> [720]`, 'MP4'],
         [`${p}dl <url>`, 'any URL'],
         [`${p}tiktok ${p}x`, 'social'],
