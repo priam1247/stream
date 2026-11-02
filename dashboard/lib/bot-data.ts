@@ -40,6 +40,14 @@ export const BOT_COMMANDS: CommandEntry[] = [
     summary: 'Resolve an embed/player link to its canonical URL (or deliver its audio/video)',
   },
   {
+    name: 'mdiag',
+    aliases: ['mediadiag', 'ownmedia'],
+    category: 'media',
+    usage: '.mdiag [search phrase]',
+    example: '.mdiag namadingo tuli',
+    summary: 'Test every brick of the standalone music/media downloader on this host',
+  },
+  {
     name: 'ytv',
     aliases: ['ytvideo', 'ytmp4', 'video'],
     category: 'media',

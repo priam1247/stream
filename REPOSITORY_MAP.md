@@ -1,6 +1,6 @@
 # Complete repository map
 
-This map covers **386 Git-tracked repository files** in the current single-Botkeep snapshot (the untracked `reference/sveltekit-embed/` source snapshot is excluded). The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
+This map covers **395 Git-tracked repository files** in the current single-Botkeep snapshot (the untracked `reference/sveltekit-embed/` source snapshot is excluded). The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
 
 ## Contents
 
@@ -77,7 +77,9 @@ The bot is CommonJS. The nested `engine/package.json` switches that subtree to E
 
 `.song`, `.ytv`, `.dl`, `.spotify`, `.mfind` and `.embed` recognise Deezer, Apple Music, Spotify, SoundCloud and YouTube Music links (plus their share-sheet embed/player forms) through `utils/musicSources/` (public JSON APIs and the Spotify embed page; no accounts, keys or DRM decryption), merge multi-catalog searches, match a catalog track to a public upload by duration, and hand the chosen URL to `utils/mediaPipeline.js`. Keyless lyrics and cover art are added to ID3 tags. `utils/musicSources/embeds.js` holds the 21 public embed URL shapes from spences10/sveltekit-embed (MIT) and normalises player URLs to canonical links before resolution; the same project's lazy-load, aspect-ratio and fuzzy-search patterns are ported to `dashboard/lib/embed-utils.ts`, `dashboard/components/lazy-embed.tsx`, `dashboard/components/command-directory.tsx` and `utils/musicSources/model.js`. The untracked `reference/sveltekit-embed/` snapshot documents the source. The approach follows amiralibg/unstream (MIT) for metadata/duration matching and the public lyrics constants from sonorahq/sonora.
 
-Media shortcuts and `.dl` use `utils/mediaPipeline.js` → the keyless YouTube provider where applicable, installed local engines, and remote fallbacks. `.reddit` searches titles through `utils/providerSearch.js` using Reddit or site-filtered indexes, then `utils/selections.js` presents session-scoped choices. Searches start immediately through `utils/jobQueue.js`; direct links remain available through `.dl`. Search results are discovery hints, not verified downloads. `dashboard/lib/bot-data.ts` catalogs canonical commands; member switches apply to commands, not website-wide blocking.
+Music downloads now go through the standalone `utils/ownMedia/` engine brick by brick: `constants.js` (public endpoints/clients), `http.js` (allowlisted HTTPS + streamed downloader), `clients.js` (direct public YouTube player/search with client rotation), `formats.js` (stream selection), `soundcloud.js` (independent public MP3 fallback), `convert.js` (shipped ffmpeg) and `engine.js` (resolve → download → convert → tag → send). `utils/mediaPipeline.js` delegates YouTube / YouTube Music / SoundCloud URLs to it when the host has no working yt-dlp binary, so the old Hector → yt-dlp → youtubei.js/Innertube → yt1d → cobalt chain is no longer reachable for music. `.mdiag` tests each brick on the host; `utils/ownMedia/` uses no keys, no accounts, no remote resolver services and no DRM decryption.
+
+Media shortcuts and `.dl` use `utils/mediaPipeline.js` → the standalone engine for music, the keyless YouTube provider where applicable, installed local engines, and remote fallbacks for other sites. `.reddit` searches titles through `utils/providerSearch.js` using Reddit or site-filtered indexes, then `utils/selections.js` presents session-scoped choices. Searches start immediately through `utils/jobQueue.js`; direct links remain available through `.dl`. Search results are discovery hints, not verified downloads. `dashboard/lib/bot-data.ts` catalogs canonical commands; member switches apply to commands, not website-wide blocking.
 
 ## Dashboard
 
@@ -533,6 +535,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   └── media/
 │   │       ├── dl.js
 │   │       ├── embed.js
+│   │       ├── mdiag.js
 │   │       ├── mfind.js
 │   │       ├── movie.js
 │   │       ├── series.js
@@ -618,6 +621,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── test-member-telemetry.js
 │   │   ├── test-music-sources.js
 │   │   ├── test-nm3u8dl-live.js
+│   │   ├── test-own-media.js
 │   │   ├── test-preflight.js
 │   │   ├── test-provider-core.js
 │   │   ├── test-provider-search-handler.js
@@ -670,6 +674,14 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   │   ├── spotifyEmbed.js
 │   │   │   └── youtubeMusic.js
 │   │   ├── nm3u8dl.js
+│   │   ├── ownMedia/
+│   │   │   ├── clients.js
+│   │   │   ├── constants.js
+│   │   │   ├── convert.js
+│   │   │   ├── engine.js
+│   │   │   ├── formats.js
+│   │   │   ├── http.js
+│   │   │   └── soundcloud.js
 │   │   ├── paperSearch.js
 │   │   ├── persistentJobs.js
 │   │   ├── providerRouter.js

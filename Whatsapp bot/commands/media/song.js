@@ -24,6 +24,7 @@ const settings = require('../../utils/mediaSettings');
 const providers = require('../../utils/downloadProviders');
 const youtubeSearch = require('../../utils/youtubeSearch');
 const musicSources = require('../../utils/musicSources/deliver');
+const mediaPipeline = require('../../utils/mediaPipeline');
 const selections = require('../../utils/selections');
 const jobQueue = require('../../utils/jobQueue');
 const {
@@ -164,6 +165,18 @@ const execute = async (sock, msg, args, extra) => {
       const durationText = duration ? ` (${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, '0')})` : '';
       if (duration && duration > MAX_AUDIO_SECONDS) {
         return reply(`❌ That track is ${Math.round(duration / 60)} min — the limit is ${Math.round(MAX_AUDIO_SECONDS / 60)} min.`);
+      }
+
+      // Hosts without a working yt-dlp binary use the standalone ownMedia
+      // engine instead of the legacy Hector → yt-dlp → Innertube → remote
+      // chain. The search/picker above is unchanged; only the downloader is
+      // swapped. Hosts that do have yt-dlp keep their original path.
+      if (!YT.version()) {
+        return mediaPipeline.downloadAndSend(sock, msg, extra, {
+          url, kind: 'audio', sendAs, lane: 'light',
+          title: title || '', author: artist || '',
+          track: { title: title || '', artists: artist ? [artist] : [], durationMs: duration * 1000 || 0 },
+        });
       }
 
       return await jobQueue.runInLane('light', async () => {

@@ -17,8 +17,9 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .song <name-or-music-link>             Download audio (YouTube or keyless music sources)
 .mfind <name|music-link> [--video] [720]  Search every keyless catalog or resolve a music link
 .embed <link> [--audio|--video] [720]  Resolve an embed/player link to its canonical URL
+.mdiag [search phrase]                 Test every brick of the standalone downloader
 .ytv <name-or-music-link> [quality]    Download a music video / MP4 (audio verified)
-.dl <URL> [audio|video] [quality]      Generic yt-dlp downloader (streamed to disk)
+.dl <URL> [audio|video] [quality]      Download a link (music uses the standalone engine)
 .tiktok <URL>  .x <URL>  .instagram <URL>  .fb <URL>
 .reddit <title>                        Search Reddit videos by title
 .spotify <Spotify URL or artist - title>
@@ -37,11 +38,11 @@ Reddit's public search and, if necessary, site-filtered web indexes. Search
 results are discovery hints, not guaranteed downloads. To download a direct
 link, use `.dl <URL>`; the remaining social shortcuts also accept links.
 
-`.song` and `.ytv` try the keyless Hector provider first, followed by the
-installed local and other remote engines if needed. Availability depends on
-the host and the video. `.ytdl test <video link>` checks metadata or URL
-resolution only; `.song` or `.ytv` performs an actual download. Download only
-content you have permission to use.
+`.song`, `.ytv`, `.mfind`, `.embed`, `.spotify` and music links passed to `.dl`
+use the standalone `utils/ownMedia/` engine — see below. It does **not** need
+`yt-dlp`, `youtubei.js`, Hector, yt1d or cobalt. `.ytdl test <video link>`
+still checks metadata/URL resolution only; `.song` or `.ytv` performs an
+actual download. Download only content you have permission to use.
 
 ### Music sources (keyless)
 
@@ -56,12 +57,14 @@ Music, and `.mfind <words>` searches several catalogs at once:
 | Spotify embed page | track / album / playlist metadata (first 100 rows, longer playlists best effort) | none |
 | SoundCloud web API | search and link metadata (public client id) | none |
 | LRCLIB / Netease / Kugou | plain + synced lyrics for ID3 tags | none |
-| YouTube / SoundCloud via yt-dlp | the actual audio or music video | none |
+| YouTube public player API (`ownMedia`) | the actual audio or music video | none (optional `YT_PO_TOKEN` / `YT_VISITOR_DATA`) |
+| SoundCloud public web API (`ownMedia`) | independent MP3 fallback when YouTube is blocked | none |
 
 A pasted link is resolved to `artist - title` plus its real duration, then the
 bot picks the public upload whose duration is within 20 seconds of the catalog
-value — that rejects live versions and hour-long mixes. The existing
-`utils/mediaPipeline.js` downloads, verifies, tags (title, artist, album,
+value — that rejects live versions and hour-long mixes.
+`utils/musicSources/deliver.js` hands that URL to the standalone `ownMedia`
+engine, which downloads, converts, verifies, tags (title, artist, album,
 lyrics, cover art) and sends it. `--video` (or `.ytv`) sends the same upload as
 an MP4 instead of an MP3. Albums and playlists show the usual numbered picker,
 capped at ten tracks.
@@ -88,6 +91,41 @@ quality and send-mode options.
 Optional tuning (all have hard-coded defaults, no secrets):
 `MUSIC_REQUEST_TIMEOUT_MS`, `MUSIC_SEARCH_TIMEOUT_MS`, `MUSIC_TAG_TIMEOUT_MS`
 and `MUSIC_MAX_DURATION_DRIFT`.
+
+For the standalone engine: `OWN_MEDIA_TIMEOUT_MS`,
+`OWN_MEDIA_DOWNLOAD_TIMEOUT_MS`, `OWN_MEDIA_CLIENT_TIMEOUT_MS`,
+`OWN_MEDIA_FFMPEG_TIMEOUT_MS`, `OWN_MEDIA_MAX_AUDIO_MB`,
+`OWN_MEDIA_MAX_VIDEO_MB`, plus the optional `YT_PO_TOKEN` /
+`YT_VISITOR_DATA` described above. All are listed in `.env.example`; none are
+needed on most hosts.
+
+### Standalone media engine (`utils/ownMedia/`)
+
+The old chain (`yt-dlp` → `youtubei.js`/Innertube → Hector → yt1d → cobalt)
+failed on hosts with no `yt-dlp` binary and no reachable resolver APIs: search
+worked but every selected result returned `NO_YTDLP` / `NO_PROVIDERS` /
+`login required` / `ENOTFOUND`. Music links no longer enter that chain at all.
+`utils/mediaPipeline.js` delegates YouTube, YouTube Music, YouTube-nocookie and
+SoundCloud URLs to `utils/ownMedia/`, built brick by brick:
+
+| Brick | File | What it does |
+| --- | --- | --- |
+| 1 | `constants.js` | public endpoints, client matrix, limits, host allowlist |
+| 2 | `http.js` | allowlisted HTTPS with redirect re-checks, JSON/text, streamed size-limited downloads |
+| 3 | `clients.js` | direct public YouTube `/youtubei/v1/player` + `/results` search, client rotation, format normalisation |
+| 4 | `formats.js` | choose a progressive MP4, an audio-only stream, or a video+audio pair to mux |
+| 5 | `soundcloud.js` | scrape the public `client_id`, resolve/search tracks, follow `media.transcodings` to an MP3 |
+| 6 | `convert.js` | ffmpeg from the locked `@ffmpeg-installer/ffmpeg` (extract MP3, mux MP4, read HLS/DASH) |
+| 7 | `engine.js` | resolve → download → convert → tag/remux → send, with per-brick failure reasons |
+
+No external binary, npm package or remote API is required beyond the repo's
+existing dependencies. Ciphered formats are skipped rather than downloaded
+broken. Optional `YT_PO_TOKEN` / `YT_VISITOR_DATA` are read from the environment
+if a host needs them; they are **not** stored here. `.mdiag [query]` prints one
+line per brick — ffmpeg, HTTPS transport, client rotation, format selection,
+YouTube search, SoundCloud client id and SoundCloud search — so a broken host
+can be diagnosed in one message. A failed download also lists the bricks that
+were tried instead of just saying "could not download".
 
 ### Embed / player links
 

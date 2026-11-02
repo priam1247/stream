@@ -9,9 +9,10 @@
  *   .mfind <name|link> --first           skip the picker, take the best hit
  *
  * Deezer, iTunes, Spotify's embed page and SoundCloud's public API supply
- * metadata; the audio/video itself always comes from a public YouTube or
- * SoundCloud upload through utils/mediaPipeline.js. No keys, no accounts, no
- * protected streams.
+ * metadata; the audio/video itself comes from a public YouTube or SoundCloud
+ * upload through the standalone utils/ownMedia/ engine (direct player API →
+ * HTTPS stream → ffmpeg). No yt-dlp binary, no keys, no accounts, no remote
+ * resolver services, no protected streams.
  */
 
 const config = require('../../config');
