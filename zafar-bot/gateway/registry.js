@@ -88,7 +88,9 @@ function checkFiles(folderPath) {
   const index = path.join(folderPath, 'index.js');
   if (!fs.existsSync(index)) return ['index.js is missing'];
   if (!fs.existsSync(path.join(folderPath, 'check.js'))) return ['check.js is missing'];
-  if (!fs.existsSync(path.join(folderPath, 'NOTES.md'))) return ['NOTES.md is missing'];
+  // NOTES.md used to be required here. It was documentation nothing read, and the
+  // project has a hard file-count ceiling, so the requirement is gone. Any
+  // NOTES.md that still exists is simply ignored.
   return [];
 }
 

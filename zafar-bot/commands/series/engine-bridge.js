@@ -16,7 +16,11 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 
 const ROOT = path.join(__dirname, '..', '..');          // bot root
-const ENGINE = path.join(__dirname, 'engine');          // this command's copy
+// ONE copy of the engine, owned by commands/movie/. It was duplicated byte-for-byte
+// into commands/series/engine/ (54 files, identical). The copy was kept in sync by
+// hand, which is a guarantee of drift, not of isolation. The folder-count limit is
+// also real, and 108 identical files is the only honest place to take it from.
+const ENGINE = path.join(__dirname, '..', 'movie', 'engine');
 
 let enginePromise = null;
 let loaded = null;
