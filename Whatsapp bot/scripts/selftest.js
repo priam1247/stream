@@ -1520,7 +1520,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
   await test('a preferred provider wins the tie at the same quality', async () => {
     const { rank } = await import(pathToFileURL(path.join(REPO, 'engine/core/ranker.js')).href);
     const cands = [
-      { provider: 'vixsrc', kind: 'file', quality: 1080, title: 'A', sourceTag: 'WEBDL', sizeMB: 900 },
+      { provider: 'vidlink', kind: 'file', quality: 1080, title: 'A', sourceTag: 'WEBDL', sizeMB: 900 },
       { provider: 'moviebox', kind: 'file', quality: 1080, title: 'B', sourceTag: 'WEBRIP', sizeMB: 0 },
     ];
     const out = rank(cands, { want: 1080, year: 2020 });
@@ -1531,10 +1531,10 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     const { rank } = await import(pathToFileURL(path.join(REPO, 'engine/core/ranker.js')).href);
     const cands = [
       { provider: 'moviebox', kind: 'file', quality: 480, title: 'B', sourceTag: 'WEBRIP', sizeMB: 0 },
-      { provider: 'vixsrc', kind: 'hls', quality: 1080, title: 'A', sourceTag: 'WEBDL', sizeMB: 0 },
+      { provider: 'vidlink', kind: 'hls', quality: 1080, title: 'A', sourceTag: 'WEBDL', sizeMB: 0 },
     ];
     const out = rank(cands, { want: 1080, year: 2020 });
-    assert.strictEqual(out[0].provider, 'vixsrc', `ranked first: ${out.map(c => c.provider).join(', ')}`);
+    assert.strictEqual(out[0].provider, 'vidlink', `ranked first: ${out.map(c => c.provider).join(', ')}`);
   });
 
   console.log('\n── 18b. media log format ──');
@@ -1808,8 +1808,8 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     const { getTempDir, holdTemp } = require(path.join(REPO, 'utils/tempManager.js'));
     const dir = path.join(getTempDir(), 'movies', 'data');
     fs.mkdirSync(dir, { recursive: true });
-    const stamp = `fresh_${Date.now()}`;
-    const stale = path.join(dir, `stale_${Date.now()}.part`);
+    const stamp = `dl_${Date.now()}_fresh`;
+    const stale = path.join(dir, `dl_${Date.now()}_stale.part`);
     const fresh = path.join(dir, `${stamp}.part`);
     fs.writeFileSync(stale, Buffer.alloc(64, 1));
     fs.writeFileSync(fresh, Buffer.alloc(64, 1));
@@ -1874,12 +1874,9 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
 
   await test('resolveCandidate returns seeded magnets without debrid and rejects low-seed torrents', async () => {
     const { default: resolver } = await import(pathToFileURL(path.join(REPO, 'engine/core/resolver.js')).href);
-    const { default: debrid } = await import(pathToFileURL(path.join(REPO, 'engine/providers/debrid/index.js')).href);
     const { default: config } = await import(pathToFileURL(path.join(REPO, 'engine/config.js')).href);
     assert.strictEqual(config.torrentDirect, true, 'direct torrent downloads are disabled in this test');
-    const originalActive = debrid.active;
-    debrid.active = () => [];
-    try {
+    {
       const candidate = {
         kind: 'torrent', provider: 'knaben', title: 'Sintel', seeds: config.torrentMinSeeds,
         magnet: 'magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10', fileIdx: 2, sizeMB: 100,
@@ -1896,8 +1893,6 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
         () => resolver.resolveCandidate({ ...candidate, seeds: config.torrentMinSeeds - 1 }, {}),
         /not enough torrent seeds/,
       );
-    } finally {
-      debrid.active = originalActive;
     }
   });
 
@@ -2122,29 +2117,30 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       disk._clearReservationsForTests();
     });
 
-    await test('heavy concurrency is capped at 1–2 and boot sweep removes leftover partials', () => {
+    await test('boot sweep removes owned partials and preserves user files', () => {
       const cfg = require(path.join(REPO, 'config'));
       const jq = require(path.join(REPO, 'utils', 'jobQueue'));
       const cleanup = require(path.join(REPO, 'utils', 'cleanup'));
-      assert.ok(cfg.queue.heavy >= 1 && cfg.queue.heavy <= 2, `heavy queue limit ${cfg.queue.heavy} exceeds 1–2`);
-      assert.ok(cfg.movies.queueConcurrency >= 1 && cfg.movies.queueConcurrency <= 2, `movie concurrency ${cfg.movies.queueConcurrency} exceeds 1–2`);
-      assert.ok(jq.stats().heavy.limit <= 2, 'jobQueue heavy limit exceeds 2');
+      assert.strictEqual(jq.stats().heavy.waiting, 0);
       assert.strictEqual(cleanup.configuredTempMaxMB(), 2048);
 
       const bootTemp = fs.mkdtempSync(path.join(sandbox, 'boottemp-'));
       fs.mkdirSync(path.join(bootTemp, 'movies'), { recursive: true });
-      const partFile = path.join(bootTemp, 'ytv_123.mp4.part');
-      const strandedMovie = path.join(bootTemp, 'movies', 'Dune.1080p.mp4');
+      const partFile = path.join(bootTemp, `ytv_${Date.now()}_abc.mp4.part`);
+      const strandedMovie = path.join(bootTemp, 'movies', 'movie_Dune.0123456789abcdef.mp4');
+      const userMovie = path.join(bootTemp, 'movies', 'family.mp4');
       const keepCache = path.join(bootTemp, 'movies', 'cache.json');
       fs.writeFileSync(partFile, 'partial');
       fs.writeFileSync(strandedMovie, 'partial-movie');
       fs.writeFileSync(keepCache, '{}');
+      fs.writeFileSync(userMovie, 'my video');
 
       const swept = cleanup.sweepBootPartials(bootTemp);
       assert.strictEqual(swept.files, 2);
       assert.strictEqual(fs.existsSync(partFile), false);
       assert.strictEqual(fs.existsSync(strandedMovie), false);
       assert.strictEqual(fs.existsSync(keepCache), true, 'boot sweep deleted cache.json');
+      assert.strictEqual(fs.existsSync(userMovie), true, 'boot sweep deleted user media');
     });
 
     const getFfmpeg = require(path.join(REPO, 'utils', 'ffmpeg'));
@@ -2179,26 +2175,16 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       await Promise.all(jobs);
     });
 
-    await test('a 21st download waits for a free slot instead of failing', async () => {
-      const running = [];
-      const waiting = [];
-      const holders = Array.from({ length: 20 }, () => jobQueue.runInLane('light', () => new Promise((resolve) => {
-        running.push(resolve);
-        waiting.push(resolve);
-      })));
-      await new Promise((resolve) => setTimeout(resolve, 120));
-
+    await test('a 21st download starts without waiting', async () => {
+      const releases = [];
+      const holders = Array.from({ length: 20 }, () => jobQueue.runInLane('heavy', () => new Promise((resolve) => releases.push(resolve))));
       let started = false;
-      const extra = jobQueue.runInLane('light', async () => { started = true; });
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      assert.strictEqual(started, false, 'the 21st job ignored the lane limit');
-
-      waiting.shift()();                       // exactly one slot freed
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      assert.strictEqual(started, true, 'the waiting job did not start when a slot freed');
-
-      waiting.forEach((resolve) => resolve());
-      running.forEach((resolve) => resolve());
+      const extra = jobQueue.runInLane('heavy', async () => { started = true; });
+      try {
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.strictEqual(started, true, 'the 21st job was queued');
+        assert.strictEqual(jobQueue.stats().heavy.waiting, 0);
+      } finally { releases.forEach((release) => release()); }
       await Promise.all([...holders, extra]);
     });
 
@@ -2405,12 +2391,12 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
 
       // 4. Menu keeps permissions and prefix without exposing identity or legacy branding.
       const userCard = menu._buildCard(menu._buildGroups('!', { isOwner: false }), '265991234567', { prefix: '!', botName: 'ZaFar Bot' });
-      assert.ok(userCard.includes('!movie') && userCard.includes('prefix !'));
+      assert.ok(userCard.includes('!movie') && userCard.includes('*MEDIA*') && userCard.includes('*PAPERS*'));
       assert.ok(!/zafar|bot|265991234567/i.test(userCard));
       assert.ok(!userCard.includes('ADMIN') && !userCard.includes('.health') && !userCard.includes('!health') && !userCard.includes('refreshpapers'));
 
       const ownerCard = menu._buildCard(menu._buildGroups('!', { isOwner: true }), '265991234567', { prefix: '!', botName: 'ZaFar Bot' });
-      assert.ok(ownerCard.includes('ADMIN') && ownerCard.includes('!status') && ownerCard.includes('enable/disable the service globally'));
+      assert.ok(ownerCard.includes('*ADMIN*') && ownerCard.includes('!status') && ownerCard.includes('!on'));
       assert.ok(!/zafar|bot|265991234567/i.test(ownerCard));
       assert.ok(!ownerCard.includes('!health') && !ownerCard.includes('.health'));
 
@@ -2891,11 +2877,11 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       // 1. MovieBox #1 beats others even with a 1950 MB (~2 GB) direct MP4
       const withMovieBox = rank([
         { provider: 'vaplayer', kind: 'hls', quality: 1080, title: 'Film', sourceTag: 'WEBDL', sizeMB: 0 },
-        { provider: 'vixsrc', kind: 'file', quality: 1080, title: 'Film', sourceTag: 'WEBDL', sizeMB: 1200 },
+        { provider: 'vidlink', kind: 'file', quality: 1080, title: 'Film', sourceTag: 'WEBDL', sizeMB: 1200 },
         { provider: 'moviebox', kind: 'file', quality: 1080, title: 'Film', sourceTag: 'WEBDL', sizeMB: 1950 },
       ], { want: 1080, year: 2024 });
       assert.strictEqual(withMovieBox[0].provider, 'moviebox');
-      assert.strictEqual(withMovieBox[1].provider, 'vixsrc');
+      assert.strictEqual(withMovieBox[1].provider, 'vidlink');
       assert.strictEqual(withMovieBox[2].provider, 'vaplayer');
 
       // 2. Fallback torrents also follow reliability rank at equal seeds/quality
@@ -2911,8 +2897,8 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       await provCmd.execute({}, {}, [], { reply: async (t) => { replyText = t; } });
       const lines = replyText.split('\n');
       assert.match(lines[1], /^1\.\s*🟢\s*moviebox$/);
-      assert.match(lines[2], /^2\.\s*🟢\s*vixsrc$/);
-      assert.match(lines[3], /^3\.\s*🟢\s*vidlink$/);
+      assert.match(lines[2], /^2\.\s*🟢\s*vidlink$/);
+      assert.match(lines[3], /^3\.\s*🟢\s*vidsrc$/);
     });
   }
 
@@ -3690,12 +3676,13 @@ console.log('Done');
 
       // Boot sweep cleans crashed `.nm3u8_*` folders inside temp/movies/
       const sweepRoot = path.join(sandbox, 'sweep_nm3u8');
-      const crashedWork = path.join(sweepRoot, 'movies', '.nm3u8_crashed_job', 'tmp');
+      const crashedName = `.nm3u8_${Date.now()}_crashed`;
+      const crashedWork = path.join(sweepRoot, 'movies', crashedName, 'tmp');
       fs.mkdirSync(crashedWork, { recursive: true });
       fs.writeFileSync(path.join(crashedWork, 'seg_0001.m4s'), Buffer.alloc(16384, 7));
       const swept = cleanup25.sweepBootPartials(sweepRoot);
       assert.strictEqual(swept.files, 1);
-      assert.strictEqual(fs.existsSync(path.join(sweepRoot, 'movies', '.nm3u8_crashed_job')), false);
+      assert.strictEqual(fs.existsSync(path.join(sweepRoot, 'movies', crashedName)), false);
     });
   }
 

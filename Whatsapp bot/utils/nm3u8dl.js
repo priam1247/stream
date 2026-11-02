@@ -600,6 +600,7 @@ async function downloadHls(url, dest, opts = {}) {
   const workOutDir = path.join(workDir, 'out');
   fs.mkdirSync(workTmpDir, { recursive: true });
   fs.mkdirSync(workOutDir, { recursive: true });
+  const releaseWorkDir = require('./tempManager').holdTemp(jobId);
 
   const runOpts = {
     workDir,
@@ -681,6 +682,7 @@ async function downloadHls(url, dest, opts = {}) {
     return { file: finalDest, bytes, engine: 'nm3u8dl-re' };
   } finally {
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    releaseWorkDir();
   }
 }
 

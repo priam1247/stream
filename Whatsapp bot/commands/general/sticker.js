@@ -14,7 +14,7 @@ const webp = require('node-webpmux');
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 const config = require('../../config');
 const getFfmpeg = require('../../utils/ffmpeg');
-const { getTempDir, deleteTempFile } = require('../../utils/tempManager');
+const { getTempDir, deleteTempFile, holdTemp } = require('../../utils/tempManager');
 
 // Max file size: 50MB
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -67,10 +67,11 @@ module.exports = {
 
     const tempDir = getTempDir();
     const timestamp = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const tempInput = path.join(tempDir, `in_${timestamp}`);
-    const tempOutput = path.join(tempDir, `out_${timestamp}.webp`);
-    const tempOutput2 = path.join(tempDir, `out_fallback_${timestamp}.webp`);
+    const tempInput = path.join(tempDir, `sticker_${timestamp}_in`);
+    const tempOutput = path.join(tempDir, `sticker_${timestamp}_out.webp`);
+    const tempOutput2 = path.join(tempDir, `sticker_${timestamp}_fallback.webp`);
     const tempFiles = [tempInput, tempOutput, tempOutput2];
+    const releaseHolds = tempFiles.map(holdTemp);
 
     try {
       const mediaBuffer = await downloadMediaMessage(
@@ -148,6 +149,7 @@ module.exports = {
       );
     } finally {
       tempFiles.forEach(file => deleteTempFile(file));
+      releaseHolds.forEach(release => release());
     }
   },
 };

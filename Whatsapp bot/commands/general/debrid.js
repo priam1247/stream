@@ -1,36 +1,13 @@
-const config = require('../../config');
-const engine = require('../../utils/movieEngine');
+'use strict';
 
-const debridCommand = {
+// Keep the existing command/aliases, but do not require paid API tokens.
+module.exports = {
   name: 'debrid',
   aliases: ['rd', 'debridstatus'],
   category: 'general',
-  description: 'Debrid status',
+  description: 'Movie source information',
   usage: '.debrid',
-
-  async execute(sock, msg, args, extra) {
-    const movies = config.movies || {};
-    const hasKey = Boolean(movies.realDebridKey || movies.allDebridKey);
-
-    if (!hasKey) {
-      return extra.reply('⚪ No debrid configured.');
-    }
-
-    try {
-      const rows = await engine.debridAccounts();
-      if (!rows.length) return extra.reply('⚪ No active debrid.');
-
-      const lines = rows.map((r) => {
-        if (!r.ok) return `🔴 *${r.provider}* — unavailable`;
-        return `🟢 *${r.provider}* — ${r.username || 'active'} (${r.premium ? 'premium' : 'free'})`;
-      });
-
-      return extra.reply(lines.join('\n'));
-    } catch (e) {
-      console.error('[debrid] error:', e.message);
-      return extra.reply('❌ Could not check debrid status.');
-    }
+  async execute(_sock, _msg, _args, extra) {
+    return extra.reply('Movie downloads use keyless sources and direct torrents; debrid services are no longer used.');
   },
 };
-
-module.exports = debridCommand;

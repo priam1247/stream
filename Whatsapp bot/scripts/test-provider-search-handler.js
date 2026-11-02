@@ -140,6 +140,37 @@ test('cancel, expiry, unrelated quotes and other sessions cannot pick an outstan
   assert.equal(entry.consumed, true);
 });
 
+test('authorized commands, aliases and selections receive an appropriate reaction', async () => {
+  const sock = socket('reactions');
+  const ping = msg('.ping');
+  await handler.handleMessage(sock, ping);
+  assert.equal(sock.sent.find((body) => body.react?.key?.id === ping.key.id)?.react.text, '🏓');
+  const menu = msg('.help');
+  await handler.handleMessage(sock, menu);
+  assert.equal(sock.sent.find((body) => body.react?.key?.id === menu.key.id)?.react.text, '📖');
+  const search = msg('.reddit title');
+  await handler.handleMessage(sock, search);
+  assert.ok(sock.sent.find((body) => body.react?.key?.id === search.key.id)?.react.text);
+  const selection = msg('.1');
+  await handler.handleMessage(sock, selection);
+  assert.ok(sock.sent.find((body) => body.react?.key?.id === selection.key.id)?.react.text);
+});
+
+test('reactions are best effort and unauthorized messages remain silent', async () => {
+  const sock = socket('reaction-failure');
+  const original = sock.sendMessage;
+  sock.sendMessage = async function (chat, body) {
+    if (body.react) throw new Error('reaction unavailable');
+    return original.call(this, chat, body);
+  };
+  await handler.handleMessage(sock, msg('.ping'));
+  assert.ok(sock.sent.some((body) => body.text), 'command should still execute');
+  sock.sent.length = 0;
+  sock.__canRespond = () => false;
+  await handler.handleMessage(sock, msg('.ping'));
+  assert.equal(sock.sent.length, 0);
+});
+
 test('member policy is rechecked for an outstanding search; owner remains able to test', async () => {
   const member = socket('member');
   const owner = socket('owner', '15550000001');
@@ -154,50 +185,33 @@ test('member policy is rechecked for an outstanding search; owner remains able t
   assert.equal(downloads[0].url, urls.reddit);
 });
 
-test('a full search lane queues searches without occupying a light download slot', async () => {
+test('searches and downloads start concurrently without lane queues', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const running = Array.from({ length: 4 }, () => jobQueue.runInLane('search', () => gate));
-  let nextStarted = false;
-  const queued = jobQueue.runInLane('search', async () => { nextStarted = true; });
+  const running = Array.from({ length: 5 }, () => jobQueue.runInLane('search', () => gate));
   try {
-    assert.equal(jobQueue.stats().search.running, 4);
-    assert.equal(jobQueue.stats().search.waiting, 1);
-    const light = await jobQueue.runInLane('light', async () => 'download-started');
-    assert.equal(light, 'download-started');
-    assert.equal(nextStarted, false);
-  } finally {
-    release();
-    await Promise.allSettled([...running, queued]);
-  }
-  assert.equal(nextStarted, true);
+    assert.equal(jobQueue.stats().search.running, 5);
+    assert.equal(jobQueue.stats().search.waiting, 0);
+    assert.equal(await jobQueue.runInLane('light', async () => 'download-started'), 'download-started');
+  } finally { release(); await Promise.allSettled(running); }
   assert.equal(jobQueue.stats().search.running, 0);
 });
 
-test('a search waiting for memory retries until memory recovers', async () => {
+test('low memory rejects immediately and a later request can start', async () => {
   const oldFree = os.freemem;
   const oldMinimum = config.queue.minFreeMB;
-  config.queue.minFreeMB = 1;
-  os.freemem = () => 0;
-  let started = false;
-  const pending = jobQueue.runInLane('search', async () => { started = true; });
   try {
-    await new Promise((resolve) => setTimeout(resolve, 2200));
+    config.queue.minFreeMB = 1;
+    os.freemem = () => 0;
+    let started = false;
+    await assert.rejects(jobQueue.runInLane('search', async () => { started = true; }),
+      (error) => error.code === 'NOT_ENOUGH_MEMORY');
     assert.equal(started, false);
+    assert.equal(jobQueue.stats().search.waiting, 0);
     os.freemem = () => 2 * 1024 * 1024;
-    let timer;
-    try {
-      await Promise.race([
-        pending,
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('search did not retry')), 3000); }),
-      ]);
-    } finally { clearTimeout(timer); }
+    await jobQueue.runInLane('search', async () => { started = true; });
     assert.equal(started, true);
-  } finally {
-    os.freemem = oldFree;
-    config.queue.minFreeMB = oldMinimum;
-    await pending;
-  }
+  } finally { os.freemem = oldFree; config.queue.minFreeMB = oldMinimum; }
 });
 
 test('no results, service failures, invalid quality and long titles give useful errors without downloads', async () => {

@@ -29,7 +29,8 @@ const path   = require('path');
 const { pipeline } = require('stream/promises');
 const config    = require('../../config');
 const database  = require('../../database');
-const { createTempFilePath, deleteTempFile } = require('../../utils/tempManager');
+const { createTempFilePath, deleteTempFile, holdTemp } = require('../../utils/tempManager');
+const log = require('../../utils/logger')('paper');
 
 // ─── SUBJECT MAP ──────────────────────────────────────────────────────────────
 const SUBJECT_MAP = {
@@ -270,7 +271,7 @@ async function walkVault(client, folderId, folderHash, workspaceId, expected, st
       );
     }
     lower = maxTs; uniqueAtWindowStart = seen.size; prevFp = null; window++;
-    console.log(`[paper] ${reason} — new window: created_at >= ${lower} (${seen.size}/${expected || '?'})`);
+    log.debug(`${reason} — new window: created_at >= ${lower} (${seen.size}/${expected || '?'})`);
     return true;
   };
 
@@ -324,11 +325,11 @@ async function refreshVault() {
       return { files, source: 'delta' };
     } catch (e) {
       if (e.code !== 'DELTA_FALLBACK') throw e;
-      console.log('[paper] delta unusable, falling back to full walk');
+      log.debug('Delta unavailable; using full walk');
     }
   }
 
-  console.log(`[paper] full vault walk (${expected} entries)…`);
+  log.debug(`Full vault walk (${expected} entries)…`);
   const seen = await walkVault(client, folderId, folderHash, workspaceId, expected, null);
   const rows = [...seen.values()];
   const files = rows.filter(isFileRow).map(rowToFile);
@@ -361,7 +362,7 @@ function backgroundRefresh() {
   if (_refreshing || Date.now() < _refreshCoolUntil) return;
   refreshOnce()
     .then(({ files, source }) => {
-      console.log(`[paper] background refresh done (${source}, ${files.length} files)`);
+      log.debug(`Background refresh done (${source}, ${files.length} files)`);
     })
     .catch(e => {
       console.warn('[paper] background refresh failed:', e.message);
@@ -412,10 +413,20 @@ async function searchFiles(courseCode, moduleNumber, year) {
 // Streams a paper to a temp file (never held in RAM) — caller must delete it.
 async function downloadFileToDisk(file) {
   const tmp = createTempFilePath('paper', 'pdf');
-  const client = drimeClient(true); // long timeout for big PDFs
-  const res = await client.get(`/file-entries/download/${file.hash}`, { responseType: 'stream' });
-  await pipeline(res.data, fs.createWriteStream(tmp));
-  return tmp;
+  const releaseHold = holdTemp(tmp);
+  let created = false;
+  try {
+    const client = drimeClient(true); // long timeout for big PDFs
+    const res = await client.get(`/file-entries/download/${file.hash}`, { responseType: 'stream' });
+    const out = fs.createWriteStream(tmp, { flags: 'wx' });
+    out.once('open', () => { created = true; });
+    await pipeline(res.data, out);
+    return { tmp, releaseHold };
+  } catch (error) {
+    if (created) deleteTempFile(tmp);
+    releaseHold();
+    throw error;
+  }
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -717,40 +728,46 @@ module.exports = {
         const chunk = sendable.slice(i, i + 2);
         const jobs = await Promise.all(chunk.map(async (file) => {
           try {
-            const tmp = await downloadFileToDisk(file);
-            return { file, tmp };
+            const download = await downloadFileToDisk(file);
+            return { file, ...download };
           } catch (e) {
             return { file, error: e };
           }
         }));
 
-        for (const job of jobs) {
-          if (job.error) {
-            telemetry.recordFailure('paper');
-            console.warn('[paper] download failed:', job.file.name, job.error.message);
-            await extra.reply(`⚠️ Failed: *${cleanName(job.file.name)}*`);
-            continue;
-          }
-          try {
-            const { type, year: fileYear, monthDisplay, subjectName: sn } = parsed(job.file);
-            const caption = [sn, type, [monthDisplay, fileYear].filter(Boolean).join(' ')].filter(Boolean).join(' · ') || undefined;
+        try {
+          for (const job of jobs) {
+            if (job.error) {
+              telemetry.recordFailure('paper');
+              console.warn('[paper] download failed:', job.file.name, job.error.message);
+              await extra.reply(`⚠️ Failed: *${cleanName(job.file.name)}*`);
+              continue;
+            }
+            try {
+              const { type, year: fileYear, monthDisplay, subjectName: sn } = parsed(job.file);
+              const caption = [sn, type, [monthDisplay, fileYear].filter(Boolean).join(' ')].filter(Boolean).join(' · ') || undefined;
 
-            await sock.sendMessage(extra.from, {
-              document: { url: job.tmp },
-              fileName: job.file.name,
-              mimetype: 'application/pdf',
-              ...(caption ? { caption } : {}),
-            }, { quoted: msg });
+              await sock.sendMessage(extra.from, {
+                document: { url: job.tmp },
+                fileName: job.file.name,
+                mimetype: 'application/pdf',
+                ...(caption ? { caption } : {}),
+              }, { quoted: msg });
 
-            database.logPaperSent(paperChatKey, job.file.id);
-            telemetry.recordDownloadSuccess('paper');
-          } catch (fileErr) {
-            telemetry.recordFailure('paper');
-            console.warn('[paper] send failed:', job.file.name, fileErr.message);
-            await extra.reply(`⚠️ Failed: *${cleanName(job.file.name)}*`);
-          } finally {
-            deleteTempFile(job.tmp);
+              database.logPaperSent(paperChatKey, job.file.id);
+              telemetry.recordDownloadSuccess('paper');
+            } catch (fileErr) {
+              telemetry.recordFailure('paper');
+              console.warn('[paper] send failed:', job.file.name, fileErr.message);
+              await extra.reply(`⚠️ Failed: *${cleanName(job.file.name)}*`);
+            } finally {
+              deleteTempFile(job.tmp);
+              job.releaseHold?.();
+            }
           }
+        } finally {
+          // Also clean downloads not yet visited if another send/reply fails.
+          for (const job of jobs) { deleteTempFile(job.tmp); job.releaseHold?.(); }
         }
       }
 

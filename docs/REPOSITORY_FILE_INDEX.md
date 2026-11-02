@@ -528,6 +528,18 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
   - **Outside modules:** `next/server`.
 
+### `dashboard/app/api/member/cancel-pending/`
+
+- [`route.ts`](../dashboard/app/api/member/cancel-pending/route.ts) — Authenticated route to cancel a pending number-link request.
+  - **References:**
+    - [`dashboard/lib/activity.ts`](../dashboard/lib/activity.ts) — static import.
+    - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — static import.
+    - [`dashboard/lib/bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — static import.
+    - [`dashboard/lib/member-insights-server.ts`](../dashboard/lib/member-insights-server.ts) — static import.
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — static import.
+  - **Referenced by:**
+    - [`dashboard/tests/member-cancel-pending.test.ts`](../dashboard/tests/member-cancel-pending.test.ts) — static import.
+
 ### `dashboard/app/api/member/numbers/`
 
 - [`route.ts`](../dashboard/app/api/member/numbers/route.ts) — Add a member-owned WhatsApp number. Next.js discovers this API route by its path.
@@ -800,6 +812,18 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 ### `dashboard/components/`
 
+- [`member-workspace.tsx`](../dashboard/components/member-workspace.tsx) — Member workspace navigation and account controls.
+  - **References:**
+    - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — static import.
+    - [`dashboard/components/workspace-shell.tsx`](../dashboard/components/workspace-shell.tsx) — static import.
+    - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — static import.
+    - [`dashboard/lib/client-session.ts`](../dashboard/lib/client-session.ts) — static import.
+    - [`dashboard/lib/member-analytics.ts`](../dashboard/lib/member-analytics.ts) — static import.
+    - [`dashboard/lib/member-link.ts`](../dashboard/lib/member-link.ts) — static import.
+    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — static import.
+  - **Referenced by:**
+    - [`dashboard/components/member-connection.tsx`](../dashboard/components/member-connection.tsx) — static import.
+
 - [`account-modal.tsx`](../dashboard/components/account-modal.tsx) — Account/profile modal.
   - **References:**
     - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
@@ -1025,6 +1049,25 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Outside modules:** `react`.
 
 ### `dashboard/lib/`
+
+- [`member-analytics.ts`](../dashboard/lib/member-analytics.ts) — Presentation helpers for member usage analytics.
+  - **References:**
+    - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — static import.
+    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — static import.
+  - **Referenced by:**
+    - [`dashboard/components/member-workspace.tsx`](../dashboard/components/member-workspace.tsx) — static import.
+    - [`dashboard/tests/member-insights.test.ts`](../dashboard/tests/member-insights.test.ts) — static import.
+
+- [`member-insights-server.ts`](../dashboard/lib/member-insights-server.ts) — Server-side member-scoped insights and privacy checks.
+  - **References:**
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — static import.
+    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — static import.
+    - [`dashboard/lib/whatsapp-accounts.ts`](../dashboard/lib/whatsapp-accounts.ts) — static import.
+  - **Referenced by:**
+    - [`dashboard/app/api/bot/sync/route.ts`](../dashboard/app/api/bot/sync/route.ts) — static import.
+    - [`dashboard/app/api/member/cancel-pending/route.ts`](../dashboard/app/api/member/cancel-pending/route.ts) — static import.
+    - [`dashboard/app/api/member/status/route.ts`](../dashboard/app/api/member/status/route.ts) — static import.
+    - [`dashboard/tests/member-insights.test.ts`](../dashboard/tests/member-insights.test.ts) — static import.
 
 - [`activity.ts`](../dashboard/lib/activity.ts) — Records control-room events without exposing sensitive action details.
   - **References:**
@@ -1483,6 +1526,41 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`dashboard/package.json`](../dashboard/package.json) — explicit relationship.
 
 ### `dashboard/tests/`
+
+- [`member-cancel-pending.test.ts`](../dashboard/tests/member-cancel-pending.test.ts) — Tests cancellation of pending number-link requests.
+  - **References:**
+    - [`dashboard/app/api/member/cancel-pending/route.ts`](../dashboard/app/api/member/cancel-pending/route.ts) — static import.
+    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — static import.
+  - **Referenced by:** no direct static import detected.
+
+- [`member-insights.test.ts`](../dashboard/tests/member-insights.test.ts) — Tests member-scoped insight calculations and privacy.
+  - **References:**
+    - [`dashboard/lib/member-analytics.ts`](../dashboard/lib/member-analytics.ts) — static import.
+    - [`dashboard/lib/member-insights-server.ts`](../dashboard/lib/member-insights-server.ts) — static import.
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — static import.
+    - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — static import.
+  - **Referenced by:** no direct static import detected.
+
+- [`member-link-storage-local.test.ts`](../dashboard/tests/member-link-storage-local.test.ts) — Tests local-store member linking and approval persistence.
+  - **References:**
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — static import.
+  - **Referenced by:** no direct static import detected.
+
+- [`member-onboarding-e2e.test.ts`](../dashboard/tests/member-onboarding-e2e.test.ts) — Exercises sign-up, linking before approval, synchronized usage, and unlinking.
+  - **References:**
+    - [`Whatsapp bot/scripts/test-sandbox.js`](../Whatsapp%20bot/scripts/test-sandbox.js) — static import.
+    - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — static import.
+    - [`dashboard/app/api/auth/login/route.ts`](../dashboard/app/api/auth/login/route.ts) — static import.
+    - [`dashboard/app/api/auth/register/route.ts`](../dashboard/app/api/auth/register/route.ts) — static import.
+    - [`dashboard/app/api/auth/verify/route.ts`](../dashboard/app/api/auth/verify/route.ts) — static import.
+    - [`dashboard/app/api/bot/sync/route.ts`](../dashboard/app/api/bot/sync/route.ts) — static import.
+    - [`dashboard/app/api/member/numbers/route.ts`](../dashboard/app/api/member/numbers/route.ts) — static import.
+    - [`dashboard/app/api/member/pair/route.ts`](../dashboard/app/api/member/pair/route.ts) — static import.
+    - [`dashboard/app/api/member/status/route.ts`](../dashboard/app/api/member/status/route.ts) — static import.
+    - [`dashboard/app/api/member/unlink/route.ts`](../dashboard/app/api/member/unlink/route.ts) — static import.
+    - [`dashboard/lib/jwt.ts`](../dashboard/lib/jwt.ts) — static import.
+    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — static import.
+  - **Referenced by:** no direct static import detected.
 
 - [`admin-console.test.tsx`](../dashboard/tests/admin-console.test.tsx) — Vitest regression tests for admin console; see direct references below for the exercised modules.
   - **References:**
@@ -2619,7 +2697,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 
 ### `Whatsapp bot/commands/general/`
 
-- [`debrid.js`](../Whatsapp%20bot/commands/general/debrid.js) — Reports debrid-provider status.
+- [`debrid.js`](../Whatsapp%20bot/commands/general/debrid.js) — Compatibility response explaining that movie downloads no longer require a debrid account token.
   - **References:**
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
     - [`Whatsapp bot/utils/movieEngine.js`](../Whatsapp%20bot/utils/movieEngine.js) — require.
@@ -2814,9 +2892,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/metadata/trakt.js`](../Whatsapp%20bot/engine/metadata/trakt.js) — import.
     - [`Whatsapp bot/engine/metadata/tvmaze.js`](../Whatsapp%20bot/engine/metadata/tvmaze.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/debrid/alldebrid.js`](../Whatsapp%20bot/engine/providers/debrid/alldebrid.js) — import.
-    - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — import.
-    - [`Whatsapp bot/engine/providers/debrid/realdebrid.js`](../Whatsapp%20bot/engine/providers/debrid/realdebrid.js) — import.
     - [`Whatsapp bot/engine/providers/stream/moviebox.js`](../Whatsapp%20bot/engine/providers/stream/moviebox.js) — import.
   - **Outside modules:** `node:fs`, `node:path`.
 
@@ -2865,15 +2940,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/providers/ddl/fourkhdhub.js`](../Whatsapp%20bot/engine/providers/ddl/fourkhdhub.js) — ES module boundary.
     - [`Whatsapp bot/engine/providers/ddl/hdhub4u.js`](../Whatsapp%20bot/engine/providers/ddl/hdhub4u.js) — ES module boundary.
     - [`Whatsapp bot/engine/providers/ddl/moviesdrive.js`](../Whatsapp%20bot/engine/providers/ddl/moviesdrive.js) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/debrid/alldebrid.js`](../Whatsapp%20bot/engine/providers/debrid/alldebrid.js) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/debrid/realdebrid.js`](../Whatsapp%20bot/engine/providers/debrid/realdebrid.js) — ES module boundary.
     - [`Whatsapp bot/engine/providers/stream/moviebox.js`](../Whatsapp%20bot/engine/providers/stream/moviebox.js) — ES module boundary.
     - [`Whatsapp bot/engine/providers/stream/vaplayer.js`](../Whatsapp%20bot/engine/providers/stream/vaplayer.js) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/stream/videasy.js`](../Whatsapp%20bot/engine/providers/stream/videasy.js) — ES module boundary.
     - [`Whatsapp bot/engine/providers/stream/vidlink.js`](../Whatsapp%20bot/engine/providers/stream/vidlink.js) — ES module boundary.
     - [`Whatsapp bot/engine/providers/stream/vidsrc.js`](../Whatsapp%20bot/engine/providers/stream/vidsrc.js) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/stream/vixsrc.js`](../Whatsapp%20bot/engine/providers/stream/vixsrc.js) — ES module boundary.
     - [`Whatsapp bot/engine/providers/torrent/_trackers.js`](../Whatsapp%20bot/engine/providers/torrent/_trackers.js) — ES module boundary.
     - [`Whatsapp bot/engine/providers/torrent/apibay.js`](../Whatsapp%20bot/engine/providers/torrent/apibay.js) — ES module boundary.
     - [`Whatsapp bot/engine/providers/torrent/eztv.js`](../Whatsapp%20bot/engine/providers/torrent/eztv.js) — ES module boundary.
@@ -2909,7 +2979,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/metadata/trakt.js`](../Whatsapp%20bot/engine/metadata/trakt.js) — import.
     - [`Whatsapp bot/engine/metadata/tvmaze.js`](../Whatsapp%20bot/engine/metadata/tvmaze.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — import.
   - **Outside modules:** `node:fs`, `node:path`.
 
 - [`events.js`](../Whatsapp%20bot/engine/core/events.js) — Engine event bus for progress and telemetry.
@@ -2928,7 +2997,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **References:** none detected in this snapshot.
   - **Referenced by:**
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/stream/videasy.js`](../Whatsapp%20bot/engine/providers/stream/videasy.js) — import.
     - [`Whatsapp bot/engine/providers/stream/vidsrc.js`](../Whatsapp%20bot/engine/providers/stream/vidsrc.js) — import.
 
 - [`http.js`](../Whatsapp%20bot/engine/core/http.js) — Shared provider HTTP requests, retries, and lightweight HTML helpers.
@@ -2952,10 +3020,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/providers/ddl/moviesdrive.js`](../Whatsapp%20bot/engine/providers/ddl/moviesdrive.js) — import.
     - [`Whatsapp bot/engine/providers/stream/moviebox.js`](../Whatsapp%20bot/engine/providers/stream/moviebox.js) — import.
     - [`Whatsapp bot/engine/providers/stream/vaplayer.js`](../Whatsapp%20bot/engine/providers/stream/vaplayer.js) — import.
-    - [`Whatsapp bot/engine/providers/stream/videasy.js`](../Whatsapp%20bot/engine/providers/stream/videasy.js) — import.
     - [`Whatsapp bot/engine/providers/stream/vidlink.js`](../Whatsapp%20bot/engine/providers/stream/vidlink.js) — import.
     - [`Whatsapp bot/engine/providers/stream/vidsrc.js`](../Whatsapp%20bot/engine/providers/stream/vidsrc.js) — import.
-    - [`Whatsapp bot/engine/providers/stream/vixsrc.js`](../Whatsapp%20bot/engine/providers/stream/vixsrc.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/apibay.js`](../Whatsapp%20bot/engine/providers/torrent/apibay.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/eztv.js`](../Whatsapp%20bot/engine/providers/torrent/eztv.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/knaben.js`](../Whatsapp%20bot/engine/providers/torrent/knaben.js) — import.
@@ -2997,7 +3063,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/media/torrent.js`](../Whatsapp%20bot/engine/media/torrent.js) — import.
     - [`Whatsapp bot/engine/metadata/index.js`](../Whatsapp%20bot/engine/metadata/index.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — import.
     - [`Whatsapp bot/utils/movieEngine.js`](../Whatsapp%20bot/utils/movieEngine.js) — computed dynamic import.
 
 - [`mirrors.js`](../Whatsapp%20bot/engine/core/mirrors.js) — Provider mirror selection and health memory.
@@ -3009,7 +3074,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/providers/ddl/hdhub4u.js`](../Whatsapp%20bot/engine/providers/ddl/hdhub4u.js) — import.
     - [`Whatsapp bot/engine/providers/ddl/moviesdrive.js`](../Whatsapp%20bot/engine/providers/ddl/moviesdrive.js) — import.
 
-- [`queue.js`](../Whatsapp%20bot/engine/core/queue.js) — Concurrency-limited media job queue.
+- [`queue.js`](../Whatsapp%20bot/engine/core/queue.js) — Immediate-start movie job runner with active-work tracking and memory safeguards.
   - **References:**
     - [`Whatsapp bot/engine/config.js`](../Whatsapp%20bot/engine/config.js) — import.
     - [`Whatsapp bot/engine/core/log.js`](../Whatsapp%20bot/engine/core/log.js) — import.
@@ -3043,10 +3108,8 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/providers/ddl/moviesdrive.js`](../Whatsapp%20bot/engine/providers/ddl/moviesdrive.js) — import.
     - [`Whatsapp bot/engine/providers/stream/moviebox.js`](../Whatsapp%20bot/engine/providers/stream/moviebox.js) — import.
     - [`Whatsapp bot/engine/providers/stream/vaplayer.js`](../Whatsapp%20bot/engine/providers/stream/vaplayer.js) — import.
-    - [`Whatsapp bot/engine/providers/stream/videasy.js`](../Whatsapp%20bot/engine/providers/stream/videasy.js) — import.
     - [`Whatsapp bot/engine/providers/stream/vidlink.js`](../Whatsapp%20bot/engine/providers/stream/vidlink.js) — import.
     - [`Whatsapp bot/engine/providers/stream/vidsrc.js`](../Whatsapp%20bot/engine/providers/stream/vidsrc.js) — import.
-    - [`Whatsapp bot/engine/providers/stream/vixsrc.js`](../Whatsapp%20bot/engine/providers/stream/vixsrc.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/apibay.js`](../Whatsapp%20bot/engine/providers/torrent/apibay.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/eztv.js`](../Whatsapp%20bot/engine/providers/torrent/eztv.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/knaben.js`](../Whatsapp%20bot/engine/providers/torrent/knaben.js) — import.
@@ -3092,7 +3155,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/core/registry.js`](../Whatsapp%20bot/engine/core/registry.js) — import.
     - [`Whatsapp bot/engine/core/verify.js`](../Whatsapp%20bot/engine/core/verify.js) — import.
     - [`Whatsapp bot/engine/media/torrent.js`](../Whatsapp%20bot/engine/media/torrent.js) — import.
-    - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/_trackers.js`](../Whatsapp%20bot/engine/providers/torrent/_trackers.js) — import.
   - **Referenced by:**
     - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import.
@@ -3168,13 +3230,10 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/media/download.js`](../Whatsapp%20bot/engine/media/download.js) — import.
     - [`Whatsapp bot/engine/metadata/index.js`](../Whatsapp%20bot/engine/metadata/index.js) — import.
     - [`Whatsapp bot/engine/metadata/tmdb.js`](../Whatsapp%20bot/engine/metadata/tmdb.js) — import.
-    - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — import.
     - [`Whatsapp bot/engine/providers/stream/moviebox.js`](../Whatsapp%20bot/engine/providers/stream/moviebox.js) — import, dynamic import.
     - [`Whatsapp bot/engine/providers/stream/vaplayer.js`](../Whatsapp%20bot/engine/providers/stream/vaplayer.js) — import.
-    - [`Whatsapp bot/engine/providers/stream/videasy.js`](../Whatsapp%20bot/engine/providers/stream/videasy.js) — import.
     - [`Whatsapp bot/engine/providers/stream/vidlink.js`](../Whatsapp%20bot/engine/providers/stream/vidlink.js) — import.
     - [`Whatsapp bot/engine/providers/stream/vidsrc.js`](../Whatsapp%20bot/engine/providers/stream/vidsrc.js) — import.
-    - [`Whatsapp bot/engine/providers/stream/vixsrc.js`](../Whatsapp%20bot/engine/providers/stream/vixsrc.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/apibay.js`](../Whatsapp%20bot/engine/providers/torrent/apibay.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/eztv.js`](../Whatsapp%20bot/engine/providers/torrent/eztv.js) — import.
     - [`Whatsapp bot/engine/providers/torrent/knaben.js`](../Whatsapp%20bot/engine/providers/torrent/knaben.js) — import.
@@ -3322,38 +3381,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
 
-### `Whatsapp bot/engine/providers/debrid/`
-
-- [`alldebrid.js`](../Whatsapp%20bot/engine/providers/debrid/alldebrid.js) — AllDebrid provider adapter.
-  - **References:**
-    - [`Whatsapp bot/engine/config.js`](../Whatsapp%20bot/engine/config.js) — import.
-  - **Referenced by:**
-    - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — import.
-
-- [`index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — Combines available debrid providers.
-  - **References:**
-    - [`Whatsapp bot/engine/config.js`](../Whatsapp%20bot/engine/config.js) — import.
-    - [`Whatsapp bot/engine/core/cache.js`](../Whatsapp%20bot/engine/core/cache.js) — import.
-    - [`Whatsapp bot/engine/core/metrics.js`](../Whatsapp%20bot/engine/core/metrics.js) — import.
-    - [`Whatsapp bot/engine/providers/debrid/alldebrid.js`](../Whatsapp%20bot/engine/providers/debrid/alldebrid.js) — import.
-    - [`Whatsapp bot/engine/providers/debrid/realdebrid.js`](../Whatsapp%20bot/engine/providers/debrid/realdebrid.js) — import.
-  - **Referenced by:**
-    - [`Whatsapp bot/engine/core/resolver.js`](../Whatsapp%20bot/engine/core/resolver.js) — import.
-    - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import.
-    - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-
-- [`realdebrid.js`](../Whatsapp%20bot/engine/providers/debrid/realdebrid.js) — Real-Debrid provider adapter.
-  - **References:**
-    - [`Whatsapp bot/engine/config.js`](../Whatsapp%20bot/engine/config.js) — import.
-  - **Referenced by:**
-    - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
-    - [`Whatsapp bot/engine/providers/debrid/index.js`](../Whatsapp%20bot/engine/providers/debrid/index.js) — import.
-
-- [`_http.js`](../Whatsapp%20bot/engine/providers/debrid/_http.js) — Shared HTTP client for supported debrid providers.
-  - **References:** none detected in this snapshot.
-  - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
-
 ### `Whatsapp bot/engine/providers/stream/`
 
 - [`moviebox.js`](../Whatsapp%20bot/engine/providers/stream/moviebox.js) — MovieBox stream-source adapter.
@@ -3375,14 +3402,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
 
-- [`videasy.js`](../Whatsapp%20bot/engine/providers/stream/videasy.js) — Videasy stream-source adapter.
-  - **References:**
-    - [`Whatsapp bot/engine/core/extract.js`](../Whatsapp%20bot/engine/core/extract.js) — import.
-    - [`Whatsapp bot/engine/core/http.js`](../Whatsapp%20bot/engine/core/http.js) — import.
-    - [`Whatsapp bot/engine/core/registry.js`](../Whatsapp%20bot/engine/core/registry.js) — import.
-  - **Referenced by:**
-    - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import.
-    - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
 
 - [`vidlink.js`](../Whatsapp%20bot/engine/providers/stream/vidlink.js) — VidLink stream-source adapter.
   - **References:**
@@ -3401,13 +3420,6 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import.
     - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
 
-- [`vixsrc.js`](../Whatsapp%20bot/engine/providers/stream/vixsrc.js) — VixSrc stream-source adapter.
-  - **References:**
-    - [`Whatsapp bot/engine/core/http.js`](../Whatsapp%20bot/engine/core/http.js) — import.
-    - [`Whatsapp bot/engine/core/registry.js`](../Whatsapp%20bot/engine/core/registry.js) — import.
-  - **Referenced by:**
-    - [`Whatsapp bot/engine/media/index.js`](../Whatsapp%20bot/engine/media/index.js) — import.
-    - [`Whatsapp bot/engine/package.json`](../Whatsapp%20bot/engine/package.json) — ES module boundary.
 
 ### `Whatsapp bot/engine/providers/torrent/`
 
@@ -3525,6 +3537,61 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
 
 ### `Whatsapp bot/scripts/`
+
+- [`test-approval-readiness.js`](../Whatsapp%20bot/scripts/test-approval-readiness.js) — Regression tests for linking before approval, preserved existing members, and access revocation.
+  - **References:**
+    - [`Whatsapp bot/scripts/test-sandbox.js`](../Whatsapp%20bot/scripts/test-sandbox.js) — static import.
+  - **Referenced by:** no direct static import detected.
+
+- [`test-knight-live.js`](../Whatsapp%20bot/scripts/test-knight-live.js) — Optional live Hector-first YouTube transfer and decode probe.
+  - **References:**
+    - [`Whatsapp bot/scripts/test-sandbox.js`](../Whatsapp%20bot/scripts/test-sandbox.js) — static import.
+  - **Referenced by:** no direct static import detected.
+
+- [`test-knight-provider.js`](../Whatsapp%20bot/scripts/test-knight-provider.js) — Tests the Hector-first YouTube provider and fallback behavior.
+  - **References:**
+    - [`Whatsapp bot/scripts/test-sandbox.js`](../Whatsapp%20bot/scripts/test-sandbox.js) — static import.
+  - **Referenced by:** no direct static import detected.
+
+- [`test-member-telemetry.js`](../Whatsapp%20bot/scripts/test-member-telemetry.js) — Tests private per-member usage telemetry.
+  - **References:**
+    - [`Whatsapp bot/scripts/test-sandbox.js`](../Whatsapp%20bot/scripts/test-sandbox.js) — static import.
+  - **Referenced by:** no direct static import detected.
+
+- [`test-public-media.js`](../Whatsapp%20bot/scripts/test-public-media.js) — Tests hardened public HTTP and public media downloads.
+  - **References:**
+    - [`Whatsapp bot/utils/publicHttp.js`](../Whatsapp%20bot/utils/publicHttp.js) — static import.
+    - [`Whatsapp bot/utils/publicMediaDownload.js`](../Whatsapp%20bot/utils/publicMediaDownload.js) — static import.
+  - **Referenced by:** no direct static import detected.
+
+- [`test-readiness.js`](../Whatsapp%20bot/scripts/test-readiness.js) — Tests concurrent media work, cleanup holds, path safety, MP4 preparation, and real FFmpeg conversion.
+  - **References:**
+    - [`Whatsapp bot/scripts/test-sandbox.js`](../Whatsapp%20bot/scripts/test-sandbox.js) — static import.
+  - **Referenced by:** no direct static import detected.
+
+- [`test-sandbox.js`](../Whatsapp%20bot/scripts/test-sandbox.js) — Creates an isolated bot fixture without copying private runtime data.
+  - **References:** no direct static import detected.
+  - **Referenced by:**
+    - [`Whatsapp bot/scripts/selftest.js`](../Whatsapp%20bot/scripts/selftest.js) — static import.
+    - [`Whatsapp bot/scripts/test-account-routing.js`](../Whatsapp%20bot/scripts/test-account-routing.js) — static import.
+    - [`Whatsapp bot/scripts/test-approval-readiness.js`](../Whatsapp%20bot/scripts/test-approval-readiness.js) — static import.
+    - [`Whatsapp bot/scripts/test-bridge.js`](../Whatsapp%20bot/scripts/test-bridge.js) — static import.
+    - [`Whatsapp bot/scripts/test-command-removal.js`](../Whatsapp%20bot/scripts/test-command-removal.js) — static import.
+    - [`Whatsapp bot/scripts/test-delivery.js`](../Whatsapp%20bot/scripts/test-delivery.js) — static import.
+    - [`Whatsapp bot/scripts/test-knight-live.js`](../Whatsapp%20bot/scripts/test-knight-live.js) — static import.
+    - [`Whatsapp bot/scripts/test-knight-provider.js`](../Whatsapp%20bot/scripts/test-knight-provider.js) — static import.
+    - [`Whatsapp bot/scripts/test-media-downloads.js`](../Whatsapp%20bot/scripts/test-media-downloads.js) — static import.
+    - [`Whatsapp bot/scripts/test-media-shortcuts.js`](../Whatsapp%20bot/scripts/test-media-shortcuts.js) — static import.
+    - [`Whatsapp bot/scripts/test-member-telemetry.js`](../Whatsapp%20bot/scripts/test-member-telemetry.js) — static import.
+    - [`Whatsapp bot/scripts/test-nm3u8dl-live.js`](../Whatsapp%20bot/scripts/test-nm3u8dl-live.js) — static import.
+    - [`Whatsapp bot/scripts/test-preflight.js`](../Whatsapp%20bot/scripts/test-preflight.js) — static import.
+    - [`Whatsapp bot/scripts/test-provider-core.js`](../Whatsapp%20bot/scripts/test-provider-core.js) — static import.
+    - [`Whatsapp bot/scripts/test-provider-search-handler.js`](../Whatsapp%20bot/scripts/test-provider-search-handler.js) — static import.
+    - [`Whatsapp bot/scripts/test-provider-search.js`](../Whatsapp%20bot/scripts/test-provider-search.js) — static import.
+    - [`Whatsapp bot/scripts/test-readiness.js`](../Whatsapp%20bot/scripts/test-readiness.js) — static import.
+    - [`Whatsapp bot/scripts/test-session-backup.js`](../Whatsapp%20bot/scripts/test-session-backup.js) — static import.
+    - [`dashboard/tests/member-onboarding-e2e.test.ts`](../dashboard/tests/member-onboarding-e2e.test.ts) — static import.
+    - [`dashboard/tests/single-host-e2e.test.ts`](../dashboard/tests/single-host-e2e.test.ts) — static import.
 
 - [`install-ytdlp.sh`](../Whatsapp%20bot/scripts/install-ytdlp.sh) — Installs or updates yt-dlp for the bot.
   - **References:** none detected in this snapshot.
@@ -3655,6 +3722,36 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) — CI invocation.
 
 ### `Whatsapp bot/utils/`
+
+- [`knightYouTube.js`](../Whatsapp%20bot/utils/knightYouTube.js) — Hector-first keyless YouTube audio/video provider and media probing.
+  - **References:**
+    - [`Whatsapp bot/utils/publicHttp.js`](../Whatsapp%20bot/utils/publicHttp.js) — static import.
+    - [`Whatsapp bot/utils/publicMediaDownload.js`](../Whatsapp%20bot/utils/publicMediaDownload.js) — static import.
+    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — static import.
+  - **Referenced by:**
+    - [`Whatsapp bot/utils/downloadProviders.js`](../Whatsapp%20bot/utils/downloadProviders.js) — static import.
+
+- [`memberTelemetry.js`](../Whatsapp%20bot/utils/memberTelemetry.js) — Collects scoped member activity without exposing other accounts.
+  - **References:**
+    - [`Whatsapp bot/utils/jsonStore.js`](../Whatsapp%20bot/utils/jsonStore.js) — static import.
+  - **Referenced by:**
+    - [`Whatsapp bot/handler.js`](../Whatsapp%20bot/handler.js) — static import.
+    - [`Whatsapp bot/utils/dashboardSync.js`](../Whatsapp%20bot/utils/dashboardSync.js) — static import.
+
+- [`publicHttp.js`](../Whatsapp%20bot/utils/publicHttp.js) — Public-address validation and credential-free, redirect-safe HTTP.
+  - **References:** no direct static import detected.
+  - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-public-media.js`](../Whatsapp%20bot/scripts/test-public-media.js) — static import.
+    - [`Whatsapp bot/utils/knightYouTube.js`](../Whatsapp%20bot/utils/knightYouTube.js) — static import.
+    - [`Whatsapp bot/utils/publicMediaDownload.js`](../Whatsapp%20bot/utils/publicMediaDownload.js) — static import.
+
+- [`publicMediaDownload.js`](../Whatsapp%20bot/utils/publicMediaDownload.js) — Streams public media to unique files with size and validation safeguards.
+  - **References:**
+    - [`Whatsapp bot/utils/publicHttp.js`](../Whatsapp%20bot/utils/publicHttp.js) — static import.
+  - **Referenced by:**
+    - [`Whatsapp bot/scripts/test-public-media.js`](../Whatsapp%20bot/scripts/test-public-media.js) — static import.
+    - [`Whatsapp bot/utils/downloadProviders.js`](../Whatsapp%20bot/utils/downloadProviders.js) — static import.
+    - [`Whatsapp bot/utils/knightYouTube.js`](../Whatsapp%20bot/utils/knightYouTube.js) — static import.
 
 - [`accessControl.js`](../Whatsapp%20bot/utils/accessControl.js) — Reads and updates WhatsApp allowlist and access decisions.
   - **References:**
@@ -3855,7 +3952,7 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/scripts/test-delivery.js`](../Whatsapp%20bot/scripts/test-delivery.js) — require.
   - **Outside modules:** `fs`, `path`.
 
-- [`jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — In-memory download and provider-search queues with separate lanes.
+- [`jobQueue.js`](../Whatsapp%20bot/utils/jobQueue.js) — Immediate-start download and provider-search runner with active-work tracking and memory safeguards.
   - **References:**
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
   - **Referenced by:**

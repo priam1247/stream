@@ -15,6 +15,7 @@
  */
 
 const fs = require('fs');
+const log = require('./logger')('media');
 const path = require('path');
 const config = require('../config');
 const YT = require('./youtubedl');
@@ -86,21 +87,20 @@ async function downloadDirect(url, dest, maxMB, onProgress) {
  */
 async function downloadAndSend(sock, msg, extra, {
   url, kind = 'video', height = 720, title = '', author = '', attempts = [],
-  lane = null, waited = false,
+  lane = null, stripCaption = false,
 } = {}) {
   const chatId = extra?.from || msg.key.remoteJid;
   const say = (text) => sock.sendMessage(chatId, { text }, { quoted: msg });
   const react = (emoji) => sock.sendMessage(chatId, { react: { text: emoji, key: msg.key } }).catch(() => {});
 
   if (lane) {
-    let queued = false;
     return jobQueue.runInLane(lane, () => downloadAndSend(sock, msg, extra, {
-      url, kind, height, title, author, attempts, waited: queued,
-    }), async () => {
-      queued = true;
-      await react('⏳');
-    });
+      url, kind, height, title, author, attempts, stripCaption,
+    }));
   }
+  // Facebook descriptions can contain the post caption and engagement text.
+  // Never put those in the outgoing caption, document name or audio tags.
+  if (stripCaption) { title = 'Facebook video'; author = ''; }
 
   const stamp = `${kind === 'audio' ? 'aud' : 'dl'}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const outBase = path.join(getTempDir(), stamp);
@@ -109,7 +109,7 @@ async function downloadAndSend(sock, msg, extra, {
   let diskReservation = null;
 
   try {
-    if (!waited) await react('⏳');
+    await react('⏳');
     diskReservation = diskSpace.reserveMediaSpace(getTempDir(), config.media || {}, {
       label: `media:${kind}`,
       tagDir: getTempDir(),
@@ -157,7 +157,7 @@ async function downloadAndSend(sock, msg, extra, {
     // Installed local engines remain fallbacks.
     if (!file) try {
       const onAttempt = (name, err, info) => {
-        console.log(`[media] yt-dlp profile "${name}" failed (${info.code})`);
+        log.debug(`yt-dlp profile ${name} failed (${info.code})`);
         attempts.push({ engine: `yt-dlp:${name}`, code: info.code });
       };
       if (kind === 'audio') {
@@ -251,7 +251,7 @@ async function downloadAndSend(sock, msg, extra, {
           files.push(file);
           providerSniff = remoteHit.sniff;
           title = title || remoteHit.title;
-          console.log(`[media] downloaded via ${via} (${remoteHit.sniff.kind}/${remoteHit.sniff.ext})`);
+          log.debug(`downloaded via ${via} (${remoteHit.sniff.kind}/${remoteHit.sniff.ext})`);
         }
       }
     }
@@ -273,7 +273,7 @@ async function downloadAndSend(sock, msg, extra, {
       const sent = await sock.sendMessage(chatId, {
         image: { url: file },
         mimetype: sniffed.mime,
-        caption: `🖼️ *${safeName(title, 'image')}*${author ? `\n👤 ${author}` : ''}\n📦 ${fmtMB(size)}${viaText}`,
+        ...(!stripCaption ? { caption: `🖼️ *${safeName(title, 'image')}*${author ? `\n👤 ${author}` : ''}\n📦 ${fmtMB(size)}${viaText}` } : {}),
       }, { quoted: msg });
       await react('✅');
       telemetry.recordDownloadSuccess('image');
@@ -305,7 +305,7 @@ async function downloadAndSend(sock, msg, extra, {
       if (String(config.song?.sendAs || 'document').toLowerCase() === 'audio') {
         await sock.sendMessage(chatId, { audio: { url: finalFile }, mimetype: mime, ptt: false, fileName }, { quoted: msg });
       } else {
-        await sock.sendMessage(chatId, { document: { url: finalFile }, mimetype: mime, fileName, caption }, { quoted: msg });
+        await sock.sendMessage(chatId, { document: { url: finalFile }, mimetype: mime, fileName, ...(!stripCaption ? { caption } : {}) }, { quoted: msg });
       }
       await react('✅');
       telemetry.recordDownloadSuccess('audio');
@@ -329,9 +329,9 @@ async function downloadAndSend(sock, msg, extra, {
     const caption = `🎬 *${title || name}*${author ? `\n👤 ${author}` : ''}\n📦 ${fmtMB(size)} • ${height}p${viaText}`;
 
     if (size > AS_DOC_ABOVE) {
-      await sock.sendMessage(chatId, { document: { url: ready }, mimetype: 'video/mp4', fileName: `${name}.mp4`, caption }, { quoted: msg });
+      await sock.sendMessage(chatId, { document: { url: ready }, mimetype: 'video/mp4', fileName: `${name}.mp4`, ...(!stripCaption ? { caption } : {}) }, { quoted: msg });
     } else {
-      await sock.sendMessage(chatId, { video: { url: ready }, mimetype: 'video/mp4', caption }, { quoted: msg });
+      await sock.sendMessage(chatId, { video: { url: ready }, mimetype: 'video/mp4', ...(!stripCaption ? { caption } : {}) }, { quoted: msg });
     }
     await react('✅');
     telemetry.recordDownloadSuccess('video');

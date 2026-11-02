@@ -17,12 +17,22 @@
 
 const { inspectDisk, BOT_ROOT } = require('./diskSpace');
 const { cleanupOldFiles } = require('./cleanup');
+const log = require('./logger')('disk');
 
 const WARN_RATIO = 0.75;      // 75% (~6.75 GB of 9 GB) -> normal sweep
 const TIGHT_RATIO = 0.88;     // 88% (~7.9 GB of 9 GB)  -> tight temp cap sweep
 const CHECK_INTERVAL_MS = 60_000;
 
 let guardTimer = null;
+let lastNotice = { action: '', at: 0 };
+
+function warnOnce(action, message) {
+  const now = Date.now();
+  if (action !== lastNotice.action || now - lastNotice.at >= 15 * 60_000) {
+    lastNotice = { action, at: now };
+    log.warn(message);
+  } else log.debug(message);
+}
 
 function formatBootComparison(info) {
   const folderLine = `folder ${info.folderUsedMB.toFixed(1)} MB / ${info.budgetMB} MB budget` +
@@ -49,30 +59,28 @@ function checkOnce(opts = {}) {
   const ratio = committedMB / info.budgetMB;
 
   if (ratio >= TIGHT_RATIO) {
-    console.warn(
-      `[DISK] 🟠 ${info.folderUsedMB.toFixed(0)} MB used + ${info.reservedMB.toFixed(0)} MB reserved / ` +
-      `${info.budgetMB} MB (${(ratio * 100).toFixed(1)}%) — running tight temp sweep`
-    );
+    warnOnce('tight', `${info.folderUsedMB.toFixed(0)} MB used + ${info.reservedMB.toFixed(0)} MB reserved / ` +
+      `${info.budgetMB} MB (${(ratio * 100).toFixed(1)}%) — running tight temp sweep`);
     cleanupOldFiles(null, { maxMB: 256 });
     if (typeof global.gc === 'function') global.gc();
     return { action: 'tight', info };
   }
 
   if (ratio >= WARN_RATIO) {
-    console.warn(
-      `[DISK] 🟡 ${info.folderUsedMB.toFixed(0)} MB used + ${info.reservedMB.toFixed(0)} MB reserved / ` +
-      `${info.budgetMB} MB (${(ratio * 100).toFixed(1)}%) — sweeping old temp files`
-    );
+    warnOnce('warn', `${info.folderUsedMB.toFixed(0)} MB used + ${info.reservedMB.toFixed(0)} MB reserved / ` +
+      `${info.budgetMB} MB (${(ratio * 100).toFixed(1)}%) — sweeping old temp files`);
     cleanupOldFiles();
     return { action: 'warn', info };
   }
 
+  lastNotice = { action: '', at: 0 };
   return { action: 'ok', info };
 }
 
 function startDiskGuard(opts = {}) {
   const info = inspectDisk(opts.dir || BOT_ROOT, opts);
-  console.log(formatBootComparison(info));
+  log.info(`${info.folderUsedMB.toFixed(0)} / ${info.budgetMB} MB used`);
+  log.debug(formatBootComparison(info));
 
   if (guardTimer) clearInterval(guardTimer);
   guardTimer = setInterval(() => {

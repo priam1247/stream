@@ -813,9 +813,9 @@ export async function saveBotConnectionConfig(patch: {
 // ============================================================================
 
 function numberApproval(value: unknown): ApprovedUser['approval'] {
-  if (value === 'pending' || value === 'rejected') return value;
   // Rows from before this feature had no approval field and retain access.
-  return value == null || value === 'approved' ? 'approved' : 'rejected';
+  if (value == null || value === 'approved') return 'approved';
+  return value === 'pending' ? 'pending' : 'rejected';
 }
 
 function mapNumberRow(row: Record<string, unknown>): ApprovedUser {
@@ -1521,7 +1521,7 @@ export async function getNextBotPollMs(): Promise<number> {
 
 function canonicalWhitelist(users: ApprovedUser[]) {
   return users
-    .map((u) => ({ number: u.number, label: u.label || '', enabled: Boolean(u.enabled), pairAllowed: u.pairAllowed === true, addedBy: (u.addedBy || '').toLowerCase(), claimId: u.claimId || '', addedAt: u.addedAt || '' }))
+    .map((u) => ({ number: u.number, label: u.label || '', approval: numberApproval(u.approval), enabled: Boolean(u.enabled), pairAllowed: u.pairAllowed === true, addedBy: (u.addedBy || '').toLowerCase(), claimId: u.claimId || '', addedAt: u.addedAt || '' }))
     .sort((a, b) => a.number.localeCompare(b.number));
 }
 

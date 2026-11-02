@@ -53,7 +53,7 @@ function searchOptions(args, defaultKind) {
 
 // Keep legacy trailing link options, but apply explicit flags wherever they
 // appear. A malformed explicit quality must never start a default download.
-function linkOptions(args, defaultKind) {
+function linkOptions(args, defaultKind, defaultHeight) {
   const rest = [];
   let explicitKind;
   let explicitHeight;
@@ -72,7 +72,7 @@ function linkOptions(args, defaultKind) {
     }
     rest.push(token);
   }
-  const parsed = parseOptions(rest, { kind: defaultKind });
+  const parsed = parseOptions(rest, { kind: defaultKind, height: defaultHeight });
   return { ...parsed, kind: explicitKind || parsed.kind, height: explicitHeight || parsed.height, invalidQuality };
 }
 
@@ -95,7 +95,7 @@ function quotedTextOf(msg) {
   );
 }
 
-const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, label, searchable = false, defaultKind = 'video' }) => ({
+const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, label, searchable = false, defaultKind = 'video', defaultHeight = 0, stripCaption = false }) => ({
   name,
   aliases,
   category: 'media',
@@ -108,7 +108,7 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
     const P = config.prefix || '.';
     const input = Array.isArray(args) ? args : [];
     const search = searchable ? searchOptions(input, defaultKind) : null;
-    const link = searchable ? null : linkOptions(input, defaultKind);
+    const link = searchable ? null : linkOptions(input, defaultKind, defaultHeight);
     const quotedUrl = YT.extractUrl(quotedTextOf(msg));
     const url = searchable ? null : (YT.extractUrl(link.rest.join(' ').trim()) || quotedUrl);
     const qualityError = 'Quality must be 144, 240, 360, 480, 720 or 1080.';
@@ -118,7 +118,7 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
       const imageUrl = /\.(?:avif|gif|jpe?g|png|webp)(?:[?#]|$)/i.test(selectedUrl);
       const lane = kind === 'audio' || kind === 'image' || imageUrl ? 'light' : 'heavy';
       return downloadAndSend(socket, message, context, {
-        url: selectedUrl, kind, height, lane,
+        url: selectedUrl, kind, height, lane, stripCaption,
         attempts: [{ engine: `${label} chain`, code: known ? 'OK' : 'HOST_MISMATCH' }],
       });
     };
@@ -150,12 +150,12 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
     await say(`Searching ${hostLabel}...`);
     let found;
     try {
-      // Searches have their own queue and release it before a selected
-      // download starts, so a slow index cannot occupy download-lane slots.
+      // Search starts immediately and is tracked independently of downloads.
       found = await jobQueue.runInLane('search', () => providerSearch.searchProvider(name, search.query, {
         limit: Number(config.search?.maxResults) || 5,
       }));
-    } catch {
+    } catch (error) {
+      if (error.code === 'NOT_ENOUGH_MEMORY') throw error;
       found = { results: [], status: 'unavailable' };
     }
     if (!found.results.length) {
@@ -214,6 +214,8 @@ module.exports = [
     name: 'fb',
     aliases: ['fbdl', 'facebookdl', 'facebook'],
     label: 'facebook',
+    defaultHeight: 1080,
+    stripCaption: true,
     description: 'Download a Facebook video or reel',
     usage: '.fb <Facebook video link>',
     domains: ['facebook.com', 'fb.watch', 'fb.com', 'm.facebook.com'],

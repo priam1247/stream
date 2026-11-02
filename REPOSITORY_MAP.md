@@ -1,6 +1,6 @@
 # Complete repository map
 
-This map covers **353 repository files** in the current single-Botkeep snapshot. The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
+This map covers **367 repository files** in the current single-Botkeep snapshot. The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
 
 ## Contents
 
@@ -51,7 +51,7 @@ This map covers **353 repository files** in the current single-Botkeep snapshot.
 - **Browser ↔ dashboard:** pages and components call same-origin Next.js routes. Permissions are enforced in route handlers and shared guards, not by hiding a button alone.
 - **Bot → dashboard:** the bot posts heartbeats, results, and encrypted session-backup operations to dashboard routes. The response carries queued actions and access/policy state. The optional reverse direction uses the bot's admin HTTP API, if enabled/configured.
 - **Dashboard → Scribd:** only the server-side dashboard adapter contacts the Scribd web service. The configured HTTPS proxy is in `dashboard/lib/scribd-config.ts`; the existing token is read server-side, not sent to the browser. The proxy may forward to its origin over HTTP, so HTTPS to the proxy is not proof of encrypted origin traffic.
-- **Remote integrations:** WhatsApp/Baileys, Cloudflare D1, SMTP, the hosting panel, Scribd/CloakBrowser, optional Drime and Discord, and media/metadata/debrid providers are outside this repository.
+- **Remote integrations:** WhatsApp/Baileys, Cloudflare D1, SMTP, the hosting panel, Scribd/CloakBrowser, optional Drime and Discord, and media and metadata providers are outside this repository.
 
 ## WhatsApp service
 
@@ -71,11 +71,11 @@ engine/media/index.js → metadata, registry, resolver, providers, downloaders
                      engine/host.js → utils/movieHost.js → bot media helpers
 ```
 
-`handler.js` accepts the linked account's own prefixed messages, scopes selections and delivery to the originating session, and checks owner/member command policy. `sessionManager.js` owns account lifecycle; `sessionBackup.js` handles encrypted backup and restore; `dashboardSync.js` exchanges heartbeats, policy, and queued work with the dashboard. `jobQueue.js`, `persistentJobs.js`, and `jobDelivery.js` cover distinct in-memory queue, durable jobs, and account-scoped delivery concerns.
+`handler.js` accepts the linked account's own prefixed messages, scopes selections and delivery to the originating session, and checks owner/member command policy. `sessionManager.js` owns account lifecycle; `sessionBackup.js` handles encrypted backup and restore; `dashboardSync.js` exchanges heartbeats, policy, and queued work with the dashboard. `jobQueue.js` starts requested work concurrently with resource safeguards. `persistentJobs.js` and `jobDelivery.js` recover previously saved jobs and scope delivery to the originating account.
 
 The bot is CommonJS. The nested `engine/package.json` switches that subtree to ES modules; the bridge uses dynamic `import()`. The engine entry point statically registers its selected stream and torrent providers. The three files in `engine/providers/ddl/` register themselves if loaded, but are not imported by the current `engine/media/index.js`; their presence alone does not mean they are active.
 
-Media shortcuts and `.dl` use `utils/mediaPipeline.js` → the keyless YouTube provider where applicable, installed local engines, and remote fallbacks. `.reddit` searches titles through `utils/providerSearch.js` using Reddit or site-filtered indexes, then `utils/selections.js` presents session-scoped choices. Searches use a bounded lane in `utils/jobQueue.js`; direct links remain available through `.dl`. Search results are discovery hints, not verified downloads. `dashboard/lib/bot-data.ts` catalogs canonical commands; member switches apply to commands, not website-wide blocking.
+Media shortcuts and `.dl` use `utils/mediaPipeline.js` → the keyless YouTube provider where applicable, installed local engines, and remote fallbacks. `.reddit` searches titles through `utils/providerSearch.js` using Reddit or site-filtered indexes, then `utils/selections.js` presents session-scoped choices. Searches start immediately through `utils/jobQueue.js`; direct links remain available through `.dl`. Search results are discovery hints, not verified downloads. `dashboard/lib/bot-data.ts` catalogs canonical commands; member switches apply to commands, not website-wide blocking.
 
 ## Dashboard
 
@@ -193,6 +193,7 @@ Next.js discovers each endpoint from its `app/api/.../route.ts` path. Methods be
 | `/api/bot/session-backups` | POST | [`bot/session-backups/route.ts`](dashboard/app/api/bot/session-backups/route.ts) |
 | `/api/bot/sync` | POST | [`bot/sync/route.ts`](dashboard/app/api/bot/sync/route.ts) |
 | `/api/bot/whitelist` | GET | [`bot/whitelist/route.ts`](dashboard/app/api/bot/whitelist/route.ts) |
+| `/api/member/cancel-pending` | POST | [`member/cancel-pending/route.ts`](dashboard/app/api/member/cancel-pending/route.ts) |
 | `/api/member/numbers` | POST | [`member/numbers/route.ts`](dashboard/app/api/member/numbers/route.ts) |
 | `/api/member/numbers/[number]` | PATCH, DELETE | [`member/numbers/[number]/route.ts`](dashboard/app/api/member/numbers/%5Bnumber%5D/route.ts) |
 | `/api/member/pair` | GET, POST | [`member/pair/route.ts`](dashboard/app/api/member/pair/route.ts) |
@@ -297,6 +298,8 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   │   │   └── whitelist/
 │   │   │   │       └── route.ts
 │   │   │   ├── member/
+│   │   │   │   ├── cancel-pending/
+│   │   │   │   │   └── route.ts
 │   │   │   │   ├── numbers/
 │   │   │   │   │   ├── [number]/
 │   │   │   │   │   │   └── route.ts
@@ -355,6 +358,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── member-connection.tsx
 │   │   ├── member-home.tsx
 │   │   ├── member-portal.tsx
+│   │   ├── member-workspace.tsx
 │   │   ├── pairing-code-banner.tsx
 │   │   ├── scribd-desk.tsx
 │   │   ├── section-nav.tsx
@@ -373,6 +377,8 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── control-room.ts
 │   │   ├── email-service.ts
 │   │   ├── jwt.ts
+│   │   ├── member-analytics.ts
+│   │   ├── member-insights-server.ts
 │   │   ├── member-link.ts
 │   │   ├── panel-client.ts
 │   │   ├── rate-limit.ts
@@ -406,10 +412,14 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── control-room-storage.test.ts
 │   │   ├── d1-initialization.test.ts
 │   │   ├── email-branding.test.ts
+│   │   ├── member-cancel-pending.test.ts
 │   │   ├── member-command-controls.test.tsx
 │   │   ├── member-features-security.test.ts
 │   │   ├── member-home.test.tsx
+│   │   ├── member-insights.test.ts
 │   │   ├── member-link-api.test.ts
+│   │   ├── member-link-storage-local.test.ts
+│   │   ├── member-onboarding-e2e.test.ts
 │   │   ├── member-portal.test.tsx
 │   │   ├── member-scribd-navigation.test.tsx
 │   │   ├── pairing-code-banner.test.tsx
@@ -562,18 +572,11 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   │   │   ├── fourkhdhub.js
 │   │   │   │   ├── hdhub4u.js
 │   │   │   │   └── moviesdrive.js
-│   │   │   ├── debrid/
-│   │   │   │   ├── _http.js
-│   │   │   │   ├── alldebrid.js
-│   │   │   │   ├── index.js
-│   │   │   │   └── realdebrid.js
 │   │   │   ├── stream/
 │   │   │   │   ├── moviebox.js
 │   │   │   │   ├── vaplayer.js
-│   │   │   │   ├── videasy.js
 │   │   │   │   ├── vidlink.js
-│   │   │   │   ├── vidsrc.js
-│   │   │   │   └── vixsrc.js
+│   │   │   │   └── vidsrc.js
 │   │   │   └── torrent/
 │   │   │       ├── _trackers.js
 │   │   │       ├── apibay.js
@@ -595,6 +598,7 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── install-ytdlp.sh
 │   │   ├── selftest.js
 │   │   ├── test-account-routing.js
+│   │   ├── test-approval-readiness.js
 │   │   ├── test-bridge.js
 │   │   ├── test-command-removal.js
 │   │   ├── test-delivery.js
@@ -603,11 +607,14 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── test-media-downloads.js
 │   │   ├── test-media-extractors.py
 │   │   ├── test-media-shortcuts.js
+│   │   ├── test-member-telemetry.js
 │   │   ├── test-nm3u8dl-live.js
 │   │   ├── test-preflight.js
 │   │   ├── test-provider-core.js
 │   │   ├── test-provider-search-handler.js
 │   │   ├── test-provider-search.js
+│   │   ├── test-public-media.js
+│   │   ├── test-readiness.js
 │   │   ├── test-sandbox.js
 │   │   ├── test-service-startup.js
 │   │   ├── test-session-backup.js
@@ -630,13 +637,14 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── jid.js
 │   │   ├── jobDelivery.js
 │   │   ├── jobQueue.js
-│   │   ├── knightYouTube.js
 │   │   ├── jsonStore.js
+│   │   ├── knightYouTube.js
 │   │   ├── logger.js
 │   │   ├── mediaPipeline.js
 │   │   ├── mediaSettings.js
 │   │   ├── mediaTransfer.js
 │   │   ├── memberCommandPolicy.js
+│   │   ├── memberTelemetry.js
 │   │   ├── movieEngine.js
 │   │   ├── movieHost.js
 │   │   ├── nm3u8dl.js

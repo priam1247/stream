@@ -129,13 +129,9 @@ module.exports = {
     budgetMB: Number(env.DISK_BUDGET_MB ?? 9000),
     tempMaxMB: Number(env.TEMP_MAX_MB ?? 2048),
   },
-  // ─── Download concurrency ────────────────────────────────────────────────
-  // light  = link/YouTube downloads: 20 at a time (QUEUE_LIGHT)
-  // heavy  = movie/episode jobs: 2 at a time (QUEUE_HEAVY, tuned for 10 GB disk)
+  // Reject immediately if memory is critically low; commands never queue.
   queue: {
-    light: Math.max(1, Math.floor(Number(env.QUEUE_LIGHT) || 20)),
-    heavy: Math.max(1, Math.floor(Number(env.QUEUE_HEAVY) || 2)),
-    minFreeMB: Math.max(0, Number(env.QUEUE_MIN_FREE_MB || 220)),
+    minFreeMB: Math.max(0, Number(env.QUEUE_MIN_FREE_MB ?? 220)),
   },
 
   messages: {
@@ -174,8 +170,8 @@ module.exports = {
   },
 
   // ─── Movies & series (.movie / .series) ──────────────────────────────────
-  // The engine needs a free TMDB key (themoviedb.org) for titles/posters.
-  // Torrent sources use debrid when configured, otherwise download directly.
+  // Keyless metadata and source providers work without account tokens.
+  // TMDB, OMDb and Trakt are optional metadata enrichments.
   movies: {
     // ── metadata sources ──────────────────────────────────────────────────
     // TMDB is the primary source (free key). Everything below it is a fallback
@@ -193,10 +189,7 @@ module.exports = {
     },
     imdbIndexFile: env.IMDB_INDEX_FILE || 'temp/imdb-index.tsv',   // optional bulk dump index
 
-    // ── debrid (unlocks the torrent tier) ─────────────────────────────────
-    // DEBRID_API_KEY is accepted as a generic alias (Real-Debrid by default)
-    realDebridKey: env.REALDEBRID_API_KEY || env.DEBRID_API_KEY || '',
-    allDebridKey: env.ALLDEBRID_API_KEY || '',
+    // Torrent downloads use the optional direct WebTorrent engine.
     torrentDirect: !/^(0|false|no|off)$/i.test(String(env.TORRENT_DIRECT ?? 'true')),
     torrentMinSeeds: Number(env.TORRENT_MIN_SEEDS || 3),
     torrentMetadataTimeoutMs: Number(env.TORRENT_METADATA_TIMEOUT_MS || 90_000),
@@ -236,9 +229,6 @@ module.exports = {
     tempDir: env.MOVIE_TEMP_DIR || 'temp/movies',
     dataDir: env.MOVIE_DATA_DIR || 'temp/movies/data',
 
-    // movies from different chats download in parallel (1–2 for a 10 GB plan)
-    queueConcurrency: Math.max(1, Number(env.MOVIE_CONCURRENCY || 2)),
-    jobTimeoutMs: Number(env.MOVIE_JOB_TIMEOUT_MS || 60 * 60 * 1000),
     dryRun: env.MOVIE_DRY_RUN === '1',                // resolve only, send the link
 
     // Legacy switch for deployments that disable direct torrent downloads.

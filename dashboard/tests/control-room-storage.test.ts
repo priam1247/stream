@@ -11,6 +11,7 @@ vi.mock('node:fs', () => ({
   },
 }));
 import { appendActivity, claimPairCooldown, completeBotCommand, deleteWhatsAppUserIfOwned, enqueueBotCommand, getBotCommandById, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, updateStoredWhatsAppUser, resolvePendingWhatsAppUser, setMemberPermission, getMemberCommandPolicy, setMemberCommandDisabled, addSupportMessage, listSupportMessages, listSupportThreads, countMemberSupportUnread, isMemberScribdAllowed, listRecentActivity, releasePairCooldown, saveCompletedPairResult, saveMemberWhatsAppUser, saveStoredWhatsAppUser, setMemberScribdAllowed } from '../lib/storage';
+import { whitelistVersionFor } from '../lib/storage';
 import { maskedNumber } from '../lib/activity';
 
 beforeEach(() => {
@@ -103,6 +104,21 @@ describe('local control-room persistence', () => {
     expect(await getStoredWhatsAppUser('265991234567')).toMatchObject({ approval: 'pending', enabled: false, pairAllowed: true });
     expect(await resolvePendingWhatsAppUser('265991234567', 'other@example.com', true)).toBeNull();
     expect(await resolvePendingWhatsAppUser('265991234567', 'maya@example.com', true)).toMatchObject({ approval: 'approved', enabled: true, pairAllowed: false });
+  });
+
+  it('allows a pending number to link but never enables a rejected or unknown state', async () => {
+    expect(await saveMemberWhatsAppUser('265991234567', 'Maya', 'maya@example.com')).toBe(true);
+    const pending = await getStoredWhatsAppUser('265991234567');
+    expect(pending).toMatchObject({ approval: 'pending', enabled: false, pairAllowed: true });
+    expect(await resolvePendingWhatsAppUser('265991234567', 'maya@example.com', false))
+      .toMatchObject({ approval: 'rejected', enabled: false, pairAllowed: false });
+    const rejected = await getStoredWhatsAppUser('265991234567');
+    expect(rejected).toMatchObject({ approval: 'rejected', enabled: false, pairAllowed: false });
+    expect(whitelistVersionFor([pending!], true)).not.toBe(whitelistVersionFor([rejected!], true));
+    const samePermissions = { ...pending!, pairAllowed: false };
+    expect(whitelistVersionFor([samePermissions], true)).not.toBe(whitelistVersionFor([rejected!], true));
+    disk.text = JSON.stringify({ whatsappUsers: [{ number: '11111111', enabled: true, approval: 'unexpected' }] });
+    expect(await getStoredWhatsAppUser('11111111')).toMatchObject({ approval: 'rejected', enabled: false, pairAllowed: false });
   });
 
   it('stores independent command switches with a version that changes on each policy change', async () => {

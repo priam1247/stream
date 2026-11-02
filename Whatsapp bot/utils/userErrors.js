@@ -37,6 +37,10 @@ function safeErrorMessage(err, { fallback = null, isOwner = false } = {}) {
   const code = String(err.code || '').toUpperCase();
   const raw = String(err.message || '').split('\n')[0].trim();
 
+  if (code === 'NOT_ENOUGH_MEMORY') {
+    return '❌ Server memory is temporarily low. Please try again shortly.';
+  }
+
   if (code === 'NOT_ENOUGH_DISK' || /not enough disk/i.test(raw)) {
     return '❌ Server storage is temporarily full while other downloads finish. Please try again in a few minutes.';
   }

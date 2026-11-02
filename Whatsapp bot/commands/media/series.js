@@ -6,8 +6,7 @@
  *   .series <title> s01      [quality]    same as full season
  *   .series <title> s01 full [quality]    season pack (link when it is huge)
  *
- * Episodes are resolved one at a time through the engine's fair queue, so a
- * 10-episode batch can never block .song / .paper / other chats.
+ * Episodes in one batch are sequential; other chats start immediately.
  *
  * Quiet by design: reactions (⏳ → ✅ / ❌) instead of chat spam, one file
  * message per episode, and one short line only if something failed.
@@ -19,7 +18,7 @@ const config = require('../../config');
 const engine = require('../../utils/movieEngine');
 const selections = require('../../utils/selections');
 const host = require('../../utils/movieHost');
-const { getTempDir } = require('../../utils/tempManager');
+const { getTempDir, createTempFilePath, deleteTempFile, holdTemp } = require('../../utils/tempManager');
 const diskSpace = require('../../utils/diskSpace');
 const { safeErrorMessage } = require('../../utils/userErrors');
 const logger = require('../../utils/logger');
@@ -328,13 +327,21 @@ async function trySubtitles(sock, msg, chatId, meta, season, episode) {
   if ((MOVIES().subtitles ?? true) === false) return null;
   const lang = MOVIES().subtitleLang || 'en';
   const base = `${meta.title} S${pad(season)}E${pad(episode)}`;
-  const dest = path.join(getTempDir(), `${base.replace(/[\\/:*?"<>|]+/g, ' ')}.${lang}.srt`);
+  const dest = createTempFilePath('series_sub', 'srt');
+  const releaseHold = holdTemp(path.basename(dest, '.srt'));
+  let sub = null;
   try {
-    const sub = await engine.subtitles(meta, { season, episode, lang, dest });
+    sub = await engine.subtitles(meta, { season, episode, lang, dest });
     if (!sub?.file || !fs.existsSync(sub.file)) return null;
     await host.sendSubtitle(sock, chatId, msg, { file: sub.file, name: base, language: sub.language || lang });
     return sub;
   } catch { return null; }
+  finally {
+    deleteTempFile(sub?.file);
+    deleteTempFile(dest);
+    deleteTempFile(dest.replace(/\.srt$/i, '.vtt'));
+    releaseHold();
+  }
 }
 
 async function sendEpisode(sock, msg, chatId, file, meta, season, episode, quality, res) {
@@ -369,9 +376,10 @@ async function deliverSeasonPack(sock, msg, extra, meta, job) {
   await react('⏳');
   let packReservation = null;
   let packFile = null;
+  let packHold = null;
 
   try {
-    // resolve + (if it fits) download inside one queue slot
+    // Start immediately; disk reservations protect concurrent downloads.
     const out = await engine.enqueue(chatId, `season ${meta.title} S${pad(season)}`, async () => {
       const resolved = await engine.resolveSeason({
         item: meta, tmdbId: meta.tmdbId, title: meta.title, year: meta.year, season, quality: job.quality,
@@ -397,17 +405,23 @@ async function deliverSeasonPack(sock, msg, extra, meta, job) {
         tagDir: path.dirname(dest),
         tagPrefix: path.basename(dest, path.extname(dest)),
       });
+      const releaseHold = holdTemp(path.basename(dest, path.extname(dest)));
       try {
         const saved = await engine.download(resolved, dest);
-        return { res: resolved, file: (saved && saved.file) || dest, reservation };
+        return { res: resolved, file: (saved && saved.file) || dest, reservation, releaseHold };
       } catch (e) {
         reservation.release();
+        for (const f of [dest, dest.replace(/\.(mp4|mkv|ts|m4v)$/i, '') + '.ts']) {
+          try { fs.rmSync(f, { force: true }); } catch { /* ignore */ }
+        }
+        releaseHold();
         throw e;
       }
     }, { timeoutMs: MOVIES().jobTimeoutMs });
 
-    const { res, file, reservation } = out;
+    const { res, file, reservation, releaseHold } = out;
     packReservation = reservation || null;
+    packHold = releaseHold || null;
     packFile = file || null;
 
     if (MOVIES().dryRun) {
@@ -446,6 +460,7 @@ async function deliverSeasonPack(sock, msg, extra, meta, job) {
   } finally {
     if (packFile) await host.release(packFile).catch(() => false);
     packReservation?.release?.();
+    packHold?.();
   }
 }
 
@@ -479,6 +494,7 @@ async function fetchEpisodeSource(meta, season, ep, quality, attempts = 3) {
       tagDir: path.dirname(dest),
       tagPrefix: path.basename(dest, path.extname(dest)),
     });
+    const releaseHold = holdTemp(path.basename(dest, path.extname(dest)));
     try {
       const saved = await engine.download(resolved, dest);
       const realFile = downloadedFile = (saved && saved.file) || dest;
@@ -486,9 +502,10 @@ async function fetchEpisodeSource(meta, season, ep, quality, attempts = 3) {
       if (!size) throw new Error('download produced an empty file');
       const epRuntime = resolved.episodeRuntime || (resolved.meta || meta).episodeRuntime || (resolved.meta || meta).runtime;
       await require('./movie')._assertFullLength(realFile, epRuntime, 'episode');
-      return { res: resolved, file: realFile, reservation };
+      return { res: resolved, file: realFile, reservation, releaseHold };
     } catch (e) {
       reservation.release();
+      releaseHold();
       lastErr = e;
       log.warn(`${meta.title} S${pad(season)}E${pad(ep)} · ${resolved.provider} download failed · ${e.message}`);
       exclude.push(resolved.provider);
@@ -545,8 +562,9 @@ async function deliver(sock, msg, extra, meta, job) {
     const tag = `S${pad(season)}E${pad(ep)}`;
     let epReservation = null;
     let epFile = null;
+    let epHold = null;
     try {
-      // resolve + download in ONE queue slot so a batch stays sequential
+      // Episodes in this request are sequential; other requests start immediately.
       const done = await engine.enqueue(
         chatId,
         `${meta.title} ${tag}`,
@@ -554,8 +572,9 @@ async function deliver(sock, msg, extra, meta, job) {
         { timeoutMs: MOVIES().jobTimeoutMs }
       );
 
-      const { res, file, reservation } = done;
+      const { res, file, reservation, releaseHold } = done;
       epReservation = reservation || null;
+      epHold = releaseHold || null;
       epFile = file || null;
 
       if (MOVIES().dryRun) {
@@ -583,6 +602,7 @@ async function deliver(sock, msg, extra, meta, job) {
     } finally {
       if (epFile) await host.release(epFile).catch(() => false);
       epReservation?.release?.();
+      epHold?.();
     }
   }
 

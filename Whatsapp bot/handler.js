@@ -12,6 +12,21 @@ const telemetry = require('./utils/telemetry');
 const memberTelemetry = require('./utils/memberTelemetry');
 const accountSockets = require('./utils/accountSockets');
 const memberCommandPolicy = require('./utils/memberCommandPolicy');
+const log = require('./utils/logger')('commands');
+
+const REACTIONS = {
+  menu: '📖', ping: '🏓', cancel: '✖️', paper: '📚', countpapers: '📚', refreshpapers: '📚',
+  movie: '🎬', series: '📺', song: '🎵', ytv: '🎬', spotify: '🎵',
+  sticker: '🎨', viewonce: '👁️', info: '🔎', providers: '🔎',
+  moviestatus: '📊', status: '📊', restart: '🔄', on: '⚙️', off: '⚙️',
+  allow: '🔐', disallow: '🔐', listusers: '👥',
+};
+
+async function reactToCommand(sock, msg, from, name) {
+  if (!msg?.key || !from) return;
+  try { await sock.sendMessage(from, { react: { text: REACTIONS[name] || '📥', key: msg.key } }); }
+  catch { /* reactions are best effort and must not prevent the command */ }
+}
 
 // Load all commands
 const commands = loadCommands();
@@ -111,7 +126,8 @@ async function runCommand(sock, msg, name, args, { from, sender, senderIds }) {
     return true;
   }
 
-  console.log(`Executing command: ${invoked}`);
+  log.debug(`executing .${invoked}`);
+  await reactToCommand(sock, msg, from, command.name || invoked);
   telemetry.recordCommand(command.name || invoked);
   try { memberTelemetry.recordCommand(command.name || invoked, sock.__memberUsageScope?.()); }
   catch { /* personal analytics must not interrupt command execution */ }
@@ -137,6 +153,7 @@ async function handleSelection(sock, msg, body, { from, sender, senderIds, quote
 
   if (selections.isCancel(body)) {
     selections.clear(from, senderIds, opts);
+    await reactToCommand(sock, msg, from, 'cancel');
     await sock.sendMessage(from, { text: '👍 Cancelled.' }, selections.quoteOpts(msg));
     return true;
   }
@@ -149,6 +166,7 @@ async function handleSelection(sock, msg, body, { from, sender, senderIds, quote
       await sock.sendMessage(from, { text: 'This command is temporarily unavailable. Please try again later.' }, selections.quoteOpts(msg));
       return true;
     }
+    await reactToCommand(sock, msg, from, canonicalName);
     try {
       await picked.entry.run(sock, msg, buildExtra(sock, msg, { from, sender, senderIds, commandName: originatingName }), picked.item);
     } catch (e) {

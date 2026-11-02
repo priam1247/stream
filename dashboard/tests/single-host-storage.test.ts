@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BOTKEEP_API_BASE } from '../lib/botkeep-config';
 import { cancelPendingWhatsAppUser, claimPairCooldown, claimPendingBotCommands, completeBotCommand, deleteWhatsAppUserIfOwned, getBotConnectionConfig, getBotHeartbeat, getPanelConnectionConfig,
   importLocalWhatsAppUser, listConfirmedMemberLinks, releaseClaimedBotCommands, saveBotConnectionConfig, saveBotHeartbeat,
-  saveBotHeartbeatIfNewer, saveConfirmedMemberLinks, savePanelConnectionConfig, sessionBackupClaim } from '../lib/storage';
+  saveBotHeartbeatIfNewer, saveConfirmedMemberLinks, savePanelConnectionConfig, sessionBackupClaim, getStoredWhatsAppUser, resolvePendingWhatsAppUser } from '../lib/storage';
 import type { ApprovedUser, ConfirmedMemberLink } from '../lib/types';
 
 let db: DatabaseSync;
@@ -15,6 +15,7 @@ beforeEach(() => {
       status TEXT NOT NULL, result_json TEXT, error_text TEXT, requested_by TEXT, created_at INTEGER, expires_at INTEGER);
     CREATE TABLE portal_whatsapp_access (number TEXT PRIMARY KEY, label TEXT, enabled INTEGER, added_by TEXT,
       added_at TEXT, approval_status TEXT, claim_id TEXT);
+    CREATE TABLE portal_member_permissions (email TEXT PRIMARY KEY, name TEXT, allowed INTEGER, updated_at TEXT);
     CREATE TABLE portal_session_backups (slot TEXT PRIMARY KEY, generation TEXT, claim_token TEXT, revision INTEGER, ciphertext TEXT, revoked INTEGER, updated_at INTEGER);
     CREATE TABLE portal_pair_cooldowns (number TEXT PRIMARY KEY, retry_at INTEGER NOT NULL);
     CREATE TABLE portal_bot_failover (id TEXT PRIMARY KEY, owner_role TEXT, owner_instance TEXT, expires_at INTEGER, epoch INTEGER);`);
@@ -90,6 +91,17 @@ describe('single Botkeep storage with old database values', () => {
     ]);
     expect(await getBotConnectionConfig()).toMatchObject({ botSyncToken: 'new-sync-token', botApiUrl: 'https://new-bot.example', botAdminToken: 'new-bridge-token', botEnabledForMembers: false });
     expect(await getPanelConnectionConfig()).toMatchObject({ panelServerId: 'workload-new', panelApiKey: 'botkeep-api-key-123456' });
+  });
+  it('maps pending, approved, rejected and legacy D1 rows correctly', async () => {
+    const insert = db.prepare(`INSERT INTO portal_whatsapp_access VALUES (?, 'Member', ?, 'member@example.com', '2026-01-01', ?, 'claim')`);
+    insert.run('15550001111', 1, 'pending');
+    insert.run('15550002222', 1, 'rejected');
+    insert.run('15550003333', 1, null);
+    expect(await getStoredWhatsAppUser('15550001111')).toMatchObject({ approval: 'pending', enabled: false, pairAllowed: true });
+    expect(await getStoredWhatsAppUser('15550002222')).toMatchObject({ approval: 'rejected', enabled: false, pairAllowed: false });
+    expect(await getStoredWhatsAppUser('15550003333')).toMatchObject({ approval: 'approved', enabled: true, pairAllowed: false });
+    expect(await resolvePendingWhatsAppUser('15550001111', 'member@example.com', true, 'claim'))
+      .toMatchObject({ approval: 'approved', enabled: true });
   });
   it('does not let a local owner import overwrite or re-enable a member', async () => {
     db.prepare(`INSERT INTO portal_whatsapp_access VALUES (?, 'Member', 0, 'member@example.com', '2026-01-01', 'pending', 'claim')`).run('15550001111');

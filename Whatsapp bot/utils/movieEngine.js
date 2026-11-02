@@ -54,8 +54,6 @@ function applyConfig() {
   setIfEmpty('META_IMDB', m.metadata?.imdb === false ? '0' : '1');
   setIfEmpty('META_TVMAZE', m.metadata?.tvmaze === false ? '0' : '1');
   setIfEmpty('META_ANIME', m.metadata?.anime === false ? '0' : '1');
-  setIfEmpty('REALDEBRID_API_KEY', m.realDebridKey);
-  setIfEmpty('ALLDEBRID_API_KEY', m.allDebridKey);
 
   // paths — always inside the bot's own temp folder
   setIfEmpty('TEMP_DIR', movieTemp);
@@ -80,8 +78,6 @@ function applyConfig() {
   setIfEmpty('TORRENT_METADATA_TIMEOUT_MS', m.torrentMetadataTimeoutMs);
   setIfEmpty('TORRENT_STALL_TIMEOUT_MS', m.torrentStallTimeoutMs);
   setIfEmpty('REGION', m.region || 'US');
-  setIfEmpty('CONCURRENCY', m.queueConcurrency);
-  setIfEmpty('JOB_TIMEOUT_MS', m.jobTimeoutMs);
   setIfEmpty('DRY_RUN', m.dryRun ? '1' : '');
   setIfEmpty('BOT_NAME', config.botName);
   setIfEmpty('MOVIE_QUIET', '1');                  // engine must not print warnings itself
@@ -181,11 +177,6 @@ module.exports = {
     return subtitles(meta, { season, episode, lang, dest });
   },
 
-  /** verify the configured debrid keys against the provider APIs */
-  async debridAccounts() {
-    const { debrid } = await load();
-    return debrid.probe();
-  },
   async movieDetails(tmdbId) {
     const { tmdb } = await load();
     return tmdb.movieDetails(tmdbId);
@@ -258,10 +249,10 @@ module.exports = {
     return download(res, file, onProgress);
   },
 
-  /** run a job in the engine's fair queue (one heavy job at a time by default) */
+  /** Track a movie job without delaying other requests. */
   async enqueue(jid, label, fn, opts = {}) {
     const { queue } = await load();
-    return queue.add(jid, label, fn, opts);
+    return require('./jobQueue').runInLane('heavy', () => queue.add(jid, label, fn, opts));
   },
   async queuePosition(jid) {
     const { queue } = await load();
@@ -282,7 +273,7 @@ module.exports = {
     const { cache } = await load();
     return cache.stats();
   },
-  /** wait for everything currently downloading (used by .movie status) */
+  /** Report work currently downloading (used by .moviestatus). */
   async queueSize() {
     const { queue } = await load();
     return { queued: queue.size, running: queue.busy };

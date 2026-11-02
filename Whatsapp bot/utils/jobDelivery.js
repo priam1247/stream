@@ -42,12 +42,15 @@ function discardJob(job) {
     if (!file) continue;
     const target = path.resolve(String(file));
     const owned = [router.mediaDir(), getTempDir()].some((dir) => {
-      const root = path.resolve(dir);
-      return target === root || target.startsWith(`${root}${path.sep}`);
+      try {
+        const root = fs.realpathSync(dir);
+        const actual = path.join(fs.realpathSync(path.dirname(target)), path.basename(target));
+        return actual.startsWith(`${root}${path.sep}`);
+      } catch { return false; }
     });
     if (owned) {
-      try { fs.rmSync(target, { force: true }); } catch { /* already gone */ }
-    } else deleteTempFile(file);
+      try { fs.unlinkSync(target); } catch { /* already gone */ }
+    }
   }
 }
 

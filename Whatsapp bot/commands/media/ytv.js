@@ -92,7 +92,6 @@ const execute = async (sock, msg, args, extra) => {
       return say('❌ No results found.');
     }
     if (results.length > 1 && pickerOn && !firstHit) {
-      void YT.getInfo(results[0].url).catch(() => {});
       const listText = youtubeSearch.formatResults(results, {
         header: `🔎 *${query}*`,
         note: `Reply *${config.prefix}1*–*${config.prefix}${results.length}* (${height}p) or *${config.prefix}cancel*.`,
@@ -139,7 +138,6 @@ const execute = async (sock, msg, args, extra) => {
     return say(`❌ Video is ${Math.round(duration / 60)} min — the limit is ${MAX_MINUTES} min.`);
   }
 
-  let waited = false;
   return await jobQueue.runInLane('light', async () => {
     const stamp = `ytv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const outBase = path.join(getTempDir(), stamp);
@@ -147,7 +145,7 @@ const execute = async (sock, msg, args, extra) => {
     let diskReservation = null;
 
     try {
-    if (!waited) await react('⏳');
+    await react('⏳');
     diskReservation = diskSpace.reserveMediaSpace(getTempDir(), config.media || {}, {
       label: 'ytv',
       tagDir: getTempDir(),
@@ -155,6 +153,7 @@ const execute = async (sock, msg, args, extra) => {
     });
 
     let file = null;
+    let verifiedInfo = null;
     let via = 'yt-dlp';
     const deadlineAt = Date.now() + JOB_DEADLINE;
     const candidates = [height, ...QUALITIES.filter(q => q < height).reverse()].slice(0, 3);
@@ -171,7 +170,7 @@ const execute = async (sock, msg, args, extra) => {
             outBase, kind: 'video', maxBytes: MAX_VIDEO_MB * 1024 * 1024, maxSeconds: MAX_MINUTES * 60, expectedSeconds: duration,
           }),
         });
-        file = hit.file; via = hit.provider; title = title || hit.title;
+        file = hit.file; verifiedInfo = hit.metadata; via = hit.provider; title = title || hit.title;
         duration = duration || hit.metadata?.duration || 0;
         height = hit.quality || requestedHeight;
       } catch (error) {
@@ -269,6 +268,7 @@ const execute = async (sock, msg, args, extra) => {
       via = remoteHit.provider;
       height = remoteHit.quality || requestedHeight;
       file = remoteHit.file;
+      verifiedInfo = remoteHit.metadata;
       title = title || remoteHit.title;
       log.info(`via ${via} · ${remoteHit.sniff.kind}/${remoteHit.sniff.ext}`);
     }
@@ -282,9 +282,9 @@ const execute = async (sock, msg, args, extra) => {
 
     diskSpace.requireMediaCopySpace(getTempDir(), fs.statSync(file).size / 1048576, config.media || {});
     // ── Make it playable in WhatsApp (no-op without ffmpeg) ────────────────
-    const ready = await ensureWhatsAppMp4(file, path.join(getTempDir(), `${stamp}_wa.mp4`));
+    const ready = await ensureWhatsAppMp4(file, path.join(getTempDir(), `${stamp}_wa.mp4`), { info: verifiedInfo });
     // Never deliver a silent video: check the audio track survived.
-    const audioCheck = await probeMedia(ready);
+    const audioCheck = ready === file && verifiedInfo?.probed ? verifiedInfo : await probeMedia(ready);
     if (audioCheck.probed && !audioCheck.hasAudio) {
       throw Object.assign(new Error('the downloaded video has no audio track'), { code: 'NO_AUDIO' });
     }
@@ -324,9 +324,6 @@ const execute = async (sock, msg, args, extra) => {
     sweep(stamp);
     if (typeof global.gc === 'function') global.gc();
   }
-  }, async () => {
-    waited = true;
-    await react('⏳');
   });
 };
 

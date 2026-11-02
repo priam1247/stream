@@ -187,7 +187,7 @@ export const MEMBER_COMMANDS = BOT_COMMANDS.filter((command) => !command.ownerOn
     { ...command, name: 'ping', aliases: ['p'], category: 'general', usage: '.ping', example: '.ping', summary: 'Check response time' },
     { ...command, name: 'menu', aliases: ['help', 'commands'], category: 'general', usage: '.menu [section]', example: '.menu', summary: 'Show the command menu' },
     { ...command, name: 'info', aliases: ['meta', 'ids', 'lookup'], category: 'general', usage: '.info [series] <title>', example: '.info Inception', summary: 'Look up movie or series details' },
-    { ...command, name: 'debrid', aliases: ['rd', 'debridstatus'], category: 'general', usage: '.debrid', example: '.debrid', summary: 'Check debrid status' },
+    { ...command, name: 'debrid', aliases: ['rd', 'debridstatus'], category: 'general', usage: '.debrid', example: '.debrid', summary: 'Movie source information' },
   ];
   if (command.name === 'providers') return [
     { ...command, aliases: ['sources'], category: 'general', usage: '.providers', example: '.providers' },

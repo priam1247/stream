@@ -190,7 +190,7 @@ const createSuppressedLogger = (level = 'silent') => {
 })();
 
 const { createSessionManager } = require('./utils/sessionManager');
-const { readWL } = require('./utils/accessControl');
+const { readWL, isApprovedUser, canPairUser } = require('./utils/accessControl');
 const FALLBACK_VERSION = [2, 3000, 1033141466];
 let versionPromise = null;
 let cachedVersion = null;
@@ -226,7 +226,7 @@ async function startService() {
   const { createSessionBackup } = require('./utils/sessionBackup');
   const backup = createSessionBackup({ sessionDir: config.sessionName, dashboardUrl: config.admin?.dashboardUrl,
     token: config.admin?.syncToken, key: process.env.SESSION_BACKUP_KEY,
-    isEligible: (number, claim) => readWL().users.some((user) => String(user.number) === number && user.backupClaim === claim && (user.enabled !== false || user.pairAllowed === true)) });
+    isEligible: (number, claim) => readWL().users.some((user) => String(user.number) === number && user.backupClaim === claim && canPairUser(user)) });
   // Do not create a fresh manifest or credentials when recovery is unavailable.
   await backup.restore();
   const sessions = createSessionManager({
@@ -247,10 +247,10 @@ async function startService() {
     markOnlineOnConnect: false,
     getMessage: async () => undefined,
   }),
-  isAllowed: (number) => permissionsSynced && readWL().users.some((user) => String(user.number) === number && user.enabled !== false),
-  canPair: (number) => permissionsSynced && readWL().users.some((user) => String(user.number) === number && (user.enabled !== false || user.pairAllowed === true)),
+  isAllowed: (number) => permissionsSynced && readWL().users.some((user) => String(user.number) === number && isApprovedUser(user)),
+  canPair: (number) => permissionsSynced && readWL().users.some((user) => String(user.number) === number && canPairUser(user)),
   enforceClaims: portalSyncConfigured,
-  getClaim: (number) => readWL().users.find((user) => String(user.number) === number && (user.enabled !== false || user.pairAllowed === true))?.backupClaim || '',
+  getClaim: (number) => readWL().users.find((user) => String(user.number) === number && canPairUser(user))?.backupClaim || '',
   isSystemJid,
   onMessage: (sock, msg) => handler.handleMessage(sock, msg),
   onOpen: (sock) => { handler.onSocketOpen?.(sock); console.log('WhatsApp connection is ready.'); },
@@ -334,16 +334,14 @@ try { require('./utils/logger').banner([
   const YT = require('./utils/youtubedl');
   const ffmpeg = require('./utils/ffmpeg');
   const nm3u8dl = require('./utils/nm3u8dl');
-  console.log(ffmpeg.works() ? `🎞️ ffmpeg  ${ffmpeg.version() || 'ready'}` : '🎞️ ffmpeg  ❌ not available');
+  const mediaLog = require('./utils/logger')('media');
+  if (!ffmpeg.works()) mediaLog.warn('ffmpeg unavailable; some media conversions will not work.');
+  else mediaLog.debug(`ffmpeg ${ffmpeg.version() || 'ready'}`);
   YT.healthCheck().then((cmd) => {
-    console.log(cmd ? `🎬 yt-dlp  ${YT.version() || 'ready'}` : '🎬 yt-dlp  optional local engine unavailable');
+    mediaLog.debug(cmd ? `yt-dlp ${YT.version() || 'ready'}` : 'optional yt-dlp unavailable');
   }).catch(() => {});
   nm3u8dl.ensureInstalled().then((bin) => {
-    console.log(
-      bin
-        ? `⚡ N_m3u8DL-RE  ${nm3u8dl.version() || 'ready'} (${nm3u8dl.threadCount()}t)`
-        : '⚡ N_m3u8DL-RE  unavailable (falling back to ffmpeg/native HLS)'
-    );
+    mediaLog.debug(bin ? `N_m3u8DL-RE ${nm3u8dl.version() || 'ready'}` : 'N_m3u8DL-RE unavailable; using HLS fallback');
   }).catch(() => {});
   } catch (error) { console.warn('Media helper startup warning:', error.message); }
 })();

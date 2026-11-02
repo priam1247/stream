@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync, spawn } = require('child_process');
-const { getTempDir, deleteTempFile } = require('./tempManager');
+const { getTempDir, deleteTempFile, holdTemp } = require('./tempManager');
 
 const FFMPEG_CANDIDATES = () => [
   process.env.FFMPEG_PATH,
@@ -98,52 +98,49 @@ function version() {
  * @param {string} outExt output extension (no dot)
  */
 function ffmpeg(buffer, args = [], ext = '', outExt = '') {
-  return new Promise((resolve, reject) => {
+  return new Promise((fulfill, reject) => {
     const tempDir = getTempDir();
     const id = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const tmpIn = path.join(tempDir, `conv_${id}${ext ? `.${ext}` : ''}`);
-    const tmpOut = path.join(tempDir, `conv_${id}.${outExt || 'out'}`);
+    const stamp = `conv_${id}`;
+    const tmpIn = path.join(tempDir, `${stamp}_in${ext ? `.${ext}` : ''}`);
+    const tmpOut = path.join(tempDir, `${stamp}_out.${outExt || 'out'}`);
+    const releaseHold = holdTemp(stamp);
+    let settled = false;
+    let ownInput = false, ownOutput = false;
+    const finish = (error, output) => {
+      if (settled) return;
+      settled = true;
+      if (ownInput) deleteTempFile(tmpIn);
+      if (ownOutput) deleteTempFile(tmpOut);
+      releaseHold();
+      if (error) reject(error); else fulfill(output);
+    };
 
     try {
-      fs.writeFileSync(tmpIn, buffer);
-    } catch (e) {
-      return reject(new Error(`Could not write temp file: ${e.message}`));
-    }
+      fs.writeFileSync(tmpIn, buffer, { flag: 'wx' }); ownInput = true;
+      fs.writeFileSync(tmpOut, '', { flag: 'wx' }); ownOutput = true;
+    } catch (e) { return finish(new Error(`Could not write temp file: ${e.message}`)); }
 
     if (!works()) {
-      deleteTempFile(tmpIn);
       const err = new Error('ffmpeg is not installed or not runnable on this host');
       err.code = 'NO_FFMPEG';
-      return reject(err);
+      return finish(err);
     }
 
-    const child = spawn(resolve(), ['-y', '-hide_banner', '-loglevel', 'error', '-i', tmpIn, ...args, tmpOut]);
+    let child;
+    try { child = spawn(resolve(), ['-y', '-hide_banner', '-loglevel', 'error', '-i', tmpIn, ...args, tmpOut]); }
+    catch (error) { return finish(new Error(`Failed to start ffmpeg: ${error.message}`)); }
     let stderr = '';
     child.stderr.on('data', d => { stderr = (stderr + d).slice(-2000); });
-    // If ffmpeg cannot read stdin it just exits; keep the process alive anyway.
     child.stdin.on('error', () => {});
-
-    child.on('error', (e) => {
-      deleteTempFile(tmpIn);
-      deleteTempFile(tmpOut);
-      reject(new Error(`Failed to start ffmpeg: ${e.message}`));
-    });
-
+    child.on('error', (e) => finish(new Error(`Failed to start ffmpeg: ${e.message}`)));
     child.on('close', (code) => {
       try {
-        if (code !== 0) {
-          deleteTempFile(tmpOut);
-          throw new Error(`ffmpeg exited with code ${code}${stderr ? `: ${stderr.trim().split('\n').pop()}` : ''}`);
-        }
+        if (code !== 0) throw new Error(`ffmpeg exited with code ${code}${stderr ? `: ${stderr.trim().split('\n').pop()}` : ''}`);
         const out = fs.readFileSync(tmpOut);
         if (!out.length) throw new Error('ffmpeg produced an empty file');
-        deleteTempFile(tmpOut);
-        resolve(out);
-      } catch (e) {
-        reject(e);
-      } finally {
-        deleteTempFile(tmpIn);
-      }
+        finish(null, out);
+      } catch (e) { finish(e); }
     });
   });
 }

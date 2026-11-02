@@ -303,7 +303,7 @@ function start(opts = {}) {
   const pollMs = Number(opts.pollMs) > 0 ? Number(opts.pollMs) : 1000;
   timer = setInterval(tick, pollMs);
   timer.unref?.();
-  log.info(`worker pool started (max ${maxHeavy()} concurrent, ${maxPerProvider()} per provider)`);
+  log.debug('legacy background-job recovery started');
   return api;
 }
 

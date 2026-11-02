@@ -22,10 +22,6 @@ clearHostConfig();
 process.env.MAX_DOWNLOAD_MB = '1';
 process.env.MIN_SAMPLE_MB = '0';
 process.env.DOWNLOAD_RETRIES = '0';
-process.env.MAX_PER_HOST = '4';
-process.env.REALDEBRID_API_KEY = '';
-process.env.DEBRID_API_KEY = '';
-process.env.ALLDEBRID_API_KEY = 'offline-test';
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'whatsapp-preflight-'));
 const ROOT = createBotFixture(TMP);
 const botRequire = createRequire(path.join(ROOT, 'scripts', 'test-preflight.js'));
@@ -140,48 +136,29 @@ test('movie verification reads only a bounded prefix when a server ignores Range
   assert.ok(closed >= 2, 'responses should be released after reading the prefix');
 });
 
-test('provider host limits reserve a released slot for an already waiting request', async () => {
+test('independent provider requests to the same host start concurrently', async () => {
   const { req } = await import(pathToFileURL(path.join(ROOT, 'engine/core/http.js')).href);
   const oldFetch = global.fetch;
-  let active = 0;
-  let peak = 0;
-  let releaseImmediately = false;
+  let active = 0, peak = 0;
   const controls = [];
   global.fetch = async () => {
-    active += 1;
-    peak = Math.max(peak, active);
-    let done;
-    const ready = new Promise((resolve) => { done = resolve; });
+    active += 1; peak = Math.max(peak, active);
+    let done; const ready = new Promise((resolve) => { done = resolve; });
     controls.push(done);
-    if (releaseImmediately) done();
-    return {
-      ok: true, status: 200, headers: { getSetCookie: () => [] },
-      async text() { await ready; active -= 1; return '{}'; },
-    };
+    return { ok: true, status: 200, headers: { getSetCookie: () => [] },
+      async text() { await ready; active -= 1; return '{}'; } };
   };
-  const url = (n) => `https://preflight-limit.example/${n}`;
-  const options = { retries: 0, coalesce: false, timeout: 5000 };
-  const tick = () => new Promise((resolve) => setImmediate(resolve));
-  const first = Array.from({ length: 4 }, (_, i) => req(url(i), options));
-  let waiting, late;
+  const requests = Array.from({ length: 8 }, (_, i) => req(`https://preflight-concurrent.example/${i}`,
+    { retries: 0, coalesce: false, timeout: 5000 }));
   try {
-    await tick();
-    assert.equal(controls.length, 4);
-    waiting = req(url('waiting'), options);
-    await tick();
-    assert.equal(controls.length, 4);
-    // Queue the late arrival after one response settles but before the waiting
-    // acquire continuation runs. It must not take a slot already handed over.
-    controls[0]();
-    queueMicrotask(() => queueMicrotask(() => { late = req(url('late'), options); }));
-    await tick();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(controls.length, 8, 'requests must not wait for a host slot');
+    assert.equal(peak, 8);
   } finally {
-    releaseImmediately = true;
     controls.forEach((resolve) => resolve());
-    await Promise.all([...first, waiting, late].filter(Boolean));
+    await Promise.all(requests);
     global.fetch = oldFetch;
   }
-  assert.equal(peak, 4);
 });
 
 test('provider cookies respect host, domain, path, secure and expiry attributes', async () => {
@@ -715,7 +692,7 @@ test('movie HTTP cancellation stops immediately without retry or fallback', asyn
   }
 });
 
-test('debrid episode selection refuses a pack containing only other episodes', async () => {
+test('episode selection refuses a pack containing only other episodes', async () => {
   const { pickEpisodeFile } = await import(pathToFileURL(path.join(ROOT, 'engine/core/tv.js')).href);
   const other = [{ path: '/Show_S01E01.mkv' }, { path: '/Show_S01E03.mkv' }];
   assert.equal(pickEpisodeFile(other, 1, 2), null);
@@ -723,150 +700,6 @@ test('debrid episode selection refuses a pack containing only other episodes', a
   assert.equal(pickEpisodeFile([...other, match], 1, 2), match);
   assert.equal(pickEpisodeFile([{ path: '/single-unlabelled.mkv' }], 1, 2)?.path, '/single-unlabelled.mkv');
   assert.equal(pickEpisodeFile([{ path: '/unknown-a.mkv' }, { path: '/unknown-b.mkv' }], 1, 2), null);
-});
-
-test('AllDebrid resolves a selected episode from the current nested files API', async (t) => {
-  const realTimeout = global.setTimeout;
-  t.mock.method(global, 'setTimeout', (fn, ms, ...args) => realTimeout(fn, ms === 3000 ? 0 : ms, ...args));
-  const { resolve } = await import(pathToFileURL(path.join(ROOT, 'engine/providers/debrid/alldebrid.js')).href);
-  const { pickEpisodeFile } = await import(pathToFileURL(path.join(ROOT, 'engine/core/tv.js')).href);
-  const calls = [];
-  t.mock.method(global, 'fetch', async (url, opts = {}) => {
-    const parsed = new URL(url);
-    const body = new URLSearchParams(opts.body || '');
-    calls.push({ path: parsed.pathname, method: opts.method, body });
-    let data;
-    if (parsed.pathname === '/v4/magnet/upload') data = { magnets: [{ id: 123, ready: true }] };
-    else if (parsed.pathname === '/v4/magnet/files') data = { magnets: [{ id: '123', files: [
-      { n: 'Season 1', e: [
-        { n: 'Show.S01E01.mkv', s: 1000000, l: 'https://alldebrid.example/episode1' },
-        { n: 'Show.S01E02.mkv', s: 2000000, l: 'https://alldebrid.example/episode2' },
-      ] },
-    ] }] };
-    else if (parsed.pathname === '/v4/link/unlock') data = { link: 'https://cdn.example/episode2', filesize: 2000000 };
-    else throw new Error(`unexpected AllDebrid endpoint ${parsed.pathname}`);
-    return new Response(JSON.stringify({ status: 'success', data }), { status: 200 });
-  });
-  const result = await resolve({ magnet: 'magnet:?xt=urn:btih:example' }, { pickEpisode: (files) => pickEpisodeFile(files, 1, 2) });
-  assert.equal(result.url, 'https://cdn.example/episode2');
-  assert.equal(result.filename, 'Season 1/Show.S01E02.mkv');
-  assert.equal(calls[0].body.get('magnets[]'), 'magnet:?xt=urn:btih:example');
-  assert.equal(calls.find((x) => x.path === '/v4/magnet/files').body.get('id[]'), '123');
-  assert.equal(calls.find((x) => x.path === '/v4/link/unlock').body.get('link'), 'https://alldebrid.example/episode2');
-  assert.ok(calls.every((x) => x.method === 'POST'));
-});
-
-test('AllDebrid fails on a magnet error instead of treating it as ready', async (t) => {
-  const realTimeout = global.setTimeout;
-  t.mock.method(global, 'setTimeout', (fn, ms, ...args) => realTimeout(fn, ms === 3000 ? 0 : ms, ...args));
-  const { resolve } = await import(pathToFileURL(path.join(ROOT, 'engine/providers/debrid/alldebrid.js')).href);
-  t.mock.method(global, 'fetch', async (url) => {
-    const pathname = new URL(url).pathname;
-    if (pathname === '/v4/magnet/upload') return new Response(JSON.stringify({ status: 'success', data: { magnets: [{ id: 123, ready: false }] } }));
-    if (pathname === '/v4.1/magnet/status') return new Response(JSON.stringify({ status: 'success', data: { magnets: [{ id: 123, statusCode: 5, status: 'Upload failed' }] } }));
-    throw new Error(`unexpected AllDebrid endpoint ${pathname}`);
-  });
-  await assert.rejects(resolve({ magnet: 'magnet:?xt=urn:btih:example' }, {}), /Upload failed/);
-});
-
-test('Real-Debrid never substitutes the first link for a missing episode link', async (t) => {
-  const realTimeout = global.setTimeout;
-  t.mock.method(global, 'setTimeout', (fn, ms, ...args) => realTimeout(fn, ms === 3000 ? 0 : ms, ...args));
-  const { resolve } = await import(pathToFileURL(path.join(ROOT, 'engine/providers/debrid/realdebrid.js')).href);
-  let unlocked = false;
-  t.mock.method(global, 'fetch', async (url) => {
-    const pathname = new URL(url).pathname;
-    if (pathname.endsWith('/addMagnet')) return new Response(JSON.stringify({ id: '123' }));
-    if (pathname.includes('/selectFiles/')) return new Response('{}');
-    if (pathname.includes('/info/')) return new Response(JSON.stringify({
-      status: 'downloaded',
-      files: [
-        { path: '/Show.S01E01.mkv', selected: 1, bytes: 1 },
-        { path: '/Show.S01E02.mkv', selected: 1, bytes: 2 },
-      ],
-      links: ['https://example.com/episode1'],
-    }));
-    if (pathname.endsWith('/unrestrict/link')) { unlocked = true; return new Response(JSON.stringify({ download: 'https://cdn.example/wrong' })); }
-    throw new Error(`unexpected Real-Debrid endpoint ${pathname}`);
-  });
-  await assert.rejects(resolve({ magnet: 'magnet:?xt=urn:btih:example' }, { pickEpisode: (files) => files[1] }), /no link/);
-  assert.equal(unlocked, false);
-});
-
-test('AllDebrid polls current magnet status and resolves delayed links', async (t) => {
-  const realTimeout = global.setTimeout;
-  t.mock.method(global, 'setTimeout', (fn, ms, ...args) => realTimeout(fn, ms === 3000 || ms === 5000 ? 0 : ms, ...args));
-  const { resolve } = await import(pathToFileURL(path.join(ROOT, 'engine/providers/debrid/alldebrid.js')).href);
-  const calls = [];
-  let statuses = 0, delayed = 0;
-  t.mock.method(global, 'fetch', async (url, opts) => {
-    const pathname = new URL(url).pathname;
-    const params = new URLSearchParams(opts.body);
-    calls.push({ pathname, params });
-    let data;
-    if (pathname === '/v4/magnet/upload') data = { magnets: [{ id: 456, ready: false }] };
-    else if (pathname === '/v4.1/magnet/status') {
-      statuses += 1;
-      data = { magnets: [{ id: 456, statusCode: statuses === 1 ? 1 : 4 }] };
-    } else if (pathname === '/v4/magnet/files') data = { magnets: [{ id: 456, files: [
-      { n: 'Film.mkv', s: 2000000, l: 'https://alldebrid.example/film' },
-    ] }] };
-    else if (pathname === '/v4/link/unlock') data = { delayed: 789, filesize: 2000000 };
-    else if (pathname === '/v4/link/delayed') {
-      delayed += 1;
-      data = delayed === 1 ? { status: 1, time_left: 5 } : { status: 2, link: 'https://cdn.example/film' };
-    } else throw new Error(`unexpected endpoint ${pathname}`);
-    return Response.json({ status: 'success', data });
-  });
-  const result = await resolve({ magnet: 'magnet:?xt=urn:btih:example' });
-  assert.equal(result.url, 'https://cdn.example/film');
-  assert.equal(statuses, 2);
-  assert.equal(delayed, 2);
-  assert.equal(calls.find((x) => x.pathname === '/v4.1/magnet/status').params.get('id'), '456');
-  assert.equal(calls.find((x) => x.pathname === '/v4/link/delayed').params.get('id'), '789');
-});
-
-test('AllDebrid stops polling when its caller cancels', async (t) => {
-  const { resolve } = await import(pathToFileURL(path.join(ROOT, 'engine/providers/debrid/alldebrid.js')).href);
-  const controller = new AbortController();
-  t.mock.method(global, 'fetch', async (url) => {
-    const pathname = new URL(url).pathname;
-    if (pathname === '/v4/magnet/upload') return Response.json({ status: 'success', data: { magnets: [{ id: 456, ready: false }] } });
-    if (pathname === '/v4.1/magnet/status') {
-      queueMicrotask(() => controller.abort(new Error('cancelled by test')));
-      return Response.json({ status: 'success', data: { magnets: [{ id: 456, statusCode: 1 }] } });
-    }
-    throw new Error(`unexpected endpoint ${pathname}`);
-  });
-  await assert.rejects(resolve({ magnet: 'magnet:?xt=urn:btih:example' }, { signal: controller.signal }), /cancelled by test/);
-});
-
-test('Real-Debrid stops polling when its caller cancels', async (t) => {
-  const realTimeout = global.setTimeout;
-  t.mock.method(global, 'setTimeout', (fn, ms, ...args) => realTimeout(fn, ms === 3000 ? 0 : ms, ...args));
-  const { resolve } = await import(pathToFileURL(path.join(ROOT, 'engine/providers/debrid/realdebrid.js')).href);
-  const controller = new AbortController();
-  t.mock.method(global, 'fetch', async (url) => {
-    const pathname = new URL(url).pathname;
-    if (pathname.endsWith('/addMagnet')) return Response.json({ id: '123' });
-    if (pathname.includes('/selectFiles/')) { controller.abort(new Error('cancelled by test')); return new Response(null, { status: 204 }); }
-    if (pathname.includes('/info/')) return Response.json({ status: 'downloading' });
-    throw new Error(`unexpected endpoint ${pathname}`);
-  });
-  await assert.rejects(resolve({ magnet: 'magnet:?xt=urn:btih:example' }, { signal: controller.signal }), /cancelled by test/);
-});
-
-test('debrid cache isolates different magnets without an explicit info hash', async (t) => {
-  const debrid = await import(pathToFileURL(path.join(ROOT, 'engine/providers/debrid/index.js')).href);
-  const { default: alldebrid } = await import(pathToFileURL(path.join(ROOT, 'engine/providers/debrid/alldebrid.js')).href);
-  let calls = 0;
-  t.mock.method(alldebrid, 'resolve', async (candidate) => { calls += 1; return { url: `https://cdn.example/${candidate.magnet.slice(-1)}` }; });
-  const a = { provider: 'same-provider', magnet: 'magnet:?xt=urn:btih:A' };
-  const b = { provider: 'same-provider', magnet: 'magnet:?xt=urn:btih:B' };
-  assert.equal((await debrid.resolve(a, {})).url, 'https://cdn.example/A');
-  assert.equal((await debrid.resolve(b, {})).url, 'https://cdn.example/B');
-  assert.equal((await debrid.resolve(a, {})).url, 'https://cdn.example/A');
-  assert.equal(calls, 2);
 });
 
 test('metadata search limits do not poison later larger IMDb and Jikan searches', async (t) => {

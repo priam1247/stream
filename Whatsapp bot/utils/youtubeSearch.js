@@ -14,6 +14,23 @@ const config = require('../config');
 const ytInnertube = require('./ytInnertube');
 
 const DEFAULT_LIMIT = 5;
+// Cache search metadata briefly, never media files or provider download URLs.
+const searchCache = new Map();
+const SEARCH_TTL_MS = 60_000;
+const SEARCH_CACHE_MAX = 100;
+
+function remember(query, rows) {
+  if (!rows.length) return;
+  if (searchCache.size >= SEARCH_CACHE_MAX) searchCache.delete(searchCache.keys().next().value);
+  searchCache.set(query.toLowerCase(), { at: Date.now(), rows: rows.map((row) => ({ ...row })) });
+}
+
+async function withTimeout(promise, ms, fallback) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((resolve) => { timer = setTimeout(() => resolve(fallback), ms); })]);
+  } finally { clearTimeout(timer); }
+}
 
 const clean = (s) => String(s || '').trim();
 
@@ -74,10 +91,17 @@ async function searchYouTube(query, { limit = DEFAULT_LIMIT } = {}) {
     return [toResult({ url, id, title: meta.title, author: meta.uploader, duration: meta.duration, thumbnail: meta.thumbnail })];
   }
 
-  // yt-search first (durations + thumbnails), then native Innertube, then yt-dlp.
+  const cached = searchCache.get(q.toLowerCase());
+  if (cached && Date.now() - cached.at < SEARCH_TTL_MS && cached.rows.length >= limit) {
+    return cached.rows.slice(0, limit).map((row) => ({ ...row }));
+  }
+  if (cached && Date.now() - cached.at >= SEARCH_TTL_MS) searchCache.delete(q.toLowerCase());
+
+  // yt-search is normally fastest. A stalled HTML scrape must not hold up
+  // the other engines indefinitely; their real errors still reach the caller.
   const wide = Math.max(limit, 5);
-  const first = await viaYtSearch(q, wide);
-  if (first.length >= limit) return first.slice(0, limit);
+  const first = await withTimeout(viaYtSearch(q, wide), 3500, []);
+  if (first.length >= limit) { remember(q, first); return first.slice(0, limit); }
 
   const merged = [...first];
   const addUnique = (rows) => {
@@ -91,10 +115,11 @@ async function searchYouTube(query, { limit = DEFAULT_LIMIT } = {}) {
     addUnique(itRows.map(toResult).filter(r => r.url));
   } catch { /* fall through to yt-dlp */ }
 
-  if (merged.length >= limit) return merged.slice(0, limit);
+  if (merged.length >= limit) { remember(q, merged); return merged.slice(0, limit); }
 
   const second = await viaYtDlp(q, limit);
   addUnique(second);
+  remember(q, merged);
   return merged.slice(0, limit);
 }
 
