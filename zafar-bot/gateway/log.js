@@ -74,7 +74,15 @@ function safeJson(value) {
 function makeLogger(file, scope) {
   const emit = (level, message, extra) => {
     if (LEVELS[level] < threshold) return;
-    append(file, format(level, scope, message, extra));
+    const line = format(level, scope, message, extra);
+    append(file, line);
+    // Also write to the console. A panel only shows stdout/stderr; when boot
+    // messages went to the file alone, a failed start looked like a silent
+    // process that quit. Errors go to stderr so they are never hidden.
+    if (CONSOLE_LOG) {
+      if (LEVELS[level] >= LEVELS.error) console.error(line);
+      else console.log(line);
+    }
   };
   return {
     scope,
@@ -85,6 +93,9 @@ function makeLogger(file, scope) {
     error: (m, e) => emit('error', m, e),
   };
 }
+
+// Console mirroring is on by default; set LOG_CONSOLE=0 for file-only logging.
+const CONSOLE_LOG = !/^(0|false|no|off)$/i.test(String(process.env.LOG_CONSOLE ?? 'true'));
 
 const gatewayLog = makeLogger(paths.gatewayLog, 'gateway');
 const usersLog = makeLogger(paths.usersLog, 'users');
