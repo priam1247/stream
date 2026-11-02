@@ -112,7 +112,7 @@ test('new shortcuts reject pasted and quoted links, while typed one-word titles 
   await handler.handleMessage(sock, msg('.reddit --audio --quality=360', { quoted: urls.reddit }));
   assert.equal(searches.length, 0);
   assert.equal(downloads.length, 0);
-  assert.match(sock.sent.at(-1).text, /searches titles only.*\.dl/i);
+  assert.match(sock.sent.at(-1).text, /searches titles only.*\.song or \.video/i);
 
   await handler.handleMessage(sock, msg('.reddit video', { quoted: urls.reddit }));
   await handler.handleMessage(sock, msg('.reddit music', { quoted: urls.reddit }));

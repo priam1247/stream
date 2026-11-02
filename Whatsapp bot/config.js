@@ -55,7 +55,16 @@ module.exports = {
 
   packname: displayName(env.PACK_NAME, 'Stickers'),
 
-  // Gifted API (optional fallback downloader). Set GIFTED_API_KEY in .env.
+  // Credentials are read only from the private environment; none are copied
+  // from XJX's source. The resolver behavior follows its media API sequence.
+  xjxMedia: {
+    knightbotApiKey: env.XJX_KNIGHTBOT_API_KEY || '',
+    apissupremeApiKey: env.XJX_APISSUPREME_API_KEY || '',
+    apixKey: env.XJX_APIX_KEY || env.APIX_KEY || '',
+    timeoutMs: Number(env.XJX_MEDIA_TIMEOUT_MS || 60000),
+  },
+
+  // Gifted API (optional fallback downloader for other media commands).
   giftedApi: {
     baseUrl: env.GIFTED_API_URL || 'https://api.gifted.co.ke',
     apiKey: env.GIFTED_API_KEY || '',
@@ -68,8 +77,8 @@ module.exports = {
     proxy: env.YTDLP_PROXY || '',                // e.g. http://user:pass@host:port
     ipv4: true,                                  // force IPv4 (IPv6 egress is often blocked)
     fragments: Number(env.YTDLP_FRAGMENTS || 4),
-    // Total time one .song/.ytv job may spend trying player clients before it
-    // gives up (prevents a hopeless download from hanging for an hour).
+    // Total time a local media-engine job may spend trying player clients
+    // before it gives up (prevents a hopeless download from hanging for an hour).
     deadlineMs: Number(env.YTDLP_DEADLINE_MS || 45 * 60 * 1000),
   },
 
@@ -92,26 +101,24 @@ module.exports = {
     useDefaultInstances: env.COBALT_USE_DEFAULTS === 'false' ? false : true,
   },
 
-  // ─── Search picker (.song / .ytv with a search phrase) ───────────────────
-  // When a query is not a link, the bot lists the top results and lets the user
-  // reply with a number instead of silently downloading the first hit.
+  // ─── Search picker for catalog search commands ───────────────────────────
+  // Retained for commands that offer a numbered media-result selection.
   search: {
-    // Off by default: .song/.ytv take the top (official) hit and only reply
-    // with the file. SEARCH_PICKER=true restores the numbered list.
+    // SEARCH_PICKER=true enables numbered search results where supported.
     picker: /^(1|true|yes)$/i.test(String(env.SEARCH_PICKER || '')),
     maxResults: Math.max(1, Math.min(10, Number(env.SEARCH_RESULTS || 5))),
     ttlMinutes: Math.max(1, Number(env.SEARCH_TTL_MINUTES || 5)),
   },
 
-  // ─── Media limits (.song / .ytv) ──────────────────────────────────────────
+  // ─── Shared media limits and music-source delivery settings ───────────────
   song: {
     maxMB: 120,
     maxMinutes: Number(env.SONG_MAX_MINUTES || 180),
-    // 'document' keeps the "Title - Artist.mp3" filename (old behaviour);
-    // 'audio' sends a normal in-chat playable audio message.
+    // 'document' preserves the filename; 'audio' sends a playable audio bubble.
     sendAs: env.SONG_SEND_AS || 'document',
   },
   video: {
+    // Local/catalog video commands keep 720p; XJX's .video command uses 480p.
     defaultQuality: 720,
     // WhatsApp documents top out at 2 GB; anything over 50 MB goes as a document.
     maxMB: Number(env.VIDEO_MAX_MB || 2000),

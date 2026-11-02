@@ -523,16 +523,14 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     assert.throws(() => settings.set('protxy', 'x'), /Unknown setting/);
   });
 
-  console.log('\n── 8. .song / .ytv end-to-end with a mocked WhatsApp socket ──');
+  console.log('\n── 8. XJX .song / .video command routing ──');
 
   const songCmd = require(path.join(REPO, 'commands/media/song.js'));
-  const ytvCmd = require(path.join(REPO, 'commands/media/ytv.js'));
-  const providersMod = require(path.join(REPO, 'utils/downloadProviders.js'));
-
+  const videoCmd = require(path.join(REPO, 'commands/media/video.js'));
+  const xjxMediaMod = require(path.join(REPO, 'utils/xjxMedia.js'));
   const realDownloadAudio = YT.downloadAudio;
   const realDownloadVideo = YT.downloadVideo;
   const realGetInfo = YT.getInfo;
-  const realResolve = providersMod.resolveMedia;
 
   // A WhatsApp socket that records everything the bot tried to send.
   function mockSock() {
@@ -542,7 +540,6 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       user: { id: '1234:5@s.whatsapp.net' },
       async sendMessage(jid, content) {
         if (content && content.react) return { key: { id: 'react' } };
-        // snapshot local files now: the command deletes them right after sending
         try {
           const f = content && (content.document?.url || content.audio?.url || content.video?.url);
           if (typeof f === 'string' && fs.existsSync(f) && fs.statSync(f).size < 20 * 1024 * 1024) {
@@ -576,338 +573,59 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
 
   const textOf = (entry) => (entry && (entry.text || entry.caption || '')) || '';
 
-  await test('.song sends the downloaded track (document mode)', async () => {
-    const audioPath = path.join(sandbox, 'unit.mp3');
-    fs.writeFileSync(audioPath, Buffer.concat([Buffer.from('ID3'), Buffer.alloc(60000, 4)]));
-    YT.downloadAudio = async () => ({ file: audioPath, ext: 'mp3', profile: 'default', attempts: [] });
-    YT.getInfo = async () => ({ title: 'Test Song', uploader: 'Test Artist', duration: 200, thumbnail: '', id: 'x' });
-
-    const sock = mockSock();
-    await songCmd.execute(sock, mockMsg('.song https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ'], makeExtra(sock));
-
-    const doc = sock.sent.find((m) => m.document);
-    assert.ok(doc, 'no document sent');
-    // "Artist - Title" is the convention every music player displays.
-    assert.ok(/Test Artist - Test Song\.mp3$/.test(doc.fileName), `bad filename: ${doc.fileName}`);
-    assert.strictEqual(doc.mimetype, 'audio/mpeg');
-    assert.ok(textOf(doc).includes('Test Song'), 'caption missing the title');
-    // the document itself must carry the tags, not just its name
-    const tags = MT.readId3(doc.__bytes);
-    assert.ok(tags, 'mp3 has no ID3 tags');
-    assert.strictEqual(tags.title, 'Test Song');
-    assert.strictEqual(tags.artist, 'Test Artist');
-  });
-
-  await test('.song falls back to a remote provider when the local engine is bot-checked', async () => {
-    YT.downloadAudio = async () => {
-      throw Object.assign(new Error('bot check'), {
-        stderr: 'ERROR: [youtube] x: Sign in to confirm you’re not a bot. Use --cookies for the authentication',
-      });
-    };
-    providersMod.resolveMedia = async () => {
-      // This is a local, synthetic fixture; real provider downloads are tested
-      // separately and use the public-address-checked transfer path.
-      const file = path.join(require(path.join(REPO, 'utils/tempManager')).getTempDir(), `fallback-${Date.now()}.mp3`);
-      const got = await MT.downloadToFile(`http://127.0.0.1:${stubPort}/media.mp3`, file, { maxBytes: 1024 * 1024 });
-      return { provider: 'cobalt (test)', file, sniff: got.sniff, title: 'Fallback Song' };
-    };
-
-    const sock = mockSock();
-    await songCmd.execute(sock, mockMsg('.song https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ'], makeExtra(sock));
-
-    const doc = sock.sent.find((m) => m.document);
-    assert.ok(doc, 'remote fallback produced nothing');
-    assert.ok(textOf(doc).includes('via cobalt'), `caption does not mention the backup source: ${textOf(doc)}`);
-  });
-
-  await test('.song reports the real reason when every engine fails', async () => {
-    YT.downloadAudio = async () => {
-      throw Object.assign(new Error('bot check'), {
-        stderr: 'ERROR: [youtube] x: Sign in to confirm you’re not a bot. Use --cookies for the authentication',
-      });
-    };
-    providersMod.resolveMedia = async () => { throw new Error('all providers failed'); };
-
-    const sock = mockSock();
-    await songCmd.execute(sock, mockMsg('.song https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ'], { ...makeExtra(sock), isOwner: false });
-
-    const error = sock.sent.map(textOf).find((t) => /anti-bot|automated access/i.test(t));
-    assert.ok(error, `no bot-check explanation in: ${JSON.stringify(sock.sent.map(textOf))}`);
-    assert.ok(!/\.cookies|\.ytdl/i.test(error), `leaked admin hint to regular user: ${error}`);
-    assert.ok(!/not available in the server's region/i.test(error), 'blamed the region instead');
-
-    const ownerSock = mockSock();
-    await songCmd.execute(ownerSock, mockMsg('.song https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ'], makeExtra(ownerSock));
-    const ownerError = ownerSock.sent.map(textOf).find((t) => /automated access/i.test(t));
-    assert.ok(ownerError);
-    assert.doesNotMatch(ownerError, /\.ytlogin|\.cookies|\.ytdl\s+repair/i);
-    assert.match(ownerError, /Tried: yt-dlp/i, 'short owner message must include the attempted engines, not an empty heading');
-  });
-
-  await test('.song, .ytv and .dl show owners a concise, complete fallback summary', async () => {
-    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
-    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
-    const saved = { audio: YT.downloadAudio, video: YT.downloadVideo, info: YT.getInfo, remote: providersMod.resolveMedia };
+  await test('.song passes the full input to XJX audio resolution without local fallbacks', async () => {
+    const previous = xjxMediaMod.downloadSongCommand;
+    let input = null;
+    xjxMediaMod.downloadSongCommand = async (_sock, _msg, _extra, query) => { input = query; return { sent: true }; };
     try {
-      YT.getInfo = async () => ({ title: 'Fixture', uploader: 'Artist', duration: 20 });
-      YT.downloadAudio = YT.downloadVideo = async () => { throw Object.assign(new Error('sign in required'), { code: 'BOT_CHECK' }); };
-      it._setTestOverride(async (_url, _mode, options) => {
-        options.onAttempt('innertube:ANDROID_VR', { code: 'BOT_CHECK' });
-        throw Object.assign(new Error('sign in required'), { code: 'BOT_CHECK' });
-      });
-      providersMod.resolveMedia = async (_url, options) => {
-        options.onAttempt('yt1d', new Error('unavailable'), { code: 'FAILED' });
-        options.onAttempt('cobalt', new Error('unavailable'), { code: 'FAILED' });
-        throw new Error('all providers failed');
-      };
-      for (const command of [songCmd, ytvCmd, dlCmd]) {
-        const url = 'https://youtu.be/dQw4w9WgXcQ';
-        const ownerSock = mockSock();
-        await command.execute(ownerSock, mockMsg(`${command.name} ${url}`), [url], makeExtra(ownerSock));
-        const ownerText = ownerSock.sent.map(textOf).find((text) => /automated access/i.test(text));
-        assert.doesNotMatch(ownerText, /\.ytlogin|\.cookies|\.ytdl\s+repair/i);
-        assert.match(ownerText, /Tried: yt-dlp, Innertube, yt1d, Cobalt\./);
-        const memberSock = mockSock();
-        await command.execute(memberSock, mockMsg(`${command.name} ${url}`), [url], { ...makeExtra(memberSock), isOwner: false });
-        const memberText = memberSock.sent.map(textOf).find((text) => /automated access/i.test(text));
-        assert.ok(memberText);
-        assert.doesNotMatch(memberText, /\.ytlogin|\.cookies|Tried:/);
-      }
-    } finally {
-      it._setTestOverride(null);
-      YT.downloadAudio = saved.audio; YT.downloadVideo = saved.video; YT.getInfo = saved.info; providersMod.resolveMedia = saved.remote;
-    }
-  });
-
-  await test('.ytv sends the video and honours the quality argument', async () => {
-    const videoPath = path.join(sandbox, 'unit.mp4');
-    fs.writeFileSync(videoPath, Buffer.concat([
-      Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.from('avc1mp4a'), Buffer.alloc(90000, 3),
-    ]));
-    let asked = null;
-    YT.downloadVideo = async (url, opts) => { asked = opts.height; return { file: videoPath, profile: 'default', attempts: [] }; };
-    YT.getInfo = async () => ({ title: 'Test Video', uploader: 'Chan', duration: 100, thumbnail: '', id: 'y' });
-
-    const sock = mockSock();
-    await ytvCmd.execute(sock, mockMsg('.ytv https://youtu.be/dQw4w9WgXcQ 480'), ['https://youtu.be/dQw4w9WgXcQ', '480'], makeExtra(sock));
-
-    assert.strictEqual(asked, 480, `height not passed through (got ${asked})`);
-    const video = sock.sent.find((m) => m.video || m.document);
-    assert.ok(video, 'no video sent');
-    assert.ok(textOf(video).includes('480p'), 'caption missing the quality');
-  });
-
-  await test('.ytv automatically retries a lower quality when the file is too big', async () => {
-    const videoPath = path.join(sandbox, 'unit2.mp4');
-    fs.writeFileSync(videoPath, Buffer.concat([
-      Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.from('avc1mp4a'), Buffer.alloc(90000, 3),
-    ]));
-    const tried = [];
-    YT.downloadVideo = async (url, opts) => {
-      tried.push(opts.height);
-      if (tried.length === 1) throw Object.assign(new Error('too big'), { stderr: 'ERROR: File is larger than max-filesize' });
-      return { file: videoPath, profile: 'default', attempts: [] };
-    };
-
-    const sock = mockSock();
-    await ytvCmd.execute(sock, mockMsg('.ytv https://youtu.be/dQw4w9WgXcQ 720'), ['https://youtu.be/dQw4w9WgXcQ', '720'], makeExtra(sock));
-
-    assert.ok(tried.length >= 2, 'no lower quality was tried');
-    assert.ok(tried[1] < tried[0], `second attempt (${tried[1]}) was not lower than the first (${tried[0]})`);
-    assert.ok(sock.sent.some((m) => m.video || m.document), 'nothing was sent after the downgrade');
-  });
-
-  await test('.dl downloads any supported link (video) and reports the source', async () => {
-    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
-    const videoPath = path.join(sandbox, 'dl.mp4');
-    fs.writeFileSync(videoPath, Buffer.concat([
-      Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.from('avc1mp4a'), Buffer.alloc(90000, 3),
-    ]));
-    let asked = null;
-    YT.downloadVideo = async (url, opts) => { asked = { url, height: opts.height }; return { file: videoPath, profile: 'default', attempts: [] }; };
-    YT.getInfo = async () => ({ title: 'TikTok Clip', uploader: 'someone', duration: 30, thumbnail: '', id: 'z' });
-
-    const sock = mockSock();
-    await dlCmd.execute(sock, mockMsg('.dl https://vm.tiktok.com/xyz 480'), ['https://vm.tiktok.com/xyz', '480'], makeExtra(sock));
-
-    assert.ok(asked && asked.url.includes('tiktok'), 'the link was not passed through');
-    assert.strictEqual(asked.height, 480);
-    assert.ok(sock.sent.some((m) => m.video || m.document), 'no video sent');
-  });
-
-  await test('.dl audio mode sends an audio file', async () => {
-    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
-    const audioPath = path.join(sandbox, 'dl.mp3');
-    fs.writeFileSync(audioPath, Buffer.concat([Buffer.from('ID3'), Buffer.alloc(60000, 4)]));
-    YT.downloadAudio = async () => ({ file: audioPath, ext: 'mp3', profile: 'default', attempts: [] });
-
-    const sock = mockSock();
-    await dlCmd.execute(sock, mockMsg('.dl https://soundcloud.com/x/y audio'), ['https://soundcloud.com/x/y', 'audio'], makeExtra(sock));
-
-    const doc = sock.sent.find((m) => m.document && String(m.mimetype).startsWith('audio'));
-    assert.ok(doc, 'no audio document sent');
-    assert.ok(/\.mp3$/.test(doc.fileName), `bad filename: ${doc.fileName}`);
-  });
-
-  await test('.dl explains an unsupported link instead of blaming the region', async () => {
-    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
-    YT.downloadVideo = async () => {
-      throw Object.assign(new Error('unsupported'), { stderr: 'ERROR: Unsupported URL: https://example.com/page' });
-    };
-    providersMod.resolveMedia = async () => { throw new Error('no providers'); };
-
-    const sock = mockSock();
-    await dlCmd.execute(sock, mockMsg('.dl https://example.com/page'), ['https://example.com/page'], makeExtra(sock));
-
-    const text = sock.sent.map(textOf).join('\n');
-    assert.ok(/could not recognize/i.test(text), `unhelpful error: ${text}`);
-  });
-
-  await test('.dl with no link shows usage', async () => {
-    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
-    const sock = mockSock();
-    await dlCmd.execute(sock, mockMsg('.dl'), [], makeExtra(sock));
-    assert.ok(/Usage/.test(sock.sent.map(textOf).join(' ')), 'no usage message');
-  });
-
-  await test('.dl uses the local Innertube fallback for a YouTube link', async () => {
-    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
-    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
-    const previousVideo = YT.downloadVideo, previousInfo = YT.getInfo, previousRemote = providersMod.resolveMedia;
-    let remoteCalls = 0, called = null;
-    try {
-      YT.getInfo = async () => ({ title: 'Fixture', duration: 20 });
-      YT.downloadVideo = async () => { throw Object.assign(new Error('bot check'), { code: 'BOT_CHECK' }); };
-      providersMod.resolveMedia = async () => { remoteCalls++; throw new Error('remote should not be needed'); };
-      it._setTestOverride(async (url, mode, options) => {
-        called = { url, mode, options };
-        const file = `${options.outBase}_it.mp4`;
-        fs.writeFileSync(file, Buffer.concat([
-          Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypisom'), Buffer.from('avc1mp4a'), Buffer.alloc(90000, 3),
-        ]));
-        return { file, metadata: { title: 'Fixture', duration: 20 } };
-      });
       const sock = mockSock();
-      await dlCmd.execute(sock, mockMsg('.dl https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ', '480'], makeExtra(sock));
-      assert.strictEqual(called.mode, 'video');
-      assert.strictEqual(called.options.height, 480);
-      assert.strictEqual(remoteCalls, 0);
-      assert.ok(sock.sent.some((m) => (m.video || m.document) && /via innertube/i.test(textOf(m))));
-      assert.ok(!fs.existsSync(`${called.options.outBase}_it.mp4`), 'download was not cleaned up');
-    } finally {
-      it._setTestOverride(null);
-      YT.downloadVideo = previousVideo; YT.getInfo = previousInfo; providersMod.resolveMedia = previousRemote;
-    }
+      await songCmd.execute(sock, mockMsg('.song Example Track'), ['Example', 'Track'], makeExtra(sock));
+      assert.equal(input, 'Example Track');
+      assert.ok(!sock.sent.some((message) => message.audio || message.document), 'the command stub should not deliver media');
+    } finally { xjxMediaMod.downloadSongCommand = previous; }
   });
 
-  await test('.dl audio mode also uses the local YouTube fallback', async () => {
-    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
-    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
-    const previousAudio = YT.downloadAudio, previousInfo = YT.getInfo, previousRemote = providersMod.resolveMedia;
-    let mode = '', remoteCalls = 0;
+  await test('.video uses XJX video resolution and has no .ytv alias or quality argument', async () => {
+    const previous = xjxMediaMod.downloadVideoCommand;
+    let input = null;
+    xjxMediaMod.downloadVideoCommand = async (_sock, _msg, _extra, query) => { input = query; return { sent: true }; };
     try {
-      YT.getInfo = async () => ({ title: 'Fixture song', duration: 20 });
-      YT.downloadAudio = async () => { throw Object.assign(new Error('bot check'), { code: 'BOT_CHECK' }); };
-      providersMod.resolveMedia = async () => { remoteCalls++; throw new Error('remote should not be needed'); };
-      it._setTestOverride(async (_url, kind, options) => {
-        mode = kind;
-        const file = `${options.outBase}_it.mp3`;
-        fs.writeFileSync(file, Buffer.concat([Buffer.from('ID3'), Buffer.alloc(60000, 4)]));
-        return { file, ext: 'mp3', metadata: { title: 'Fixture song' } };
-      });
       const sock = mockSock();
-      await dlCmd.execute(sock, mockMsg('.dl https://youtu.be/dQw4w9WgXcQ audio'), ['https://youtu.be/dQw4w9WgXcQ', 'audio'], makeExtra(sock));
-      assert.strictEqual(mode, 'audio');
-      assert.strictEqual(remoteCalls, 0);
-      assert.ok(sock.sent.some((m) => m.document && /via innertube/i.test(textOf(m))));
-    } finally {
-      it._setTestOverride(null);
-      YT.downloadAudio = previousAudio; YT.getInfo = previousInfo; providersMod.resolveMedia = previousRemote;
-    }
+      await videoCmd.execute(sock, mockMsg('.video Example Clip'), ['Example', 'Clip'], makeExtra(sock));
+      assert.equal(input, 'Example Clip');
+      assert.equal(videoCmd.name, 'video');
+      assert.equal(videoCmd.aliases.includes('ytv'), false);
+      assert.ok(!sock.sent.some((message) => message.video || message.document), 'the command stub should not deliver media');
+    } finally { xjxMediaMod.downloadVideoCommand = previous; }
   });
 
-  await test('.song and .ytv do not bypass an Innertube duration failure via remote sources', async () => {
-    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
-    const cfg = require(path.join(REPO, 'config.js'));
-    const previousAudio = YT.downloadAudio, previousVideo = YT.downloadVideo;
-    const previousInfo = YT.getInfo, previousRemote = providersMod.resolveMedia;
-    let remoteCalls = 0;
-    const options = [];
+  await test('XJX song and video failures use the original generic messages', async () => {
+    const previousSong = xjxMediaMod.downloadSongCommand;
+    const previousVideo = xjxMediaMod.downloadVideoCommand;
     try {
-      YT.getInfo = async () => ({ title: 'Fixture', duration: 20 });
-      YT.downloadAudio = YT.downloadVideo = async () => { throw Object.assign(new Error('bot check'), { code: 'BOT_CHECK' }); };
-      providersMod.resolveMedia = async () => { remoteCalls++; throw new Error('remote should not be needed'); };
-      it._setTestOverride(async (_url, mode, opts) => {
-        options.push({ mode, maxSeconds: opts.maxSeconds });
-        throw Object.assign(new Error('media exceeds duration limit'), { code: 'TOO_LONG' });
-      });
-      const audioSock = mockSock();
+      xjxMediaMod.downloadSongCommand = async () => { throw Object.assign(new Error('provider details'), { code: 'NO_MEDIA' }); };
+      xjxMediaMod.downloadVideoCommand = async () => { throw Object.assign(new Error('provider details'), { code: 'NO_MEDIA' }); };
+      const songSock = mockSock();
       const videoSock = mockSock();
-      const url = 'https://youtu.be/dQw4w9WgXcQ';
-      await songCmd.execute(audioSock, mockMsg(`.song ${url}`), [url], makeExtra(audioSock));
-      await ytvCmd.execute(videoSock, mockMsg(`.ytv ${url}`), [url], makeExtra(videoSock));
-      assert.deepStrictEqual(options, [
-        { mode: 'audio', maxSeconds: cfg.song.maxMinutes * 60 },
-        { mode: 'video', maxSeconds: cfg.video.maxMinutes * 60 },
-      ]);
-      assert.strictEqual(remoteCalls, 0);
-      assert.ok(audioSock.sent.map(textOf).some((s) => /longer than the allowed limit/i.test(s)));
-      assert.ok(videoSock.sent.map(textOf).some((s) => /longer than the allowed limit/i.test(s)));
-      assert.ok(!audioSock.sent.some((m) => m.audio || m.document));
-      assert.ok(!videoSock.sent.some((m) => m.video || m.document));
+      await songCmd.execute(songSock, mockMsg('.song x'), ['x'], makeExtra(songSock));
+      await videoCmd.execute(videoSock, mockMsg('.video x'), ['x'], makeExtra(videoSock));
+      assert.ok(songSock.sent.map(textOf).includes('❌ Failed to fetch audio. Please try again later.'));
+      assert.ok(videoSock.sent.map(textOf).includes('❌ Failed to fetch video. Please try again later.'));
+      assert.doesNotMatch(songSock.sent.map(textOf).join('\n'), /provider details|apikey|http/i);
+      assert.doesNotMatch(videoSock.sent.map(textOf).join('\n'), /provider details|apikey|http/i);
     } finally {
-      it._setTestOverride(null);
-      YT.downloadAudio = previousAudio; YT.downloadVideo = previousVideo;
-      YT.getInfo = previousInfo; providersMod.resolveMedia = previousRemote;
+      xjxMediaMod.downloadSongCommand = previousSong;
+      xjxMediaMod.downloadVideoCommand = previousVideo;
     }
   });
 
-  await test('.dl respects an Innertube size failure and cleans partials without trying a remote', async () => {
-    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
-    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
-    const previousVideo = YT.downloadVideo, previousInfo = YT.getInfo, previousRemote = providersMod.resolveMedia;
-    let remoteCalls = 0, partial = '';
-    try {
-      YT.getInfo = async () => ({ title: 'Fixture', duration: 20 });
-      YT.downloadVideo = async () => { throw Object.assign(new Error('bot check'), { code: 'BOT_CHECK' }); };
-      providersMod.resolveMedia = async () => { remoteCalls++; throw new Error('remote should not be needed'); };
-      it._setTestOverride(async (_url, _mode, options) => {
-        partial = `${options.outBase}_partial.tmp`;
-        fs.writeFileSync(partial, 'partial');
-        throw Object.assign(new Error('too large'), { code: 'TOO_BIG' });
-      });
-      const sock = mockSock();
-      await dlCmd.execute(sock, mockMsg('.dl https://youtu.be/dQw4w9WgXcQ'), ['https://youtu.be/dQw4w9WgXcQ'], makeExtra(sock));
-      assert.strictEqual(remoteCalls, 0);
-      assert.ok(sock.sent.map(textOf).some((s) => /exceeds limit/i.test(s)));
-      assert.ok(!sock.sent.some((m) => m.video || m.document));
-      assert.ok(!fs.existsSync(partial), 'partial download was not cleaned up');
-    } finally {
-      it._setTestOverride(null);
-      YT.downloadVideo = previousVideo; YT.getInfo = previousInfo; providersMod.resolveMedia = previousRemote;
-    }
-  });
-
-  await test('.dl does not send another site to Innertube or blame YouTube for its access check', async () => {
-    const dlCmd = require(path.join(REPO, 'commands/media/dl.js'));
-    const it = require(path.join(REPO, 'utils/ytInnertube.js'));
-    const previousVideo = YT.downloadVideo, previousInfo = YT.getInfo, previousRemote = providersMod.resolveMedia;
-    let innertubeCalls = 0;
-    try {
-      YT.getInfo = async () => ({ title: 'Fixture', duration: 20 });
-      YT.downloadVideo = async () => { throw Object.assign(new Error('sign in required'), { code: 'BOT_CHECK' }); };
-      providersMod.resolveMedia = async () => { throw new Error('no remote'); };
-      it._setTestOverride(async () => { innertubeCalls++; throw new Error('unexpected'); });
-      const sock = mockSock();
-      await dlCmd.execute(sock, mockMsg('.dl https://www.reddit.com/r/test/comments/abc123/example/'), ['https://www.reddit.com/r/test/comments/abc123/example/'], { ...makeExtra(sock), isOwner: false });
-      assert.strictEqual(innertubeCalls, 0);
-      const text = sock.sent.map(textOf).join(' ');
-      assert.ok(/this site/i.test(text));
-      assert.ok(!/youtube/i.test(text));
-    } finally {
-      it._setTestOverride(null);
-      YT.downloadVideo = previousVideo; YT.getInfo = previousInfo; providersMod.resolveMedia = previousRemote;
-    }
+  await test('generic .dl and legacy .ytv commands are not registered', () => {
+    const { loadCommands } = require(path.join(REPO, 'utils/commandLoader.js'));
+    const commands = loadCommands();
+    assert.equal(commands.has('song'), true);
+    assert.equal(commands.has('video'), true);
+    assert.equal(commands.has('ytv'), false);
+    assert.equal(commands.has('dl'), false);
   });
 
   console.log('\n── 9. numbered search results (reply with a number) ──');
@@ -923,78 +641,63 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     { url: 'https://youtu.be/ccc', id: 'ccc', title: 'Third Song', author: 'C', duration: 220, thumbnail: '' },
   ];
 
-  await test('offers a numbered list when SEARCH_PICKER is on', async () => {
+  await test('.song ignores the legacy picker setting and sends the full query to XJX', async () => {
     const song = require(path.join(REPO, 'commands/media/song.js'));
-    stubSearch(THREE);
-    // picker is opt-in now (.song sends the official/top hit by default)
+    const xjxMedia = require(path.join(REPO, 'utils/xjxMedia.js'));
     const cfg = require(path.join(REPO, 'config.js'));
+    const previousSend = xjxMedia.downloadSongCommand;
     const wasPicker = cfg.search.picker;
+    const seen = [];
+    xjxMedia.downloadSongCommand = async (_sock, _msg, _extra, input) => { seen.push(input); return { sent: true }; };
     cfg.search.picker = true;
     settings.set('searchPicker', true);
-
-    const sock = mockSock();
-    await song.execute(sock, mockMsg('.song some song'), ['some', 'song'], makeExtra(sock));
-
-    const list = sock.sent.map(textOf).find((t) => /1\./.test(t) && /3\./.test(t));
-    assert.ok(list, 'no numbered list shown');
-    assert.ok(/First Song/.test(list) && /Third Song/.test(list), 'results missing from the list');
-    assert.ok(!sock.sent.some((m) => m.document), 'it downloaded something before the user chose');
-    assert.ok(selections.peek('chat@s.whatsapp.net', '1234@s.whatsapp.net'), 'no pending choice registered');
-
-    cfg.search.picker = wasPicker;
-    settings.set('searchPicker', false);
+    try {
+      const sock = mockSock();
+      await song.execute(sock, mockMsg('.song some song'), ['some', 'song'], makeExtra(sock));
+      assert.deepEqual(seen, ['some song']);
+      assert.ok(!sock.sent.map(textOf).some((text) => /^1\./m.test(text)), 'a picker was shown');
+      assert.equal(selections.peek('chat@s.whatsapp.net', '1234@s.whatsapp.net'), null, 'a pending picker was registered');
+    } finally {
+      xjxMedia.downloadSongCommand = previousSend;
+      cfg.search.picker = wasPicker;
+      settings.set('searchPicker', false);
+    }
   });
 
-  await test('"2" downloads the second result', async () => {
+  await test('a numeric reply has no song selection unless a separate picker created one', () => {
+    assert.equal(selections.match('chat@s.whatsapp.net', '1234@s.whatsapp.net', '2'), null);
+  });
+
+  await test('.song forwards all argument text without custom flags', async () => {
     const song = require(path.join(REPO, 'commands/media/song.js'));
-    const audioPath = path.join(sandbox, 'pick.mp3');
-    fs.writeFileSync(audioPath, Buffer.concat([Buffer.from('ID3'), Buffer.alloc(60000, 4)]));
-    YT.downloadAudio = async () => ({ file: audioPath, ext: 'mp3', profile: 'default', attempts: [] });
-    YT.getInfo = async (u) => ({ title: u.includes('bbb') ? 'Second Song' : 'Wrong Song', uploader: 'B', duration: 210, thumbnail: '', id: 'x' });
-    stubSearch(THREE);
-
-    const cfg = require(path.join(REPO, 'config.js'));
-    const wasPicker = cfg.search.picker;
-    cfg.search.picker = true;
-    settings.set('searchPicker', true);
-
-    const sock = mockSock();
-    const extra = makeExtra(sock);
-    await song.execute(sock, mockMsg('.song some song'), ['some', 'song'], extra);
-
-    // What the handler does with the follow-up message:
-    const picked = selections.match('chat@s.whatsapp.net', '1234@s.whatsapp.net', '2');
-    assert.ok(picked, 'the number did not resolve a selection');
-    await picked.entry.run(sock, mockMsg('2'), extra, picked.item);
-
-    const doc = sock.sent.find((m) => m.document);
-    assert.ok(doc, 'nothing downloaded after picking');
-    assert.ok(/Second Song/.test(String(doc.fileName)), `wrong item downloaded: ${doc.fileName}`);
-
-    cfg.search.picker = wasPicker;
-    settings.set('searchPicker', false);
+    const xjxMedia = require(path.join(REPO, 'utils/xjxMedia.js'));
+    const previousSend = xjxMedia.downloadSongCommand;
+    const seen = [];
+    xjxMedia.downloadSongCommand = async (_sock, _msg, _extra, input) => { seen.push(input); return { sent: true }; };
+    try {
+      const sock1 = mockSock();
+      const sock2 = mockSock();
+      await song.execute(sock1, mockMsg('.song some song --first'), ['some', 'song', '--first'], makeExtra(sock1));
+      await song.execute(sock2, mockMsg('.song !some song'), ['!some', 'song'], makeExtra(sock2));
+      assert.deepStrictEqual(seen, ['some song --first', '!some song']);
+    } finally { xjxMedia.downloadSongCommand = previousSend; }
   });
 
-  await test('.song sends the top hit directly when the picker is off', async () => {
+  await test('one-word song searches are forwarded unchanged to XJX', async () => {
     const song = require(path.join(REPO, 'commands/media/song.js'));
-    const audioPath = path.join(sandbox, 'top.m4a');
-    fs.writeFileSync(audioPath, Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypM4A '), Buffer.alloc(60000, 4)]));
-    YT.downloadAudio = async () => ({ file: audioPath, ext: 'm4a', profile: 'default', attempts: [] });
-    YT.getInfo = async () => ({ title: 'First Song', uploader: 'A', duration: 200, thumbnail: '', id: 'y' });
-    stubSearch(THREE);
-    settings.set('searchPicker', false);
-
-    const sock = mockSock();
-    await song.execute(sock, mockMsg('.song some song'), ['some', 'song'], makeExtra(sock));
-
-    assert.ok(!sock.sent.map(textOf).some((t) => /^1\./m.test(t)), 'a numbered list was shown');
-    const doc = sock.sent.find((m) => m.document);
-    assert.ok(doc, 'no document sent');
-    assert.ok(/First Song/.test(String(doc.fileName)), `wrong song: ${doc.fileName}`);
-    assert.ok(/m4a$/.test(String(doc.fileName)), `audio was re-encoded: ${doc.fileName}`);
+    const xjxMedia = require(path.join(REPO, 'utils/xjxMedia.js'));
+    const previousSend = xjxMedia.downloadSongCommand;
+    let seen = null;
+    xjxMedia.downloadSongCommand = async (_sock, _msg, _extra, input) => { seen = input; return { sent: true }; };
+    try {
+      const sock = mockSock();
+      await song.execute(sock, mockMsg('.song unique'), ['unique'], makeExtra(sock));
+      assert.equal(seen, 'unique');
+      assert.ok(!sock.sent.map(textOf).some((text) => /^1\./m.test(text)));
+    } finally { xjxMedia.downloadSongCommand = previousSend; }
   });
 
-  await test('"9" is out of range and reported as such', () => {
+  await test('"9" is out of range and reported as such by the generic selection helper', () => {
     selections.offer({ chatId: 'c1', sender: 's1', items: THREE, run: async () => {} });
     assert.strictEqual(selections.match('c1', 's1', '9'), null);
     assert.strictEqual(selections.isOutOfRange('c1', 's1', '9'), true);
@@ -1021,38 +724,6 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     assert.strictEqual(selections.parseChoice('2.'), 2);
     assert.strictEqual(selections.parseChoice('song'), null);
     assert.strictEqual(selections.parseChoice(''), null);
-  });
-
-  await test('--first / !query skip the list and download immediately', async () => {
-    const song = require(path.join(REPO, 'commands/media/song.js'));
-    const audioPath = path.join(sandbox, 'first.mp3');
-    fs.writeFileSync(audioPath, Buffer.concat([Buffer.from('ID3'), Buffer.alloc(60000, 4)]));
-    let used = null;
-    YT.downloadAudio = async (u) => { used = u; return { file: audioPath, ext: 'mp3', profile: 'default', attempts: [] }; };
-    YT.getInfo = async () => ({ title: 'First Song', uploader: 'A', duration: 200, thumbnail: '', id: 'aaa' });
-    stubSearch(THREE);
-
-    const sock = mockSock();
-    await song.execute(sock, mockMsg('.song some song --first'), ['some', 'song', '--first'], makeExtra(sock));
-    assert.ok(sock.sent.some((m) => m.document), '--first did not download');
-    assert.ok(String(used).includes('aaa'), `--first picked the wrong item: ${used}`);
-
-    const sock2 = mockSock();
-    await song.execute(sock2, mockMsg('.song !some song'), ['!some', 'song'], makeExtra(sock2));
-    assert.ok(sock2.sent.some((m) => m.document), '!query did not download');
-  });
-
-  await test('a single search result downloads straight away (no pointless step)', async () => {
-    const song = require(path.join(REPO, 'commands/media/song.js'));
-    const audioPath = path.join(sandbox, 'single.mp3');
-    fs.writeFileSync(audioPath, Buffer.concat([Buffer.from('ID3'), Buffer.alloc(60000, 4)]));
-    YT.downloadAudio = async () => ({ file: audioPath, ext: 'mp3', profile: 'default', attempts: [] });
-    YT.getInfo = async () => ({ title: 'Only Hit', uploader: 'A', duration: 100, thumbnail: '', id: 'a' });
-    stubSearch([THREE[0]]);
-
-    const sock = mockSock();
-    await song.execute(sock, mockMsg('.song unique'), ['unique'], makeExtra(sock));
-    assert.ok(sock.sent.some((m) => m.document), 'single result did not download');
   });
 
   await test('yt-dlp search returns a ranked list (engine level)', async () => {
@@ -1147,7 +818,6 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
   YT.downloadAudio = realDownloadAudio;
   YT.downloadVideo = realDownloadVideo;
   YT.getInfo = realGetInfo;
-  providersMod.resolveMedia = realResolve;
 
   stub.close();
 
@@ -1321,7 +991,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     const { loadCommands } = require(path.join(REPO, 'utils/commandLoader.js'));
     const cmds = loadCommands();
     const names = new Set([...cmds.values()].map(c => c.name));
-    for (const expected of ['song', 'ytv', 'dl', 'tiktok', 'x', 'reddit', 'spotify',
+    for (const expected of ['song', 'video', 'tiktok', 'x', 'reddit', 'spotify',
       'cookies', 'ytdl', 'ytlogin', 'menu', 'paper', 'sticker', 'fb', 'instagram',
       'movie', 'series', 'providers', 'moviestatus', 'debrid']) {
       assert.ok(names.has(expected), `command missing: ${expected}`);
@@ -2560,7 +2230,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       assert.strictEqual(YT.scheduleAutoUpdate, undefined);
     });
 
-    await test('.ytv never sends a silent video', async () => {
+    await test('local media pipeline never sends a silent video', async () => {
       const ff = require(path.join(REPO, 'utils', 'ffmpeg'));
       if (!ff.works()) return;                     // no ffmpeg → no fixture
       const dir = fs.mkdtempSync(path.join(sandbox, 'silent-'));
@@ -2576,7 +2246,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       YT.downloadVideo = async () => ({ file: silent, profile: 'test', attempts: [], hasAudio: false });
       const sent = [];
       const sock = { sendMessage: async (_jid, content) => { sent.push(content); return { key: { id: 'x' } }; } };
-      const msg = { key: { remoteJid: 's@s.whatsapp.net', id: 'm3' }, message: { conversation: '.ytv x' } };
+      const msg = { key: { remoteJid: 's@s.whatsapp.net', id: 'm3' }, message: { conversation: 'video fixture' } };
       try {
         const out = await pipeline.downloadAndSend(sock, msg, { from: 's@s.whatsapp.net' },
           { url: 'https://example.com/v', kind: 'video', title: 'silent', height: 720 });
@@ -2711,7 +2381,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       telemetry.recordCommand('paper');
       telemetry.recordDownloadSuccess('audio', 1);
       telemetry.recordDownloadSuccess('paper', 3);
-      telemetry.recordFailure('ytv', 1);
+      telemetry.recordFailure('video', 1);
       telemetry.flushNow();
 
       const snap = telemetry.snapshot();
@@ -2902,7 +2572,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     });
   }
 
-  console.log('\n── 24. YouTube proxy hardening, Innertube PoToken/SABR & yt1d WebSocket muxer ──');
+  console.log('\n── 24. Local YouTube engine diagnostics and XJX media routing ──');
   {
     const http = require('http');
     const { EventEmitter } = require('events');
@@ -2916,12 +2586,11 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     const getFfmpeg = require(path.join(REPO, 'utils/ffmpeg.js'));
     const ytAuth = require(path.join(REPO, 'utils/ytAuth.js'));
     const ytInnertube = require(path.join(REPO, 'utils/ytInnertube.js'));
-    const yt1d = require(path.join(REPO, 'utils/yt1d.js'));
-    const providers24 = require(path.join(REPO, 'utils/downloadProviders.js'));
     const ytdlCmd = require(path.join(REPO, 'commands/admin/ytdl.js'));
     const ytloginCmd = require(path.join(REPO, 'commands/admin/ytlogin.js'));
     const songCmd24 = require(path.join(REPO, 'commands/media/song.js'));
-    const ytvCmd24 = require(path.join(REPO, 'commands/media/ytv.js'));
+    const videoCmd24 = require(path.join(REPO, 'commands/media/video.js'));
+    const xjxMedia24 = require(path.join(REPO, 'utils/xjxMedia.js'));
     const { probeMedia } = MT24;
 
     const prevSettingsFile = process.env.MEDIA_SETTINGS_FILE;
@@ -3024,181 +2693,54 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       }
     });
 
-    await test('yt1d + flashydl WebSocket muxer delivers real MP3 (.song) and MP4 (.ytv) when yt-dlp is bot-checked', async () => {
-      const ff = getFfmpeg();
-      assert.ok(getFfmpeg.works(), 'ffmpeg must work for end-to-end media verification');
-
-      const realM4a = path.join(sandbox, 'yt1d_src.m4a');
-      const realMp4 = path.join(sandbox, 'yt1d_src.mp4');
-      execFileSync(ff, [
-        '-y', '-hide_banner', '-loglevel', 'error',
-        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=5',
-        '-c:a', 'aac', '-b:a', '192k', realM4a,
-      ]);
-      execFileSync(ff, [
-        '-y', '-hide_banner', '-loglevel', 'error',
-        '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=24:duration=3',
-        '-f', 'lavfi', '-i', 'sine=frequency=523:duration=3',
-        '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-shortest', realMp4,
-      ]);
-
-      // Start local WebSocket render server + yt1d HTTP server
-      const wss = new WebSocket.Server({ port: 0, host: '127.0.0.1' });
-      await new Promise((r) => wss.once('listening', r));
-      const wsPort = wss.address().port;
-
-      let httpPort = 0;
-      wss.on('connection', (socket, req) => {
-        const isAudio = String(req.url || '').includes('_MP3');
-        socket.send(JSON.stringify({ status: 'processing', progress: 50 }));
-        setTimeout(() => {
-          socket.send(JSON.stringify({
-            status: 'done',
-            output: {
-              url: `http://127.0.0.1:${httpPort}/${isAudio ? 'rendered.m4a' : 'rendered.mp4'}`,
-            },
-          }));
-        }, 25);
-      });
-
-      const yt1dServer = http.createServer((req, res) => {
-        if (req.url === '/') {
-          res.writeHead(200, { 'Content-Type': 'text/html' });
-          return res.end('<input name="yt1_nonce" value="nonce_abc"><script>var cfg={"merge_nonce":"m_xyz"};</script>');
-        }
-        if (req.url === '/get-server') {
-          res.writeHead(200, { 'Content-Type': 'text/plain' });
-          return res.end(`ws://127.0.0.1:${wsPort}`);
-        }
-        if (req.url === '/results/' && req.method === 'POST') {
-          res.writeHead(200, { 'Content-Type': 'text/html' });
-          return res.end([
-            '<button data-token="tok_mp3" data-quality="MP3" data-has-audio="1" data-filesize="32000" data-title="Joji - Sanctuary" data-merge-id="job777" data-merge-nonce="m_xyz"></button>',
-            '<button data-token="tok_720" data-quality="720p" data-has-audio="0" data-filesize="95000" data-title="Joji - Sanctuary" data-merge-id="job777" data-merge-nonce="m_xyz"></button>',
-          ].join('\n'));
-        }
-        if (req.url === '/wp-admin/admin-ajax.php' && req.method === 'POST') {
-          let body = '';
-          req.on('data', (c) => { body += c.toString(); });
-          req.on('end', () => {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            if (body.includes('yt1_resolve_streams')) {
-              return res.end(JSON.stringify({
-                success: true,
-                data: {
-                  video_url: `http://127.0.0.1:${httpPort}/raw_video.mp4`,
-                  audio_url: `http://127.0.0.1:${httpPort}/rendered.m4a`,
-                },
-              }));
-            }
-            if (body.includes('process_video_merge')) {
-              return res.end(JSON.stringify({ success: true, data: { queued: true } }));
-            }
-            res.end(JSON.stringify({ success: false }));
-          });
-          return;
-        }
-        if (req.url === '/rendered.m4a') {
-          res.writeHead(200, { 'Content-Type': 'audio/mp4' });
-          return fs.createReadStream(realM4a).pipe(res);
-        }
-        if (req.url === '/rendered.mp4') {
-          res.writeHead(200, { 'Content-Type': 'video/mp4' });
-          return fs.createReadStream(realMp4).pipe(res);
-        }
-        res.writeHead(404).end();
-      });
-
-      await new Promise((r) => yt1dServer.listen(0, '127.0.0.1', r));
-      httpPort = yt1dServer.address().port;
-
-      const origDlAudio = YT24.downloadAudio;
-      const origDlVideo = YT24.downloadVideo;
-      const origGetInfo = YT24.getInfo;
-      const origFetchCandidate = providers24.fetchCandidate;
-      // The production fetch rejects private hosts. This local-only test
-      // deliberately injects a transfer for its loopback fixture server.
-      providers24.fetchCandidate = async (hit, opts) => {
-        const file = `${opts.outBase}_fixture_remote.bin`;
-        const got = await MT24.downloadToFile(hit.url, file, { maxBytes: opts.maxBytes });
-        return { file, sniff: got.sniff, metadata: await probeMedia(file) };
+    await test('.song/.video use only the XJX command resolver sequence, not local fallbacks', async () => {
+      const previousSong = xjxMedia24.downloadSongCommand;
+      const previousVideo = xjxMedia24.downloadVideoCommand;
+      const previousAudio = YT24.downloadAudio;
+      const previousVideoDownload = YT24.downloadVideo;
+      const previousInfo = YT24.getInfo;
+      const received = [];
+      let legacyCalls = 0;
+      xjxMedia24.downloadSongCommand = async (_sock, _msg, _extra, input) => {
+        received.push(['song', input]);
+        return { sent: true };
       };
-      process.env.YT1D_BASE_URL = `http://127.0.0.1:${httpPort}`;
-      process.env.YT1D_BALANCER_URL = `http://127.0.0.1:${httpPort}/get-server`;
-      cfg24.cobalt.useDefaultInstances = false;
-
+      xjxMedia24.downloadVideoCommand = async (_sock, _msg, _extra, input) => {
+        received.push(['video', input]);
+        return { sent: true };
+      };
+      YT24.downloadAudio = YT24.downloadVideo = YT24.getInfo = async () => {
+        legacyCalls++;
+        throw new Error('local downloader must not be used by .song/.video');
+      };
       try {
-        // Direct unit check on resolveYt1d
-        const resolvedAudio = await yt1d.resolveYt1d('https://www.youtube.com/watch?v=YWN81V7ojOE', { kind: 'audio', timeoutMs: 10000 });
-        assert.strictEqual(resolvedAudio.provider, 'yt1d');
-        assert.ok(resolvedAudio.url.endsWith('/rendered.m4a'));
-
-        // Full .song execution when yt-dlp throws BOT_CHECK
-        YT24.getInfo = async () => { throw Object.assign(new Error('bot check'), { stderr: 'ERROR: Sign in to confirm you are not a bot' }); };
-        YT24.downloadAudio = async () => { throw Object.assign(new Error('bot check'), { stderr: 'ERROR: Sign in to confirm you are not a bot' }); };
-        YT24.downloadVideo = async () => { throw Object.assign(new Error('bot check'), { stderr: 'ERROR: Sign in to confirm you are not a bot' }); };
-
-        const sentSong = [];
-        const songSock = {
-          user: { id: '1234:1@s.whatsapp.net' },
-          async sendMessage(_jid, content) {
-            if (content?.document?.url && fs.existsSync(content.document.url)) {
-              Object.defineProperty(content, '__bytes', { value: fs.readFileSync(content.document.url) });
-            }
-            sentSong.push(content);
-            return { key: { id: 's1' } };
-          },
-        };
+        const url = 'https://youtu.be/YWN81V7ojOE';
+        const songSock = mockSock();
+        const videoSock = mockSock();
         await songCmd24.execute(
           songSock,
-          { key: { remoteJid: 'u@s.whatsapp.net', id: 'm_song' }, message: { conversation: '.song https://youtu.be/YWN81V7ojOE' } },
-          ['https://youtu.be/YWN81V7ojOE'],
+          { key: { remoteJid: 'u@s.whatsapp.net', id: 'm_song' }, message: { conversation: `.song ${url}` } },
+          [url],
           { from: 'u@s.whatsapp.net', isOwner: false }
         );
-        const docMsg = sentSong.find((m) => m.document);
-        assert.ok(docMsg, `.song via yt1d did not send document; sent=${JSON.stringify(sentSong)}`);
-        assert.strictEqual(docMsg.fileName, 'Joji - Sanctuary.mp3');
-        assert.match(docMsg.caption, /via yt1d/);
-        const id3 = MT24.readId3(docMsg.__bytes);
-        assert.strictEqual(id3.artist, 'Joji');
-        assert.strictEqual(id3.title, 'Sanctuary');
-
-        // Full .ytv execution when yt-dlp throws BOT_CHECK
-        const sentVid = [];
-        const vidSock = {
-          user: { id: '1234:1@s.whatsapp.net' },
-          async sendMessage(_jid, content) {
-            if (content?.video?.url && fs.existsSync(content.video.url)) {
-              Object.defineProperty(content, '__probed', { value: await probeMedia(content.video.url) });
-            }
-            sentVid.push(content);
-            return { key: { id: 'v1' } };
-          },
-        };
-        await ytvCmd24.execute(
-          vidSock,
-          { key: { remoteJid: 'u@s.whatsapp.net', id: 'm_ytv' }, message: { conversation: '.ytv https://youtu.be/YWN81V7ojOE 720' } },
-          ['https://youtu.be/YWN81V7ojOE', '720'],
+        await videoCmd24.execute(
+          videoSock,
+          { key: { remoteJid: 'u@s.whatsapp.net', id: 'm_video' }, message: { conversation: `.video ${url}` } },
+          [url],
           { from: 'u@s.whatsapp.net', isOwner: false }
         );
-        const vidMsg = sentVid.find((m) => m.video || m.document);
-        assert.ok(vidMsg, `.ytv via yt1d did not send video; sent=${JSON.stringify(sentVid)}`);
-        assert.match(vidMsg.caption, /via yt1d/);
-        assert.strictEqual(vidMsg.__probed?.hasAudio, true, 'yt1d video had no audio track');
+        assert.deepStrictEqual(received, [['song', url], ['video', url]]);
+        assert.equal(legacyCalls, 0);
       } finally {
-        YT24.downloadAudio = origDlAudio;
-        YT24.downloadVideo = origDlVideo;
-        YT24.getInfo = origGetInfo;
-        providers24.fetchCandidate = origFetchCandidate;
-        cfg24.cobalt.useDefaultInstances = true;
-        delete process.env.YT1D_BASE_URL;
-        delete process.env.YT1D_BALANCER_URL;
-        await new Promise((r) => wss.close(r));
-        await new Promise((r) => yt1dServer.close(r));
+        xjxMedia24.downloadSongCommand = previousSong;
+        xjxMedia24.downloadVideoCommand = previousVideo;
+        YT24.downloadAudio = previousAudio;
+        YT24.downloadVideo = previousVideoDownload;
+        YT24.getInfo = previousInfo;
       }
     });
 
-    await test('Innertube PoToken mutex, disk-streamed track merge, and .song/.ytv Engine 2 cascade work cleanly', async () => {
+    await test('Innertube utility behavior and .song/.video routing separation work cleanly', async () => {
       const { BG } = require('bgutils-js');
       const ff = getFfmpeg();
 
@@ -3252,43 +2794,48 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       } catch (e) { capErr = e; }
       assert.strictEqual(capErr?.code, 'TOO_BIG', 'streamWebReadableToFile did not enforce maxBytes');
 
-      // 3. Engine 2 (.song -> Innertube OAuth) cascade when yt-dlp hits BOT_CHECK
-      const origDlAudio = YT24.downloadAudio;
-      const origGetInfo = YT24.getInfo;
-      YT24.getInfo = async () => { throw Object.assign(new Error('bot'), { stderr: 'ERROR: Sign in to confirm you are not a bot' }); };
-      YT24.downloadAudio = async () => { throw Object.assign(new Error('bot'), { stderr: 'ERROR: Sign in to confirm you are not a bot' }); };
-      ytInnertube._setTestOverride(async (_url, _mode, opts) => {
-        const dest = `${opts.outBase}_it.m4a`;
-        fs.copyFileSync(aOnly, dest);
-        return {
-          file: dest,
-          ext: 'm4a',
-          authenticated: true,
-          metadata: { title: 'Slow Dancing in the Dark', author: 'Joji', duration: 209 },
-        };
+      // .song / .video do not enter the local Innertube cascade.
+      const previousSong = xjxMedia24.downloadSongCommand;
+      const previousVideo = xjxMedia24.downloadVideoCommand;
+      const received = [];
+      let innertubeCalls = 0;
+      xjxMedia24.downloadSongCommand = async (_sock, _msg, _extra, input) => {
+        received.push(['song', input]);
+        return { sent: true };
+      };
+      xjxMedia24.downloadVideoCommand = async (_sock, _msg, _extra, input) => {
+        received.push(['video', input]);
+        return { sent: true };
+      };
+      ytInnertube._setTestOverride(async () => {
+        innertubeCalls++;
+        throw new Error('Innertube must not run for .song/.video');
       });
       try {
-        const sent = [];
-        const sock = {
-          user: { id: '1234:1@s.whatsapp.net' },
-          async sendMessage(_jid, content) { sent.push(content); return { key: { id: 'it1' } }; },
-        };
+        const url = 'https://youtu.be/K3Qzzggn--s';
+        const audioSock = mockSock();
+        const videoSock = mockSock();
         await songCmd24.execute(
-          sock,
-          { key: { remoteJid: 'u@s.whatsapp.net', id: 'm_it' }, message: { conversation: '.song https://youtu.be/K3Qzzggn--s' } },
-          ['https://youtu.be/K3Qzzggn--s'],
+          audioSock,
+          { key: { remoteJid: 'u@s.whatsapp.net', id: 'm_it_song' }, message: { conversation: `.song ${url}` } },
+          [url],
           { from: 'u@s.whatsapp.net', isOwner: true }
         );
-        const doc = sent.find((m) => m.document);
-        assert.ok(doc, 'Engine 2 Innertube fallback did not deliver audio');
-        assert.strictEqual(doc.fileName, 'Joji - Slow Dancing in the Dark.mp3');
-        assert.match(doc.caption, /via innertube \(oauth\)/);
+        await videoCmd24.execute(
+          videoSock,
+          { key: { remoteJid: 'u@s.whatsapp.net', id: 'm_it_video' }, message: { conversation: `.video ${url}` } },
+          [url],
+          { from: 'u@s.whatsapp.net', isOwner: true }
+        );
+        assert.deepStrictEqual(received, [['song', url], ['video', url]]);
+        assert.equal(innertubeCalls, 0);
       } finally {
+        xjxMedia24.downloadSongCommand = previousSong;
+        xjxMedia24.downloadVideoCommand = previousVideo;
         ytInnertube._setTestOverride(null);
-        YT24.downloadAudio = origDlAudio;
-        YT24.getInfo = origGetInfo;
       }
     });
+
 
     await test('.ytlogin performs Google TV OAuth2 device-code flow, persists tokens, and updates .ytdl status', async () => {
       ytAuth.clearYtCreds();

@@ -14,12 +14,11 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .paper <course-code> [module] [year]   Search & send past papers (capped per query, 3-day dedupe)
 .paper browse [letter|code] [page]     Paginated course/module directory
 .countpapers [course-code]             Count papers in the vault
-.song <name-or-music-link>             Download audio (YouTube or keyless music sources)
-.mfind <name|music-link> [--video] [720]  Search every keyless catalog or resolve a music link
+.song <name-or-YouTube-URL>            Download audio with XJX's resolver flow
+.video <name-or-YouTube-URL>           Download video with XJX's resolver flow (480p)
+.mfind <name|music-link> [--video] [720]  Search catalogs, then deliver via external APIs
 .embed <link> [--audio|--video] [720]  Resolve an embed/player link to its canonical URL
-.mdiag [search phrase]                 Test every brick of the standalone downloader
-.ytv <name-or-music-link> [quality]    Download a music video / MP4 (audio verified)
-.dl <URL> [audio|video] [quality]      Download a link (music uses the standalone engine)
+.mdiag [search phrase]                 Test the separate standalone downloader
 .tiktok <URL>  .x <URL>  .instagram <URL>  .fb <URL>
 .reddit <title>                        Search Reddit videos by title
 .spotify <Spotify URL or artist - title>
@@ -35,20 +34,27 @@ Interactive title and quality choices use a tap selector or a prefixed numbered 
 `.reddit` searches by title, shows numbered results, and accepts `--first`,
 `--audio`, `--video`, a quality such as `480p`, or `--quality 480`. It uses
 Reddit's public search and, if necessary, site-filtered web indexes. Search
-results are discovery hints, not guaranteed downloads. To download a direct
-link, use `.dl <URL>`; the remaining social shortcuts also accept links.
+results are discovery hints, not guaranteed downloads. The social shortcuts
+also accept their site links; there is no generic `.dl` command.
 
-`.song`, `.ytv`, `.mfind`, `.embed`, `.spotify` and music links passed to `.dl`
-use the standalone `utils/ownMedia/` engine — see below. It does **not** need
-`yt-dlp`, `youtubei.js`, Hector, yt1d or cobalt. `.ytdl test <video link>`
-still checks metadata/URL resolution only; `.song` or `.ytv` performs an
-actual download. Download only content you have permission to use.
+`.song` and `.video` now use the same resolver sequence as XJX, with no local
+YouTube downloader fallback. Search phrases use the first `yt-search` result;
+URLs are passed to the same resolvers as in XJX. Audio tries XJX's `getIzumi`
+URL resolver (KnightBot, ApisSupreme, then Apix), its `getEliteProTech`
+Hector-URL resolver, then its Hector query resolver. Video calls XJX's
+`getEliteProTechVideoByUrl` (KnightBot, then Keithsite) at 480p. Resolved HTTPS
+URLs are sent directly through Baileys: `.song` sends the audio and document,
+and `.video` falls back to a document if WhatsApp rejects the video message.
+Neither command runs yt-dlp or ffmpeg locally. `.mdiag` diagnoses the separate
+local media engine and does not test these providers. Download only content
+you have permission to use.
 
-### Music sources (keyless)
+### Music sources
 
-`.song`, `.ytv`, `.dl`, `.spotify` and `.mfind` accept **track, album and
-playlist links** from Spotify, Deezer, Apple Music, SoundCloud and YouTube
-Music, and `.mfind <words>` searches several catalogs at once:
+`.mfind` accepts **track, album and playlist links** from Spotify, Deezer,
+Apple Music, SoundCloud and YouTube Music; `.mfind <words>` searches the public
+music catalogs. Use `.song` and `.video` for the direct XJX-style YouTube
+commands:
 
 | Source | What it provides | Credentials |
 | --- | --- | --- |
@@ -56,57 +62,50 @@ Music, and `.mfind <words>` searches several catalogs at once:
 | iTunes Search / Lookup | Apple Music search, albums and songs | none |
 | Spotify embed page | track / album / playlist metadata (first 100 rows, longer playlists best effort) | none |
 | SoundCloud web API | search and link metadata (public client id) | none |
-| LRCLIB / Netease / Kugou | plain + synced lyrics for ID3 tags | none |
-| YouTube public player API (`ownMedia`) | the actual audio or music video | none (optional `YT_PO_TOKEN` / `YT_VISITOR_DATA`) |
-| SoundCloud public web API (`ownMedia`) | independent MP3 fallback when YouTube is blocked | none |
+| XJX APIs | audio/video URLs for a matching public YouTube upload | optional provider credentials |
 
-A pasted link is resolved to `artist - title` plus its real duration, then the
-bot picks the public upload whose duration is within 20 seconds of the catalog
-value — that rejects live versions and hour-long mixes.
-`utils/musicSources/deliver.js` hands that URL to the standalone `ownMedia`
-engine, which downloads, converts, verifies, tags (title, artist, album,
-lyrics, cover art) and sends it. `--video` (or `.ytv`) sends the same upload as
-an MP4 instead of an MP3. Albums and playlists show the usual numbered picker,
-capped at ten tracks.
+`.mfind` resolves a pasted music-service link to `artist - title` and its
+duration, then searches for a matching public YouTube upload. If no catalog
+upload matches, it searches YouTube by title and artist. The resolved media is
+sent from the external provider URL. Albums and playlists show the existing
+numbered picker, capped at ten tracks. The `.song` and `.video` commands do not
+resolve music-catalog links; they follow XJX's direct URL/search behavior.
 
-No accounts, API keys, ARL cookies, bearer tokens or Widevine CDM are needed
-and none are stored in the repository. Streaming services are DRM-protected,
-so nothing is downloaded from them directly: **no DRM is circumvented**. The
-background download-job router (`utils/providerRouter.js`) still refuses
-`music.apple.com` and the other DRM hosts for the same reason; the music
-commands resolve those links to a public upload *before* any download is
-queued. `.spotify` keeps its single-track flow but now takes album, cover and
-duration from the embed page. The
-keyless metadata approach and duration matching follow
-[amiralibg/unstream](https://github.com/amiralibg/unstream) (MIT); the keyless
-lyrics constants come from [sonorahq/sonora](https://github.com/sonorahq/sonora).
-Those projects are not affiliated with the services named above. Only download
+The API-key settings (`XJX_KNIGHTBOT_API_KEY`, `XJX_APISSUPREME_API_KEY`,
+`XJX_APIX_KEY`, or an existing `APIX_KEY`) belong in the private Botkeep
+environment or `.env`; only use credentials you own. No API tokens from XJX's
+repository were copied. `.song` sends both the resolved audio and its document,
+matching XJX. `.video` uses XJX's 480p default and does not accept a quality
+argument. Provider availability remains external and can change independently
+of this repository.
+
+Streaming services are used for metadata only: nothing is downloaded from
+them directly and **no DRM is circumvented**. The background download-job
+router (`utils/providerRouter.js`) continues to reject DRM-protected music
+hosts. `.spotify` remains a separate single-track command. Only download
 content you have the rights to.
 
 `.mfind` defaults to MP3. Use `.mfind <name|link> --video [720]` (or
-`--quality 720`) for a music video, `--first` / a leading `!` to skip the picker,
-and `--audio` to force MP3. `.song`, `.ytv`, `.dl` and `.spotify` keep their own
-quality and send-mode options.
+`--quality 720`) for a music video, `--first` / a leading `!` to skip the
+picker, and `--audio` to force MP3. `.song` and `.video` use XJX command
+behavior without audio-mode or quality flags.
 
-Optional tuning (all have hard-coded defaults, no secrets):
-`MUSIC_REQUEST_TIMEOUT_MS`, `MUSIC_SEARCH_TIMEOUT_MS`, `MUSIC_TAG_TIMEOUT_MS`
-and `MUSIC_MAX_DURATION_DRIFT`.
-
-For the standalone engine: `OWN_MEDIA_TIMEOUT_MS`,
-`OWN_MEDIA_DOWNLOAD_TIMEOUT_MS`, `OWN_MEDIA_CLIENT_TIMEOUT_MS`,
-`OWN_MEDIA_FFMPEG_TIMEOUT_MS`, `OWN_MEDIA_MAX_AUDIO_MB`,
-`OWN_MEDIA_MAX_VIDEO_MB`, plus the optional `YT_PO_TOKEN` /
-`YT_VISITOR_DATA` described above. All are listed in `.env.example`; none are
-needed on most hosts.
+Optional tuning for catalog requests: `MUSIC_REQUEST_TIMEOUT_MS`,
+`MUSIC_SEARCH_TIMEOUT_MS` and `MUSIC_MAX_DURATION_DRIFT`. For the XJX-style
+provider requests, set `XJX_MEDIA_TIMEOUT_MS` and, only if you own them, the
+three `XJX_*_API_KEY` variables. The local downloader still uses
+`OWN_MEDIA_TIMEOUT_MS`, `OWN_MEDIA_DOWNLOAD_TIMEOUT_MS`,
+`OWN_MEDIA_CLIENT_TIMEOUT_MS`, `OWN_MEDIA_FFMPEG_TIMEOUT_MS`,
+`OWN_MEDIA_MAX_AUDIO_MB`, `OWN_MEDIA_MAX_VIDEO_MB`, and optional `YT_PO_TOKEN` /
+`YT_VISITOR_DATA`; see `.env.example`.
 
 ### Standalone media engine (`utils/ownMedia/`)
 
-The old chain (`yt-dlp` → `youtubei.js`/Innertube → Hector → yt1d → cobalt)
-failed on hosts with no `yt-dlp` binary and no reachable resolver APIs: search
-worked but every selected result returned `NO_YTDLP` / `NO_PROVIDERS` /
-`login required` / `ENOTFOUND`. Music links no longer enter that chain at all.
-`utils/mediaPipeline.js` delegates YouTube, YouTube Music, YouTube-nocookie and
-SoundCloud URLs to `utils/ownMedia/`, built brick by brick:
+The local `utils/mediaPipeline.js` remains for site-specific and other
+commands that explicitly use it. It delegates YouTube, YouTube Music,
+YouTube-nocookie and SoundCloud URLs to `utils/ownMedia/`, built brick by
+brick. `.song` and `.video` do not call this local YouTube pipeline; they use
+the XJX resolver sequence above.
 
 | Brick | File | What it does |
 | --- | --- | --- |
@@ -130,8 +129,8 @@ were tried instead of just saying "could not download".
 ### Embed / player links
 
 Share sheets and "copy embed" buttons often give a *player* URL rather than
-the normal link. Every music command now normalises those to the shared URL
-before resolving metadata, so pasting any of these works:
+the normal link. The catalog commands (`.mfind` and `.embed`) normalise these
+to a shared URL before resolving metadata, so pasting supported forms works:
 
 | Provider | Embed / player URL | Canonical link |
 | --- | --- | --- |
@@ -145,8 +144,9 @@ The same registry covers Anchor.fm, Buzzsprout, SimpleCast, Zencastr, Bluesky,
 Threads, Mastodon, X/Twitter, CodePen, GitHub Gist, StackBlitz, Slides, Relive,
 Guild and a generic fallback. `.embed <link>` prints the provider, kind, ID,
 canonical URL, embed URL and iframe attributes; `.embed --list` lists all of
-them. `.embed <link> --audio` / `--video 720` delivers the media directly, and
-`.dl`, `.song`, `.ytv`, `.mfind` handle embed links without extra flags.
+them. `.embed <link> --audio` / `--video 720` delivers catalog media directly;
+`.mfind` handles music catalog links. `.song` and `.video` use XJX's input
+handling and do not normalize non-YouTube music-service links.
 
 The URL shapes, iframe defaults (`loading="lazy"`, `allow`, heights) and the
 term-by-term fuzzy search scoring come from
@@ -157,7 +157,7 @@ Svelte code is included here.
 
 ## Background link jobs
 
-Bare links are ignored; use a prefixed command such as `.dl <URL>`. Previously queued bare-link jobs in `database/jobs.sqlite` are preserved but no longer run or send replies automatically.
+Bare links are ignored; use `.song` or `.video` for YouTube media, or a site-specific command. Previously queued bare-link jobs in `database/jobs.sqlite` are preserved but no longer run or send replies automatically.
 
 ```text
 INLINE_LIMIT=104857600     bytes that still go inline (100 MB)

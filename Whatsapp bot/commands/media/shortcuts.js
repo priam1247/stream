@@ -138,11 +138,11 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
     }
 
     if (searchable && containsUrl(input.join(' '))) {
-      return say(`This shortcut searches titles only. To download a link, use ${P}dl <link>.`);
+      return say(`This shortcut searches titles only. Use ${P}song or ${P}video for YouTube media.`);
     }
     if (searchable && search.invalidQuality) return say(qualityError);
     if (!searchable || !search.query) {
-      if (searchable && quotedUrl) return say(`This shortcut searches titles only. To download a link, use ${P}dl <link>.`);
+      if (searchable && quotedUrl) return say(`This shortcut searches titles only. Use ${P}song or ${P}video for YouTube media.`);
       return say(`Usage: ${P}${usage.replace(/^\./, '')}`);
     }
     if (search.query.length > providerSearch.MAX_QUERY) return say(`Search titles must be ${providerSearch.MAX_QUERY} characters or fewer.`);

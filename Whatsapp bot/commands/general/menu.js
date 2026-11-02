@@ -25,8 +25,7 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
         [`${p}mfind <name|link>`, 'music search'],
         [`${p}embed <link>`, 'resolve an embed link'],
         [`${p}mdiag`, 'test media sources'],
-        [`${p}ytv <name|url> [720]`, 'MP4'],
-        [`${p}dl <url>`, 'any URL'],
+        [`${p}video <name|url>`, 'MP4'],
         [`${p}tiktok ${p}x`, 'social'],
         [`${p}instagram ${p}fb`, 'social'],
         [`${p}reddit <title>`, 'title search'],
@@ -80,7 +79,7 @@ function buildGroups(prefix = '.', { isOwner = false } = {}) {
 }
 
 const SECTION_ALIASES = {
-  movie: 'media', movies: 'media', song: 'media', ytv: 'media', dl: 'media', reddit: 'media',
+  movie: 'media', movies: 'media', song: 'media', video: 'media', reddit: 'media',
   paper: 'papers', papers: 'papers',
   engine: 'engine', sources: 'engine', status: 'engine',
   admin: 'admin', all: null, help: null,

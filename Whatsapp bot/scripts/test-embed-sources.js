@@ -29,11 +29,9 @@ const spotify = bot('../utils/musicSources/spotifyEmbed');
 const deezer = bot('../utils/musicSources/deezer');
 const soundcloud = bot('../utils/musicSources/soundcloud');
 const deliver = bot('../utils/musicSources/deliver');
-const mediaPipeline = bot('../utils/mediaPipeline');
 const spotifyUtil = bot('../utils/spotify');
 const { loadCommands } = bot('../utils/commandLoader');
 const embedCmd = bot('../commands/media/embed');
-const dlCmd = bot('../commands/media/dl');
 
 test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
@@ -219,21 +217,6 @@ test('.embed --audio delegates with the canonical link', async () => {
     assert.equal(calls[0].kind, 'audio');
   } finally {
     deliver.deliverMusic = saved;
-  }
-});
-
-test('.dl normalises an embed URL before the generic yt-dlp path', async () => {
-  const saved = { send: mediaPipeline.downloadAndSend, deliver: deliver.deliverMusic };
-  const calls = [];
-  try {
-    mediaPipeline.downloadAndSend = async (_sock, _msg, _extra, opts) => { calls.push(opts); return { ok: true }; };
-    deliver.deliverMusic = async () => { throw new Error('should not route to music sources'); };
-    await dlCmd.execute(socket(), message(), ['https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ'], extra());
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
-  } finally {
-    mediaPipeline.downloadAndSend = saved.send;
-    deliver.deliverMusic = saved.deliver;
   }
 });
 

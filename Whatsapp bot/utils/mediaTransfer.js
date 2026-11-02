@@ -1,7 +1,7 @@
 /**
  * ZaFar Bot — media transfer helpers
  *
- * Shared by .song / .ytv (and usable by any other downloader):
+ * Shared by local media-download flows and usable by any other downloader:
  *   • stream a URL to disk with a hard size cap (RAM stays flat),
  *   • sniff the real container from the file header so we never label an m4a
  *     as an mp3 or send a webm as mp4,

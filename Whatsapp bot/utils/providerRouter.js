@@ -8,8 +8,8 @@
  * because their streams are encrypted and the bot does not decrypt them.
  *
  * Supported provider
- *   generic — anything yt-dlp handles, via utils/youtubedl.js (the same engine
- *             `.dl` / `.ytv` use, with cookies, proxy and format fallbacks)
+ *   generic — anything yt-dlp handles, via utils/youtubedl.js, with cookies,
+ *             proxy and format handling for background jobs
  *
  * Result shape (shared with utils/persistentJobs.js)
  *   { provider, title, quality, path, size, subs[], log }

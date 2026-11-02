@@ -22,8 +22,8 @@ const FFMPEG_CANDIDATES = () => [
   path.join(os.homedir(), '.local', 'bin', 'ffmpeg'),
   // @ffmpeg-installer ships the binary INSIDE a platform package, so it works
   // on panels that block npm install scripts (which is what killed
-  // install-script-only binaries). This is what makes .song → mp3 and merged .ytv
-  // possible on the Pterodactyl image.
+  // install-script-only binaries). This enables local MP3 conversion and
+  // merged MP4 output on the Pterodactyl image.
   (() => {
     try {
       const inst = require('@ffmpeg-installer/ffmpeg');
