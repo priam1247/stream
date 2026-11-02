@@ -10,6 +10,18 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
 - **Outside modules** are literal imports that resolve to the language runtime, a third-party package, or another external module rather than a tracked repository file.
 - Relationships for updated files were rescanned for literal references; the index is not a proof of every dynamic or remote runtime path. External services and runtime state are not tracked files.
 
+## Keyless music-source update (addendum)
+
+The `## Files` body below is the last full generated snapshot. The following
+files were added with the keyless music sources: `.song`, `.ytv`, `.dl`,
+`.spotify` and the new `.mfind` resolve Deezer, Apple Music, Spotify,
+SoundCloud and YouTube Music **metadata** through `Whatsapp bot/utils/musicSources/`,
+then download a duration-matched public YouTube/SoundCloud upload as audio or
+music video through the existing media pipeline. No service credentials,
+protected streams or DRM decryption are involved. Entries for the new files are
+included in their directory sections; reverse-reference lists for the modified
+files remain those of the generated snapshot.
+
 ## Files
 
 ### Repository root
@@ -2771,6 +2783,14 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:**
     - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
 
+- [`mfind.js`](../Whatsapp%20bot/commands/media/mfind.js) — Keyless music search / link resolver (.mfind, .findmusic, .msearch) for audio or music video.
+  - **References:**
+    - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
+    - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
+    - [`Whatsapp bot/utils/musicSources/deliver.js`](../Whatsapp%20bot/utils/musicSources/deliver.js) — require.
+  - **Referenced by:**
+    - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — dynamic command discovery.
+
 - [`movie.js`](../Whatsapp%20bot/commands/media/movie.js) — Searches and delivers selected movies.
   - **References:**
     - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
@@ -3537,6 +3557,18 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
   - **Referenced by:** no direct repository reference detected; this can be an entry point, discovered file, asset, or operator-run tool.
 
 ### `Whatsapp bot/scripts/`
+
+- [`test-music-sources.js`](../Whatsapp%20bot/scripts/test-music-sources.js) — Offline fixture tests for keyless catalog adapters, lyrics, duration matching, ID3 tags, command wiring and the .mfind command.
+  - **References:**
+    - [`Whatsapp bot/scripts/test-sandbox.js`](../Whatsapp%20bot/scripts/test-sandbox.js) — static import.
+    - [`Whatsapp bot/utils/commandLoader.js`](../Whatsapp%20bot/utils/commandLoader.js) — require.
+    - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
+    - [`Whatsapp bot/utils/mediaTransfer.js`](../Whatsapp%20bot/utils/mediaTransfer.js) — require.
+    - [`Whatsapp bot/utils/musicSources/http.js`](../Whatsapp%20bot/utils/musicSources/http.js) — require.
+    - [`Whatsapp bot/utils/musicSources/index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — require.
+  - **Referenced by:**
+    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — npm test:media script.
+  - **Outside modules:** `fs`, `node:assert/strict`, `node:module`, `node:path`, `node:test`, `os`, `path`, `zlib`.
 
 - [`test-approval-readiness.js`](../Whatsapp%20bot/scripts/test-approval-readiness.js) — Regression tests for linking before approval, preserved existing members, and access revocation.
   - **References:**
@@ -4317,3 +4349,124 @@ The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, 
     - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
     - [`Whatsapp bot/utils/youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — require.
   - **Outside modules:** `bgutils-js`, `child_process`, `crypto`, `fs`, `googlevideo/sabr-stream`, `googlevideo/utils`, `jsdom`, `path`, `stream`, `stream/promises`, `youtubei.js`.
+
+### `Whatsapp bot/utils/musicSources/`
+
+- [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — Hard-coded public endpoints, regexes, quotas and match limits for the keyless catalogs; no secrets.
+  - **References:**
+    - [`Whatsapp bot/package.json`](../Whatsapp%20bot/package.json) — require.
+  - **Referenced by:**
+    - [`Whatsapp bot/utils/musicSources/http.js`](../Whatsapp%20bot/utils/musicSources/http.js) — require.
+    - [`Whatsapp bot/utils/musicSources/model.js`](../Whatsapp%20bot/utils/musicSources/model.js) — require.
+    - [`Whatsapp bot/utils/musicSources/deezer.js`](../Whatsapp%20bot/utils/musicSources/deezer.js) — require.
+    - [`Whatsapp bot/utils/musicSources/itunes.js`](../Whatsapp%20bot/utils/musicSources/itunes.js) — require.
+    - [`Whatsapp bot/utils/musicSources/spotifyEmbed.js`](../Whatsapp%20bot/utils/musicSources/spotifyEmbed.js) — require.
+    - [`Whatsapp bot/utils/musicSources/soundcloud.js`](../Whatsapp%20bot/utils/musicSources/soundcloud.js) — require.
+    - [`Whatsapp bot/utils/musicSources/youtubeMusic.js`](../Whatsapp%20bot/utils/musicSources/youtubeMusic.js) — require.
+    - [`Whatsapp bot/utils/musicSources/lyrics.js`](../Whatsapp%20bot/utils/musicSources/lyrics.js) — require.
+    - [`Whatsapp bot/utils/musicSources/index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — require.
+    - [`Whatsapp bot/utils/musicSources/deliver.js`](../Whatsapp%20bot/utils/musicSources/deliver.js) — require.
+
+- [`http.js`](../Whatsapp%20bot/utils/musicSources/http.js) — Allowlisted HTTPS client with redirect host checks and an injectable offline test transport.
+  - **References:**
+    - [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+  - **Referenced by:**
+    - [`deezer.js`](../Whatsapp%20bot/utils/musicSources/deezer.js) — require.
+    - [`itunes.js`](../Whatsapp%20bot/utils/musicSources/itunes.js) — require.
+    - [`spotifyEmbed.js`](../Whatsapp%20bot/utils/musicSources/spotifyEmbed.js) — require.
+    - [`soundcloud.js`](../Whatsapp%20bot/utils/musicSources/soundcloud.js) — require.
+    - [`lyrics.js`](../Whatsapp%20bot/utils/musicSources/lyrics.js) — require.
+    - [`Whatsapp bot/scripts/test-music-sources.js`](../Whatsapp%20bot/scripts/test-music-sources.js) — require.
+  - **Outside modules:** `axios`.
+
+- [`model.js`](../Whatsapp%20bot/utils/musicSources/model.js) — Normalized track/result/collection shapes and cross-catalog dedupe/relevance scoring.
+  - **References:**
+    - [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+  - **Referenced by:**
+    - [`deezer.js`](../Whatsapp%20bot/utils/musicSources/deezer.js) — require.
+    - [`itunes.js`](../Whatsapp%20bot/utils/musicSources/itunes.js) — require.
+    - [`spotifyEmbed.js`](../Whatsapp%20bot/utils/musicSources/spotifyEmbed.js) — require.
+    - [`soundcloud.js`](../Whatsapp%20bot/utils/musicSources/soundcloud.js) — require.
+    - [`lyrics.js`](../Whatsapp%20bot/utils/musicSources/lyrics.js) — require.
+    - [`index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — require.
+
+- [`deezer.js`](../Whatsapp%20bot/utils/musicSources/deezer.js) — Public Deezer catalog search and track/album/playlist link resolution (metadata only).
+  - **References:**
+    - [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+    - [`http.js`](../Whatsapp%20bot/utils/musicSources/http.js) — require.
+    - [`model.js`](../Whatsapp%20bot/utils/musicSources/model.js) — require.
+  - **Referenced by:**
+    - [`index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — require.
+
+- [`itunes.js`](../Whatsapp%20bot/utils/musicSources/itunes.js) — Public iTunes Search/Lookup for Apple Music links and catalog search (metadata only).
+  - **References:**
+    - [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+    - [`http.js`](../Whatsapp%20bot/utils/musicSources/http.js) — require.
+    - [`model.js`](../Whatsapp%20bot/utils/musicSources/model.js) — require.
+  - **Referenced by:**
+    - [`index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — require.
+
+- [`spotifyEmbed.js`](../Whatsapp%20bot/utils/musicSources/spotifyEmbed.js) — Keyless Spotify embed / __NEXT_DATA__ resolver with best-effort playlist paging.
+  - **References:**
+    - [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+    - [`http.js`](../Whatsapp%20bot/utils/musicSources/http.js) — require.
+    - [`model.js`](../Whatsapp%20bot/utils/musicSources/model.js) — require.
+  - **Referenced by:**
+    - [`index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — require.
+    - [`Whatsapp bot/utils/spotify.js`](../Whatsapp%20bot/utils/spotify.js) — require.
+
+- [`soundcloud.js`](../Whatsapp%20bot/utils/musicSources/soundcloud.js) — SoundCloud public web API client with a scraped client id and yt-dlp fallback.
+  - **References:**
+    - [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+    - [`http.js`](../Whatsapp%20bot/utils/musicSources/http.js) — require.
+    - [`model.js`](../Whatsapp%20bot/utils/musicSources/model.js) — require.
+  - **Referenced by:**
+    - [`index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — require.
+
+- [`youtubeMusic.js`](../Whatsapp%20bot/utils/musicSources/youtubeMusic.js) — Normalizes music.youtube.com watch/playlist links to public YouTube URLs.
+  - **References:**
+    - [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+  - **Referenced by:**
+    - [`index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — require.
+
+- [`lyrics.js`](../Whatsapp%20bot/utils/musicSources/lyrics.js) — Keyless LRCLIB / Netease / Kugou lyrics and cover art for ID3 tags.
+  - **References:**
+    - [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+    - [`http.js`](../Whatsapp%20bot/utils/musicSources/http.js) — require.
+    - [`model.js`](../Whatsapp%20bot/utils/musicSources/model.js) — require.
+  - **Referenced by:**
+    - [`index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — require.
+  - **Outside modules:** `zlib`.
+
+- [`index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — Unified resolver: parallel catalog search, dedupe, duration-matched YouTube/SoundCloud upload selection.
+  - **References:**
+    - [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+    - [`http.js`](../Whatsapp%20bot/utils/musicSources/http.js) — require.
+    - [`model.js`](../Whatsapp%20bot/utils/musicSources/model.js) — require.
+    - [`deezer.js`](../Whatsapp%20bot/utils/musicSources/deezer.js) — require.
+    - [`itunes.js`](../Whatsapp%20bot/utils/musicSources/itunes.js) — require.
+    - [`spotifyEmbed.js`](../Whatsapp%20bot/utils/musicSources/spotifyEmbed.js) — require.
+    - [`soundcloud.js`](../Whatsapp%20bot/utils/musicSources/soundcloud.js) — require.
+    - [`youtubeMusic.js`](../Whatsapp%20bot/utils/musicSources/youtubeMusic.js) — require.
+    - [`lyrics.js`](../Whatsapp%20bot/utils/musicSources/lyrics.js) — require.
+    - [`Whatsapp bot/utils/youtubedl.js`](../Whatsapp%20bot/utils/youtubedl.js) — require.
+    - [`Whatsapp bot/utils/youtubeSearch.js`](../Whatsapp%20bot/utils/youtubeSearch.js) — require.
+  - **Referenced by:**
+    - [`deliver.js`](../Whatsapp%20bot/utils/musicSources/deliver.js) — require.
+    - [`Whatsapp bot/commands/media/spotify.js`](../Whatsapp%20bot/commands/media/spotify.js) — require.
+    - [`Whatsapp bot/scripts/test-music-sources.js`](../Whatsapp%20bot/scripts/test-music-sources.js) — require.
+
+- [`deliver.js`](../Whatsapp%20bot/utils/musicSources/deliver.js) — Shared picker, enrichment and audio/video delivery through the existing media pipeline.
+  - **References:**
+    - [`Whatsapp bot/config.js`](../Whatsapp%20bot/config.js) — require.
+    - [`constants.js`](../Whatsapp%20bot/utils/musicSources/constants.js) — require.
+    - [`index.js`](../Whatsapp%20bot/utils/musicSources/index.js) — require.
+    - [`Whatsapp bot/utils/mediaPipeline.js`](../Whatsapp%20bot/utils/mediaPipeline.js) — require.
+    - [`Whatsapp bot/utils/selections.js`](../Whatsapp%20bot/utils/selections.js) — require.
+  - **Referenced by:**
+    - [`Whatsapp bot/commands/media/song.js`](../Whatsapp%20bot/commands/media/song.js) — require.
+    - [`Whatsapp bot/commands/media/ytv.js`](../Whatsapp%20bot/commands/media/ytv.js) — require.
+    - [`Whatsapp bot/commands/media/dl.js`](../Whatsapp%20bot/commands/media/dl.js) — require.
+    - [`Whatsapp bot/commands/media/mfind.js`](../Whatsapp%20bot/commands/media/mfind.js) — require.
+    - [`Whatsapp bot/scripts/test-music-sources.js`](../Whatsapp%20bot/scripts/test-music-sources.js) — require.
+

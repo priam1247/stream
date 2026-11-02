@@ -2,18 +2,22 @@
  * ZaFar Bot — Spotify metadata (no API key needed)
  *
  * `.spotify <link>` has to answer "what song is this?" before it can download
- * anything. Spotify's oEmbed endpoint is public and unauthenticated, so this
- * works out of the box:
+ * anything. Order of resolution, all keyless by default:
  *
- *   GET https://open.spotify.com/oembed?url=<track url>
- *   → { title, author_name, thumbnail_url, ... }
+ *   1. public embed / __NEXT_DATA__ (artists, album, cover, duration)
+ *   2. Web API, if SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET are configured
+ *   3. public oEmbed endpoint as a last-resort fallback
  *
- * If a real API key is configured (SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET)
- * the Web API is used instead, which also gives the album and duration.
+ *      GET https://open.spotify.com/oembed?url=<track url>
+ *      → { title, author_name, thumbnail_url, ... }
+ *
+ * The duration lets `.spotify` match the right YouTube upload instead of a
+ * live version or an hour-long mix.
  */
 
 const axios = require('axios');
 const config = require('../config');
+const spotifyEmbed = require('./musicSources/spotifyEmbed');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
@@ -88,6 +92,32 @@ async function viaOembed(parsed) {
 }
 
 /**
+ * Keyless metadata from the public embed page. It carries artists, album,
+ * cover art and a real duration (which oEmbed does not), so the downloader can
+ * match a YouTube upload to the correct recording.
+ */
+async function viaEmbed(parsed) {
+  if (!parsed || !['track', 'album', 'playlist'].includes(parsed.type)) return null;
+  try {
+    const collection = await spotifyEmbed.resolve(parsed.url);
+    const track = collection.tracks?.[0];
+    if (!track?.title) return null;
+    return {
+      title: track.title,
+      artists: track.artists.join(', '),
+      album: track.album || collection.name,
+      durationMs: track.durationMs || 0,
+      cover: track.cover || collection.cover || '',
+      source: 'spotify-embed',
+      collection: { name: collection.name, kind: collection.kind, trackCount: collection.tracks.length },
+    };
+  } catch (e) {
+    console.warn('[spotify] embed metadata failed:', e.message);
+    return null;
+  }
+}
+
+/**
  * Resolve a Spotify link (or a bare "artist - title" query) to search terms.
  * @returns {Promise<{title,artists,album,cover,searchQuery,source}>}
  */
@@ -99,8 +129,10 @@ async function resolveTrack(input) {
     return { title: query, artists: '', album: '', cover: '', durationMs: 0, searchQuery: query, source: 'query' };
   }
 
-  let meta = null;
-  try { meta = await viaWebApi(parsed); } catch (e) { console.warn('[spotify] web api failed:', e.message); }
+  let meta = await viaEmbed(parsed);
+  if (!meta) {
+    try { meta = await viaWebApi(parsed); } catch (e) { console.warn('[spotify] web api failed:', e.message); }
+  }
   if (!meta) {
     try { meta = await viaOembed(parsed); } catch (e) {
       console.warn('[spotify] oembed failed:', e.message);

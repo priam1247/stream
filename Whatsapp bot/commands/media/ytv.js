@@ -26,6 +26,7 @@ const ytInnertube = require('../../utils/ytInnertube');
 const settings = require('../../utils/mediaSettings');
 const providers = require('../../utils/downloadProviders');
 const youtubeSearch = require('../../utils/youtubeSearch');
+const musicSources = require('../../utils/musicSources/deliver');
 const selections = require('../../utils/selections');
 const jobQueue = require('../../utils/jobQueue');
 const {
@@ -78,6 +79,15 @@ const execute = async (sock, msg, args, extra) => {
 
   if (!query) {
     return say(`Usage: .ytv <name or link> [360|480|720|1080]`);
+  }
+
+  // Music-service links resolve to a public music video through the keyless
+  // catalog layer; ordinary YouTube links and title searches are unchanged.
+  if (musicSources.isMusicInput(query)) {
+    return musicSources.deliverMusic(sock, msg, extra, {
+      input: query, kind: 'video', height, firstHit,
+      maxResults: Number(config.search?.maxResults) || 5,
+    });
   }
 
   const attempts = [];

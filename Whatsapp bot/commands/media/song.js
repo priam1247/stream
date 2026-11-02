@@ -23,6 +23,7 @@ const ytInnertube = require('../../utils/ytInnertube');
 const settings = require('../../utils/mediaSettings');
 const providers = require('../../utils/downloadProviders');
 const youtubeSearch = require('../../utils/youtubeSearch');
+const musicSources = require('../../utils/musicSources/deliver');
 const selections = require('../../utils/selections');
 const jobQueue = require('../../utils/jobQueue');
 const {
@@ -84,6 +85,16 @@ const execute = async (sock, msg, args, extra) => {
     let text = args.join(' ').trim();
     if (text.startsWith('!')) { firstHit = true; text = text.slice(1).trim(); }
     if (!text) return reply('Usage: .song <name or YouTube link>');
+
+    // Deezer / Apple Music / Spotify / SoundCloud / YouTube Music links are
+    // resolved through the keyless music sources before the YouTube pipeline.
+    // Plain search phrases keep the original .song behaviour exactly.
+    if (musicSources.isMusicInput(text)) {
+      return musicSources.deliverMusic(sock, msg, extra, {
+        input: text, kind: 'audio', sendAs, firstHit,
+        maxResults: Number(config.search?.maxResults) || 5,
+      });
+    }
 
     const id = stamp();
     const outBase = path.join(getTempDir(), id);
