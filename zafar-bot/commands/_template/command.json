@@ -1,0 +1,17 @@
+{
+  "name": "template",
+  "aliases": [
+    "tpl"
+  ],
+  "category": "general",
+  "description": "Copy this folder to start a new command",
+  "usage": ".template <something>",
+  "role": "user",
+  "cooldownSec": 3,
+  "timeoutSec": 30,
+  "lane": "light",
+  "limits": {
+    "maxInputChars": 200
+  },
+  "sample": "hello"
+}

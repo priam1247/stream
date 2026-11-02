@@ -1,0 +1,16 @@
+{
+  "name": "status",
+  "aliases": [
+    "health",
+    "board"
+  ],
+  "category": "admin",
+  "description": "Command health board",
+  "usage": ".status",
+  "role": "admin",
+  "cooldownSec": 2,
+  "timeoutSec": 20,
+  "lane": "light",
+  "limits": {},
+  "sample": ""
+}

@@ -1,0 +1,22 @@
+{
+  "name": "movie",
+  "aliases": [
+    "film",
+    "mv"
+  ],
+  "category": "media",
+  "description": "Search and download a movie",
+  "usage": ".movie <title> [year]",
+  "role": "user",
+  "cooldownSec": 30,
+  "timeoutSec": 900,
+  "lane": "single",
+  "limits": {
+    "maxSizeMB": 2000,
+    "maxDurationMin": 240,
+    "maxConcurrent": 1,
+    "singleSlot": true,
+    "maxInputChars": 120
+  },
+  "sample": "Inception 2010"
+}

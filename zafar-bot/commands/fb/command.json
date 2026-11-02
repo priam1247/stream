@@ -1,0 +1,20 @@
+{
+  "name": "fb",
+  "aliases": [
+    "fbdl",
+    "facebookdl",
+    "facebook"
+  ],
+  "category": "media",
+  "description": "Download a Facebook video or reel",
+  "usage": ".fb <Facebook video link>",
+  "role": "user",
+  "cooldownSec": 8,
+  "timeoutSec": 180,
+  "lane": "heavy",
+  "limits": {
+    "maxSizeMB": 2000,
+    "maxInputChars": 4096
+  },
+  "sample": "https://www.facebook.com/watch/?v=1234567890"
+}

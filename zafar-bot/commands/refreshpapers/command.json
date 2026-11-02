@@ -1,0 +1,16 @@
+{
+  "name": "refreshpapers",
+  "aliases": [
+    "refreshvault",
+    "reloadpapers"
+  ],
+  "category": "papers",
+  "description": "Refresh paper index",
+  "usage": ".refreshpapers",
+  "role": "owner",
+  "cooldownSec": 60,
+  "timeoutSec": 600,
+  "lane": "heavy",
+  "limits": {},
+  "sample": ""
+}

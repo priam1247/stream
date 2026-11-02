@@ -1,0 +1,20 @@
+{
+  "name": "sticker",
+  "aliases": [
+    "s",
+    "stiker",
+    "stc"
+  ],
+  "category": "general",
+  "description": "Convert image or video to sticker (auto compression)",
+  "usage": ".sticker (reply to media)",
+  "role": "user",
+  "cooldownSec": 3,
+  "timeoutSec": 120,
+  "lane": "light",
+  "limits": {
+    "maxSizeMB": 50,
+    "maxAnimatedKB": 1000
+  },
+  "sample": ""
+}

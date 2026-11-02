@@ -1,0 +1,22 @@
+{
+  "name": "ig",
+  "aliases": [
+    "instagram",
+    "insta",
+    "igdl",
+    "reels"
+  ],
+  "category": "media",
+  "description": "Download Instagram reels, videos, or photos",
+  "usage": ".ig <Instagram link>",
+  "role": "user",
+  "cooldownSec": 8,
+  "timeoutSec": 180,
+  "lane": "heavy",
+  "limits": {
+    "maxItems": 10,
+    "maxSizeMB": 200,
+    "maxInputChars": 4096
+  },
+  "sample": "https://www.instagram.com/reel/C1a2b3c4d5e/"
+}

@@ -1,0 +1,15 @@
+{
+  "name": "reload",
+  "aliases": [
+    "hotreload"
+  ],
+  "category": "admin",
+  "description": "Reload ONE command without touching the others",
+  "usage": ".reload <command>",
+  "role": "admin",
+  "cooldownSec": 2,
+  "timeoutSec": 20,
+  "lane": "light",
+  "limits": {},
+  "sample": "ping"
+}

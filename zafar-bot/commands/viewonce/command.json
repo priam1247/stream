@@ -1,0 +1,20 @@
+{
+  "name": "viewonce",
+  "aliases": [
+    "readvo",
+    "read",
+    "vv",
+    "readviewonce"
+  ],
+  "category": "general",
+  "description": "Reveal view-once messages (images/videos/audio)",
+  "usage": ".viewonce (reply to view-once message)",
+  "role": "user",
+  "cooldownSec": 3,
+  "timeoutSec": 60,
+  "lane": "light",
+  "limits": {
+    "maxSizeMB": 64
+  },
+  "sample": ""
+}
