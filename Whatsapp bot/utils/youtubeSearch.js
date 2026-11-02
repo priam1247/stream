@@ -1,12 +1,10 @@
 /**
  * ZaFar Bot — YouTube search
  *
- * Shared by .song / .ytv / .spotify so a query never dead-ends:
- *   1. yt-search (fast, gives durations and thumbnails — scrapes the HTML),
- *   2. yt-dlp's ytsearch: (API endpoints, survives HTML changes).
+ * Used by .spotify and local media search flows. The XJX-style .song/.video
+ * commands use yt-search's first hit directly, matching their reference.
  *
- * Returns a list, so commands can show numbered results and let the user pick
- * instead of silently downloading the first hit.
+ * Returns a list for the commands that offer numbered results.
  */
 
 const YT = require('./youtubedl');

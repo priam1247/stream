@@ -459,65 +459,63 @@ test('mediaPipeline delegates YouTube links to the standalone engine', async () 
   } finally { engine.deliverMedia = saved; }
 });
 
-test('musicSources.deliverMusic passes track metadata through to the engine', async () => {
+test('musicSources.deliverMusic passes a matched YouTube upload through to XJX media', async () => {
   const sources = bot('utils/musicSources/index');
   const deliver = bot('utils/musicSources/deliver');
+  const xjxMedia = bot('utils/xjxMedia');
   const saved = {
     resolve: sources.resolveUrl, find: sources.findUpload,
-    lyrics: sources.getLyrics, cover: sources.fetchCover, send: mediaPipeline.downloadAndSend,
+    send: xjxMedia.downloadAndSend,
   };
   try {
     sources.resolveUrl = async () => ({ type: 'collection', collection: {
       name: 'Song', owner: 'Artist', tracks: [{ title: 'Song', artists: ['Artist'], durationMs: 200000 }],
     } });
     sources.findUpload = async () => ({ url: 'https://www.youtube.com/watch?v=bbbbbbbbbbb', duration: 200 });
-    sources.getLyrics = async () => ({ plain: 'words' });
-    sources.fetchCover = async () => null;
     let opts = null;
-    mediaPipeline.downloadAndSend = async (_s, _m, _e, o) => { opts = o; return { sent: true }; };
+    xjxMedia.downloadAndSend = async (_s, _m, _e, o) => { opts = o; return { sent: true }; };
     const sock = { sendMessage: async () => ({ key: { id: 'x' } }) };
     const msg = { key: { remoteJid: 'c@s.whatsapp.net', id: 'm4' } };
     await deliver.deliverMusic(sock, msg, { from: 'c@s.whatsapp.net' }, {
       input: 'https://www.deezer.com/track/1', kind: 'audio', firstHit: true,
     });
     assert.equal(opts?.url, 'https://www.youtube.com/watch?v=bbbbbbbbbbb');
+    assert.equal(opts?.query, 'Song Artist');
+    assert.equal(opts?.kind, 'audio');
     assert.equal(opts?.track?.title, 'Song');
-    assert.equal(opts?.lyrics, 'words');
   } finally {
     sources.resolveUrl = saved.resolve; sources.findUpload = saved.find;
-    sources.getLyrics = saved.lyrics; sources.fetchCover = saved.cover;
-    mediaPipeline.downloadAndSend = saved.send;
+    xjxMedia.downloadAndSend = saved.send;
   }
 });
 
-test('deliverMusic still sends when no public upload was found (engine searches)', async () => {
+test('deliverMusic sends a title query to XJX search when no catalog upload was found', async () => {
   const sources = bot('utils/musicSources/index');
   const deliver = bot('utils/musicSources/deliver');
+  const xjxMedia = bot('utils/xjxMedia');
   const saved = {
     resolve: sources.resolveUrl, find: sources.findUpload,
-    lyrics: sources.getLyrics, cover: sources.fetchCover, send: mediaPipeline.downloadAndSend,
+    send: xjxMedia.downloadAndSend,
   };
   try {
     sources.resolveUrl = async () => ({ type: 'collection', collection: {
       name: 'Song', tracks: [{ title: 'Song', artists: ['Artist'], durationMs: 200000 }],
     } });
     sources.findUpload = async () => null;
-    sources.getLyrics = async () => null;
-    sources.fetchCover = async () => null;
     let opts = null;
-    mediaPipeline.downloadAndSend = async (_s, _m, _e, o) => { opts = o; return { sent: true }; };
+    xjxMedia.downloadAndSend = async (_s, _m, _e, o) => { opts = o; return { sent: true }; };
     const sock = { sendMessage: async () => ({ key: { id: 'x' } }) };
     const msg = { key: { remoteJid: 'c@s.whatsapp.net', id: 'm5' } };
     await deliver.deliverMusic(sock, msg, { from: 'c@s.whatsapp.net' }, {
       input: 'https://www.deezer.com/track/1', kind: 'audio', firstHit: true,
     });
     assert.equal(opts?.url, '');
+    assert.equal(opts?.query, 'Song Artist');
+    assert.equal(opts?.kind, 'audio');
     assert.equal(opts?.track?.title, 'Song');
-    assert.equal(engine.shouldHandle(opts?.url, 'audio', opts?.track), true);
   } finally {
     sources.resolveUrl = saved.resolve; sources.findUpload = saved.find;
-    sources.getLyrics = saved.lyrics; sources.fetchCover = saved.cover;
-    mediaPipeline.downloadAndSend = saved.send;
+    xjxMedia.downloadAndSend = saved.send;
   }
 });
 

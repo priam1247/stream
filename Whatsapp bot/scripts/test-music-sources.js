@@ -7,7 +7,7 @@
  * Every HTTP response is a fixture installed through
  * utils/musicSources/http.setTransportForTests — no WhatsApp connection and no
  * network access. Commands are exercised against stubbed delivery so the
- * existing .song / .ytv / .spotify title-search behaviour is guarded too.
+ * existing .song / .video / .spotify command behavior is guarded too.
  */
 
 const test = require('node:test');
@@ -367,83 +367,66 @@ test('tagMp3 writes album, lyrics and cover art alongside title/artist', async (
 
 // ─── 9. Command wiring ─────────────────────────────────────────────────────
 
-test('.song resolves a Deezer link through the music sources', async () => {
-  const saved = {
-    resolve: sources.resolveUrl, find: sources.findUpload,
-    lyrics: sources.getLyrics, cover: sources.fetchCover,
-    send: mediaPipeline.downloadAndSend,
-  };
-  const calls = [];
+test('.song passes its raw YouTube input to the XJX command resolver', async () => {
+  const xjxMedia = bot('../utils/xjxMedia');
+  const saved = xjxMedia.downloadSongCommand;
+  let received = null;
   try {
-    sources.resolveUrl = async () => ({ type: 'collection', collection: {
-      source: 'deezer', kind: 'track', name: 'Song', owner: 'Artist', cover: '',
-      tracks: [{ title: 'Song', artists: ['Artist'], album: 'Album', durationMs: 200000, cover: '', source: 'deezer' }],
-    } });
-    sources.findUpload = async () => ({ url: 'https://www.youtube.com/watch?v=bbbbbbbbbbb', duration: 200 });
-    sources.getLyrics = async () => ({ plain: 'words', synced: '', source: 'lrclib-get' });
-    sources.fetchCover = async () => null;
-    mediaPipeline.downloadAndSend = async (_s, _m, _e, opts) => { calls.push(opts); return { sent: true }; };
+    xjxMedia.downloadSongCommand = async (_sock, _msg, _extra, input) => { received = input; return { sent: true }; };
     const song = bot('../commands/media/song');
-    await song.execute(socket(), message(), ['https://www.deezer.com/track/1'], extra());
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].kind, 'audio');
-    assert.equal(calls[0].url, 'https://www.youtube.com/watch?v=bbbbbbbbbbb');
-    assert.equal(calls[0].title, 'Song');
-    assert.equal(calls[0].author, 'Artist');
-    assert.equal(calls[0].album, 'Album');
-    assert.equal(calls[0].lyrics, 'words');
-  } finally {
-    Object.assign(sources, { resolveUrl: saved.resolve, findUpload: saved.find, getLyrics: saved.lyrics, fetchCover: saved.cover });
-    mediaPipeline.downloadAndSend = saved.send;
-  }
+    const url = 'https://www.youtube.com/watch?v=bbbbbbbbbbb';
+    await song.execute(socket(), message(), [url], extra());
+    assert.equal(received, url);
+  } finally { xjxMedia.downloadSongCommand = saved; }
 });
 
-test('.ytv resolves an Apple Music link as a music video', async () => {
-  const saved = { resolve: sources.resolveUrl, find: sources.findUpload, send: mediaPipeline.downloadAndSend };
-  const calls = [];
+test('.video passes its input to XJX without a quality override', async () => {
+  const xjxMedia = bot('../utils/xjxMedia');
+  const saved = xjxMedia.downloadVideoCommand;
+  let received = null;
   try {
-    sources.resolveUrl = async () => ({ type: 'collection', collection: {
-      source: 'itunes', kind: 'track', name: 'Video Song', owner: 'Artist', cover: '',
-      tracks: [{ title: 'Video Song', artists: ['Artist'], album: '', durationMs: 210000, cover: '', source: 'itunes' }],
-    } });
-    sources.findUpload = async (_t, opts) => {
-      assert.equal(opts.video, true);
-      return { url: 'https://www.youtube.com/watch?v=ccccccccccc', duration: 210 };
-    };
-    mediaPipeline.downloadAndSend = async (_s, _m, _e, opts) => { calls.push(opts); return { sent: true }; };
-    const ytv = bot('../commands/media/ytv');
-    await ytv.execute(socket(), message(), ['https://music.apple.com/us/album/x/1?i=2', '720'], extra());
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].kind, 'video');
-    assert.equal(calls[0].height, 720);
-  } finally {
-    Object.assign(sources, { resolveUrl: saved.resolve, findUpload: saved.find });
-    mediaPipeline.downloadAndSend = saved.send;
-  }
+    xjxMedia.downloadVideoCommand = async (_sock, _msg, _extra, input) => { received = input; return { sent: true }; };
+    const video = bot('../commands/media/video');
+    const url = 'https://www.youtube.com/watch?v=ccccccccccc';
+    await video.execute(socket(), message(), [url], extra());
+    assert.equal(received, url);
+    assert.equal(video.name, 'video');
+    assert.equal(video.aliases.includes('ytv'), false);
+  } finally { xjxMedia.downloadVideoCommand = saved; }
 });
 
-test('plain title searches keep the original .song / .spotify behaviour', async () => {
-  const saved = { search: youtubeSearch.searchYouTube, resolve: bot('../utils/spotify').resolveTrack, send: mediaPipeline.downloadAndSend };
+test('.song uses XJX resolution while .spotify keeps its separate title search', async () => {
+  const xjxMedia = bot('../utils/xjxMedia');
+  const spotifyCmd = bot('../utils/spotify');
+  const saved = {
+    search: youtubeSearch.searchYouTube,
+    resolve: spotifyCmd.resolveTrack,
+    xjxSong: xjxMedia.downloadSongCommand,
+    pipelineSend: mediaPipeline.downloadAndSend,
+  };
   const queries = [];
+  const songInputs = [];
   const messages = [];
   try {
     youtubeSearch.searchYouTube = async (q) => { queries.push(q); return []; };
-    bot('../utils/spotify').resolveTrack = async () => ({
+    spotifyCmd.resolveTrack = async () => ({
       title: 'Track', artists: 'Artist', searchQuery: 'Artist Track', source: 'query',
     });
-    mediaPipeline.downloadAndSend = async () => { throw new Error('should not download'); };
+    xjxMedia.downloadSongCommand = async (_s, _m, _e, input) => { songInputs.push(input); return { sent: true }; };
+    mediaPipeline.downloadAndSend = async () => { throw new Error('the XJX song path must not use the local pipeline'); };
     const sock = socket();
     sock.sendMessage = async (_chat, body) => { messages.push(body.text || ''); return { key: { id: 'x' } }; };
     const ex = { ...extra(), status: async () => ({ update: async (text) => messages.push(text) }) };
     await bot('../commands/media/song').execute(sock, message(), ['Example', 'Song'], ex);
     await bot('../commands/media/spotify').execute(sock, message(), ['Artist', 'Track'], ex);
-    assert.deepEqual(queries, ['Example Song', 'Artist Track']);
-    assert.ok(messages.some((m) => /No results found/i.test(m)));
+    assert.deepEqual(songInputs, ['Example Song']);
+    assert.deepEqual(queries, ['Artist Track']);
     assert.ok(messages.some((m) => /Not found/i.test(m)));
   } finally {
     youtubeSearch.searchYouTube = saved.search;
-    bot('../utils/spotify').resolveTrack = saved.resolve;
-    mediaPipeline.downloadAndSend = saved.send;
+    spotifyCmd.resolveTrack = saved.resolve;
+    xjxMedia.downloadSongCommand = saved.xjxSong;
+    mediaPipeline.downloadAndSend = saved.pipelineSend;
   }
 });
 

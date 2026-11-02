@@ -5,15 +5,14 @@
  *
  * Resolves a link or a search phrase, offers the existing scoped numbered
  * picker for collections/searches, finds a public upload and hands it to the
- * standalone `utils/ownMedia/` engine (direct player API → HTTPS stream →
- * ffmpeg → tag → send). No yt-dlp binary, youtubei.js, Hector, yt1d or cobalt.
- * Audio and music video use the same source; only `kind` changes.
+ * XJX-compatible external resolver chain and remote-URL Baileys delivery.
+ * These music requests do not go through the bot's local downloader.
  */
 
 const config = require('../../config');
 const C = require('./constants');
 const sources = require('./index');
-const mediaPipeline = require('../mediaPipeline');
+const media = require('../xjxMedia');
 const selections = require('../selections');
 
 const PREFIX = () => config.prefix || '.';
@@ -56,45 +55,39 @@ async function deliverMusic(sock, msg, extra, opts = {}) {
 
   if (!text) return say(sock, msg, 'Usage: .mfind <name or music link> [audio|video]');
 
-  const send = (s, m, e, url, meta = {}) => mediaPipeline.downloadAndSend(s, m, e, {
-    url,
-    kind,
-    height,
-    sendAs,
-    lane: kind === 'audio' ? 'light' : 'heavy',
-    attempts: [],
-    title: meta.title || '',
-    author: meta.author || '',
-    album: meta.album || '',
-    lyrics: meta.lyrics || '',
-    cover: meta.cover || null,
-    track: meta.track || null,
-  });
+  const send = async (s, m, e, url, meta = {}) => {
+    const candidateUrl = media.isYouTubeUrl(url) ? url : '';
+    const artists = Array.isArray(meta.track?.artists) ? meta.track.artists : [];
+    const author = meta.author || artists.join(', ') || '';
+    const query = meta.query || [author, meta.title || meta.track?.title].filter(Boolean).join(' ');
+    try {
+      return await media.downloadAndSend(s, m, e, {
+        url: candidateUrl,
+        query: candidateUrl ? (meta.query || url) : query,
+        kind,
+        height,
+        sendAs,
+        title: meta.title || meta.track?.title || '',
+        author,
+        track: meta.track || null,
+      });
+    } catch (error) {
+      await react(s, m, '❌');
+      return say(s, m, media.friendlyError(error, { isOwner: Boolean(e?.isOwner) }));
+    }
+  };
 
   const deliverTrack = async (track, s, m, e) => {
     if (!track?.title) return say(s, m, '❌ That result has no track information.');
-    // A missing upload is no longer fatal: the ownMedia engine can search
-    // SoundCloud and the public YouTube endpoint itself using this metadata.
+    // If catalog matching finds no upload, the XJX-compatible helper searches
+    // YouTube from the track title and artist before calling the API ladder.
     const found = await sources.findUpload(track, { video: kind === 'video' }).catch(() => null);
     if (found) await react(s, m, '📥');
-
-    let lyricsText = '';
-    let cover = null;
-    if (kind === 'audio') {
-      const [foundLyrics, foundCover] = await Promise.all([
-        sources.getLyrics(track).catch(() => null),
-        sources.fetchCover(track.cover).catch(() => null),
-      ]);
-      lyricsText = foundLyrics?.plain || '';
-      cover = foundCover;
-    }
     return send(s, m, e, found?.url || '', {
       title: track.title,
       author: (track.artists || []).join(', '),
-      album: track.album || '',
-      lyrics: lyricsText,
-      cover,
       track,
+      query: [track.title, ...(track.artists || [])].join(' '),
     });
   };
 
@@ -156,10 +149,10 @@ async function deliverMusic(sock, msg, extra, opts = {}) {
     });
   };
 
-  // 1. A normal YouTube / SoundCloud / YouTube Music upload goes straight to
-  //    the existing pipeline; no catalog lookup is needed.
+  // 1. A YouTube / YouTube Music URL goes straight to the external resolver.
+  //    Other music-service URLs are resolved to a YouTube upload below.
   const direct = sources.normalizeDirectUrl(text);
-  if (direct) return send(sock, msg, extra, direct);
+  if (direct && media.isYouTubeUrl(direct)) return send(sock, msg, extra, direct, { query: text });
 
   // 2. A music-service link resolves to metadata, then to a public upload.
   if (sources.isMusicLink(text)) {

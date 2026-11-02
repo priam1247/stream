@@ -1,5 +1,5 @@
 /**
- * ZaFar Bot — YouTube engine (shared by .song and .ytv)   v3
+ * ZaFar Bot — local YouTube download engine   v3
  *
  * Why this module exists
  * ----------------------
@@ -623,7 +623,7 @@ const MAX_CAPTURE = 256 * 1024;
 /**
  * Spawn yt-dlp and capture output with hard caps.
  * `onProgress({percent,speed,eta})` is called while downloading when the
- * `progress` option is on — used by .ytv to show live progress in WhatsApp.
+ * `progress` option is on — used by local video-download flows to show progress.
  */
 function spawnYtdlp(args, { timeout = 120000, onProgress } = {}) {
   return new Promise((resolve, reject) => {

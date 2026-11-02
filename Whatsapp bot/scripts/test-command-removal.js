@@ -20,14 +20,17 @@ test.after(() => fs.rmSync(temp, { recursive: true, force: true }));
 
 const retired = ['audius', 'deezer', 'dz', 'bilibili', 'bili', 'vimeo', 'dailymotion', 'daily',
   'xhs', 'xiaohongshu', 'acfun', 'twitch', 'rumble', 'niconico', 'nico', 'commons',
-  'broadcast', 'bc', 'announce', 'weibo', 'pinterest', 'pintrest', 'pin', 'douyin', 'odysee', 'vk', 'youku'];
+  'broadcast', 'bc', 'announce', 'weibo', 'pinterest', 'pintrest', 'pin', 'douyin', 'odysee', 'vk', 'youku',
+  'ytv', 'ytvideo', 'dl', 'download', 'save', 'getvid', 'fetch'];
 
 test('retired commands and their aliases are not registered or listed in the menus', () => {
   const commands = bot('utils/commandLoader').loadCommands();
   for (const name of retired) assert.equal(commands.has(name), false, `${name} unexpectedly registered`);
-  for (const name of ['song', 'ytv', 'dl', 'spotify', 'reddit', 'tiktok', 'x', 'instagram', 'fb', 'status', 'restart']) {
+  for (const name of ['song', 'video', 'ytmp4', 'spotify', 'reddit', 'tiktok', 'x', 'instagram', 'fb', 'status', 'restart']) {
     assert.ok(commands.has(name), `${name} must remain registered`);
   }
+  assert.equal(fs.existsSync(path.join(root, 'commands/media/dl.js')), false, '.dl source still exists');
+  assert.equal(fs.existsSync(path.join(root, 'commands/media/ytv.js')), false, '.ytv source still exists');
   const menu = bot('commands/general/menu');
   for (const isOwner of [false, true]) {
     const text = menu._buildCard(menu._buildGroups('.', { isOwner }), null, { prefix: '.' });
@@ -35,14 +38,17 @@ test('retired commands and their aliases are not registered or listed in the men
   }
 });
 
-test('a legacy environment credential cannot divert song or Spotify title searches', async () => {
+test('a legacy environment credential cannot divert XJX song or Spotify title searches', async () => {
   const youtube = bot('utils/youtubeSearch');
+  const xjxMedia = bot('utils/xjxMedia');
   const spotify = bot('utils/spotify');
   const song = bot('commands/media/song');
   const spotifyCommand = bot('commands/media/spotify');
   const savedSearch = youtube.searchYouTube;
   const savedResolve = spotify.resolveTrack;
+  const savedSend = xjxMedia.downloadSongCommand;
   const queries = [];
+  const songRequests = [];
   const messages = [];
   const socket = { async sendMessage(_chat, body) { if (body.text) messages.push(body.text); } };
   const msg = { key: { remoteJid: 'test@s.whatsapp.net', id: 'fixture' }, message: {} };
@@ -50,15 +56,17 @@ test('a legacy environment credential cannot divert song or Spotify title search
   try {
     youtube.searchYouTube = async (query) => { queries.push(query); return []; };
     spotify.resolveTrack = async () => ({ title: 'Track', artists: 'Artist', searchQuery: 'Artist Track', source: 'query' });
+    xjxMedia.downloadSongCommand = async (_sock, _msg, _extra, input) => { songRequests.push(input); return { sent: true }; };
     await song.execute(socket, msg, ['Example', 'Song'], extra);
     await spotifyCommand.execute(socket, msg, ['Artist', 'Track'], extra);
-    assert.deepEqual(queries, ['Example Song', 'Artist Track']);
-    assert.ok(messages.some((message) => /No results found/i.test(message)));
+    assert.deepEqual(songRequests, ['Example Song']);
+    assert.deepEqual(queries, ['Artist Track']);
     assert.ok(messages.some((message) => /Not found/i.test(message)));
     assert.equal(Object.hasOwn(bot('config'), 'deezer'), false);
   } finally {
     youtube.searchYouTube = savedSearch;
     spotify.resolveTrack = savedResolve;
+    xjxMedia.downloadSongCommand = savedSend;
   }
 });
 

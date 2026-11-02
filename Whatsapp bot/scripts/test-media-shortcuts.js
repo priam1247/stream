@@ -37,12 +37,12 @@ for (const [name, url] of cases) {
     sock.sent.length = 0;
     await cmd.execute(sock, msg, [url, '480'], extra);
     assert.equal(last, null);
-    assert.match(sock.sent.at(-1).text, /searches titles only.*!dl/i);
+    assert.match(sock.sent.at(-1).text, /searches titles only.*[!.]song or [!.]video/i);
     const quoted = { ...msg, message: { extendedTextMessage: { contextInfo: { quotedMessage: { conversation: url } } } } };
     sock.sent.length = 0;
     await cmd.execute(sock, quoted, ['--audio'], extra);
     assert.equal(last, null);
-    assert.match(sock.sent.at(-1).text, /searches titles only.*!dl/i);
+    assert.match(sock.sent.at(-1).text, /searches titles only.*[!.]song or [!.]video/i);
   });
 }
 
@@ -92,7 +92,7 @@ test('new shortcuts do not download quoted or scheme-less links', async () => {
     sock.sent.length = 0;
     await cmd.execute(sock, message, args, extra);
     assert.equal(last, null);
-    assert.match(sock.sent.at(-1).text, /searches titles only.*!dl/i);
+    assert.match(sock.sent.at(-1).text, /searches titles only.*[!.]song or [!.]video/i);
   }
 });
 

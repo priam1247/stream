@@ -8,9 +8,9 @@
  *   • temp files      → the bot's own temp dir (`utils/tempManager`), in a
  *                       `movies/` subfolder it never sweeps
  *   • downloads       → the bot's streamed downloader (`utils/mediaTransfer`)
- *                       with the same size caps / content-type guards as `.dl`
+ *                       with size caps and content-type guards
  *   • ffmpeg          → the bot's resolved binary (`utils/ffmpeg`), so the
- *                       engine works wherever `.song`/`.ytv` already work
+ *                       engine uses the same media runtime as other commands
  *   • sending         → as a DOCUMENT, exactly like `.song`/`.paper` in this bot
  *   • disk            → nothing is cached: the file is deleted after the send
  *
@@ -114,7 +114,7 @@ function sniff(file) {
   return { kind: 'video', ext, mime: 'video/mp4' };
 }
 
-/** WhatsApp/fs-safe name, shared with `.song`/`.ytv`. */
+/** WhatsApp/fs-safe name for media filenames. */
 function safeName(value, fallback = 'video') {
   const m = transfer();
   if (m && typeof m.safeName === 'function') {

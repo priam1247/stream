@@ -149,7 +149,7 @@ async function downloadAndSend(sock, msg, extra, {
     let via = 'yt-dlp';
     let providerSniff = null;
 
-    // Match .song/.ytv for exact YouTube links, without changing other sites.
+    // Match direct YouTube URLs within the local pipeline without changing other sites.
     if (YT.isYouTubeUrl(url) && kind !== 'image' && providers.preferredEnabled()) {
       try {
         const hit = await providers.resolveMedia(url, {
@@ -205,8 +205,8 @@ async function downloadAndSend(sock, msg, extra, {
         const fallbackWorthTrying = ['BOT_CHECK', 'NO_YTDLP', 'NO_FORMATS', 'FFMPEG_MISSING', 'UNKNOWN',
           'NETWORK', 'RATE_LIMIT', 'PO_TOKEN', 'AGE_RESTRICTED', 'GEO_BLOCK', 'BAD_ARGS', 'PROXY_ERROR'];
 
-        // .dl should get the same local YouTube fallback as .song/.ytv. Never
-        // send a non-YouTube URL to this engine, and keep all existing size and
+        // Use the local Innertube fallback only for direct YouTube URLs.
+        // Never send another site to this engine; keep the existing size and
         // duration checks before delivering its result.
         if (YT.isYouTubeUrl(url) && kind !== 'image' && fallbackWorthTrying.includes(info.code) && ytInnertube.isEnabled()) {
           await react('🔄');

@@ -495,7 +495,7 @@ function describe(text) {
   lines.push('', `iframe: loading=${info.iframe.loading}, height=${info.iframe.height}, allow="${info.iframe.allow}"`);
   if (info.note) lines.push(`ℹ️ ${info.note}`);
   if (MUSIC_CATEGORIES.has(info.category)) {
-    lines.push('', `Tip: .song ${info.canonical} (MP3) · .ytv ${info.canonical} (MP4)`);
+    lines.push('', `Tip: .mfind ${info.canonical} (MP3) · .mfind ${info.canonical} --video (MP4)`);
     lines.push('     .embed <link> --audio | --video delivers it directly.');
   }
   return lines.join('\n');

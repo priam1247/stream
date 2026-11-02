@@ -1,9 +1,9 @@
 /**
  * API Integration Utilities
  *
- * Remote downloader fallbacks for .song / .ytv. Only used when yt-dlp cannot
- * do the job — every failure reason is collected, and an invalid/revoked
- * Gifted API key logs a clear warning (never printing the secret itself).
+ * Optional Gifted remote provider for the generic local media pipeline.
+ * The XJX-style .song/.video commands do not use this module. An invalid or
+ * revoked key logs a warning without printing the secret.
  */
 
 const axios = require('axios');
