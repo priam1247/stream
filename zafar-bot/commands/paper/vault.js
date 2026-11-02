@@ -63,9 +63,26 @@ const DELTA_PAGE_CAP    = 40;   // bigger delta than this → just do a full wal
 const MEM_CACHE_TTL     = 15 * 60 * 1000;       // serve memory, refresh in background
 const SNAPSHOT_MAX_AGE  = 24 * 60 * 60 * 1000;  // snapshot older → full re-walk
 const paperSearch       = require('./paperSearch');
-// No cap by default (.paper always sent every paper). Set PAPER_MAX_SEND_MB
-// only if the host truly cannot push large files.
-const MAX_SEND_BYTES    = Number(process.env.PAPER_MAX_SEND_MB || 0) * 1024 * 1024;
+// Limits come from command.json and only from command.json (see configureLimits).
+// There is no env override: two sources of truth for a cap is how a documented
+// limit and an enforced limit drift apart.
+let MAX_SEND_BYTES = 0;
+let MAX_PAPERS_PER_QUERY = 0;
+
+/**
+ * Called once by index.js with meta.limits. Throws if a limit is missing rather
+ * than inventing a default, because a silent default is an undocumented cap.
+ */
+function configureLimits({ maxSizeMB, maxPapersPerQuery } = {}) {
+  if (typeof maxPapersPerQuery !== 'number' || !Number.isFinite(maxPapersPerQuery) || maxPapersPerQuery < 1) {
+    throw new Error('paper: command.json limits.maxPapersPerQuery must be a positive number');
+  }
+  if (typeof maxSizeMB !== 'number' || !Number.isFinite(maxSizeMB) || maxSizeMB < 0) {
+    throw new Error('paper: command.json limits.maxSizeMB must be a number (0 = no cap)');
+  }
+  MAX_PAPERS_PER_QUERY = maxPapersPerQuery;
+  MAX_SEND_BYTES = maxSizeMB * 1024 * 1024;
+}
 const SNAPSHOT_VERSION  = 1;
 const SNAPSHOT_PATH     = path.join(__dirname, 'data', 'vault_snapshot.json');
 
@@ -579,7 +596,6 @@ async function browseCode(courseCode) {
 
 const BROWSE_CODES_PER_PAGE = 40;
 const BROWSE_MODULES_PER_PAGE = 25;
-const MAX_PAPERS_PER_QUERY = Math.max(1, Math.min(20, Number(process.env.PAPER_MAX_PER_QUERY) || 10));
 
 // ─── .paper COMMAND ───────────────────────────────────────────────────────────
 module.exports = {
@@ -855,7 +871,7 @@ const paperCommand = Object.assign({}, module.exports, {
   _browseCode: browseCode,
   _getVaultForTests,
   _setVaultFilesForTests,
-  MAX_PAPERS_PER_QUERY,
+  configureLimits,
   drimeClient,
   getFolderCount,
   refreshOnce,
@@ -877,6 +893,8 @@ module.exports = legacyExports;
 module.exports.paperCommand = paperCommand;
 module.exports.countpapersCmd = countpapersCmd;
 module.exports.refreshpapersCmd = refreshpapersCmd;
+// command.json limits are injected here; there is no env path to these numbers.
+module.exports.configureLimits = configureLimits;
 // ─── BOOT PREFETCH ────────────────────────────────────────────────────────────
 // Index any on-disk snapshot instantly at load, then refresh in the background
 // shortly after boot so the first query usually hits warm data. The timer is
@@ -884,5 +902,8 @@ module.exports.refreshpapersCmd = refreshpapersCmd;
 try {
   const bootSnap = loadSnapshot();
   if (bootSnap) indexVault(bootSnap.files, 'snapshot');
-} catch (_) { /* cold start proceeds on first query */ }
+} catch (err) {
+  // Cold start is fine, but a corrupt snapshot must not be invisible.
+  if (typeof setLog === 'function') setLog(`[paper] snapshot prefetch failed: ${err.message}`);
+}
 setTimeout(() => backgroundRefresh(), 5000).unref();

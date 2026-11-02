@@ -167,10 +167,10 @@ test('gateway/users/store.js is the only writer of users.json', () => {
 
 /* ── every catch must keep the cause ─────────────────────────────────────── */
 
-test('no empty catch blocks outside the ported media engine', () => {
-  // The brief: every catch logs the cause or rethrows. The ported engine/ is a
-  // documented exception (see docs/MIGRATION-REPORT.md §5.5) because its 31
-  // catches are unverifiable without a reachable provider.
+test('no empty catch blocks anywhere, engine included', () => {
+  // The brief: every catch logs the cause or rethrows. The ported engine/ used to
+  // be an exception (31 swallows); they now log at the right level, so the rule
+  // applies to the whole tree with no carve-outs.
   const offenders = [];
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -179,7 +179,6 @@ test('no empty catch blocks outside the ported media engine', () => {
       if (entry.isDirectory()) { walk(full); continue; }
       if (!entry.name.endsWith('.js')) continue;
       const rel = path.relative(ROOT, full);
-      if (rel.includes(`${path.sep}engine${path.sep}`)) continue;
       if (rel.startsWith('test')) continue;
       const source = fs.readFileSync(full, 'utf8');
       // catch {} and catch (_) {} and catch (e) { } with no body.
@@ -311,6 +310,48 @@ test('.gitignore covers sessions, storage and logs', () => {
     assert.ok(ignore.includes(line), `.gitignore does not exclude ${line}`);
   }
   assert.ok(ignore.includes('.env'), '.gitignore does not exclude .env');
+});
+
+test('limits live only in command.json — no env override for a cap', () => {
+  // A cap that can be set in two places is the hidden-path problem: the
+  // documented limit and the enforced limit drift apart. Env is for secrets.
+  const BANNED = [
+    'PAPER_MAX_PER_QUERY', 'PAPER_MAX_SEND_MB',
+    'MOVIE_QUALITY', 'MOVIE_MAX_MB', 'MOVIE_MAX_DOWNLOAD_MB',
+    'XJX_SONG_AUDIO_FORMAT',
+  ];
+  const offenders = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (['node_modules', '.git', 'storage', 'sessions', 'logs', 'test'].includes(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!entry.name.endsWith('.js')) continue;
+      const source = fs.readFileSync(full, 'utf8');
+      for (const name of BANNED) {
+        if (source.includes(`process.env.${name}`) || source.includes(`env.${name}`)) {
+          offenders.push(`${path.relative(ROOT, full)} reads ${name}`);
+        }
+      }
+    }
+  };
+  walk(ROOT);
+  assert.deepEqual(offenders, [], `limit overrides still readable from env:\n${offenders.join('\n')}`);
+});
+
+test('every command.json limit is a number', () => {
+  const problems = [];
+  for (const name of commandFolders()) {
+    const meta = JSON.parse(fs.readFileSync(path.join(COMMANDS, name, 'command.json'), 'utf8'));
+    for (const [key, value] of Object.entries(meta.limits || {})) {
+      if (key === 'singleSlot') {
+        if (typeof value !== 'boolean') problems.push(`${name}.${key} must be boolean`);
+      } else if (typeof value !== 'number' || !Number.isFinite(value)) {
+        problems.push(`${name}.${key} must be a number, got ${typeof value}`);
+      }
+    }
+  }
+  assert.deepEqual(problems, [], problems.join('\n'));
 });
 
 test('.env.example documents every variable the code reads', () => {

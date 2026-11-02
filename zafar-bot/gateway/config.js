@@ -61,7 +61,6 @@ const config = {
 
   media: {
     timeoutMs: num(env.XJX_MEDIA_TIMEOUT_MS, 60_000),
-    songAudioFormat: env.XJX_SONG_AUDIO_FORMAT || '320kbps',
     apisSupremeKey: env.XJX_APISSUPREME_API_KEY || '',
     knightbotKey: env.XJX_KNIGHTBOT_API_KEY || '',
   },
@@ -70,13 +69,10 @@ const config = {
   // environment variables in its own config.js; a shared config that knows about
   // one feature is exactly the coupling this rebuild removes.
 
-  movies: {
-    tmdbKey: env.TMDB_API_KEY || '',
-    quality: num(env.MOVIE_QUALITY, 720),
-    maxMB: num(env.MOVIE_MAX_MB, 2000),
-    maxDownloadMB: num(env.MOVIE_MAX_DOWNLOAD_MB, 2000),
-    torrentDirect: !/^(0|false|no|off)$/i.test(String(env.TORRENT_DIRECT ?? 'true')),
-  },
+  // No movie/series settings here. Size, runtime and quality limits are declared
+  // in each command's command.json and handed to the engine by engine-bridge.js;
+  // TMDB is read by the engine itself. A shared config duplicating a command's
+  // limits is the two-sources-of-truth problem this rebuild removes.
 };
 
 /** Filled in at boot by gateway/index.js once the registry is loaded. */

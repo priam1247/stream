@@ -72,6 +72,38 @@ async function apply({ number, sender, request }) {
       return { message: `✅ Added *${target}* as ${record.role}.`, user: record };
     }
 
+    // Approving is the same act as adding: a person who is not in this number's
+    // users.json is not served at all. Named separately because "approve" is the
+    // word that matches what the owner is doing.
+    case 'approve': {
+      if (!jid.isNumber(target)) throw new Error('a valid number is required');
+      const existing = store.getUser(number, target);
+      if (existing && existing.role !== 'banned') {
+        return { message: `ℹ️ *${target}* is already approved (${existing.role}).`, user: existing };
+      }
+      const record = store.addUser(number, target, { reason: `approved by ${sender}` });
+      return { message: `✅ Approved *${target}*. They can now use this number.`, user: record };
+    }
+
+    case 'groups': {
+      const settings = store.readSettings(number);
+      return { message: '', groups: settings.groups || [] };
+    }
+
+    case 'group': {
+      const [action, groupJid] = String(request?.extra || '').split(/\s+/).filter(Boolean);
+      if (!['on', 'off'].includes(action)) throw new Error('say "on" or "off"');
+      if (!/^\d{5,20}@g\.us$/.test(groupJid || '')) throw new Error('a group jid like 1203…@g.us is required');
+      const settings = store.setGroupEnabled(number, groupJid, action === 'on');
+      gatewayLog.info('group toggled', { group: groupJid, action, by: sender });
+      return {
+        message: action === 'on'
+          ? `✅ I will answer in *${groupJid}*.`
+          : `⛔ I will stay quiet in *${groupJid}*.`,
+        groups: settings.groups || [],
+      };
+    }
+
     case 'remove': {
       if (!jid.isNumber(target)) throw new Error('a valid number is required');
       if (owner === target) throw new Error('refusing to remove the owner');

@@ -10,7 +10,12 @@ export function tryB64(s) {
     const d = Buffer.from(s, 'base64').toString('utf8');
     if (/^https?:\/\//.test(d)) return d;
     if (/^[ -~]{8,}$/.test(d) && /https?:/.test(d)) return /https?:\/\/[^\s"']+/.exec(d)?.[0] || null;
-  } catch {}
+  } catch (err) {
+    // Expected for malformed input, but it is the only signal we get that a
+    // candidate link was not base64 at all. Debug level keeps the log usable.
+    log.debug('extract: base64 decode failed', err.message);
+    return null;
+  }
   return null;
 }
 

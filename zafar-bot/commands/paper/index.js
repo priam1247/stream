@@ -25,6 +25,9 @@ async function run(ctx) {
   // The job's temp folder is where downloads land and where the gateway will
   // delete everything afterwards.
   process.env.ZAFAR_JOB_TMP = ctx.tmp;
+  // Limits live in command.json. Handed to the ported vault explicitly so there
+  // is exactly one place a cap can come from.
+  vault.configureLimits(meta.limits);
   vault.paperCommand.setLog(ctx.log);
 
   const { sock, msg, extra } = makeAdapter(ctx);

@@ -34,9 +34,19 @@ function command({ role = 'user', cooldownSec = 0 } = {}) {
   return { name: 'ping', meta: { role, cooldownSec }, folderPath: '/dev/null' };
 }
 
-function evaluate({ sender, fromMe = true, number = NUMBER_A, cmd = command() }) {
+function evaluate({
+  sender, fromMe = true, number = NUMBER_A, cmd = command(),
+  isGroup = false, groupEnabled = true, chatKind = 'dm', jid: customJid = null,
+}) {
   return guards.evaluate({
-    message: { fromMe, chat: `${number}@s.whatsapp.net`, sender: `${sender}@s.whatsapp.net` },
+    message: {
+      fromMe,
+      isGroup,
+      groupEnabled,
+      chatKind,
+      chat: customJid || `${number}@s.whatsapp.net`,
+      sender: customJid || `${sender}@s.whatsapp.net`,
+    },
     number,
     command: cmd,
   });
@@ -54,10 +64,18 @@ test.beforeEach(() => {
 
 /* 1 ─ fromMe */
 
-test('guard 1: a message that is not from the linked account is ignored', () => {
-  const verdict = evaluate({ sender: OWNER, fromMe: false });
+test('guard 1: a stranger is ignored with no reply', () => {
+  // Not our number, not approved on it: silence. Replying would confirm the bot
+  // is listening.
+  const verdict = evaluate({ sender: '265900000005', fromMe: false });
   assert.equal(verdict.mode, 'ignore');
-  assert.equal(verdict.reason, 'not-from-me');
+  assert.equal(verdict.reason, 'not-approved');
+});
+
+test('guard 1: an approved person in a direct chat is served', () => {
+  store.addUser(NUMBER_A, '265900000005', { role: 'user' });
+  const verdict = evaluate({ sender: '265900000005', fromMe: false });
+  assert.equal(verdict.mode, 'replay', 'approval, not fromMe, is what lets somebody in');
 });
 
 test('guard 1: a message with no sender is ignored', () => {
@@ -94,21 +112,23 @@ test('guard 2: banned outranks the access mode (still silent under whitelist)', 
 
 /* 3 ─ access mode */
 
-test('guard 3: whitelist mode refuses an unlisted user politely', () => {
+test('guard 3: an unapproved person is refused, and told nothing', () => {
   store.setAccessMode(NUMBER_A, 'whitelist');
   const verdict = evaluate({ sender: '265900000005' });
-  assert.equal(verdict.mode, 'not-authorized');
-  assert.equal(verdict.reason, 'not-whitelisted');
+  assert.equal(verdict.mode, 'ignore', 'a stranger gets no message at all');
+  assert.equal(verdict.reason, 'not-approved');
 });
 
-test('guard 3: whitelist mode lets a listed user through', () => {
-  store.setAccessMode(NUMBER_A, 'whitelist');
+test('guard 3: an approved user is let through', () => {
   store.addUser(NUMBER_A, '265900000005');
   assert.equal(evaluate({ sender: '265900000005' }).mode, 'replay');
 });
 
-test('guard 3: open mode lets an unlisted user through', () => {
-  assert.equal(evaluate({ sender: '265900000005' }).mode, 'replay');
+test('guard 3: accessMode "open" no longer admits anyone', () => {
+  // The open door is gone on purpose. Kept as a test because a future refactor
+  // might reintroduce it by accident.
+  store.setAccessMode(NUMBER_A, 'open');
+  assert.equal(evaluate({ sender: '265900000005' }).mode, 'ignore');
 });
 
 /* 4 ─ maintenance */
@@ -171,6 +191,7 @@ test('guard 6: a per-command block stops exactly one command', () => {
 test('guard 7: cooldown refuses the second run, then expires', () => {
   const cmd = command({ cooldownSec: 2 });
   usage._resetAll();
+  store.addUser(NUMBER_A, '265900000005');
 
   assert.equal(evaluate({ sender: '265900000005', cmd }).mode, 'replay', 'first run must pass');
   usage.mark(NUMBER_A, '265900000005', 'ping');
@@ -186,6 +207,8 @@ test('guard 7: cooldown refuses the second run, then expires', () => {
 
 test('cooldown is per user and per command, not global', () => {
   const cmd = command({ cooldownSec: 60 });
+  store.addUser(NUMBER_A, '265900000005');
+  store.addUser(NUMBER_A, '265900000007');
   usage.mark(NUMBER_A, '265900000005', 'ping');
   // Another user is unaffected.
   assert.equal(evaluate({ sender: '265900000007', cmd }).mode, 'replay');
@@ -221,7 +244,7 @@ test('the guards fire in the documented order, not in whatever order is convenie
 /* refusal wording */
 
 test('every refusal has one fixed, polite message', () => {
-  assert.match(guards.refusalText('not-whitelisted'), /not authorized/i);
+  assert.match(guards.refusalText('not-approved'), /not authorized/i);
   assert.match(guards.refusalText('maintenance'), /maintenance/i);
   assert.match(guards.refusalText('role-too-low'), /restricted/i);
   assert.match(guards.refusalText('blocked-command'), /not allowed/i);

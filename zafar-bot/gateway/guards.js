@@ -16,12 +16,21 @@
  * This module wires them to the message and returns one decision object. It
  * never throws for a policy refusal: a refusal is an outcome, not an error.
  *
- * IMPORTANT — see MIGRATION_REPORT.md, decision A. The old bot served ONLY
- * messages where `key.fromMe === true` (the linked account talking to itself).
- * Step 1 preserves exactly that. The consequence is that steps 2 and 3 can only
- * fire for a sender other than the linked account, which the self-bot path never
- * produces. They are implemented, ordered and tested anyway, because the spec
- * requires them and because a future multi-user mode needs them.
+ * WHO GETS SERVED
+ *
+ * The bot answers approved people only — never the general public. Two kinds of
+ * sender are allowed:
+ *
+ *   - one of our OWN linked numbers (the owner asking from their own phone), and
+ *   - a person explicitly approved on that number via `.users add`.
+ *
+ * Everyone else is ignored with no reply at all. An unknown sender never learns
+ * the bot is listening.
+ *
+ * Step 1 used to be `fromMe === true`, which made the bot a private self-bot.
+ * It now accepts a message that is either fromMe OR from a bare-number contact
+ * (a DM). Group messages carry a `participant` jid and are handled separately,
+ * because a group must be switched on for the bot to answer in it at all.
  */
 
 const jid = require('../lib/jid');
@@ -42,10 +51,24 @@ const MODE = Object.freeze({
  * @param {object} input.command        registry entry (has meta.role, meta.cooldownSec, name)
  * @returns {{mode:string, reason:string, role:string, retryInSec:number}}
  */
-function evaluate({ message, number, command }) {
-  // 1. fromMe — the bot's own messages only.
-  if (!message || message.fromMe !== true) {
-    return { mode: MODE.IGNORE, reason: 'not-from-me', role: null, retryInSec: 0 };
+function evaluate({ message, number, command, linked = [] }) {
+  // 1. where did this come from?
+  //    - our own account (fromMe): always in scope
+  //    - a direct chat with a person: in scope, subject to approval below
+  //    - a group: only if that group has been switched on for this number
+  //    - anything else (status, broadcast): out of scope, silently
+  if (!message) {
+    return { mode: MODE.IGNORE, reason: 'no-message', role: null, retryInSec: 0 };
+  }
+  if (message.isGroup) {
+    if (!message.groupEnabled) {
+      return { mode: MODE.IGNORE, reason: 'group-not-enabled', role: null, retryInSec: 0 };
+    }
+    // A group message from one of our own phones is answered only by the socket
+    // that owns that phone; the decision is made in gateway/dedupe.js, which has
+    // already run by the time we get here.
+  } else if (!message.fromMe && message.chatKind !== 'dm') {
+    return { mode: MODE.IGNORE, reason: 'not-a-dm', role: null, retryInSec: 0 };
   }
 
   const sender = jid.digits(message.sender);
@@ -71,6 +94,7 @@ function evaluate({ message, number, command }) {
     command: command?.name || '',
     user,
     ownerNumber: store.readOwner(),
+    linked,
   });
 
   if (verdict.allowed) {
@@ -82,11 +106,10 @@ function evaluate({ message, number, command }) {
     return { mode: MODE.REPLAY, reason: 'ok', role: verdict.role, retryInSec: 0 };
   }
 
-  if (verdict.reason === 'banned') {
-    return { mode: MODE.IGNORE, reason: 'banned', role: verdict.role, retryInSec: 0 };
-  }
-  if (verdict.reason === 'not-whitelisted') {
-    return { mode: MODE.NOT_AUTHORIZED, reason: 'not-whitelisted', role: verdict.role, retryInSec: 0 };
+  // Silence for anything that would tell a stranger the bot exists: not approved,
+  // banned, or a store failure. Only an APPROVED person gets a described refusal.
+  if (['banned', 'not-approved', 'no-settings'].includes(verdict.reason)) {
+    return { mode: MODE.IGNORE, reason: verdict.reason, role: verdict.role, retryInSec: 0 };
   }
   return { mode: MODE.NOT_AUTHORIZED, reason: verdict.reason, role: verdict.role, retryInSec: 0 };
 }

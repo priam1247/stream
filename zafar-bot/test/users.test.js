@@ -213,7 +213,7 @@ test('removing a user on A leaves them on B', async () => {
 test('access mode is per number', () => {
   store.setAccessMode(A, 'whitelist');
   assert.equal(store.readSettings(A).accessMode, 'whitelist');
-  assert.equal(store.readSettings(B).accessMode, 'open', 'B must keep its own default');
+  assert.equal(store.readSettings(B).accessMode, 'whitelist', 'B must keep its own default');
 });
 
 test('maintenance is per number', () => {

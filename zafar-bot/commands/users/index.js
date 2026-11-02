@@ -12,6 +12,8 @@
  *   .users role <number> admin|user
  *   .users block <number> <command>
  *   .users unblock <number> <command>
+ *   .users approve <number>          (same as add; the word the owner uses)
+ *   .users group on|off <jid>        (let the bot answer in one group)
  *
  * This command never imports gateway/users/store.js. It cannot: commands only
  * see ctx. It sends an admin request through ctx.admin, and the gateway applies
@@ -21,7 +23,7 @@
 const meta = require('./command.json');
 const { parseArgs, formatList, formatInfo } = require('./render');
 
-const SUBCOMMANDS = ['list', 'info', 'add', 'remove', 'ban', 'unban', 'role', 'block', 'unblock'];
+const SUBCOMMANDS = ['list', 'info', 'add', 'remove', 'ban', 'unban', 'role', 'block', 'unblock', 'approve', 'group'];
 
 const USAGE = [
   `${meta.usage}`,
@@ -33,6 +35,8 @@ const USAGE = [
   `.users ban <number> | unban <number>`,
   `.users role <number> admin|user`,
   `.users block <number> <command> | unblock <number> <command>`,
+  '.users approve <number>',
+  '.users group on|off <group jid>',
 ].join('\n');
 
 async function run(ctx) {
@@ -42,6 +46,12 @@ async function run(ctx) {
   if (!sub) return ctx.reply(USAGE);
   if (!SUBCOMMANDS.includes(sub)) {
     return ctx.reply(`❌ Unknown: *${sub}*\n\n${USAGE}`);
+  }
+  if (sub === 'group') {
+    // .users group on|off <jid>
+    const [action, groupJid] = String(ctx.text || '').replace(/^group\s*/i, '').split(/\s+/).filter(Boolean);
+    const result = await ctx.admin({ action: 'group', extra: `${action || ''} ${groupJid || ''}`.trim() });
+    return ctx.reply(result.message);
   }
   if (sub !== 'list' && !target) {
     return ctx.reply(`Usage: .users ${sub} <number>`);

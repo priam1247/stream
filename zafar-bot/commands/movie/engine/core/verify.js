@@ -82,7 +82,7 @@ async function sizeOf(url, headers) {
     }
     const cr = res.headers.get('content-range');           // "bytes 0-0/1234567"
     const total = Number(String(cr || '').split('/')[1] || res.headers.get('content-length') || 0);
-    try { await res.body?.cancel(); } catch {}
+    try { await res.body?.cancel(); } catch (err) { log.debug('verify: could not cancel a discarded body', err.message); }
     return { ok: true, sizeMB: total ? total / 1048576 : 0, type: res.headers.get('content-type') || '' };
   } catch (e) {
     return { ok: false, status: e.name === 'TimeoutError' ? 'timeout' : e.message };
@@ -118,7 +118,7 @@ export async function probeRange(url, bytes = config.verifyBytes, headers = {}) 
       '-of', 'json', tmp
     ]);
     return JSON.parse(out);
-  } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} }
+  } finally { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (err) { log.warn('verify: could not remove the scratch dir', dir, err.message); } }
 }
 
 // download just the first 512 bytes and identify the container

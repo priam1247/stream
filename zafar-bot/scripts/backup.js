@@ -15,8 +15,13 @@
  *
  * Rotation: keeps the newest 10 archives in storage/backups/.
  *
+ * OFF-BOX COPY: set ZAFAR_BACKUP_DIR to a path outside this repository and every
+ * archive is mirrored there as well. That is the only copy that survives losing
+ * the host. The mirror is written with mode 0700 and never inside the repo.
+ *
  * SECURITY: the archives contain WhatsApp credentials. They are written with
- * mode 0600 inside storage/, which .gitignore excludes. Never commit them.
+ * mode 0600 inside storage/, which .gitignore excludes. Never commit them and
+ * never point ZAFAR_BACKUP_DIR at a git working tree.
  */
 
 const fs = require('fs');
@@ -25,6 +30,35 @@ const { execFileSync } = require('child_process');
 const { paths } = require('../lib/paths');
 
 const KEEP = 10;
+
+/**
+ * Mirror an archive to ZAFAR_BACKUP_DIR when it is set.
+ * Refuses to copy inside the repository: an off-box copy that lives in the repo
+ * is not off-box, and is one `git add -A` away from being published.
+ */
+function mirrorOffBox(archiveDir, root) {
+  const dest = process.env.ZAFAR_BACKUP_DIR;
+  if (!dest) return { mirrored: false, reason: 'ZAFAR_BACKUP_DIR is not set' };
+
+  const resolved = path.resolve(dest);
+  if (resolved.startsWith(root + path.sep) || resolved === root) {
+    throw new Error(`ZAFAR_BACKUP_DIR must be outside the repository (got ${resolved})`);
+  }
+
+  fs.mkdirSync(resolved, { recursive: true, mode: 0o700 });
+  fs.chmodSync(resolved, 0o700);
+  const target = path.join(resolved, path.basename(archiveDir));
+  copyTree(archiveDir, target);
+  fs.writeFileSync(
+    path.join(target, 'MIRRORED.txt'),
+    `off-box copy of ${path.basename(archiveDir)}\n` +
+    `source: ${archiveDir}\n` +
+    `at: ${new Date().toISOString()}\n` +
+    'Contains WhatsApp credentials. Keep it private.\n',
+    { mode: 0o600 },
+  );
+  return { mirrored: true, path: target };
+}
 
 function stamp() {
   const d = new Date();
@@ -84,17 +118,22 @@ function main() {
   try {
     const listing = execFileSync('find', [target, '-type', 'f'], { encoding: 'utf8' });
     fs.writeFileSync(path.join(target, 'FILES.txt'), listing, { mode: 0o600 });
-  } catch {
+  } catch (err) {
     // `find` is absent on some minimal images; the manifest still lists counts.
+    console.warn(`   (FILES.txt skipped: ${err.message})`);
   }
 
   rotate(paths.backups);
+
+  const mirror = mirrorOffBox(target, path.resolve(__dirname, '..'));
 
   console.log(`✅ Backup written: ${path.relative(path.resolve(__dirname, '..'), target)}`);
   console.log(`   users/settings files: ${users}`);
   console.log(`   core files:           ${core}`);
   console.log(`   session files:        ${sessions}`);
   console.log(`   kept:                 newest ${KEEP}`);
+  if (mirror.mirrored) console.log(`   off-box mirror:       ${mirror.path}`);
+  else console.log(`   off-box mirror:       skipped — ${mirror.reason}`);
   console.log('');
   console.log('These archives contain WhatsApp credentials. Never commit storage/.');
 }
