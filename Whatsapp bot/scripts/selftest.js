@@ -761,19 +761,33 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
     assert.ok(sock.sent.some((m) => m.video || m.document), 'nothing sent');
   });
 
-  await test('.instagram sends an image when the post is an image', async () => {
+  await test('.instagram delegates public posts to XJX resolver and sends the returned image', async () => {
     const cmds = require(path.join(REPO, 'commands/media/shortcuts.js'));
     const instagram = cmds.find(c => c.name === 'instagram');
-    const imgPath = path.join(sandbox, 'instagram.jpg');
-    fs.writeFileSync(imgPath, Buffer.concat([Buffer.from([0xFF, 0xD8]), Buffer.alloc(60000, 9)]));
-    YT.downloadVideo = async () => ({ file: imgPath, profile: 'default', attempts: [] });
-    YT.getInfo = async () => ({ title: 'A Photo', uploader: 'p', duration: 0, thumbnail: '', id: 'p' });
-
+    const socialMedia = require(path.join(REPO, 'utils/socialMedia.js'));
+    const realDownloadAndSend = socialMedia.downloadAndSend;
+    const calls = [];
     const sock = mockSock();
-    await instagram.execute(sock, mockMsg('.instagram https://www.instagram.com/p/abc'), ['https://www.instagram.com/p/abc'], makeExtra(sock));
+    socialMedia.downloadAndSend = async (socket, message, extra, options) => {
+      calls.push(options);
+      await socket.sendMessage(extra.from, {
+        image: { url: 'https://cdninstagram.com/photo.jpg' }, mimetype: 'image/jpeg',
+      }, { quoted: message });
+      return { sent: true, count: 1, platform: options.platform };
+    };
 
-    const img = sock.sent.find((m) => m.image);
-    assert.ok(img, 'image post was not sent as an image');
+    try {
+      YT.downloadVideo = async () => { throw new Error('generic media pipeline must not run'); };
+      await instagram.execute(sock, mockMsg('.instagram https://www.instagram.com/p/abc'),
+        ['https://www.instagram.com/p/abc'], makeExtra(sock));
+    } finally {
+      socialMedia.downloadAndSend = realDownloadAndSend;
+    }
+
+    assert.strictEqual(calls.length, 1, 'Instagram resolver was not called exactly once');
+    assert.strictEqual(calls[0].platform, 'instagram');
+    assert.strictEqual(calls[0].url, 'https://www.instagram.com/p/abc');
+    assert.ok(sock.sent.some((message) => message.image), 'image post was not sent as an image');
   });
 
   await test('.spotify reads the link, matches YouTube and downloads the audio', async () => {
@@ -2094,7 +2108,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
       assert.ok(warns.some((w) => /Gifted API fallback failed.*GIFTED_API_KEY/.test(w)), 'missing Gifted key warning');
     });
 
-    await test('Phase 4: dead files/packages/listeners removed while webtorrent is preserved', () => {
+    await test('Phase 4: dead files/listeners removed while active scrapers and webtorrent are preserved', () => {
       for (const removed of [
         'admin-server.js',
         'utils/heapPlan.js',
@@ -2106,7 +2120,7 @@ const settings = require(path.join(REPO, 'utils/mediaSettings.js'));
         assert.strictEqual(fs.existsSync(path.join(SOURCE_REPO, removed)), false, `${removed} should be deleted`);
       }
       const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
-      assert.ok(!pkg.dependencies?.['ruhend-scraper'], 'ruhend-scraper still in dependencies');
+      assert.ok(pkg.dependencies?.['ruhend-scraper'], 'ruhend-scraper is required by the Instagram resolver');
       assert.ok(!pkg.devDependencies?.nodemon, 'nodemon still in devDependencies');
       assert.ok(!pkg.scripts?.['install:no-puppeteer'] && !pkg.scripts?.check && !pkg.scripts?.dev, 'unused scripts remain');
       assert.ok(pkg.optionalDependencies?.webtorrent, 'webtorrent must remain in optionalDependencies');

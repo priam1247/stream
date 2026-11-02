@@ -14,7 +14,7 @@ A command-driven WhatsApp bot built on Baileys v7 with an integrated Past-Paper 
 .paper <course-code> [module] [year]   Search & send past papers (capped per query, 3-day dedupe)
 .paper browse [letter|code] [page]     Paginated course/module directory
 .countpapers [course-code]             Count papers in the vault
-.song <name-or-YouTube-URL>            Download audio with XJX's resolver flow
+.song <name-or-YouTube-URL>            Send one artist-titled MP3 document via XJX resolvers
 .video <name-or-YouTube-URL>           Download video with XJX's resolver flow (480p)
 .mfind <name|music-link> [--video] [720]  Search catalogs, then deliver via external APIs
 .embed <link> [--audio|--video] [720]  Resolve an embed/player link to its canonical URL
@@ -43,11 +43,13 @@ URLs are passed to the same resolvers as in XJX. Audio tries XJX's `getIzumi`
 URL resolver (KnightBot, ApisSupreme, then Apix), its `getEliteProTech`
 Hector-URL resolver, then its Hector query resolver. Video calls XJX's
 `getEliteProTechVideoByUrl` (KnightBot, then Keithsite) at 480p. Resolved HTTPS
-URLs are sent directly through Baileys: `.song` sends the audio and document,
-and `.video` falls back to a document if WhatsApp rejects the video message.
-Neither command runs yt-dlp or ffmpeg locally. `.mdiag` diagnoses the separate
-local media engine and does not test these providers. Download only content
-you have permission to use.
+URLs are sent directly through Baileys: `.song` sends exactly one MP3 document
+with a cleaned artist–title filename and caption; it requests the configured
+high-bitrate format (320 kbps by default, subject to what the source can
+provide). `.video` falls back to a document if WhatsApp rejects the video
+message. Neither command runs yt-dlp or ffmpeg locally. `.mdiag` diagnoses the
+separate local media engine and does not test these providers. Download only
+content you have permission to use.
 
 ### Music sources
 
@@ -73,11 +75,22 @@ resolve music-catalog links; they follow XJX's direct URL/search behavior.
 
 The API-key settings (`XJX_KNIGHTBOT_API_KEY`, `XJX_APISSUPREME_API_KEY`,
 `XJX_APIX_KEY`, or an existing `APIX_KEY`) belong in the private Botkeep
-environment or `.env`; only use credentials you own. No API tokens from XJX's
-repository were copied. `.song` sends both the resolved audio and its document,
-matching XJX. `.video` uses XJX's 480p default and does not accept a quality
-argument. Provider availability remains external and can change independently
-of this repository.
+environment or `.env`; only use credentials you own. The ApisSupreme key is
+also used by `.fb`. No API tokens from XJX's repository were copied. `.song`
+sends only one document and asks KnightBot for the bitrate in
+`XJX_SONG_AUDIO_FORMAT` (320 kbps by default); actual quality depends on the
+provider and source. `.video` uses XJX's 480p default and does not accept a
+quality argument. Provider availability remains external and can change
+independently of this repository.
+
+### Social media downloads
+
+`.fb` uses XJX's ApisSupreme Facebook resolver and picks HD when available,
+otherwise SD. `.instagram` / `.ig` uses the `ruhend-scraper` `igdl` resolver and
+sends public post/reel items (up to ten carousel images/videos). These commands
+no longer route through the generic yt-dlp → yt1d → Cobalt fallback chain.
+Private/restricted posts may not resolve. The Facebook endpoint may require
+`XJX_APISSUPREME_API_KEY`; configure only a key you own.
 
 Streaming services are used for metadata only: nothing is downloaded from
 them directly and **no DRM is circumvented**. The background download-job

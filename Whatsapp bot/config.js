@@ -61,6 +61,7 @@ module.exports = {
     knightbotApiKey: env.XJX_KNIGHTBOT_API_KEY || '',
     apissupremeApiKey: env.XJX_APISSUPREME_API_KEY || '',
     apixKey: env.XJX_APIX_KEY || env.APIX_KEY || '',
+    audioFormat: env.XJX_SONG_AUDIO_FORMAT || '320kbps',
     timeoutMs: Number(env.XJX_MEDIA_TIMEOUT_MS || 60000),
   },
 

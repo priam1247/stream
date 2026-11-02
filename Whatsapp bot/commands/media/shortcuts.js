@@ -1,9 +1,8 @@
 /**
  * ZaFar Bot — site shortcuts: .tiktok / .x / .instagram / .fb / .reddit
  *
- * Thin wrappers around the shared pipeline (`utils/mediaPipeline.js`), which
- * streams every file directly to disk instead of buffering in RAM and cleans
- * up temp files immediately after sending:
+ * Link shortcuts share the media pipeline; Facebook and Instagram use the
+ * dedicated XJX-style social resolvers in `utils/socialMedia.js`:
  *
  *   .tiktok <link> [quality]      .tt
  *   .x <link> [quality]           .twitter .xtwitter
@@ -18,6 +17,7 @@ const providerSearch = require('../../utils/providerSearch');
 const selections = require('../../utils/selections');
 const jobQueue = require('../../utils/jobQueue');
 const { downloadAndSend, parseOptions } = require('../../utils/mediaPipeline');
+const socialMedia = require('../../utils/socialMedia');
 
 const QUALITIES = [144, 240, 360, 480, 720, 1080];
 
@@ -95,7 +95,7 @@ function quotedTextOf(msg) {
   );
 }
 
-const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, label, searchable = false, defaultKind = 'video', defaultHeight = 0, stripCaption = false }) => ({
+const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, label, searchable = false, defaultKind = 'video', defaultHeight = 0, stripCaption = false, socialPlatform = '' }) => ({
   name,
   aliases,
   category: 'media',
@@ -134,6 +134,16 @@ const makeCommand = ({ name, aliases, description, usage, domains, hostLabel, la
           ? host.startsWith(domain) || host.includes(`.${domain}`)
           : host === domain || host.endsWith(`.${domain}`);
       });
+      if (socialPlatform) {
+        if (!known) return say(socialMedia.friendlyError({ code: 'BAD_LINK' }, socialPlatform));
+        try {
+          return await socialMedia.downloadAndSend(sock, msg, extra, {
+            platform: socialPlatform, url, quality: link.height,
+          });
+        } catch (error) {
+          return say(socialMedia.friendlyError(error, socialPlatform));
+        }
+      }
       return send(sock, msg, extra, url, link.kind, link.height, known);
     }
 
@@ -209,17 +219,18 @@ module.exports = [
     usage: '.instagram <Instagram link>',
     domains: ['instagram.com', 'instagr.am', 'ddinstagram.com'],
     hostLabel: 'Instagram',
+    socialPlatform: 'instagram',
   }),
   makeCommand({
     name: 'fb',
     aliases: ['fbdl', 'facebookdl', 'facebook'],
     label: 'facebook',
     defaultHeight: 1080,
-    stripCaption: true,
     description: 'Download a Facebook video or reel',
     usage: '.fb <Facebook video link>',
     domains: ['facebook.com', 'fb.watch', 'fb.com', 'm.facebook.com'],
     hostLabel: 'Facebook',
+    socialPlatform: 'facebook',
   }),
   makeCommand({
     name: 'reddit',
