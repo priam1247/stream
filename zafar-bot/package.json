@@ -11,7 +11,8 @@
     "backup": "node scripts/backup.js",
     "add-owner": "node scripts/add-owner.js",
     "test": "node --test \"test/*.test.js\"",
-    "test:isolation": "node --test test/isolation.test.js"
+    "test:isolation": "node --test test/isolation.test.js",
+    "smoke:paper": "node scripts/smoke-paper.js"
   },
   "engines": {
     "node": ">=22.13.0"

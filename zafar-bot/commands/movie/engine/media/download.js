@@ -42,7 +42,7 @@ async function resolveFfmpegInputs(url, headers, maxHeight) {
       signal: AbortSignal.timeout(12000),
       redirect: 'follow',
     });
-    if (!res.ok) { try { await res.body?.cancel(); } catch {} return { video: url }; }
+    if (!res.ok) { try { await res.body?.cancel(); } catch (err) { log.debug('download: could not cancel a rejected body', err.message); } return { video: url }; }
     const text = await readPlaylist(res);
     if (!/#EXT-X-STREAM-INF/i.test(text)) return { video: url };
     const base = res.url || url;
@@ -128,20 +128,20 @@ export async function hlsToFile(url, dest, onProgress, { headers = {}, maxHeight
           const tick = setInterval(() => {
             if (onAbort?.()) {
               clearInterval(tick);
-              try { p.kill('SIGKILL'); } catch {}
+              try { p.kill('SIGKILL'); } catch (err) { log.debug('download: kill after torn stdout failed', err.message); }
               return reject(Object.assign(new Error('download aborted'), { code: 'ABORTED' }));
             }
             try {
               const s = fs.statSync(dest).size;
               if (maxBytes > 0 && s > maxBytes) {
                 clearInterval(tick);
-                try { p.kill('SIGKILL'); } catch {}
+                try { p.kill('SIGKILL'); } catch (err) { log.debug('download: kill after torn stdout failed', err.message); }
                 return reject(Object.assign(new Error('HLS stream larger than the cap'), { code: 'TOO_BIG' }));
               }
               if (s !== lastSize) { lastSize = s; lastChange = Date.now(); onProgress?.(s, 0); }
               else if (Date.now() - lastChange > config.downloadStallMs) {
                 clearInterval(tick);
-                try { p.kill('SIGKILL'); } catch {}
+                try { p.kill('SIGKILL'); } catch (err) { log.debug('download: kill after torn stdout failed', err.message); }
                 return reject(new Error('HLS stream stalled (no data) — link expired?'));
               }
             } catch { /* file not created yet */ }

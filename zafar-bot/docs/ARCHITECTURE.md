@@ -124,7 +124,7 @@ them is skipped at load with the reason recorded — the bot still starts.
 | `cooldownSec` | per user, per command | ✓ number |
 | `timeoutSec` | hard kill in the runner | ✓ number |
 | `lane` | `light` \| `heavy` \| `single` | ✓ |
-| `limits` | command-specific caps, checked before any download | — |
+| `limits` | command-specific caps, checked before any download. **The only place a limit can live** — no env override exists, and a test enforces it | ✓ numbers |
 | `sample` | one example input, printed by `.status` and the tests | ✓ non-empty |
 
 ### `index.js`
@@ -282,9 +282,16 @@ the tree.
 | lane busy | the message is refused with "busy" | user, no queue |
 | send fails | the job fails; the cause is logged | `logs/<name>.log` |
 
-Every `catch` in the new tree logs the cause or rethrows. The old bot had 293
-empty `catch` blocks; the new tree has none (checked by the imports test, which
-fails on a bare `catch {}` in a command).
+
+
+### Every catch keeps the cause
+
+There are **zero** empty `catch {}` blocks in the tree, engine included, and a
+test fails if one appears. The ported movie/series engine shipped with 31; they
+now log at a level chosen by what the failure means — `warn` where it signals a
+real problem (a cache file that will not delete, a leaked scratch dir) and `debug`
+where the failure is expected (a discarded body, a `kill` on an already-dead
+process, malformed base64). See the migration report §5.5.
 
 ### The circuit breaker
 

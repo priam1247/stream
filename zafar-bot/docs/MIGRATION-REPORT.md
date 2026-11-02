@@ -171,7 +171,7 @@ two different jobs chosen explicitly by the caller, not a retry ladder.
 | # | finding | status |
 |---|---|---|
 | 1 | `handler.js:203` requires `fromMe === true`; the bot is a self-bot | **preserved**, documented |
-| 2 | 293 empty `catch` blocks — every failure silently swallowed | **fixed in our code**: 0 bare catches in `gateway/`, `lib/`, `scripts/`, `test/` and in command code. 31 remain **inside** the ported `engine/` (movie + series) and are listed as a known limitation below |
+| 2 | 293 empty `catch` blocks — every failure silently swallowed | **fixed**: 0 bare catches anywhere in the tree, engine included (see §5.5) |
 | 3 | `whitelist.json` written from 3 places | **fixed**: one store, one writer |
 | 4 | `movieCapDefault` read `VIDEO_MAX_MB` | **preserved** (behaviour kept, noted) |
 | 5 | Menu advertised `.dl` and `.ytv`, which do not exist | **fixed**: menu is generated from the registry |
@@ -291,29 +291,31 @@ No ❌ in section 5.3 is caused by code that failed a test. They are all "could 
 reach the provider from here". That distinction is the whole point of the board:
 a green tick on `.song` would have been a lie.
 
-### 5.5 Known limitation: the ported engine still swallows some errors
+### 5.5 The 31 empty `catch {}` blocks are fixed
 
-The movie and series commands carry a full copy of the old `engine/` (51 ESM
-files). That code **still contains 31 empty `catch {}` blocks**, concentrated in
-`engine/core/cache.js`, `engine/core/extract.js`, `engine/core/verify.js` and
-`engine/media/download.js`.
+The ported movie/series engine shipped with 31 empty `catch {}` blocks (14 per
+engine copy, plus the paper trio's reaction swallow). They swallowed the cause,
+which breaks the "every catch logs or rethrows" rule — and it is exactly where
+"I can't see what's broken" would come from in `.movie` and `.series`.
 
-Most are defensible clean-up paths (`unlinkSync` on a file that may already be
-gone, `body.cancel()` on a stream being discarded, `p.kill('SIGKILL')` on a
-process that may have exited) where there is genuinely nothing to report. Some
-are not: a failed temp-file removal in `cache.js` is silent, so a disk filling up
-would be invisible until it became an emergency.
+All of them now log. The level is chosen by what the failure means, not by
+convenience:
 
-They were left in place deliberately. Rewriting 352 KB of working media code
-without a reachable provider would mean shipping unverifiable changes into the
-two most fragile commands. The honest position: **this part of the tree does not
-yet meet the "every catch logs or rethrows" rule**, and it is the first thing to
-fix once the providers are reachable and `.movie`/`.series` can be exercised
-against real media.
+| site | level | why |
+|---|---|---|
+| `cache.js` delete / sweep failures | `warn` | a disk that will not empty is how the host fills up |
+| `cache.js` size-walk `stat` | `debug` | a file vanished mid-walk; noise |
+| `verify.js` scratch-dir cleanup | `warn` | leaked temp dirs, worth seeing |
+| `verify.js` / `download.js` body `cancel()` | `debug` | discarding a rejected stream by design |
+| `download.js` `p.kill('SIGKILL')` (×3) | `debug` | the process may already be gone |
+| `extract.js` base64 decode | `debug` | malformed input is the common case |
+| `disk.js` `statfs` | `debug` | absent before Node 22; the `df` path follows |
+| `disk.js` size-walk `stat` | `debug` | same as cache |
+| paper `react()` | `warn` via `console.warn` | a failed reaction must not abort a job |
 
-Command-level code outside `engine/` is clean: 0 empty catches. The three
-remaining ones (a failed WhatsApp reaction in each paper vault) now log their
-cause.
+Verified after the change: both engines still load (`21 exports` each, all ESM
+imports resolve), and `npm test` enforces the rule across the **whole tree** with
+no carve-out — the test no longer skips `engine/`.
 
 ---
 
@@ -367,6 +369,36 @@ Preserved unless listed here.
     it is a two-line change and nothing else depends on it.
 
 ---
+
+## 6a. Limits live in exactly one place
+
+`command.json` is the **only** source for every cap: size, runtime, per-query
+count, cooldown, timeout. There are no environment overrides for a limit, and a
+test enforces it (`limits live only in command.json — no env override for a cap`).
+
+Removed as part of this:
+
+| removed | was | now |
+|---|---|---|
+| `PAPER_MAX_PER_QUERY` | env override of `maxPapersPerQuery` | `command.json` only |
+| `PAPER_MAX_SEND_MB` | env override of `maxSizeMB` | `command.json` only |
+| `MOVIE_QUALITY`, `MOVIE_MAX_MB`, `MOVIE_MAX_DOWNLOAD_MB` | read into `gateway/config.js` and used by nothing — decoration | gone; the engine is configured from `command.json` by `engine-bridge.js` |
+| `XJX_SONG_AUDIO_FORMAT` | read into `config.media.songAudioFormat`, used by nothing | gone |
+| `config.movies.tmdbKey` | dead duplicate of the engine's own read | gone; the engine reads `process.env.TMDB_API_KEY` itself |
+
+The paper vault now takes its caps through an explicit `configureLimits()`, which
+**throws** if a limit is missing rather than inventing a default:
+
+```
+paper: command.json limits.maxPapersPerQuery must be a positive number
+```
+
+A silent default is an undocumented cap, which is the same hidden-path problem in
+a different costume.
+
+`.env.example` is now secrets, keys and connectivity only (`TORRENT_DIRECT` stays
+because it is a "may I use torrents at all" switch, not a limit). `PACK_NAME` is
+documented.
 
 ## 7. Dependencies
 
@@ -456,19 +488,54 @@ Answered by the safest assumption in code where an answer was needed. None of
 these block running the bot.
 
 1. **Five old media commands were not migrated** (`.dramabox`, `.tiktok`, `.x`,
-   `.reddit`, `.spotify`). Should they be rebuilt against a current provider, or
-   formally dropped? *Assumption: dropped.* (`.instagram` is **not** on this
-   list — it was an alias of `.ig` and is migrated; see §2.)
-2. **The self-bot gate.** `fromMe === true` means the actor is always the linked
-   number. Is that intended, or should the bot answer other people in groups?
-   *Assumption: preserved as the old bot did.*
-3. **`.providers` lost live health.** Accept the static list, or duplicate the
-   engine's health probe into `.providers`? *Assumption: static, to keep rule 1.*
+   `.reddit`, `.spotify`). Decision taken: do not rebuild in bulk. Each returns
+   as its own folder, on its own provider, only if it is actually used — adding
+   one command cannot affect the other 22. `.instagram` is **not** on this list;
+   it was an alias of `.ig` and is migrated (see §2).
+2. **The self-bot gate — ANSWERED from the old code, not assumed.**
+   `handler.js:203` is `if (!msg?.message || msg?.key?.fromMe !== true) return;`
+   with the comment *"Each socket serves only commands sent by its own WhatsApp
+   account."* It is the **only** inbound path: one `messages.upsert` listener
+   (`utils/sessionManager.js:307`) feeds one `handleMessage`, and there is no
+   group or mention branch anywhere. Two lines later the sender is forced to the
+   socket's own account (`const sender = sock.__accountNumber ? ... : sock.user?.id`),
+   so the actor can only ever be the linked number.
+
+   Consequences, verified line by line:
+
+   - the old bot was **owner-only in production**; it never served students in
+     DMs. The migration did not break student access — there was none to break.
+   - `utils/accessControl.js` (the whitelist) is **never imported by
+     `handler.js`**. It is used for dashboard account management, i.e. which
+     numbers may be *linked*, not who may run a command. Its three writers were a
+     dashboard-sync race, not an access-control race.
+   - the old non-owner branches (`ownerOnly`, `memberCommandPolicy.isUnavailable`
+     at `handler.js:124` and `:167`) are **unreachable**: `isOwner(senderIds)` is
+     always true because `senderIds` is built from the socket's own account.
+   - `memberTelemetry` / `member-usage.json` counted the owner's own usage under a
+     "member" label; the dashboard's "member" is a **user/person who linked a
+     number**, not a WhatsApp contact who sends commands.
+
+   **What this means for the users mechanism.** Roles, bans, per-user blocks and
+   cooldowns are real and tested, but in production they govern *the owner and any
+   other linked account on that number* — not students messaging the bot. The
+   system is correct for multi-account operation and is overkill for a single
+   owner. It is not a security boundary for third parties, because no third party
+   can reach a command at all.
+
+   **This is the one item that needs a product decision.** If students are meant
+   to use `.paper` from their own phones, the gate has to change: accept
+   `!fromMe`, resolve the actor from `participant`/`remoteJid`, and then the
+   guards, whitelist and roles become load-bearing. That is a deliberate redesign
+   with real abuse exposure, not a flag flip. It is **not** applied here, because
+   it would silently turn a private bot into a public one.
+3. **`.providers` lost live health.** Accepted: static list, to keep rule 1.
+   A per-provider health view would require importing another command's engine.
 4. **Paper duplication.** Three copies of a 863-line vault is a real maintenance
    cost. Confirm this is preferred over a shared `paper-core/`? *Assumption:
    duplication, because the brief forbids shared feature code.*
-5. **Admin cooldown of 2 s.** Kept from the old behaviour? It makes scripted
-   multi-step admin work need pacing. *Assumption: kept.*
+5. **Admin cooldown of 2 s.** Kept. Scripted multi-step admin work needs ~2 s of
+   pacing, which is a deliberate cost of having a cooldown at all.
 6. **`QUALITY_FALLBACK=0`.** Movie/series now fail rather than trying another
    quality. Confirm that is preferred over a lower-quality result. *Assumption:
    fail, per "no fallbacks".*

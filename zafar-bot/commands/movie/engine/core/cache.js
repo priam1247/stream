@@ -129,7 +129,7 @@ function duBytes(dir) {
     for (const e of entries) {
       const p = path.join(d, e.name);
       if (e.isDirectory()) walk(p);
-      else { try { total += fs.statSync(p).size; } catch {} }
+      else { try { total += fs.statSync(p).size; } catch (err) { log.debug('cache: stat failed during size walk', p, err.message); } }
     }
   };
   walk(dir);
@@ -168,7 +168,7 @@ async function sweep() {
   for (const [k, v] of files) {
     if (inUse(v.file)) continue; // downloading or uploading
     if (now() - v.at > ttl) {
-      try { if (ownedMovieFile(v.file)) fs.unlinkSync(v.file); } catch {}
+      try { if (ownedMovieFile(v.file)) fs.unlinkSync(v.file); } catch (err) { log.warn('cache: could not delete a known file', v.file, err.message); }
       files.delete(k); dirty = true;
     }
   }
@@ -204,9 +204,13 @@ async function sweep() {
       try { st = fs.statSync(p); } catch { continue; }
       if (st.isDirectory()) continue;
       if (MEDIA_EXT.test(name) && now() - st.mtimeMs < config.partialGraceMs) continue;
-      try { fs.unlinkSync(p); } catch {}
+      try { fs.unlinkSync(p); } catch (err) { log.warn('cache: could not delete a stale file', p, err.message); }
     }
-  } catch {}
+  } catch (err) {
+    // A sweep that cannot even list the temp dir is worth knowing about: this is
+    // the code path that stops the disk from filling up.
+    log.warn('cache: temp sweep failed', err.message);
+  }
 }
 
 function stats() {
@@ -223,7 +227,7 @@ function stats() {
 function wipe() {
   for (const [key, v] of files) {
     if (inUse(v.file)) continue;
-    try { if (ownedMovieFile(v.file)) fs.unlinkSync(v.file); } catch {}
+    try { if (ownedMovieFile(v.file)) fs.unlinkSync(v.file); } catch (err) { log.warn('cache: could not delete a known file', v.file, err.message); }
     files.delete(key);
   }
   meta.clear(); links.clear(); neg.clear();
