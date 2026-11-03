@@ -49,7 +49,7 @@ export function PairingCodeBanner({ activePair, onDismiss }: PairingCodeBannerPr
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          <span className="font-mono text-xs font-semibold tabular-nums text-slate-600">
+          <span className={`font-mono text-xs font-semibold tabular-nums ${remaining <= 20 ? 'text-rose-600' : 'text-slate-600'}`}>
             {remaining > 0 ? `${remaining}s` : 'Expired'}
           </span>
           <button
@@ -82,7 +82,7 @@ export function PairingCodeBanner({ activePair, onDismiss }: PairingCodeBannerPr
       <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
         <div
           className={`h-full transition-[width] duration-500 ${
-            remaining > 12 ? 'bg-teal-600' : 'bg-rose-500'
+            remaining > 20 ? 'bg-teal-600' : 'bg-rose-500'
           }`}
           style={{ width: `${pct}%` }}
         />

@@ -13,6 +13,7 @@ import { maskMemberNumber } from '@/lib/member-link';
 import type { AuthUser, MemberOverviewPayload, WhatsAppAccountStatus } from '@/lib/types';
 import { ScribdDesk } from './scribd-desk';
 import { WorkspaceShell, type WorkspaceNavGroup } from './workspace-shell';
+import { ZafarBubble, ZafarFox } from './zafar-fox';
 
 type Page = 'home' | 'commands' | 'settings' | 'scribd' | 'support';
 type Category = 'all' | 'general' | 'media' | 'vault';
@@ -20,7 +21,7 @@ type Category = 'all' | 'general' | 'media' | 'vault';
 const card = 'rounded-[22px] border border-slate-200/80 bg-white shadow-[0_10px_35px_-28px_rgba(15,45,37,0.3)]';
 const eyebrow = 'text-[10px] font-bold uppercase tracking-[0.16em] text-teal-700';
 const categoryNames = { general: 'General', media: 'Media', vault: 'Vault', other: 'Other' } as const;
-const categoryColors = { general: 'bg-teal-600', media: 'bg-emerald-400', vault: 'bg-amber-400', other: 'bg-slate-400' } as const;
+const categoryColors = { general: 'bg-black', media: 'bg-neutral-700', vault: 'bg-neutral-500', other: 'bg-neutral-400' } as const;
 
 function formatDate(value?: number) {
   if (!value || !Number.isFinite(value)) return 'Date unavailable';
@@ -124,9 +125,23 @@ export function MemberWorkspace({ user: initialUser, overview, number, account, 
     <div className="mx-auto max-w-[1180px]">
       {notice && <p role={notice.bad ? 'alert' : 'status'} className={`mb-4 rounded-2xl border px-4 py-3 text-xs ${notice.bad ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-teal-100 bg-teal-50 text-teal-800'}`}>{notice.text}</p>}
       {page === 'home' && <>
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-          <div><p className={eyebrow}>Your personal space</p><h1 className="mt-1.5 text-[25px] font-bold tracking-[-0.035em] text-slate-950 sm:text-[32px]">Good to see you, {firstName}.</h1><p className="mt-1 text-xs text-slate-500 sm:text-sm">Your connection and activity, in one place.</p></div>
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <ZafarFox compact />
+            <div className="min-w-0">
+              <p className={eyebrow}>Your personal space</p>
+              <h1 className="mt-1.5 text-[25px] font-bold tracking-[-0.035em] text-slate-950 sm:text-[32px]">Good to see you, {firstName}.</h1>
+              <p className="mt-1 text-xs text-slate-500 sm:text-sm">Your connection and activity, in one place.</p>
+            </div>
+          </div>
           <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] font-semibold ${state === 'connected' && access === 'Approved' ? 'bg-emerald-50 text-emerald-800' : 'bg-amber-50 text-amber-800'}`}><span className={`h-2 w-2 rounded-full ${state === 'connected' && access === 'Approved' ? 'bg-emerald-500' : 'bg-amber-500'}`} />{access}</span>
+          <ZafarBubble className="basis-full bg-white/80 text-xs text-slate-700">
+            {statusError
+              ? 'I can’t reach your status right now. Try refresh and I’ll check again.'
+              : state === 'connected'
+                ? 'You’re connected. Your recent activity and tools are ready here.'
+                : `Your connection is ${connection.toLowerCase()}. Visit Settings to manage it.`}
+          </ZafarBubble>
         </div>
         {(!overview.memberAllowed || approval !== 'approved' || current?.enabled === false) && <div role="status" className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">{!overview.memberAllowed ? 'Your account access is restricted.' : approval === 'pending' ? 'Your number is linked. Commands unlock after administrator approval.' : approval === 'rejected' ? 'Your request was not approved. Contact support or unlink your number.' : 'Your command access is paused.'}</div>}
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.65fr)_minmax(280px,1fr)]">

@@ -55,7 +55,7 @@ function Navigation<T extends string>({ groups, current, label, onChoose }: {
                 aria-description={alert && typeof badge === 'number' ? `${badge} unread ${badge === 1 ? 'alert' : 'alerts'}` : undefined}
                 aria-current={current === id ? 'page' : undefined}
                 onClick={() => onChoose(id)}
-                className={`group flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
+                className={`group ink flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
                   current === id
                     ? 'bg-slate-50 text-slate-950'
                     : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950'
@@ -92,7 +92,7 @@ function Sidebar<T extends string>({ kind, user, groups, current, navLabel, onCh
           <p className="truncate text-sm font-bold tracking-tight text-slate-950">{kind === 'owner' ? 'Control Room' : 'My Workspace'}</p>
           <p className="mt-0.5 truncate text-[11px] font-medium text-slate-500">{kind === 'owner' ? 'Owner workspace' : 'Personal workspace'}</p>
         </div>
-        {onClose && <button type="button" onClick={onClose} aria-label="Close workspace menu" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"><X aria-hidden="true" className="h-5 w-5" /></button>}
+        {onClose && <button type="button" onClick={onClose} aria-label="Close workspace menu" className="ink flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"><X aria-hidden="true" className="h-5 w-5" /></button>}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto py-6">
@@ -100,7 +100,7 @@ function Sidebar<T extends string>({ kind, user, groups, current, navLabel, onCh
       </div>
 
       <div className="border-t border-slate-100 p-3">
-        <div className="flex items-center gap-1 rounded-2xl bg-slate-50 p-1.5">
+        <div className="ink flex items-center gap-1 rounded-2xl bg-slate-50 p-1.5">
           <button type="button" onClick={onAccount} aria-label="Open account settings" className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-xl px-1.5 text-left hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-teal-100 text-xs font-bold uppercase text-teal-800">{(user.name || user.email).slice(0, 2)}</span>
             <span className="min-w-0"><span className="block truncate text-xs font-bold text-slate-800">{user.name || 'Account'}</span><span className="block truncate text-[11px] text-slate-500">{kind === 'owner' ? 'Owner' : 'Member'}</span></span>

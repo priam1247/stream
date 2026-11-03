@@ -3,6 +3,7 @@
 import { Activity, ArrowRight, Bell, CheckCircle2, ChevronRight, CircleAlert, Library, ListChecks, Server, Smartphone, Users, type LucideIcon } from 'lucide-react';
 import type { AdminOverviewPayload } from '@/lib/types';
 import { formatCheckedTime, type RoomAlert, type RoomTarget, type ScribdSnapshot } from '@/lib/control-room';
+import { ZafarBubble, ZafarFox } from './zafar-fox';
 
 interface Props {
   data: AdminOverviewPayload;
@@ -58,10 +59,16 @@ export function ControlRoomHome({ data, overviewCheckedAt, overviewError, scribd
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3 px-0.5">
-        <div>
-          <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-teal-700">Control room</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">Overview</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3 px-0.5">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <ZafarFox compact />
+          <div className="min-w-0 shrink-0">
+            <p className="eyebrow">Control room</p>
+            <h1 className="mt-1 text-2xl text-slate-950 sm:text-3xl">Overview</h1>
+          </div>
+          <ZafarBubble className="hidden max-w-sm flex-1 bg-white/70 text-xs text-slate-700 md:block">
+            I’m checking the service bridge, WhatsApp connection, and Scribd availability for you.
+          </ZafarBubble>
         </div>
         <span className="inline-flex items-center gap-1.5 text-xs text-slate-500"><Activity className="h-3.5 w-3.5 text-teal-600" /> {formatCheckedTime(overviewCheckedAt)}</span>
       </div>

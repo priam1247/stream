@@ -2,6 +2,7 @@
 
 import { ArrowRight, BookOpen, Command, Library, LockKeyhole, Smartphone, type LucideIcon } from 'lucide-react';
 import type { AuthUser, MemberOverviewPayload } from '@/lib/types';
+import { ZafarBubble, ZafarFox } from './zafar-fox';
 
 export type MemberDestination = 'numbers' | 'commands' | 'vault' | 'scribd' | 'status';
 
@@ -46,18 +47,22 @@ export function MemberHome({ user, overview, statusUnavailable, canAccessScribd,
       {!statusUnavailable && overview.memberAllowed && !overview.botEnabledForMembers && !user.isAdmin && (
         <p role="status" className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold leading-5 text-amber-800">New number approvals and pairing are paused.</p>
       )}
-      <section className="ink relative overflow-hidden rounded-lg bg-gradient-to-br from-white via-[#f4fbf8] to-[#e6f5ef] p-5 sm:p-7">
-        <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full border-[36px] border-teal-100/40" />
-        <div className="relative">
-          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-teal-700">Personal workspace</p>
-          <h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">{name ? `Welcome, ${name}` : 'Welcome'}</h1>
-          <p className="mt-2 text-sm text-slate-600">Your numbers and tools, in one place.</p>
-          <button type="button" onClick={() => onNavigate('numbers')} className="mt-5 inline-flex min-h-11 items-center gap-2 rounded-xl bg-teal-700 px-4 text-xs font-bold text-white shadow-sm transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2">Manage my numbers <ArrowRight aria-hidden="true" className="h-4 w-4" /></button>
+      <section className="ink relative overflow-hidden bg-gradient-to-br from-white via-[#f4fbf8] to-[#e6f5ef] p-5 sm:p-7">
+        <div className="relative flex flex-wrap items-start gap-4 sm:gap-5">
+          <ZafarFox />
+          <div className="min-w-0 flex-1">
+            <p className="eyebrow">Personal workspace</p>
+            <h1 className="mt-2 text-2xl text-slate-950 sm:text-3xl">{name ? `Welcome, ${name}` : 'Welcome'}</h1>
+            <ZafarBubble className="mt-3 bg-white/70 text-slate-700">
+              Your numbers and tools are here. I’ll help you keep your WhatsApp connection on track.
+            </ZafarBubble>
+            <button type="button" onClick={() => onNavigate('numbers')} className="mt-5 inline-flex min-h-11 items-center gap-2 bg-teal-700 px-4 text-xs font-bold text-white transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2">Manage my numbers <ArrowRight aria-hidden="true" className="h-4 w-4" /></button>
+          </div>
         </div>
         <div className="relative mt-6 grid grid-cols-3 gap-2 border-t border-teal-100/90 pt-4 sm:max-w-xl sm:gap-4">
-          <div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">My access</p><p className="mt-1 text-sm font-bold text-slate-900">{access}</p></div>
-          <div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Numbers</p><p className="mt-1 text-sm font-bold text-slate-900">{countText}</p></div>
-          <div className="min-w-0"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Service bridge</p><p className="mt-1 text-sm font-bold text-slate-900">{bridge}</p></div>
+          <div className="min-w-0"><p className="eyebrow">My access</p><p className="mt-1 text-sm font-bold text-slate-900">{access}</p></div>
+          <div className="min-w-0"><p className="eyebrow">Numbers</p><p className="mt-1 text-sm font-bold text-slate-900">{countText}</p></div>
+          <div className="min-w-0"><p className="eyebrow">Service bridge</p><p className="mt-1 text-sm font-bold text-slate-900">{bridge}</p></div>
         </div>
       </section>
 
