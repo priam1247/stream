@@ -14,7 +14,7 @@ import {
   User as UserIcon,
 } from 'lucide-react';
 import { AuthUser } from '@/lib/types';
-import { ZafarRobot } from './zafar-robot';
+import { ZafarFox } from './zafar-fox';
 
 type AuthStep = 'login' | 'register' | 'verify' | 'forgot' | 'reset';
 
@@ -239,14 +239,14 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
     <div className="bg-portal-canvas flex min-h-screen w-full flex-col justify-center overflow-x-hidden px-3.5 py-6 sm:px-6">
       <div className="mx-auto w-full max-w-[400px]">
         <div className="mb-4 flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-700 text-sm font-black text-white">z</div>
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-ink text-xs font-black tracking-[-0.08em] text-white">zA</div>
           <div>
             <div className="text-[15px] font-extrabold tracking-tight text-slate-900">zAfAr</div>
             <div className="text-[11px] text-slate-500">Your WhatsApp companion</div>
           </div>
         </div>
         <div className="mb-4 flex items-center gap-2.5">
-          <ZafarRobot compact={keyboardOpen} />
+          <ZafarFox compact={keyboardOpen} />
           <div aria-live="polite" className="relative rounded-2xl rounded-bl-md border border-teal-100 bg-white px-4 py-3 text-xs leading-relaxed text-slate-700 shadow-sm">
             {step === 'register'
               ? 'Let’s get started! Create your account to link your number with the zAfAr WhatsApp bot.'

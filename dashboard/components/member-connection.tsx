@@ -6,7 +6,7 @@ import { AlertCircle, ArrowRight, Check, ChevronRight, Copy, Link2, Loader2, Log
 import { authHeaders, performSignOut } from '@/lib/client-session';
 import { formatCountdown, normalizeMalawiNumber } from '@/lib/member-link';
 import type { AuthUser, MemberOverviewPayload } from '@/lib/types';
-import { ZafarRobot } from './zafar-robot';
+import { ZafarFox } from './zafar-fox';
 import { MemberWorkspace } from './member-workspace';
 
 interface LinkCache {
@@ -391,7 +391,7 @@ export function MemberConnection({ user }: { user: AuthUser }) {
         {loading ? <div className="flex min-h-40 items-center justify-center gap-2 text-xs text-slate-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading your connection…</div> : <>
             {cache.relinking && confirmed && <button type="button" onClick={() => setCache((old) => ({ ...old, relinking: false }))} className="mb-4 min-h-10 text-xs font-semibold text-teal-700">← Back to workspace</button>}
             <div className="mb-4"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-teal-700">Your WhatsApp connection</p><h1 className="mt-2 text-[25px] font-bold tracking-tight">{disconnected ? 'Your number got disconnected' : headingName ? `Welcome, ${headingName}` : 'Welcome to zAfAr'}</h1><p className="mt-1 text-xs leading-5 text-slate-500">{disconnected ? 'Let’s get your number connected again.' : 'One quick step to get started.'}</p></div>
-            <div className="mb-5 flex items-center gap-3 rounded-[20px] border border-teal-100 bg-[#eaf8f2] px-3 py-2"><ZafarRobot /><div className="min-w-0"><p className="text-xs font-bold text-teal-900">{disconnected ? 'I’m ready when you are.' : 'Hi, I’m here to help.'}</p><p className="mt-1 text-xs leading-5 text-teal-800/80">{disconnected ? 'Get a new code to reconnect your number.' : 'Let’s link your number to the zAfAr WhatsApp bot.'}</p></div></div>
+            <div className="ink mb-5 flex items-center gap-3 px-3 py-2"><ZafarFox /><div className="min-w-0"><p className="text-xs font-bold text-teal-900">{disconnected ? 'I’m ready when you are.' : 'Hi, I’m here to help.'}</p><p className="mt-1 text-xs leading-5 text-teal-800/80">{disconnected ? 'Get a new code to reconnect your number.' : 'Let’s link your number to the zAfAr WhatsApp bot.'}</p></div></div>
             <section className="rounded-[22px] border border-[#dfeae5] bg-white p-4 shadow-[0_12px_38px_-28px_rgba(15,80,65,.3)]"><div className="mb-4 flex items-start gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-50 text-teal-700"><Link2 className="h-4 w-4" /></div><div><h2 className="text-sm font-bold">Link your number</h2><p className="mt-1 text-[11px] text-slate-500">Enter your details to get a WhatsApp code.</p></div></div>
               {!overview?.memberAllowed && <p className="mb-3 rounded-xl bg-rose-50 p-3 text-xs text-rose-800">Your account access has been restricted.</p>}
               {overview?.memberAllowed && !overview.botEnabledForMembers && <p className="mb-3 rounded-xl bg-amber-50 p-3 text-xs text-amber-800">New number linking is currently paused.</p>}
