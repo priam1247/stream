@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import Link from 'next/link';
-import { ArrowUpRight, LogOut, Menu, MoreHorizontal, RefreshCw, X, type LucideIcon } from 'lucide-react';
+import { ArrowUpRight, Layers3, LogOut, Menu, MoreHorizontal, RefreshCw, X, type LucideIcon } from 'lucide-react';
 import type { AuthUser } from '@/lib/types';
 
 export interface WorkspaceNavItem<T extends string> {
@@ -57,7 +57,7 @@ function Navigation<T extends string>({ groups, current, label, onChoose }: {
                 onClick={() => onChoose(id)}
                 className={`group flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
                   current === id
-                    ? 'bg-teal-50 text-teal-800 ring-1 ring-inset ring-teal-100'
+                    ? 'bg-slate-50 text-slate-950'
                     : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950'
                 }`}
               >
@@ -87,9 +87,9 @@ function Sidebar<T extends string>({ kind, user, groups, current, navLabel, onCh
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
       <div className="flex min-h-[76px] items-center gap-3 border-b border-slate-100 px-5">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-ink text-sm font-black tracking-[-0.08em] text-white">zA</span>
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-black text-white"><Layers3 aria-hidden="true" className="h-5 w-5" strokeWidth={1.9} /></span>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-bold tracking-tight text-slate-950">zAfAr</p>
+          <p className="truncate text-sm font-bold tracking-tight text-slate-950">{kind === 'owner' ? 'Control Room' : 'My Workspace'}</p>
           <p className="mt-0.5 truncate text-[11px] font-medium text-slate-500">{kind === 'owner' ? 'Owner workspace' : 'Personal workspace'}</p>
         </div>
         {onClose && <button type="button" onClick={onClose} aria-label="Close workspace menu" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"><X aria-hidden="true" className="h-5 w-5" /></button>}
@@ -198,7 +198,7 @@ export function WorkspaceShell<T extends string>({
   };
 
   return (
-    <div className="min-h-screen w-full overflow-x-hidden bg-white text-slate-900">
+    <div className="min-h-screen w-full overflow-x-hidden bg-[#f6f8f7] text-slate-900">
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-[248px] border-r border-slate-200/80 lg:block">
         <Sidebar kind={kind} user={user} groups={groups} current={current} navLabel={desktopLabel} onChoose={onNavigate} onAccount={onAccount} onSignOut={onSignOut} />
       </aside>

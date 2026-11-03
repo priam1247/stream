@@ -237,9 +237,9 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
 
   return (
     <div className="bg-portal-canvas flex min-h-screen w-full flex-col justify-center overflow-x-hidden px-3.5 py-6 sm:px-6">
-      <div className="mx-auto w-full max-w-[400px]">
+      <div className="mx-auto w-full max-w-[440px]">
         <div className="mb-4 flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-ink text-xs font-black tracking-[-0.08em] text-white">zA</div>
+          <div className="flex h-9 w-9 items-center justify-center rounded-sm bg-black text-sm font-black text-white">z</div>
           <div>
             <div className="text-[15px] font-extrabold tracking-tight text-slate-900">zAfAr</div>
             <div className="text-[11px] text-slate-500">Your WhatsApp companion</div>
@@ -247,14 +247,14 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
         </div>
         <div className="mb-4 flex items-center gap-2.5">
           <ZafarFox compact={keyboardOpen} />
-          <div aria-live="polite" className="relative rounded-2xl rounded-bl-md border border-teal-100 bg-white px-4 py-3 text-xs leading-relaxed text-slate-700 shadow-sm">
+          <div aria-live="polite" className="ink relative rounded-lg px-4 py-3 text-xs leading-relaxed text-slate-700">
             {step === 'register'
               ? 'Let’s get started! Create your account to link your number with the zAfAr WhatsApp bot.'
               : 'Hi, welcome to zAfAr! Sign in or create an account to link your number with the zAfAr WhatsApp bot.'}
           </div>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-lg sm:p-6">
+        <div className="ink rounded-lg p-5 sm:p-6">
           {(step === 'login' || step === 'register') && (
             <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1">
               <button
