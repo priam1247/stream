@@ -256,29 +256,9 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
 
         <div className="ink rounded-lg p-5 sm:p-6">
           {(step === 'login' || step === 'register') && (
-            <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-100 p-1">
-              <button
-                type="button"
-                onClick={() => switchStep('login')}
-                className={`min-h-[44px] rounded-lg py-2 text-xs font-semibold transition ${
-                  step === 'login'
-                    ? 'bg-white text-slate-900 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Sign in
-              </button>
-              <button
-                type="button"
-                onClick={() => switchStep('register')}
-                className={`min-h-[44px] rounded-lg py-2 text-xs font-semibold transition ${
-                  step === 'register'
-                    ? 'bg-white text-slate-900 shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Register
-              </button>
+            <div className="seg mb-5 flex w-full" role="group" aria-label="Account access">
+              <button type="button" className="min-h-[44px] flex-1" aria-pressed={step === 'login'} onClick={() => switchStep('login')}>Sign in</button>
+              <button type="button" className="min-h-[44px] flex-1" aria-pressed={step === 'register'} onClick={() => switchStep('register')}>Register</button>
             </div>
           )}
 
@@ -336,7 +316,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 >
                   Email
                 </label>
-                <div className="relative">
+                <div className="relative ink-field">
                   <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     id="login-email"
@@ -367,7 +347,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                     Forgot?
                   </button>
                 </div>
-                <div className="relative">
+                <div className="relative ink-field">
                   <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     id="login-password"
@@ -414,7 +394,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 >
                   Name
                 </label>
-                <div className="relative">
+                <div className="relative ink-field">
                   <UserIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     id="reg-name"
@@ -437,7 +417,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 >
                   Email
                 </label>
-                <div className="relative">
+                <div className="relative ink-field">
                   <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     id="reg-email"
@@ -459,7 +439,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 >
                   Password
                 </label>
-                <div className="relative">
+                <div className="relative ink-field">
                   <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     id="reg-password"
@@ -507,7 +487,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 >
                   6-digit code
                 </label>
-                <div className="relative">
+                <div className="relative ink-field">
                   <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-teal-600" />
                   <input
                     id="verify-code"
@@ -562,7 +542,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 >
                   Email
                 </label>
-                <div className="relative">
+                <div className="relative ink-field">
                   <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     id="forgot-email"
