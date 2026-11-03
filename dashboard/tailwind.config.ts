@@ -7,6 +7,7 @@ const config: Config = {
       colors: { ink: '#171714', paper: '#ffffff', muted: '#5f5c56', line: '#e4e1da', wash: '#f6f5f2' },
       fontFamily: {
         sans: ["'Archivo Variable'", 'Archivo', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        heading: ["'Archivo Variable'", 'Archivo', 'sans-serif'],
         mono: ["'JetBrains Mono Variable'", "'JetBrains Mono'", 'ui-monospace', 'monospace'],
       },
       borderRadius: { brand: '8px' },

@@ -20,9 +20,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en">
       <body className="min-h-screen overflow-x-hidden bg-white font-sans text-[#171714] selection:bg-black selection:text-white">
         <svg className="zafar-ink-filter" aria-hidden="true" focusable="false">
-          <filter id="zafar-ink-wobble" x="-5%" y="-5%" width="110%" height="110%">
-            <feTurbulence type="fractalNoise" baseFrequency="0.025" numOctaves="2" seed="7" />
-            <feDisplacementMap in="SourceGraphic" scale="2" />
+          <filter id="zafar-ink-wobble" x="-5%" y="-20%" width="110%" height="140%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.045" numOctaves="2" seed="3" />
+            <feDisplacementMap in="SourceGraphic" scale="5" xChannelSelector="R" yChannelSelector="G" />
           </filter>
         </svg>
         {children}
