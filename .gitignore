@@ -71,3 +71,11 @@ scribd/*/tmp/
 
 # Local, untracked reference snapshots fetched from third-party repos
 reference/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# TanStack/Vite app generated output
+dashboard 2/.output/
+dashboard 2/.tanstack/
+dashboard 2/dist/

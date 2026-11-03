@@ -1,7 +1,7 @@
 # Complete repository file and connection index
 
-This index documents repository files and the single-Botkeep architecture.
-The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, complete tree, runtime flows, route list, and scope.
+This generated index documents the original single-Botkeep applications; it does not enumerate the newer standalone TanStack Start app in [`dashboard 2/`](../dashboard%202/).
+The linked [architecture overview](../REPOSITORY_MAP.md) contains the diagrams, complete tree, runtime flows, route list, and scope for the original applications.
 
 ## How to read an entry
 

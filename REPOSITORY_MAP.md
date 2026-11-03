@@ -1,6 +1,6 @@
 # Complete repository map
 
-This map covers **395 Git-tracked repository files** in the current single-Botkeep snapshot (the untracked `reference/sveltekit-embed/` source snapshot is excluded). The detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md) gives each file's role, local references, reverse references, and literal outside-module imports.
+This map describes the original Botkeep applications (`Whatsapp bot/`, `dashboard/`, and `scribd/`). The newer TanStack Start app is kept separately in [`dashboard 2/`](dashboard%202/), with its own package manifest and README; it is not included in the historical detailed [file and connection index](docs/REPOSITORY_FILE_INDEX.md). That index gives the older files' roles, local references, reverse references, and literal outside-module imports.
 
 ## Contents
 
@@ -49,6 +49,7 @@ This map covers **395 Git-tracked repository files** in the current single-Botke
 ```
 
 - **Browser ↔ dashboard:** pages and components call same-origin Next.js routes. Permissions are enforced in route handlers and shared guards, not by hiding a button alone.
+- **`dashboard 2/`:** the recently uploaded TanStack Start UI is a separate app with its own `package.json`, lockfile, Vite/TypeScript configuration, `src/`, and `public/`. Run it from that directory; it does not replace the existing Next.js `dashboard/` app.
 - **Bot → dashboard:** the bot posts heartbeats, results, and encrypted session-backup operations to dashboard routes. The response carries queued actions and access/policy state. The optional reverse direction uses the bot's admin HTTP API, if enabled/configured.
 - **Dashboard → Scribd:** only the server-side dashboard adapter contacts the Scribd web service. The configured HTTPS proxy is in `dashboard/lib/scribd-config.ts`; the existing token is read server-side, not sent to the browser. The proxy may forward to its origin over HTTP, so HTTPS to the proxy is not proof of encrypted origin traffic.
 - **Remote integrations:** WhatsApp/Baileys, Cloudflare D1, SMTP, the hosting panel, Scribd/CloakBrowser, optional Drime and Discord, and media and metadata providers are outside this repository.

@@ -1,29 +1,18 @@
-# Welcome to your Lovable project
+# Stream
 
-This project was built with [Lovable](https://lovable.dev).
+This repository contains several related applications and tools:
 
-## Build with Lovable
+- [`dashboard 2/`](./dashboard%202/) — the newer TanStack Start dashboard app, kept self-contained with its own source, Vite configuration, and package manifest.
+- [`dashboard/`](./dashboard/) — the existing Next.js operations dashboard.
+- [`Whatsapp bot/`](./Whatsapp%20bot/) — the WhatsApp bot and media engine.
+- [`scribd/`](./scribd/) — Scribd-related tools.
 
-Open your project in the [Lovable editor](https://lovable.dev) and keep building.
-
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: connect the project to GitHub and every change made in Lovable is committed straight to your repository.
-- **Full ownership**: this code is yours. Push to your repository and your changes sync back into Lovable, ready for your next prompt.
-
-## Development
-
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+To work on the newer dashboard:
 
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
+cd 'dashboard 2'
+npm install
 npm run dev
 ```
 
-## Built with
-
-- TanStack Start
-- TypeScript
-- React
-- Tailwind CSS
+See each application's README for its own setup and environment requirements.
