@@ -1,0 +1,187 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+@import "@fontsource-variable/archivo/wdth.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/600.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Archivo Variable", "Archivo", system-ui, sans-serif;
+  --font-display: "Archivo Variable", "Archivo", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-canvas: var(--canvas);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-mint: var(--mint);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+:root {
+  --radius: 0px;
+  --background: oklch(1 0 0);
+  --canvas: oklch(0.987 0.002 90);
+  --foreground: oklch(0 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0 0 0);
+  --primary: oklch(0 0 0);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.96 0.004 85);
+  --secondary-foreground: oklch(0 0 0);
+  --muted: oklch(0.955 0.005 85);
+  --muted-foreground: oklch(0.45 0.012 80);
+  --accent: oklch(0.945 0.006 85);
+  --accent-foreground: oklch(0 0 0);
+  --mint: oklch(0.965 0.035 165);
+  --success: oklch(0.55 0.14 150);
+  --warning: oklch(0.68 0.15 70);
+  --destructive: oklch(0.56 0.21 27);
+  --destructive-foreground: oklch(1 0 0);
+  --border: oklch(0.9 0.008 85);
+  --input: oklch(0 0 0);
+  --ring: oklch(0 0 0);
+}
+
+@layer base {
+  * { border-color: var(--color-border); }
+  html, body { overflow-x: hidden; }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, .display {
+    font-family: var(--font-display);
+    font-stretch: 125%;
+    font-variation-settings: "wdth" 125;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    text-transform: lowercase;
+  }
+}
+
+/* Hand-drawn ink perimeter: the filter lives on a pseudo-element only, never on text. */
+@utility ink {
+  position: relative;
+  isolation: isolate;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 2px solid var(--color-foreground);
+    filter: url(#wobble);
+    pointer-events: none;
+    z-index: 1;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    &::after { filter: none; }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-ghost::after, .seg::after { filter: none; }
+}
+
+@utility field {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border-bottom: 2px solid var(--color-foreground);
+  padding: 0.55rem 0;
+  & input, & textarea, & select {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    outline: none;
+    border: 0;
+    color: var(--color-foreground);
+  }
+  & input::placeholder, & textarea::placeholder { color: var(--color-muted-foreground); }
+  &:focus-within { border-bottom-width: 3px; }
+}
+
+@utility btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  padding: 0.7rem 1.1rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+  transition: opacity 150ms;
+  &:hover { opacity: 0.85; }
+  &:disabled { opacity: 0.4; cursor: not-allowed; }
+}
+
+@utility btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  position: relative;
+  background: transparent;
+  color: var(--color-foreground);
+  padding: 0.45rem 0.8rem;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1.5px solid currentColor;
+    filter: url(#wobble);
+    pointer-events: none;
+  }
+  font-weight: 600;
+  font-size: 0.82rem;
+  &:hover { background: var(--color-accent); }
+  &:disabled { opacity: 0.4; cursor: not-allowed; }
+}
+
+@utility eyebrow {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 600;
+  color: var(--color-muted-foreground);
+}
+
+@utility seg {
+  display: inline-flex;
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1.5px solid var(--color-foreground);
+    filter: url(#wobble);
+    pointer-events: none;
+  }
+  & > button { padding: 0.4rem 0.9rem; font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+  & > button[aria-pressed="true"] { background: var(--color-primary); color: var(--color-primary-foreground); }
+}

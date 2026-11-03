@@ -1,28 +1,29 @@
-# ZaFar projects
+# Welcome to your Lovable project
 
-This repository contains three separate projects:
+This project was built with [Lovable](https://lovable.dev).
 
-- **[WhatsApp bot](./Whatsapp%20bot/README.md)** — commands, media engine, configuration, and bot startup files are all in `Whatsapp bot/`.
-- **[Control Room dashboard](./dashboard/README.md)** — the standalone Next.js website.
-- **[Scribd service](./scribd/README.md)** — the separate Python search and download service.
+## Build with Lovable
 
-## Starting the WhatsApp bot
+Open your project in the [Lovable editor](https://lovable.dev) and keep building.
 
-From the repository root:
+- **Ship faster**: describe what you want to build and Lovable handles the code.
+- **Stay in sync**: connect the project to GitHub and every change made in Lovable is committed straight to your repository.
+- **Full ownership**: this code is yours. Push to your repository and your changes sync back into Lovable, ready for your next prompt.
 
-```bash
-cd "Whatsapp bot"
-cp .env.example .env   # set private values locally, or use your host's variables
-npm ci
-npm run selftest
-npm run test:jobs
-npm start
+## Development
+
+Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+
+```sh
+git clone <this-repository-url>
+cd <repository-name>
+npm i
+npm run dev
 ```
 
-The bot's README explains how to run the contents of `Whatsapp bot/` at the
-Botkeep application root and protect existing sessions and databases. Repository
-CI only tests code; merging does not upload or restart the bot. Updates to the
-separate Botkeep deployment are managed by the owner.
+## Built with
 
-The dashboard deploys separately with `dashboard` as its project root. The
-Scribd service runs independently; neither is started by the WhatsApp bot.
+- TanStack Start
+- TypeScript
+- React
+- Tailwind CSS
