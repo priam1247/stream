@@ -46,11 +46,10 @@ export function MemberHome({ user, overview, statusUnavailable, canAccessScribd,
       {!statusUnavailable && overview.memberAllowed && !overview.botEnabledForMembers && !user.isAdmin && (
         <p role="status" className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold leading-5 text-amber-800">New number approvals and pairing are paused.</p>
       )}
-      <section className="relative overflow-hidden rounded-[24px] border border-teal-100/80 bg-gradient-to-br from-white via-[#f4fbf8] to-[#e6f5ef] p-5 shadow-[0_5px_25px_rgba(15,23,42,0.035)] sm:p-7">
-        <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full border-[36px] border-teal-100/40" />
+      <section className="relative overflow-hidden rounded-lg border border-slate-200 bg-white p-5 sm:p-7">
         <div className="relative">
           <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-teal-700">Personal workspace</p>
-          <h1 className="mt-2 text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">{name ? `Welcome, ${name}` : 'Welcome'}</h1>
+          <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-950 sm:text-5xl">{name ? `Welcome, ${name}` : 'Welcome'}</h1>
           <p className="mt-2 text-sm text-slate-600">Your numbers and tools, in one place.</p>
           <button type="button" onClick={() => onNavigate('numbers')} className="mt-5 inline-flex min-h-11 items-center gap-2 rounded-xl bg-teal-700 px-4 text-xs font-bold text-white shadow-sm transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-700 focus-visible:ring-offset-2">Manage my numbers <ArrowRight aria-hidden="true" className="h-4 w-4" /></button>
         </div>

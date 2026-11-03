@@ -4,7 +4,7 @@ import { AuthScreen } from '../components/auth-screen';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it('keeps the sign-in card with accessible fields and changes the robot greeting for registration', () => {
+it('keeps the sign-in card with accessible fields and changes the fox greeting for registration', () => {
   render(<AuthScreen onAuthenticated={vi.fn()} />);
   expect(screen.getByText('Hi, welcome to zAfAr! Sign in or create an account to link your number with the zAfAr WhatsApp bot.')).toBeTruthy();
   expect(screen.queryByText('Control Room')).toBeNull();
