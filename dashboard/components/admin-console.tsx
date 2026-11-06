@@ -45,6 +45,7 @@ import { accountStatusLabel, serviceText } from '@/lib/whatsapp-accounts';
 import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
 import { MemberCommandControls } from './member-command-controls';
+import { CommandDirectory } from './command-directory';
 import { SupportDesk } from './support-desk';
 import { ControlRoomHome } from './control-room-home';
 import { ControlRoomActivity } from './control-room-activity';
@@ -809,7 +810,8 @@ export function AdminConsole() {
               </section>
             )}
 
-            {whatsAppPage === 'commands' && <MemberCommandControls />}
+            {whatsAppPage === 'commands' && <><MemberCommandControls />
+              <section aria-label="Service command reference" className="mt-4 space-y-2.5"><h2 className="px-0.5 text-sm font-bold text-slate-900 sm:text-base">Service command reference</h2><p className="px-0.5 text-xs text-slate-500">Every command on the service, including owner-only ones. Members only see the member catalog.</p><CommandDirectory /></section></>}
 
             {whatsAppPage === 'sync' && <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="Session recovery status">
               <h2 className="text-sm font-bold text-slate-900">Encrypted session recovery</h2>

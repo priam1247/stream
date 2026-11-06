@@ -17,7 +17,7 @@ it('shows site shortcuts, searches aliases, and toggles the canonical member com
   vi.stubGlobal('fetch', fetchMock);
   render(<MemberCommandControls />);
   expect(await screen.findByText('Service synced')).toBeTruthy();
-  expect(screen.getByText(/Site shortcuts do not block \.dl/)).toBeTruthy();
+  expect(screen.getByText(/owner and configured bot admins keep access/)).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'media' }));
   expect(screen.getByRole('switch', { name: 'Allow .tiktok for members' }).getAttribute('aria-checked')).toBe('true');
   fireEvent.change(screen.getByRole('searchbox', { name: 'Search member commands' }), { target: { value: 'tt' } });
@@ -27,13 +27,20 @@ it('shows site shortcuts, searches aliases, and toggles the canonical member com
   expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ name: 'tiktok', disabled: true });
 });
 
-it('keeps Reddit title search and removes the retired commands from the catalog', () => {
-  const reddit = BOT_COMMANDS.find((item) => item.name === 'reddit');
-  expect(reddit?.usage).toContain('<title>');
-  expect(MEMBER_COMMANDS.find((item) => item.name === 'reddit')?.usage).toBe(reddit?.usage);
-  for (const name of ['audius', 'deezer', 'bilibili', 'vimeo', 'dailymotion', 'xiaohongshu', 'acfun',
-    'twitch', 'rumble', 'niconico', 'commons', 'broadcast', 'weibo', 'pinterest', 'pintrest', 'douyin', 'odysee', 'vk', 'youku']) {
+it('matches the live service command set and drops the retired commands', () => {
+  expect(BOT_COMMANDS).toHaveLength(31);
+  const video = BOT_COMMANDS.find((item) => item.name === 'video');
+  expect(video?.aliases).toContain('ytmp4');
+  expect(MEMBER_COMMANDS.find((item) => item.name === 'video')?.usage).toBe(video?.usage);
+  const drama = MEMBER_COMMANDS.find((item) => item.name === 'dramabox');
+  expect(drama?.aliases).toEqual(['drama', 'dramastream']);
+  expect(MEMBER_COMMANDS.map((item) => item.name)).toContain('dramabox');
+  for (const name of ['ytv', 'dl', 'spotify', 'x', 'reddit', 'audius', 'deezer', 'bilibili', 'vimeo',
+    'dailymotion', 'xiaohongshu', 'acfun', 'twitch', 'rumble', 'niconico', 'commons', 'broadcast', 'weibo',
+    'pinterest', 'pintrest', 'douyin', 'odysee', 'vk', 'youku']) {
     expect(BOT_COMMANDS.some((item) => item.name === name || item.aliases.includes(name))).toBe(false);
     expect(MEMBER_COMMANDS.some((item) => item.name === name || item.aliases.includes(name))).toBe(false);
   }
+  // Only members' commands are switchable; owner-only commands stay with the owner.
+  expect(MEMBER_COMMANDS.some((item) => item.ownerOnly)).toBe(false);
 });

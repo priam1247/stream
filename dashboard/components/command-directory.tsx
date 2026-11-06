@@ -5,7 +5,7 @@ import { Check, Copy, Lock, Search, Terminal } from 'lucide-react';
 import { BOT_COMMANDS } from '@/lib/bot-data';
 import { scoreCommandQuery } from '@/lib/embed-utils';
 
-type CategoryFilter = 'all' | 'media' | 'vault' | 'admin';
+type CategoryFilter = 'all' | 'general' | 'media' | 'vault' | 'admin';
 
 interface CommandDirectoryProps {
   hideOwnerCommands?: boolean;
@@ -27,11 +27,13 @@ export function CommandDirectory({ hideOwnerCommands = false }: CommandDirectory
   const categories: { id: CategoryFilter; label: string }[] = hideOwnerCommands
     ? [
         { id: 'all', label: `All (${visibleCommands.length})` },
+        { id: 'general', label: 'General' },
         { id: 'media', label: 'Media' },
-        { id: 'vault', label: 'Vault & Tools' },
+        { id: 'vault', label: 'Vault' },
       ]
     : [
         { id: 'all', label: `All (${visibleCommands.length})` },
+        { id: 'general', label: 'General' },
         { id: 'media', label: 'Media' },
         { id: 'vault', label: 'Vault' },
         { id: 'admin', label: 'Admin' },
@@ -130,7 +132,7 @@ export function CommandDirectory({ hideOwnerCommands = false }: CommandDirectory
                       {cmd.ownerOnly && (
                         <span className="inline-flex items-center gap-0.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-800 ring-1 ring-amber-200">
                           <Lock className="h-2.5 w-2.5" />
-                          Admin
+                          {cmd.adminOk ? 'Owner / Admin' : 'Owner'}
                         </span>
                       )}
                     </div>

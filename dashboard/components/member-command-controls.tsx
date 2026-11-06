@@ -39,7 +39,7 @@ export function MemberCommandControls() {
     ? [command.name, command.summary, ...command.aliases].some((part) => part.toLowerCase().includes(q))
     : command.category === category);
   return <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5" aria-label="Member command controls">
-    <div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-sm font-bold text-slate-900 sm:text-base">Member commands</h2><p className="mt-1 text-xs text-slate-500">Switch off commands for members; owners can still test. Site shortcuts do not block .dl.</p></div>
+    <div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-sm font-bold text-slate-900 sm:text-base">Member commands</h2><p className="mt-1 text-xs text-slate-500">Switch off commands for members; the owner and configured bot admins keep access. Changes sync to the service on its next check-in.</p></div>
       <span role="status" className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${policy?.sync === 'synced' ? 'bg-teal-50 text-teal-700' : 'bg-amber-50 text-amber-800'}`}>{policy?.sync === 'synced' ? 'Service synced' : 'Awaiting service sync'}</span></div>
     {error && <p role="alert" className="mt-3 rounded-lg bg-rose-50 p-3 text-xs text-rose-800">{error}</p>}
     <div className="relative mt-4"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"/><input type="search" aria-label="Search member commands" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search commands" className="min-h-[44px] w-full rounded-xl border border-slate-200 pl-9 pr-3 text-base outline-none focus:border-teal-600"/></div>

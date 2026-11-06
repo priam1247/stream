@@ -61,14 +61,14 @@ describe('new management routes', () => {
   });
   it('allows only admins to control remaining media commands and rejects retired ones', async () => {
     const patch = (name: string) => commandsPatch(request('/api/admin/commands', { name, disabled: true }, 'PATCH'));
-    expect((await patch('reddit')).status).toBe(403);
+    expect((await patch('tiktok')).status).toBe(403);
     state.role = 'admin';
     expect((await patch('ig')).status).toBe(400);
-    for (const name of ['reddit', 'tiktok', 'song', 'ytv']) {
+    for (const name of ['tiktok', 'song', 'video']) {
       expect((await patch(name)).status).toBe(200);
       expect(calls.updatePolicy).toHaveBeenCalledWith(name, true);
     }
-    for (const name of ['bilibili', 'audius', 'commons', 'deezer', 'youku']) {
+    for (const name of ['reddit', 'ytv', 'dl', 'spotify', 'bilibili', 'audius', 'commons', 'deezer', 'youku']) {
       expect((await patch(name)).status).toBe(400);
     }
   });

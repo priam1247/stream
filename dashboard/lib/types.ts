@@ -250,11 +250,13 @@ export interface PairCodePayload {
 export interface CommandEntry {
   name: string;
   aliases: string[];
-  category: 'media' | 'vault' | 'admin';
+  category: 'general' | 'media' | 'vault' | 'admin';
   usage: string;
   example: string;
   summary: string;
   ownerOnly?: boolean;
+  /** ownerOnly commands that also allow the configured bot admin numbers. */
+  adminOk?: boolean;
 }
 
 export interface MetadataSourceEntry {
