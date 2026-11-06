@@ -49,7 +49,7 @@ and old hosting-panel credentials are intentionally ignored, so they cannot
 silently target a previous host. Prefer HTTPS for all token traffic. A
 heartbeat is a report by the bot, not proof of hosting power state.
 
-HiddenCloud server controls are optional. In **WhatsApp → Hosting**, enter a
+HiddenCloud server controls are optional and require a HidenCloud plan with API access — the **free** tier deletes client API keys every 30 minutes, so status/power cannot stay configured there; control the server from the panel instead. On plans with API access, in **WhatsApp → Hosting**, enter a
 server ID (prefilled with `a6451c6c`) and a client API key (`ptlc_…`) from
 **Account → API Credentials**. The server sends credentials only to the fixed
 panel address (`https://freepanel.hidencloud.com`, Pterodactyl-compatible
