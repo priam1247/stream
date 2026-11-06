@@ -52,7 +52,6 @@ export async function GET(req: NextRequest) {
     ok: true,
     adminEmail: '',
     memberAllowed: session.user.memberAllowed,
-    scribdAllowed: session.user.scribdAllowed === true,
     botEnabledForMembers: target.botEnabledForMembers,
     botServerLinked: botLinked,
     botReachable: live.reachable,

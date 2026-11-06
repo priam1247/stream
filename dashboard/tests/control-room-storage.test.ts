@@ -10,7 +10,7 @@ vi.mock('node:fs', () => ({
     writeFileSync: (_path: string, value: string) => { if (disk.fail) throw new Error('read-only'); disk.text = value; },
   },
 }));
-import { appendActivity, claimPairCooldown, completeBotCommand, deleteWhatsAppUserIfOwned, enqueueBotCommand, getBotCommandById, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, updateStoredWhatsAppUser, resolvePendingWhatsAppUser, setMemberPermission, getMemberCommandPolicy, setMemberCommandDisabled, addSupportMessage, listSupportMessages, listSupportThreads, countMemberSupportUnread, isMemberScribdAllowed, listRecentActivity, releasePairCooldown, saveCompletedPairResult, saveMemberWhatsAppUser, saveStoredWhatsAppUser, setMemberScribdAllowed } from '../lib/storage';
+import { appendActivity, claimPairCooldown, completeBotCommand, deleteWhatsAppUserIfOwned, enqueueBotCommand, getBotCommandById, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, updateStoredWhatsAppUser, resolvePendingWhatsAppUser, setMemberPermission, getMemberCommandPolicy, setMemberCommandDisabled, addSupportMessage, listSupportMessages, listSupportThreads, countMemberSupportUnread, listRecentActivity, releasePairCooldown, saveCompletedPairResult, saveMemberWhatsAppUser, saveStoredWhatsAppUser } from '../lib/storage';
 import { whitelistVersionFor } from '../lib/storage';
 import { maskedNumber } from '../lib/activity';
 
@@ -25,15 +25,6 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('local control-room persistence', () => {
-  it('defaults Scribd access to private and stores individual grants and revocations', async () => {
-    expect(await isMemberScribdAllowed('member@example.com')).toBe(false);
-    await setMemberScribdAllowed(' MEMBER@example.com ', true);
-    expect(await isMemberScribdAllowed('member@example.com')).toBe(true);
-    expect(await isMemberScribdAllowed('other@example.com')).toBe(false);
-    await setMemberScribdAllowed('MEMBER@example.com', false);
-    expect(await isMemberScribdAllowed('member@example.com')).toBe(false);
-  });
-
   it('records bounded, masked activity rather than full phone numbers', async () => {
     const detail = maskedNumber('+265 991 234 567');
     await appendActivity({ category: 'numbers', action: 'Number added', actor: 'OWNER@example.com', outcome: 'success', detail });
@@ -147,12 +138,12 @@ describe('local control-room persistence', () => {
 
   it('does not report successful permission changes when local storage is read-only', async () => {
     disk.fail = true;
-    await expect(setMemberScribdAllowed('member@example.com', true)).rejects.toThrow(/storage is unavailable/i);
+    await expect(setMemberPermission('member@example.com', false)).rejects.toThrow(/storage is unavailable/i);
   });
 
   it('does not overwrite a corrupt local store with an empty one', async () => {
     disk.text = '{not valid json';
-    await expect(setMemberScribdAllowed('member@example.com', true)).rejects.toThrow(/could not be read/i);
+    await expect(setMemberPermission('member@example.com', false)).rejects.toThrow(/could not be read/i);
     expect(disk.text).toBe('{not valid json');
   });
 });

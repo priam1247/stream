@@ -7,7 +7,6 @@ import {
 import { fetchLiveBotStatus, getResolvedBotTarget } from '@/lib/bot-proxy';
 import { JwtConfigError } from '@/lib/jwt';
 import { whitelistSyncState } from '@/lib/sync-status';
-import { scribdPanelConfig } from '@/lib/scribd-panel';
 import {
   getPanelConnectionConfig,
   isUsingCloudflareD1,
@@ -42,7 +41,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const [target, panelCfg, d1Active, users, members, liveStatus, scribdConfig] =
+  const [target, panelCfg, d1Active, users, members, liveStatus] =
     await Promise.all([
       getResolvedBotTarget(),
       getPanelConnectionConfig(),
@@ -50,7 +49,6 @@ export async function GET(req: NextRequest) {
       listStoredWhatsAppUsers(),
       listAllMembers(isAdminEmail),
       fetchLiveBotStatus(),
-      scribdPanelConfig(),
     ]);
 
   const botLinked =
@@ -95,8 +93,6 @@ export async function GET(req: NextRequest) {
     panelUrl: panelCfg.panelUrl,
     panelServerId: panelCfg.panelServerId,
     hasPanelApiKey: Boolean(panelCfg.panelApiKey),
-    scribdTokenConfigured: Boolean(scribdConfig.key),
-    scribdSecureTransport: scribdConfig.baseUrl.startsWith('https://'),
     latencyMs: liveStatus.latencyMs,
     users,
     members,

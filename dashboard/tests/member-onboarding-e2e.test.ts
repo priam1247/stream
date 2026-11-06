@@ -27,7 +27,7 @@ import { signSessionJwt } from '../lib/jwt';
 import { getBotHeartbeat, saveBotConnectionConfig, saveBotHeartbeat, upsertAccount } from '../lib/storage';
 
 const require = createRequire(import.meta.url);
-const { createBotFixture } = require('../../Whatsapp bot/scripts/test-sandbox.js') as { createBotFixture: (root: string) => string };
+const { createBotFixture } = require('../../the bot/scripts/test-sandbox.js') as { createBotFixture: (root: string) => string };
 let root = '';
 let db: DatabaseSync | undefined;
 let cleanupBot: (() => Promise<void>) | undefined;
@@ -60,10 +60,10 @@ it('registers, verifies, links before approval, syncs private usage, survives of
   db = new DatabaseSync(':memory:');
   const botRoot = createBotFixture(root);
   const botRequire = createRequire(path.join(botRoot, 'scripts', 'test-sandbox.js'));
-  const { createSessionManager } = botRequire('../utils/sessionManager.js');
-  const { startDashboardSync } = botRequire('../utils/dashboardSync.js');
-  const { readWL } = botRequire('../utils/accessControl.js');
-  const usage = botRequire('../utils/memberTelemetry.js');
+  const { createSessionManager } = botRequire('../gateway/sessions/manager.js');
+  const { startDashboardSync } = botRequire('../gateway/dashboard/sync.js');
+  const { readWL } = botRequire('../gateway/users/access.js');
+  const usage = botRequire('../gateway/users/usage.js');
   usage._resetForTests(path.join(root, 'member-usage.json'));
 
   vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test'); vi.stubEnv('D1_DATABASE_ID', 'test'); vi.stubEnv('CLOUDFLARE_API_TOKEN', 'test');

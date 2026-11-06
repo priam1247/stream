@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_SCRIBD_WEB_URL } from './scribd-config';
 import { BOTKEEP_API_BASE } from './botkeep-config';
 import {
   ActivityEvent,
@@ -12,7 +11,6 @@ import {
   ConfirmedMemberLink,
   MemberRecord,
   PanelConnectionConfig,
-  ScribdConnectionConfig,
 } from './types';
 
 export interface StoredPortalAccount {
@@ -38,12 +36,6 @@ interface StoredMemberPermission {
   updatedAt: string;
 }
 
-interface StoredMemberFeatures {
-  email: string;
-  scribdAllowed: boolean;
-  updatedAt: string;
-}
-
 export interface SupportMessage { id: number; memberEmail: string; role: 'member' | 'admin'; text: string; createdAt: number }
 export interface SupportThread { email: string; latestAt: number; preview: string; unread: number }
 
@@ -52,7 +44,6 @@ interface DiskStoreSchema {
   accounts: StoredPortalAccount[];
   whatsappUsers: ApprovedUser[];
   memberPermissions: StoredMemberPermission[];
-  memberFeatures: StoredMemberFeatures[];
   activity: ActivityEvent[];
   botCommands: BotCommandRecord[];
   pairCooldowns: Record<string, number>;
@@ -201,14 +192,6 @@ async function initializeD1Tables(): Promise<boolean> {
   `);
 
   await queryD1(`
-    CREATE TABLE IF NOT EXISTS portal_member_features (
-      email TEXT PRIMARY KEY,
-      scribd_allowed INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL
-    )
-  `);
-
-  await queryD1(`
     CREATE TABLE IF NOT EXISTS portal_activity (
       id TEXT PRIMARY KEY,
       category TEXT NOT NULL,
@@ -280,7 +263,6 @@ function readDiskStore(): DiskStoreSchema {
         memberPermissions: Array.isArray(parsed.memberPermissions)
           ? parsed.memberPermissions
           : [],
-        memberFeatures: Array.isArray(parsed.memberFeatures) ? parsed.memberFeatures : [],
         activity: Array.isArray(parsed.activity) ? parsed.activity : [],
         botCommands: Array.isArray(parsed.botCommands) ? parsed.botCommands : [],
         pairCooldowns: parsed.pairCooldowns && typeof parsed.pairCooldowns === 'object' ? parsed.pairCooldowns : {},
@@ -300,7 +282,6 @@ function readDiskStore(): DiskStoreSchema {
     accounts: [],
     whatsappUsers: [],
     memberPermissions: [],
-    memberFeatures: [],
     activity: [],
     botCommands: [],
     pairCooldowns: {},
@@ -548,55 +529,10 @@ export async function removeMemberPermissionRecord(email: string): Promise<void>
   await setMemberPermission(clean, false);
 }
 
-/** Scribd is private by default. This grant never bypasses the member block. */
-export async function isMemberScribdAllowed(email: string): Promise<boolean> {
-  const clean = email.trim().toLowerCase();
-  if (!clean) return false;
-  if (await ensureD1Tables()) {
-    const rows = await queryD1(
-      `SELECT scribd_allowed FROM portal_member_features WHERE email = ? LIMIT 1`,
-      [clean],
-    );
-    return Boolean(rows?.length && Number(rows[0].scribd_allowed));
-  }
-  return readDiskStore().memberFeatures.find((item) => item.email === clean)?.scribdAllowed === true;
-}
-
-export async function setMemberScribdAllowed(email: string, allowed: boolean): Promise<void> {
-  const clean = email.trim().toLowerCase();
-  if (!clean) throw new Error('Member email required.');
-  const now = new Date().toISOString();
-  if (await ensureD1Tables()) {
-    await queryD1(
-      `INSERT INTO portal_member_features (email, scribd_allowed, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(email) DO UPDATE SET scribd_allowed = excluded.scribd_allowed, updated_at = excluded.updated_at`,
-      [clean, allowed ? 1 : 0, now],
-    );
-    return;
-  }
-  const store = readDiskStore();
-  const existing = store.memberFeatures.find((item) => item.email === clean);
-  if (existing) {
-    existing.scribdAllowed = allowed;
-    existing.updatedAt = now;
-  } else {
-    store.memberFeatures.push({ email: clean, scribdAllowed: allowed, updatedAt: now });
-  }
-  writeDiskStore(store);
-}
-
-async function memberScribdGrants(): Promise<Set<string>> {
-  if (await ensureD1Tables()) {
-    const rows = (await queryD1(`SELECT email FROM portal_member_features WHERE scribd_allowed = 1`)) || [];
-    return new Set(rows.map((row) => String(row.email).toLowerCase()));
-  }
-  return new Set(readDiskStore().memberFeatures.filter((item) => item.scribdAllowed).map((item) => item.email.toLowerCase()));
-}
-
 export async function listAllMembers(
   checkAdmin: (email: string) => boolean,
 ): Promise<MemberRecord[]> {
-  const [whatsappAll, scribdGrants] = await Promise.all([listStoredWhatsAppUsers(), memberScribdGrants()]);
+  const whatsappAll = await listStoredWhatsAppUsers();
   const countByEmail = new Map<string, number>();
   for (const item of whatsappAll) {
     const owner = (item.addedBy || '').toLowerCase();
@@ -636,7 +572,6 @@ export async function listAllMembers(
         isVerified: Boolean(Number(r.is_verified)),
         isAdmin: checkAdmin(em),
         allowed: checkAdmin(em) ? true : perm ? perm.allowed : true,
-        scribdAllowed: checkAdmin(em) || scribdGrants.has(em),
         numbersCount: countByEmail.get(em) || 0,
         createdAt: String(r.created_at || new Date().toISOString()),
       });
@@ -657,7 +592,6 @@ export async function listAllMembers(
           isVerified: Boolean(Number(r.is_verified ?? 1)),
           isAdmin: checkAdmin(em),
           allowed: checkAdmin(em) ? true : perm ? perm.allowed : true,
-          scribdAllowed: checkAdmin(em) || scribdGrants.has(em),
           numbersCount: countByEmail.get(em) || 0,
           createdAt: String(r.created_at || new Date().toISOString()),
         });
@@ -674,7 +608,6 @@ export async function listAllMembers(
           isVerified: false,
           isAdmin: checkAdmin(em),
           allowed: checkAdmin(em) ? true : perm.allowed,
-          scribdAllowed: checkAdmin(em) || scribdGrants.has(em),
           numbersCount: countByEmail.get(em) || 0,
           createdAt: perm.updatedAt,
         });
@@ -697,7 +630,6 @@ export async function listAllMembers(
       isVerified: acc.isVerified,
       isAdmin: checkAdmin(em),
       allowed: checkAdmin(em) ? true : perm ? perm.allowed : true,
-      scribdAllowed: checkAdmin(em) || scribdGrants.has(em),
       numbersCount: countByEmail.get(em) || 0,
       createdAt: acc.createdAt,
     });
@@ -711,7 +643,6 @@ export async function listAllMembers(
         isVerified: false,
         isAdmin: checkAdmin(em),
         allowed: checkAdmin(em) ? true : perm.allowed,
-        scribdAllowed: checkAdmin(em) || scribdGrants.has(em),
         numbersCount: countByEmail.get(em) || 0,
         createdAt: perm.updatedAt,
       });
@@ -1810,82 +1741,4 @@ export async function listRecentActivity(limit = 100): Promise<ActivityEvent[]> 
     }));
   }
   return readDiskStore().activity.slice(0, safeLimit);
-}
-
-// ---------------------------------------------------------------------------
-// Legacy Scribd panel settings (not used by the current web-service adapter).
-// ---------------------------------------------------------------------------
-// Retained for compatibility with existing stored settings. The defaults here
-// must not diverge from the current web-service address.
-export const DEFAULT_SCRIBD_SEARCH_URL = 'http://node6.botkeep.cloud:45009';
-export const DEFAULT_SCRIBD_PANEL_URL = DEFAULT_SCRIBD_WEB_URL;
-
-export async function getScribdConnectionConfig(): Promise<ScribdConnectionConfig> {
-  const envUrl = (process.env.SCRIBD_PANEL_URL || DEFAULT_SCRIBD_PANEL_URL).trim();
-  const envKey = (process.env.SCRIBD_PANEL_KEY || '').trim();
-
-  if (await ensureD1Tables()) {
-    const rows =
-      (await queryD1(
-        `SELECT key, value, updated_at FROM portal_settings
-         WHERE key IN ('scribd_panel_url', 'scribd_panel_key')`,
-      )) || [];
-    const map = new Map<string, string>();
-    let updatedAt: string | undefined;
-    for (const r of rows) {
-      map.set(String(r.key), String(r.value));
-      if (r.updated_at) updatedAt = String(r.updated_at);
-    }
-    return {
-      panelUrl: (map.get('scribd_panel_url') || envUrl).trim(),
-      panelKey: (map.get('scribd_panel_key') ?? envKey).trim(),
-      updatedAt,
-    };
-  }
-
-  const store = readDiskStore();
-  return {
-    panelUrl: (store.settings.scribd_panel_url || envUrl).trim(),
-    panelKey: (store.settings.scribd_panel_key ?? envKey).trim(),
-    updatedAt: store.settings.scribd_panel_updated_at,
-  };
-}
-
-export async function saveScribdConnectionConfig(patch: {
-  panelUrl?: string;
-  panelKey?: string;
-}): Promise<ScribdConnectionConfig> {
-  const current = await getScribdConnectionConfig();
-  const nextUrl =
-    typeof patch.panelUrl === 'string'
-      ? patch.panelUrl.trim() || DEFAULT_SCRIBD_PANEL_URL
-      : current.panelUrl;
-  // An empty key is a real value here: it means "this panel is not locked".
-  const nextKey =
-    typeof patch.panelKey === 'string' ? patch.panelKey.trim() : current.panelKey;
-  const now = new Date().toISOString();
-
-  if (await ensureD1Tables()) {
-    const entries: [string, string][] = [
-      ['scribd_panel_url', nextUrl],
-      ['scribd_panel_key', nextKey],
-    ];
-    for (const [k, v] of entries) {
-      await queryD1(
-        `INSERT INTO portal_settings (key, value, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-        [k, v, now],
-      );
-    }
-    return { panelUrl: nextUrl, panelKey: nextKey, updatedAt: now };
-  }
-
-  const store = readDiskStore();
-  store.settings.scribd_panel_url = nextUrl;
-  store.settings.scribd_panel_key = nextKey;
-  store.settings.scribd_panel_updated_at = now;
-  writeDiskStore(store);
-
-  return { panelUrl: nextUrl, panelKey: nextKey, updatedAt: now };
 }

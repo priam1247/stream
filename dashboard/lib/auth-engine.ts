@@ -15,7 +15,6 @@ import {
 import {
   findAccountByEmailOrUsername,
   isMemberEmailAllowed,
-  isMemberScribdAllowed,
   setMemberPermission,
   upsertAccount,
 } from './storage';
@@ -103,7 +102,6 @@ async function buildAuthUser(input: {
 }): Promise<AuthUser> {
   const admin = isAdminEmail(input.email);
   const memberAllowed = admin ? true : await isMemberEmailAllowed(input.email);
-  const scribdAllowed = admin || (memberAllowed && await isMemberScribdAllowed(input.email));
   return {
     id: input.id,
     name: input.name || input.username || 'Member',
@@ -112,7 +110,6 @@ async function buildAuthUser(input: {
     isVerified: input.isVerified,
     isAdmin: admin,
     memberAllowed,
-    scribdAllowed,
     createdAt: input.createdAt,
   };
 }

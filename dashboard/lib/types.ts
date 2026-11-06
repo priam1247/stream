@@ -6,8 +6,6 @@ export interface AuthUser {
   isVerified: boolean;
   isAdmin: boolean;
   memberAllowed: boolean;
-  /** Explicit access to the shared Scribd library; owners always have access. */
-  scribdAllowed?: boolean;
   createdAt?: string;
 }
 
@@ -26,12 +24,11 @@ export interface MemberRecord {
   isVerified: boolean;
   isAdmin: boolean;
   allowed: boolean;
-  scribdAllowed: boolean;
   numbersCount: number;
   createdAt: string;
 }
 
-export type ActivityCategory = 'account' | 'members' | 'numbers' | 'bot' | 'scribd';
+export type ActivityCategory = 'account' | 'members' | 'numbers' | 'bot';
 export type ActivityOutcome = 'success' | 'failed' | 'requested';
 
 export interface ActivityEvent {
@@ -80,12 +77,6 @@ export interface PanelConnectionConfig {
   panelUrl: string;
   panelServerId: string;
   panelApiKey: string;
-  updatedAt?: string;
-}
-
-export interface ScribdConnectionConfig {
-  panelUrl: string;
-  panelKey: string;
   updatedAt?: string;
 }
 
@@ -214,8 +205,6 @@ export interface AdminOverviewPayload {
   panelUrl?: string;
   panelServerId?: string;
   hasPanelApiKey?: boolean;
-  scribdTokenConfigured?: boolean;
-  scribdSecureTransport?: boolean;
   users: ApprovedUser[];
   members: MemberRecord[];
   latencyMs?: number;
@@ -232,7 +221,6 @@ export interface MemberOverviewPayload {
   botError?: string | null;
   lastSeenSecondsAgo?: number | null;
   whitelistSync?: WhitelistSyncState;
-  scribdAllowed?: boolean;
   botConnected: boolean | null;
   botNumber: string | null;
   accounts?: WhatsAppAccountStatus[] | null;

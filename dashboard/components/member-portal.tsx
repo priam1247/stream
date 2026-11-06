@@ -9,10 +9,8 @@ import {
   CheckCircle2,
   Home,
   Command,
-  Library,
   Link2,
   Loader2,
-  LockKeyhole,
   Search,
   Plus,
   Smartphone,
@@ -34,7 +32,6 @@ import { PairingCodeBanner } from './pairing-code-banner';
 import { accountStatusLabel } from '@/lib/whatsapp-accounts';
 import { CommandDirectory } from './command-directory';
 import { MediaVaultDesk } from './media-vault-desk';
-import { ScribdDesk } from './scribd-desk';
 import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
 import { MemberHome, type MemberDestination } from './member-home';
@@ -308,7 +305,6 @@ export function MemberPortal() {
 
   const canLinkNumbers =
     overview.memberAllowed && (overview.botEnabledForMembers || user.isAdmin);
-  const canAccessScribd = user.isAdmin || (overview.memberAllowed && overview.scribdAllowed === true);
   const filteredNumbers = overview.numbers.filter((item) => `${item.number} ${item.label || ''}`.toLowerCase().includes(numberSearch.trim().toLowerCase()));
   const navGroups: WorkspaceNavGroup<MemberTab>[] = [
     { label: 'My space', items: [
@@ -318,7 +314,6 @@ export function MemberPortal() {
     { label: 'Tools', items: [
       { id: 'commands', label: 'Commands', icon: Command },
       { id: 'vault', label: 'Vault', icon: BookOpen },
-      { id: 'scribd', label: 'Scribd', icon: Library, ...(!statusUnavailable && !canAccessScribd ? { badge: 'Private' } : {}) },
     ] },
     { label: 'Service', items: [
       { id: 'status', label: 'Status', icon: Activity },
@@ -332,7 +327,7 @@ export function MemberPortal() {
       groups={navGroups}
       current={tab}
       onNavigate={navigate}
-      mobileItems={['home', 'numbers', 'vault', 'scribd']}
+      mobileItems={['home', 'numbers', 'vault']}
       mobileMore
       refreshing={refreshing}
       onRefresh={() => { void loadMemberStatus(false); }}
@@ -383,7 +378,7 @@ export function MemberPortal() {
           </div>
         )}
 
-        {tab === 'home' && <MemberHome user={user} overview={overview} statusUnavailable={statusUnavailable} canAccessScribd={canAccessScribd} onNavigate={navigate} />}
+        {tab === 'home' && <MemberHome user={user} overview={overview} statusUnavailable={statusUnavailable} onNavigate={navigate} />}
 
         {tab === 'status' && (
           <div className="space-y-4">
@@ -584,8 +579,6 @@ export function MemberPortal() {
 
         {visitedTabs.includes('commands') && <div hidden={tab !== 'commands'} className="space-y-4"><h1 className="px-0.5 text-2xl font-bold tracking-tight text-slate-950">Commands</h1><CommandDirectory hideOwnerCommands /></div>}
         {visitedTabs.includes('vault') && <div hidden={tab !== 'vault'}><MediaVaultDesk /></div>}
-        {visitedTabs.includes('scribd') && canAccessScribd && <div hidden={tab !== 'scribd'}><ScribdDesk bottomNav active={tab === 'scribd'} /></div>}
-        {tab === 'scribd' && !canAccessScribd && <section className="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm"><span className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-teal-50 text-teal-700"><LockKeyhole className="h-6 w-6" /></span><h1 className="mt-4 text-base font-bold text-slate-900">Scribd is private</h1><p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-slate-500">Ask the owner for access to the shared library.</p></section>}
       <AccountModal
         open={accountOpen}
         onClose={() => setAccountOpen(false)}

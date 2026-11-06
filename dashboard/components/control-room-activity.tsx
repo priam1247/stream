@@ -28,7 +28,7 @@ const PAGES: { id: ActivityPage; label: string }[] = [
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'all', label: 'All' }, { key: 'bot', label: 'Service' },
   { key: 'numbers', label: 'Numbers' }, { key: 'members', label: 'Members' },
-  { key: 'scribd', label: 'Scribd' }, { key: 'account', label: 'Account' },
+  { key: 'account', label: 'Account' },
 ];
 function dateText(value: string) {
   const date = new Date(value);
