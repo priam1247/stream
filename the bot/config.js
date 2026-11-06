@@ -1,0 +1,264 @@
+/**
+ * ZaFar Bot — Global Configuration
+ *
+ * Every value can be overridden with an environment variable (shown in the
+ * comments), which keeps tokens out of git on hosts that have an env panel.
+ * The hard-coded values stay as defaults so Katabump-style panels (no env
+ * panel) keep working exactly as before.
+ */
+
+// ── .env loader (no dependency) ────────────────────────────────────────────
+// The engine has its own loader, but the bot's config is read first, so a key
+// placed in .env (e.g. REALDEBRID_API_KEY) has to be picked up here too.
+// .env is git-ignored on purpose: never commit real keys.
+(function loadDotEnv(file = '.env') {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const p = path.resolve(process.cwd(), file);
+    if (!fs.existsSync(p)) return;
+    for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const i = t.indexOf('=');
+      if (i < 1) continue;
+      const k = t.slice(0, i).trim();
+      let v = t.slice(i + 1).trim();
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+      if (process.env[k] === undefined) process.env[k] = v;
+    }
+  } catch { /* non-fatal */ }
+})();
+
+const env = process.env;
+const list = (raw, fallback = '') => String(raw || fallback).split(',').map(s => s.trim()).filter(Boolean);
+// Ignore legacy branding in existing environment files without changing access rules.
+const displayName = (raw, fallback) => {
+  const value = String(raw || '').trim();
+  return value && !/zafar|\bbot\b/i.test(value) ? value : fallback;
+};
+// WhatsApp documents cap at 2 GB: that is the download ceiling too.
+const movieCapDefault = Math.min(2000, Number(env.VIDEO_MAX_MB || 2000));
+
+module.exports = {
+  ownerNumber: list(env.OWNER_NUMBER, '265894016453'),
+  // Bot admins: full owner-level access, no need to .allow them
+  adminNumbers: list(env.ADMIN_NUMBERS, '265997564836,265986741036,265894016451'),
+  ownerName: list(env.OWNER_NAME),
+
+  botName: displayName(env.BOT_NAME, 'WhatsApp'),
+  prefix: env.PREFIX || '.',
+  sessionName: env.SESSION_NAME || 'session',
+  // Katabump has no environment-variable panel — set the real value here.
+  // ZaFarBot! session string from your pairing/auth step.
+  sessionID: env.SESSION_ID || '',
+
+  packname: displayName(env.PACK_NAME, 'Stickers'),
+
+  // Credentials are read only from the private environment; none are copied
+  // from XJX's source. The resolver behavior follows its media API sequence.
+  xjxMedia: {
+    knightbotApiKey: env.XJX_KNIGHTBOT_API_KEY || '',
+    apissupremeApiKey: env.XJX_APISSUPREME_API_KEY || '',
+    apixKey: env.XJX_APIX_KEY || env.APIX_KEY || '',
+    audioFormat: env.XJX_SONG_AUDIO_FORMAT || '320kbps',
+    timeoutMs: Number(env.XJX_MEDIA_TIMEOUT_MS || 60000),
+  },
+
+  // Gronka API (https://api.gronka.dev). When GRONKA_API_KEY is set it is the
+  // single source for .song, .video, .fb and .instagram (no backup provider).
+  gronka: {
+    apiKey: env.GRONKA_API_KEY || '',
+    baseUrl: env.GRONKA_API_URL || 'https://api.gronka.dev',
+    timeoutMs: Number(env.GRONKA_TIMEOUT_MS || 180000),
+  },
+
+  // Gifted API (optional fallback downloader for other media commands).
+  giftedApi: {
+    baseUrl: env.GIFTED_API_URL || 'https://api.gifted.co.ke',
+    apiKey: env.GIFTED_API_KEY || '',
+  },
+
+  // ─── Optional local media engine (other sites and YouTube fallback) ───────
+  ytdlp: {
+    cookiesFile: env.YOUTUBE_COOKIES_FILE || '', // path to cookies.txt
+    cookies: env.YOUTUBE_COOKIES || '',          // raw Netscape text, base64, or JSON export
+    proxy: env.YTDLP_PROXY || '',                // e.g. http://user:pass@host:port
+    ipv4: true,                                  // force IPv4 (IPv6 egress is often blocked)
+    fragments: Number(env.YTDLP_FRAGMENTS || 4),
+    // Total time a local media-engine job may spend trying player clients
+    // before it gives up (prevents a hopeless download from hanging for an hour).
+    deadlineMs: Number(env.YTDLP_DEADLINE_MS || 45 * 60 * 1000),
+  },
+
+
+  // ─── Remote downloader fallbacks (used only when yt-dlp cannot do it) ────
+  // Cobalt (github.com/imputnet/cobalt) instances. Community instances come and
+  // go: override with COBALT_INSTANCES="https://a,https://b" (or from WhatsApp
+  // with `.ytdl engine` for a status view). Set useDefaultInstances:false to
+  // rely only on the ones you configure.
+  cobalt: {
+    instances: String(env.COBALT_INSTANCES || '').split(',').map(s => s.trim()).filter(Boolean),
+    useDefaultInstances: env.COBALT_USE_DEFAULTS === 'false' ? false : true,
+  },
+
+  // ─── Search picker for catalog search commands ───────────────────────────
+  // Retained for commands that offer a numbered media-result selection.
+  search: {
+    // SEARCH_PICKER=true enables numbered search results where supported.
+    picker: /^(1|true|yes)$/i.test(String(env.SEARCH_PICKER || '')),
+    maxResults: Math.max(1, Math.min(10, Number(env.SEARCH_RESULTS || 5))),
+    ttlMinutes: Math.max(1, Number(env.SEARCH_TTL_MINUTES || 5)),
+  },
+
+  // ─── Shared media limits and music-source delivery settings ───────────────
+  song: {
+    maxMB: 120,
+    maxMinutes: Number(env.SONG_MAX_MINUTES || 180),
+    // 'document' preserves the filename; 'audio' sends a playable audio bubble.
+    sendAs: env.SONG_SEND_AS || 'document',
+  },
+  video: {
+    // Local/catalog video commands keep 720p; XJX's .video command uses 480p.
+    defaultQuality: 720,
+    // WhatsApp documents top out at 2 GB; anything over 50 MB goes as a document.
+    maxMB: Number(env.VIDEO_MAX_MB || 2000),
+    maxMinutes: Number(env.VIDEO_MAX_MINUTES || 0),   // 0 = no length limit
+  },
+  media: {
+    diskMinFreeMB: Number(env.MEDIA_DISK_MIN_FREE_MB ?? 1200),
+    diskCopyMultiplier: Number(env.MEDIA_DISK_COPY_MULTIPLIER ?? 1.2),
+    diskCopyOverheadMB: Number(env.MEDIA_DISK_COPY_OVERHEAD_MB ?? 300),
+  },
+  // ─── Disk guard (bot folder quota vs shared host disk) ───────────────────
+  // Counts the bot's own folder against ~9 GB by default (for a 10 GB plan)
+  // instead of trusting statfs, which often reports the whole host node.
+  disk: {
+    budgetMB: Number(env.DISK_BUDGET_MB ?? 9000),
+    tempMaxMB: Number(env.TEMP_MAX_MB ?? 2048),
+  },
+  // Reject immediately if memory is critically low; commands never queue.
+  queue: {
+    minFreeMB: Math.max(0, Number(env.QUEUE_MIN_FREE_MB ?? 220)),
+  },
+
+  messages: {
+    error: '❌ Something went wrong.',
+    ownerOnly: '❌ This command is restricted.',
+  },
+
+  timezone: env.TZ || 'Africa/Blantyre',
+
+  // Set PAIR_NUMBER (full WhatsApp number, digits only, country code first,
+  // e.g. 265991234567) to log in with a pairing code instead of scanning a
+  // QR — or leave empty to pair interactively from the web dashboard.
+  pairNumber: env.PAIR_NUMBER || '',
+
+  // ─── Dashboard control API ───────────────────────────────────────────────
+  // The bot normally syncs outbound to the dashboard with a shared token.
+  // An inbound /admin/api/{status,users,pair} bridge is optional.
+  //
+  //   ADMIN_DASHBOARD_TOKEN  same value saved in the dashboard's Admin Console
+  //   ADMIN_API_PORT         port to listen on inside the panel (default 3000)
+  //   DASHBOARD_URL          dashboard origin, enables whitelist pull sync
+  admin: {
+    token: env.ADMIN_DASHBOARD_TOKEN || '',
+    syncToken: env.BOT_SYNC_TOKEN || env.ADMIN_DASHBOARD_TOKEN || '',
+    apiEnabled: !/^(0|false|no|off)$/i.test(String(env.ADMIN_API_ENABLED ?? 'true')),
+    // Pterodactyl hands the container a port (SERVER_PORT / PORT); on other
+    // hosts ADMIN_API_PORT (or ADMIN_PORT) is the one to set. 3000 is last resort.
+    port: Number(env.ADMIN_API_PORT || env.ADMIN_PORT || env.SERVER_PORT || env.PORT || 3000),
+    dashboardUrl: (env.DASHBOARD_URL || '').replace(/\/+$/, ''),
+    corsOrigins: String(env.ADMIN_CORS_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim().replace(/\/+$/, ''))
+      .filter(Boolean),
+    syncMinutes: Number(env.DASHBOARD_SYNC_MINUTES || 5),
+    syncIntervalMs: Number(env.DASHBOARD_SYNC_INTERVAL_MS || 10_000),
+  },
+
+  // ─── Movies & series (.movie / .series) ──────────────────────────────────
+  // Keyless metadata and source providers work without account tokens.
+  // TMDB, OMDb and Trakt are optional metadata enrichments.
+  movies: {
+    // ── metadata sources ──────────────────────────────────────────────────
+    // TMDB is the primary source (free key). Everything below it is a fallback
+    // and none of them is required: the engine uses whatever answers.
+    tmdbKey: env.TMDB_API_KEY || '',
+    omdbKey: env.OMDB_API_KEY || '',                 // optional: ratings/runtime
+    traktClientId: env.TRAKT_CLIENT_ID || '',        // optional: trending/ids
+    metadata: {
+      cinemeta: env.META_CINEMETA !== '0',           // keyless (Stremio)
+      imdb: env.META_IMDB !== '0',                   // keyless suggestions / bulk index
+      tvmaze: env.META_TVMAZE !== '0',               // keyless episode guides
+      omdb: env.META_OMDB !== '0',
+      trakt: env.META_TRAKT !== '0',
+      anime: env.META_ANIME !== '0',                 // Jikan + AniList
+    },
+    imdbIndexFile: env.IMDB_INDEX_FILE || 'temp/imdb-index.tsv',   // optional bulk dump index
+
+    // Torrent downloads use the optional direct WebTorrent engine.
+    torrentDirect: !/^(0|false|no|off)$/i.test(String(env.TORRENT_DIRECT ?? 'true')),
+    torrentMinSeeds: Number(env.TORRENT_MIN_SEEDS || 3),
+    torrentMetadataTimeoutMs: Number(env.TORRENT_METADATA_TIMEOUT_MS || 90_000),
+    torrentStallTimeoutMs: Number(env.TORRENT_STALL_TIMEOUT_MS || 180_000),
+
+    // 1080 → 720 → 480 instead of failing when a quality has no source
+    qualityFallback: env.QUALITY_FALLBACK !== '0',
+
+    // HLS acceleration: 'auto' tries N_m3u8DL-RE (parallel segments + ffmpeg mux)
+    // first, falling back to ffmpeg HLS remux and pure-JS segment download.
+    hlsEngine: String(env.MOVIE_HLS_ENGINE || 'auto').toLowerCase(),
+    hlsThreads: Math.max(1, Math.min(32, Number(env.NM3U8DL_THREADS || 16))),
+    hlsRetries: Math.max(1, Math.min(20, Number(env.NM3U8DL_RETRIES || 10))),
+
+    defaultQuality: Number(env.MOVIE_QUALITY || 720),
+    // WhatsApp send ceiling (used by the engine's own ranking) …
+    maxSendMB: Number(env.MOVIE_MAX_MB || movieCapDefault),
+    // … and the download cap. Above maxSendMB files are still sent: the bot
+    // puts anything bigger than drimeThresholdMB on Drime and posts the link.
+    maxDownloadMB: Number(env.MOVIE_MAX_DOWNLOAD_MB || movieCapDefault),
+    minFreeMB: Number(env.MOVIE_MIN_FREE_MB || 800),  // refuse a download below this
+    diskSizeMultiplier: Number(env.MOVIE_DISK_SIZE_MULTIPLIER ?? 1.5),
+    diskOverheadMB: Number(env.MOVIE_DISK_OVERHEAD_MB ?? 400),
+    unknownSizeMB: Number(env.MOVIE_DISK_UNKNOWN_SIZE_MB ?? 2000),
+
+    region: env.REGION || 'US',
+    episodeBatchLimit: Number(env.MOVIE_BATCH_LIMIT || 10),
+    // attach the English subtitle (.srt) that MovieBox serves with the stream
+    subtitles: env.MOVIE_SUBTITLES !== '0',
+    subtitleLang: env.MOVIE_SUBTITLE_LANG || 'en',
+
+    // ── disk hygiene ─────────────────────────────────────────────────────
+    // Nothing is cached: a delivered movie/episode is DELETED as soon as
+    // WhatsApp has taken it (the file, its temp copy and its subtitle).
+
+    // engine storage — stays inside the bot's ./temp folder
+    tempDir: env.MOVIE_TEMP_DIR || 'temp/movies',
+    dataDir: env.MOVIE_DATA_DIR || 'temp/movies/data',
+
+    dryRun: env.MOVIE_DRY_RUN === '1',                // resolve only, send the link
+
+    // Legacy switch for deployments that disable direct torrent downloads.
+    skipTorrentWithoutDebrid: env.SKIP_TORRENT_WITHOUT_DEBRID !== 'false',
+  },
+
+  // ─── Drime Cloud Storage (drime.cloud) ───────────────────────────────────
+  // Replaces the old Google Drive + Service Account setup. Get an access
+  // token from Drime Cloud → Account Settings → Developers.
+  drime: {
+    // Set DRIME_API_TOKEN in .env or panel Startup Variables (never commit keys).
+    // Get it from Drime Cloud → Account Settings → Developers.
+    apiToken: env.DRIME_API_TOKEN || '',
+    baseUrl: env.DRIME_BASE_URL || 'https://app.drime.cloud/api/v1',
+    // Folder ID (numeric) of the folder in your Drime workspace that
+    // contains the past-papers vault — from GET /drive/file-entries.
+    papersFolderId: Number(env.DRIME_PAPERS_FOLDER_ID || 841342462),
+    // Folder hash (from the folder's Drime URL) — required for windowed
+    // listing of large vaults. Stays valid unless the folder is recreated.
+    papersFolderHash: env.DRIME_PAPERS_FOLDER_HASH || 'ODQxMzQyNDYyfA',
+    // 0 = personal workspace. Set to a workspace ID if papers live in a
+    // shared Drime workspace instead.
+    workspaceId: Number(env.DRIME_WORKSPACE_ID || 0),
+  },
+};

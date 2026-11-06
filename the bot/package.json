@@ -1,0 +1,51 @@
+{
+  "name": "zafar-bot",
+  "version": "2.2.0",
+  "description": "WhatsApp service powered by Baileys",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node --expose-gc index.js",
+    "ytdlp:install": "bash scripts/install-ytdlp.sh",
+    "selftest": "node scripts/selftest.js && npm run test:preflight",
+    "test:structure": "node --test scripts/test-structure.js",
+    "test:preflight": "node --test scripts/test-preflight.js scripts/test-readiness.js scripts/test-approval-readiness.js",
+    "test:media": "node --test scripts/test-media-downloads.js scripts/test-knight-provider.js scripts/test-media-shortcuts.js scripts/test-social-media.js scripts/test-dramabox.js scripts/test-command-removal.js scripts/test-provider-search.js scripts/test-provider-search-handler.js scripts/test-public-media.js scripts/test-music-sources.js scripts/test-embed-sources.js scripts/test-own-media.js scripts/test-xjx-media.js",
+    "test:jobs": "node --test scripts/test-provider-core.js",
+    "test:sessions": "node --test scripts/test-structure.js scripts/test-sessions.js scripts/test-account-routing.js scripts/test-member-telemetry.js scripts/test-bridge.js scripts/test-delivery.js scripts/test-session-backup.js scripts/test-service-startup.js"
+  },
+  "keywords": [
+    "whatsapp bot",
+    "baileys"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "axios": "^1.7.2",
+    "bgutils-js": "^3.2.0",
+    "cheerio": "1.0.0-rc.10",
+    "googlevideo": "^4.1.1",
+    "ipaddr.js": "^2.5.0",
+    "jsdom": "^27.4.0",
+    "node-webpmux": "^3.1.7",
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0",
+    "tough-cookie": "^6.0.2",
+    "youtubei.js": "^18.3.0",
+    "yt-search": "^2.13.1"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "optionalDependencies": {
+    "@sparticuz/chromium": "153.0.0",
+    "webtorrent": "^3.0.21"
+  },
+  "overrides": {
+    "redstar": {
+      "minimatch": "^3.1.5"
+    }
+  }
+}
