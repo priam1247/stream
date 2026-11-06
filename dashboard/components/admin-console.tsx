@@ -654,9 +654,9 @@ export function AdminConsole() {
 
   if (checking || !user) {
     return (
-      <div className="bg-canvas flex min-h-screen items-center justify-center px-4">
-        <div className="flex items-center gap-2.5 rounded-2xl border border-line bg-paper px-4 py-3 text-xs font-semibold text-ink-soft shadow-sm">
-          <Loader2 className="h-4 w-4 animate-spin text-accent-600" />
+      <div className="bg-paper flex min-h-screen items-center justify-center px-4">
+        <div className="flex items-center gap-2.5 rounded-2xl border border-ink/10 bg-paper px-4 py-3 text-xs font-semibold text-ink/80 shadow-sm">
+          <Loader2 className="h-4 w-4 animate-spin text-accent" />
           Connecting…
         </div>
       </div>
@@ -697,15 +697,15 @@ export function AdminConsole() {
             role={notice.bad ? 'alert' : 'status'}
             className={`mb-4 flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-medium ${
               notice.bad
-                ? 'border-bad-200 bg-bad-50 text-bad-800'
-                : 'border-accent-200 bg-accent-50 text-accent-900'
+                ? 'border-accent/25 bg-accent/10 text-accent'
+                : 'border-accent/25 bg-accent/10 text-accent'
             }`}
           >
             <div className="flex min-w-0 items-center gap-2">
               {notice.bad ? (
-                <AlertCircle className="h-4 w-4 shrink-0 text-bad-600" />
+                <AlertCircle className="h-4 w-4 shrink-0 text-accent" />
               ) : (
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-accent-600" />
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-accent" />
               )}
               <span className="min-w-0 break-words">{notice.text}</span>
             </div>
@@ -738,16 +738,16 @@ export function AdminConsole() {
             <SectionNav label="WhatsApp pages" items={WHATSAPP_PAGES} value={whatsAppPage} onChange={setWhatsAppPage} />
             {whatsAppPage === 'service' && (
               <>
-                <section className="mb-4 rounded-2xl border border-line bg-paper p-4 shadow-sm sm:p-5">
+                <section className="mb-4 rounded-2xl border border-ink/10 bg-paper p-4 shadow-sm sm:p-5">
                   <h2 className="text-sm font-bold text-ink sm:text-base">Service status</h2>
                   <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    <div className="rounded-xl bg-wash p-3"><p className="text-xs text-muted">HiddenCloud server</p><p className="mt-1 text-sm font-semibold capitalize text-ink-soft">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p>{panelStatus?.error && <p className="mt-1 break-words text-[11px] text-muted">{panelStatus.error}</p>}</div>
-                    <div className="rounded-xl bg-wash p-3"><p className="text-xs text-muted">Service bridge</p><p className="mt-1 text-sm font-semibold text-ink-soft">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-muted">{overviewError ? 'Last check failed' : overviewCheckedAt == null ? 'Awaiting first check' : data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
-                    <div className="rounded-xl bg-wash p-3"><p className="text-xs text-muted">WhatsApp</p><p className="mt-1 text-sm font-semibold text-ink-soft">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p></div>
+                    <div className="rounded-xl bg-ink/5 p-3"><p className="text-xs text-ink/60">HiddenCloud server</p><p className="mt-1 text-sm font-semibold capitalize text-ink/80">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p>{panelStatus?.error && <p className="mt-1 break-words text-[11px] text-ink/60">{panelStatus.error}</p>}</div>
+                    <div className="rounded-xl bg-ink/5 p-3"><p className="text-xs text-ink/60">Service bridge</p><p className="mt-1 text-sm font-semibold text-ink/80">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-ink/60">{overviewError ? 'Last check failed' : overviewCheckedAt == null ? 'Awaiting first check' : data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
+                    <div className="rounded-xl bg-ink/5 p-3"><p className="text-xs text-ink/60">WhatsApp</p><p className="mt-1 text-sm font-semibold text-ink/80">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p></div>
                   </div>
-                  {overviewError && <p role="alert" className="mt-3 text-xs text-bad-700">Status could not be refreshed. Check Sync settings.</p>}
-                  {!overviewError && data.botVersion && <p className="mt-3 break-all text-xs text-muted">Reported version {data.botVersion}</p>}
-                  {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-warn-700">{serviceText(data.botError)} Check the service process and Sync settings.</p>}
+                  {overviewError && <p role="alert" className="mt-3 text-xs text-accent">Status could not be refreshed. Check Sync settings.</p>}
+                  {!overviewError && data.botVersion && <p className="mt-3 break-all text-xs text-ink/60">Reported version {data.botVersion}</p>}
+                  {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-accent">{serviceText(data.botError)} Check the service process and Sync settings.</p>}
                 </section>
                 {/* Live Server Analytics: Commands, Successful Downloads, Failed, Uptime + RAM/Disk/Queues */}
                 <LiveAnalytics
@@ -770,15 +770,15 @@ export function AdminConsole() {
             )}
 
             {whatsAppPage === 'power' && (
-              <section className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-line bg-paper p-3 shadow-sm sm:px-4">
-                <div className="flex w-full items-center justify-between gap-2"><h2 className="text-sm font-bold text-ink">Server power</h2><span className="text-xs font-semibold capitalize text-muted">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</span></div>
-                {panelStatus?.error && <p className="w-full break-words text-xs text-warn-700">{panelStatus.error}</p>}
+              <section className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-ink/10 bg-paper p-3 shadow-sm sm:px-4">
+                <div className="flex w-full items-center justify-between gap-2"><h2 className="text-sm font-bold text-ink">Server power</h2><span className="text-xs font-semibold capitalize text-ink/60">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</span></div>
+                {panelStatus?.error && <p className="w-full break-words text-xs text-accent">{panelStatus.error}</p>}
                 <div className="flex flex-wrap items-center gap-1.5">
                   <button
                     type="button"
                     disabled={sendingPower !== null}
                     onClick={() => handlePanelPower('restart')}
-                    className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-accent-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-accent-700 disabled:opacity-50"
+                    className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-accent px-3 py-2 text-xs font-semibold text-paper shadow-sm transition hover:bg-accent disabled:opacity-50"
                   >
                     <RefreshCw
                       className={`h-3.5 w-3.5 ${sendingPower === 'restart' ? 'animate-spin' : ''}`}
@@ -790,7 +790,7 @@ export function AdminConsole() {
                     type="button"
                     disabled={sendingPower !== null}
                     onClick={() => handlePanelPower('start')}
-                    className="min-h-11 rounded-xl border border-ok-200 bg-ok-50 px-3 py-2 text-xs font-semibold text-ok-800 transition hover:bg-ok-100 disabled:opacity-50"
+                    className="min-h-11 rounded-xl border border-ink/15 bg-ink/5 px-3 py-2 text-xs font-semibold text-ink transition hover:bg-ink/10 disabled:opacity-50"
                   >
                     {sendingPower === 'start' ? 'Starting…' : 'Start service'}
                   </button>
@@ -799,48 +799,48 @@ export function AdminConsole() {
                     type="button"
                     disabled={sendingPower !== null}
                     onClick={() => handlePanelPower('stop')}
-                    className="min-h-11 rounded-xl border border-bad-200 bg-bad-50 px-3 py-2 text-xs font-semibold text-bad-700 transition hover:bg-bad-100 disabled:opacity-50"
+                    className="min-h-11 rounded-xl border border-accent/25 bg-accent/10 px-3 py-2 text-xs font-semibold text-accent transition hover:bg-accent/15 disabled:opacity-50"
                   >
                     {sendingPower === 'stop' ? 'Stopping…' : 'Stop service'}
                   </button>
                 </div>
 
-                                {lastRestartEvent && <p className="w-full text-[11px] text-muted">Last restart request: {new Date(lastRestartEvent.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
+                                {lastRestartEvent && <p className="w-full text-[11px] text-ink/60">Last restart request: {new Date(lastRestartEvent.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
               </section>
             )}
 
             {whatsAppPage === 'commands' && <><MemberCommandControls />
-              <section aria-label="Service command reference" className="mt-4 space-y-2.5"><h2 className="px-0.5 text-sm font-bold text-ink sm:text-base">Service command reference</h2><p className="px-0.5 text-xs text-muted">Every command on the service, including owner-only ones. Members only see the member catalog.</p><CommandDirectory /></section></>}
+              <section aria-label="Service command reference" className="mt-4 space-y-2.5"><h2 className="px-0.5 text-sm font-bold text-ink sm:text-base">Service command reference</h2><p className="px-0.5 text-xs text-ink/60">Every command on the service, including owner-only ones. Members only see the member catalog.</p><CommandDirectory /></section></>}
 
-            {whatsAppPage === 'sync' && <section className="rounded-2xl border border-line bg-paper p-4 shadow-sm" aria-label="Session recovery status">
+            {whatsAppPage === 'sync' && <section className="rounded-2xl border border-ink/10 bg-paper p-4 shadow-sm" aria-label="Session recovery status">
               <h2 className="text-sm font-bold text-ink">Encrypted session recovery</h2>
-              <p className="mt-1 text-xs leading-5 text-muted">{!data.botReachable ? 'Service offline; backup status cannot be confirmed.' : !data.sessionBackup ? 'The service has not reported recovery status. Update the service to enable it.' : data.sessionBackup.state === 'disabled' ? 'Not configured. Set a private SESSION_BACKUP_KEY on the service and configure durable D1 storage.' : data.sessionBackup.state === 'error' ? 'Backup or revocation failed. Check the service logs and dashboard storage.' : data.sessionBackup.state === 'conflict' ? 'Local sessions were preserved; a backup conflict needs review.' : data.sessionBackup.state === 'starting' ? 'Connecting to encrypted recovery.' : data.sessionBackup.lastBackupAt ? `Recovery connected. Last encrypted snapshot: ${new Date(data.sessionBackup.lastBackupAt).toLocaleString()}.` : 'Recovery connected. No session snapshot has been saved yet.'}</p>
-              {data.botReachable && data.sessionBackup?.state === 'ready' && data.sessionBackup.sessions !== undefined && data.sessionBackup.backedUp !== undefined && <p className="mt-2 text-xs font-semibold text-ink-soft">{data.sessionBackup.backedUp} of {data.sessionBackup.sessions} registered sessions have a current snapshot.</p>}
-              {data.storageEngine !== 'cloudflare-d1' && <p className="mt-2 text-xs font-semibold text-warn-800">Durable D1 storage has not been confirmed.</p>}
+              <p className="mt-1 text-xs leading-5 text-ink/60">{!data.botReachable ? 'Service offline; backup status cannot be confirmed.' : !data.sessionBackup ? 'The service has not reported recovery status. Update the service to enable it.' : data.sessionBackup.state === 'disabled' ? 'Not configured. Set a private SESSION_BACKUP_KEY on the service and configure durable D1 storage.' : data.sessionBackup.state === 'error' ? 'Backup or revocation failed. Check the service logs and dashboard storage.' : data.sessionBackup.state === 'conflict' ? 'Local sessions were preserved; a backup conflict needs review.' : data.sessionBackup.state === 'starting' ? 'Connecting to encrypted recovery.' : data.sessionBackup.lastBackupAt ? `Recovery connected. Last encrypted snapshot: ${new Date(data.sessionBackup.lastBackupAt).toLocaleString()}.` : 'Recovery connected. No session snapshot has been saved yet.'}</p>
+              {data.botReachable && data.sessionBackup?.state === 'ready' && data.sessionBackup.sessions !== undefined && data.sessionBackup.backedUp !== undefined && <p className="mt-2 text-xs font-semibold text-ink/80">{data.sessionBackup.backedUp} of {data.sessionBackup.sessions} registered sessions have a current snapshot.</p>}
+              {data.storageEngine !== 'cloudflare-d1' && <p className="mt-2 text-xs font-semibold text-accent">Durable D1 storage has not been confirmed.</p>}
             </section>}
 
-            {whatsAppPage === 'numbers' && <section className="rounded-2xl border border-line bg-paper p-4 shadow-sm sm:p-5">
+            {whatsAppPage === 'numbers' && <section className="rounded-2xl border border-ink/10 bg-paper p-4 shadow-sm sm:p-5">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-sm font-bold text-ink sm:text-base">
                   Approved numbers
                 </h2>
-                <span className="whitespace-nowrap font-mono text-xs text-muted tabular-nums">
+                <span className="whitespace-nowrap font-mono text-xs text-ink/60 tabular-nums">
                   {enabledNumbersCount}/{data.users.length} allowed
                 </span>
               </div>
 
-              <div className={`mt-3 rounded-xl border px-3 py-2.5 text-xs leading-5 ${data.whitelistSync === 'synced' && !overviewError ? 'border-accent-100 bg-accent-50/60 text-accent-800' : 'border-line bg-wash text-muted'}`}>
+              <div className={`mt-3 rounded-xl border px-3 py-2.5 text-xs leading-5 ${data.whitelistSync === 'synced' && !overviewError ? 'border-accent/15 bg-accent/10 text-accent' : 'border-ink/10 bg-ink/5 text-ink/60'}`}>
                 <span className="font-semibold">{overviewError ? 'Sync status unavailable' : data.whitelistSync === 'synced' ? 'Service reports the latest number list' : data.whitelistSync === 'pending' ? 'Number list waiting for service sync' : 'Number sync not confirmed'}</span>
               </div>
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line bg-wash p-3">
-                <div className="min-w-0"><p className="text-xs font-semibold text-ink-soft">Member linking: {data.botEnabledForMembers ? 'Open' : 'Paused'}</p><p className="mt-1 text-[11px] leading-4 text-muted">Pausing stops new requests, not approved numbers.</p></div>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ink/10 bg-ink/5 p-3">
+                <div className="min-w-0"><p className="text-xs font-semibold text-ink/80">Member linking: {data.botEnabledForMembers ? 'Open' : 'Paused'}</p><p className="mt-1 text-[11px] leading-4 text-ink/60">Pausing stops new requests, not approved numbers.</p></div>
                 <button
                   type="button"
                   onClick={handleToggleGlobalBot}
                   className={`inline-flex min-h-11 items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition ${
                     data.botEnabledForMembers
-                      ? 'border-accent-200 bg-accent-50 text-accent-800 hover:bg-accent-100'
-                      : 'border-bad-200 bg-bad-50 text-bad-700 hover:bg-bad-100'
+                      ? 'border-accent/25 bg-accent/10 text-accent hover:bg-accent/15'
+                      : 'border-accent/25 bg-accent/10 text-accent hover:bg-accent/15'
                   }`}
                 >
                   <Power className="h-3.5 w-3.5 shrink-0" />
@@ -849,7 +849,7 @@ export function AdminConsole() {
                   </span>
                 </button>
               </div>
-              <p className="mt-3 text-xs leading-5 text-muted">Approve a number, then request a code. A code alone does not confirm linking.</p>
+              <p className="mt-3 text-xs leading-5 text-ink/60">Approve a number, then request a code. A code alone does not confirm linking.</p>
 
               <form
                 onSubmit={handleAddNumber}
@@ -858,7 +858,7 @@ export function AdminConsole() {
                 <div className="min-w-0">
                   <label
                     htmlFor="admin-add-num"
-                    className="mb-1 block text-xs font-medium text-ink-soft"
+                    className="mb-1 block text-xs font-medium text-ink/80"
                   >
                     Number
                   </label>
@@ -870,13 +870,13 @@ export function AdminConsole() {
                     value={numInput}
                     onChange={(e) => setNumInput(e.target.value)}
                     placeholder="265991234567"
-                    className="w-full rounded-xl border border-linestrong bg-paper px-3.5 py-2.5 font-mono text-sm text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none tabular-nums"
+                    className="w-full rounded-xl border border-ink/20 bg-paper px-3.5 py-2.5 font-mono text-sm text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none tabular-nums"
                   />
                 </div>
                 <div className="min-w-0">
                   <label
                     htmlFor="admin-add-label"
-                    className="mb-1 block text-xs font-medium text-ink-soft"
+                    className="mb-1 block text-xs font-medium text-ink/80"
                   >
                     Label
                   </label>
@@ -886,13 +886,13 @@ export function AdminConsole() {
                     value={numLabel}
                     onChange={(e) => setNumLabel(e.target.value)}
                     placeholder="Operator"
-                    className="w-full rounded-xl border border-linestrong bg-paper px-3.5 py-2.5 text-sm text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none"
+                    className="w-full rounded-xl border border-ink/20 bg-paper px-3.5 py-2.5 text-sm text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none"
                   />
                 </div>
                 <button
                   type="submit"
                   disabled={addingNumber}
-                  className="inline-flex h-[42px] items-center justify-center gap-1.5 rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-accent-700 disabled:opacity-60"
+                  className="inline-flex h-[42px] items-center justify-center gap-1.5 rounded-xl bg-accent px-4 text-sm font-semibold text-paper shadow-sm transition hover:bg-accent disabled:opacity-60"
                 >
                   <Plus className="h-4 w-4" />
                   {addingNumber ? 'Adding…' : 'Approve'}
@@ -910,12 +910,12 @@ export function AdminConsole() {
               </div>
 
               <div className="mt-3 flex flex-wrap gap-2">
-                <div className="relative min-w-0 flex-1 basis-44"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" /><input type="search" aria-label="Search WhatsApp numbers" value={numberSearch} onChange={(event) => setNumberSearch(event.target.value)} placeholder="Search number, label or owner" className="min-h-11 w-full rounded-xl border border-line bg-wash py-2 pl-9 pr-3 text-base text-ink outline-none focus:border-accent-600 focus:bg-paper sm:text-sm" /></div>
-                <select aria-label="Filter WhatsApp numbers" value={numberFilter} onChange={(event) => setNumberFilter(event.target.value as 'all' | 'allowed' | 'blocked')} className="min-h-11 rounded-xl border border-line bg-paper px-3 text-sm text-ink-soft"><option value="all">All numbers</option><option value="allowed">Allowed</option><option value="blocked">Blocked</option></select>
+                <div className="relative min-w-0 flex-1 basis-44"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink/40" /><input type="search" aria-label="Search WhatsApp numbers" value={numberSearch} onChange={(event) => setNumberSearch(event.target.value)} placeholder="Search number, label or owner" className="min-h-11 w-full rounded-xl border border-ink/10 bg-ink/5 py-2 pl-9 pr-3 text-base text-ink outline-none focus:border-accent focus:bg-paper sm:text-sm" /></div>
+                <select aria-label="Filter WhatsApp numbers" value={numberFilter} onChange={(event) => setNumberFilter(event.target.value as 'all' | 'allowed' | 'blocked')} className="min-h-11 rounded-xl border border-ink/10 bg-paper px-3 text-sm text-ink/80"><option value="all">All numbers</option><option value="allowed">Allowed</option><option value="blocked">Blocked</option></select>
               </div>
-              <div className="mt-2 divide-y divide-wash">
+              <div className="mt-2 divide-y divide-ink/5">
                 {filteredNumbers.length === 0 ? (
-                  <p className="py-6 text-center font-mono text-xs text-faint">
+                  <p className="py-6 text-center font-mono text-xs text-ink/40">
                     {data.users.length ? 'No numbers match this filter' : 'No numbers approved'}
                   </p>
                 ) : (
@@ -936,20 +936,20 @@ export function AdminConsole() {
                             <span
                               className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
                                 u.enabled
-                                  ? 'bg-ok-50 text-ok-700 ring-1 ring-ok-200'
-                                  : 'bg-bad-50 text-bad-700 ring-1 ring-bad-200'
+                                  ? 'bg-ink/5 text-ink ring-1 ring-ink/15'
+                                  : 'bg-accent/10 text-accent ring-1 ring-accent/25'
                               }`}
                             >
                               {u.enabled ? 'Allowed' : 'Blocked'}
                             </span>
                           </div>
-                          <p className="mt-1 text-xs font-medium text-accent-700">{accountStatusLabel(overviewError || !data.botReachable ? null : data.accounts, u.number)}</p>
-                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
+                          <p className="mt-1 text-xs font-medium text-accent">{accountStatusLabel(overviewError || !data.botReachable ? null : data.accounts, u.number)}</p>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink/60">
                             <span className="truncate">{u.label || 'Approved'}</span>
                             {u.addedBy && (
                               <>
                                 <span>·</span>
-                                <span className="break-all font-mono text-[11px] text-muted">
+                                <span className="break-all font-mono text-[11px] text-ink/60">
                                   {u.addedBy}
                                 </span>
                               </>
@@ -958,14 +958,14 @@ export function AdminConsole() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <button type="button" disabled={busy} onClick={() => handleSyncNumber(u.number)} aria-label={`Retry sync for +${u.number}`} className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-line bg-paper px-2.5 py-1.5 text-xs font-semibold text-ink-soft hover:border-accent-200 hover:bg-accent-50 disabled:opacity-40"><RefreshCw className="h-3.5 w-3.5 text-accent-600" /> Sync</button>
+                          <button type="button" disabled={busy} onClick={() => handleSyncNumber(u.number)} aria-label={`Retry sync for +${u.number}`} className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-ink/10 bg-paper px-2.5 py-1.5 text-xs font-semibold text-ink/80 hover:border-accent/25 hover:bg-accent/10 disabled:opacity-40"><RefreshCw className="h-3.5 w-3.5 text-accent" /> Sync</button>
                           <button
                             type="button"
                             disabled={!u.enabled || busy || accountState === 'connected' || accountState === 'connecting'}
                             onClick={() => handlePairNumber(u.number)}
-                            className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-line bg-wash px-2.5 py-1.5 text-xs font-semibold text-ink-soft transition hover:border-accent-200 hover:bg-accent-50 hover:text-accent-800 disabled:opacity-40"
+                            className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-ink/10 bg-ink/5 px-2.5 py-1.5 text-xs font-semibold text-ink/80 transition hover:border-accent/25 hover:bg-accent/10 hover:text-accent disabled:opacity-40"
                           >
-                            <Link2 className="h-3.5 w-3.5 text-accent-600" />
+                            <Link2 className="h-3.5 w-3.5 text-accent" />
                             Get code
                           </button>
 
@@ -975,8 +975,8 @@ export function AdminConsole() {
                             onClick={() => handleToggleNumber(u.number, !u.enabled)}
                             className={`min-h-11 rounded-xl px-2.5 py-1.5 text-xs font-semibold transition ${
                               u.enabled
-                                ? 'border border-bad-200 bg-bad-50 text-bad-700 hover:bg-bad-100'
-                                : 'bg-accent-600 text-white hover:bg-accent-700'
+                                ? 'border border-accent/25 bg-accent/10 text-accent hover:bg-accent/15'
+                                : 'bg-accent text-paper hover:bg-accent'
                             }`}
                           >
                             {u.enabled ? 'Block' : 'Allow'}
@@ -987,14 +987,14 @@ export function AdminConsole() {
                               <button
                                 type="button"
                                 onClick={() => handleDeleteNumber(u.number)}
-                                className="min-h-11 rounded-xl bg-bad-600 px-2.5 py-1.5 text-xs font-semibold text-white"
+                                className="min-h-11 rounded-xl bg-accent px-2.5 py-1.5 text-xs font-semibold text-paper"
                               >
                                 Confirm
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setConfirmDeleteNum(null)}
-                                className="min-h-11 rounded-xl bg-wash px-2.5 py-1.5 text-xs font-medium text-muted"
+                                className="min-h-11 rounded-xl bg-ink/5 px-2.5 py-1.5 text-xs font-medium text-ink/60"
                               >
                                 Cancel
                               </button>
@@ -1003,7 +1003,7 @@ export function AdminConsole() {
                             <button
                               type="button"
                               onClick={() => setConfirmDeleteNum(u.number)}
-                              className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-line bg-paper px-2.5 py-1.5 text-xs font-semibold text-bad-600 hover:border-bad-200 hover:bg-bad-50"
+                              className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-ink/10 bg-paper px-2.5 py-1.5 text-xs font-semibold text-accent hover:border-accent/25 hover:bg-accent/10"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
                               Remove
@@ -1017,13 +1017,13 @@ export function AdminConsole() {
               </div>
             </section>}
 
-            {whatsAppPage === 'sync' && <section className="rounded-2xl border border-line bg-paper p-4 shadow-sm sm:p-5">
+            {whatsAppPage === 'sync' && <section className="rounded-2xl border border-ink/10 bg-paper p-4 shadow-sm sm:p-5">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="flex items-center gap-2 text-sm font-bold text-ink">
-                    <Server className="h-4 w-4 text-accent-600" />
+                    <Server className="h-4 w-4 text-accent" />
                     Service Sync Bridge
                   </h2>
-                  <span className="rounded bg-wash px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-muted">
+                  <span className="rounded bg-ink/5 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-ink/60">
                     {data.connectionMode || 'sync'}
                   </span>
                 </div>
@@ -1032,7 +1032,7 @@ export function AdminConsole() {
                   <div className="min-w-0">
                     <label
                       htmlFor="admin-bot-sync-token"
-                      className="mb-1 block font-mono text-[11px] font-semibold text-muted"
+                      className="mb-1 block font-mono text-[11px] font-semibold text-ink/60"
                     >
                       BOT_SYNC_TOKEN
                     </label>
@@ -1043,13 +1043,13 @@ export function AdminConsole() {
                         value={botSyncTokenInput}
                         onChange={(e) => setBotSyncTokenInput(e.target.value)}
                         placeholder="Sync token"
-                        className="w-full rounded-xl border border-linestrong bg-paper py-2 pl-3 pr-9 font-mono text-xs text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none"
+                        className="w-full rounded-xl border border-ink/20 bg-paper py-2 pl-3 pr-9 font-mono text-xs text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none"
                       />
                       <button
                         type="button"
                         onClick={() => setShowBotToken((s) => !s)}
                         aria-label={showBotToken ? 'Hide token' : 'Show token'}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-faint hover:text-ink-soft"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink/40 hover:text-ink/80"
                       >
                         {showBotToken ? (
                           <EyeOff className="h-4 w-4" />
@@ -1064,7 +1064,7 @@ export function AdminConsole() {
                     <div className="min-w-0">
                       <label
                         htmlFor="admin-bot-url"
-                        className="mb-1 block font-mono text-[11px] font-semibold text-muted"
+                        className="mb-1 block font-mono text-[11px] font-semibold text-ink/60"
                       >
                         Botkeep inbound URL
                       </label>
@@ -1074,14 +1074,14 @@ export function AdminConsole() {
                         value={botUrlInput}
                         onChange={(e) => setBotUrlInput(e.target.value)}
                         placeholder="Defaults to https://troy.hidenplay.net"
-                        className="w-full rounded-xl border border-linestrong bg-paper px-3 py-2 font-mono text-xs text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none"
+                        className="w-full rounded-xl border border-ink/20 bg-paper px-3 py-2 font-mono text-xs text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none"
                       />
                     </div>
 
                     <div className="min-w-0">
                       <label
                         htmlFor="admin-bot-token"
-                        className="mb-1 block font-mono text-[11px] font-semibold text-muted"
+                        className="mb-1 block font-mono text-[11px] font-semibold text-ink/60"
                       >
                           Botkeep bridge token
                       </label>
@@ -1091,7 +1091,7 @@ export function AdminConsole() {
                         value={botTokenInput}
                         onChange={(e) => setBotTokenInput(e.target.value)}
                         placeholder="Optional"
-                        className="w-full rounded-xl border border-linestrong bg-paper px-3 py-2 font-mono text-xs text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none"
+                        className="w-full rounded-xl border border-ink/20 bg-paper px-3 py-2 font-mono text-xs text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none"
                       />
                     </div>
                   </div>
@@ -1099,24 +1099,24 @@ export function AdminConsole() {
                   <button
                     type="submit"
                     disabled={savingBot}
-                    className="inline-flex h-[38px] w-full items-center justify-center rounded-xl bg-accent-600 px-4 text-xs font-semibold text-white shadow-sm transition hover:bg-accent-700 disabled:opacity-60 sm:w-auto"
+                    className="inline-flex h-[38px] w-full items-center justify-center rounded-xl bg-accent px-4 text-xs font-semibold text-paper shadow-sm transition hover:bg-accent disabled:opacity-60 sm:w-auto"
                   >
                     {savingBot ? 'Saving…' : 'Save Sync'}
                   </button>
                 </form>
               </section>}
 
-              {whatsAppPage === 'hosting' && <section className="rounded-2xl border border-line bg-paper p-4 shadow-sm sm:p-5">
+              {whatsAppPage === 'hosting' && <section className="rounded-2xl border border-ink/10 bg-paper p-4 shadow-sm sm:p-5">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="flex items-center gap-2 text-sm font-bold text-ink">
-                    <Power className="h-4 w-4 text-accent-600" />
+                    <Power className="h-4 w-4 text-accent" />
                     HiddenCloud server controls
                   </h2>
                   <span
                     className={`rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase ${
                       data.panelConfigured
-                        ? 'bg-ok-50 text-ok-700'
-                        : 'bg-wash text-muted'
+                        ? 'bg-ink/5 text-ink'
+                        : 'bg-ink/5 text-ink/60'
                     }`}
                   >
                     {data.panelConfigured ? 'Configured' : 'Unset'}
@@ -1124,18 +1124,18 @@ export function AdminConsole() {
                 </div>
 
                 <form onSubmit={handleSavePanel} className="mt-3.5 space-y-3">
-                  <p className="text-xs leading-5 text-muted">Client API key from Account → API Credentials. Status and power need both fields; the ID comes prefilled.</p>
+                  <p className="text-xs leading-5 text-ink/60">Client API key from Account → API Credentials. Status and power need both fields; the ID comes prefilled.</p>
                   <div className="min-w-0">
-                    <label htmlFor="admin-panel-sid" className="mb-1 block text-[11px] font-semibold text-muted">HiddenCloud server ID</label>
+                    <label htmlFor="admin-panel-sid" className="mb-1 block text-[11px] font-semibold text-ink/60">HiddenCloud server ID</label>
                     <input id="admin-panel-sid" type="text" value={panelServerIdInput}
                       onChange={(e) => setPanelServerIdInput(e.target.value)} placeholder="a6451c6c"
-                      className="w-full rounded-xl border border-linestrong bg-paper px-3 py-2 font-mono text-xs text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none" />
+                      className="w-full rounded-xl border border-ink/20 bg-paper px-3 py-2 font-mono text-xs text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none" />
                   </div>
 
                   <div className="min-w-0">
                     <label
                       htmlFor="admin-panel-key"
-                      className="mb-1 block font-mono text-[11px] font-semibold text-muted"
+                      className="mb-1 block font-mono text-[11px] font-semibold text-ink/60"
                     >
                       HiddenCloud client API key
                     </label>
@@ -1146,13 +1146,13 @@ export function AdminConsole() {
                         value={panelKeyInput}
                         onChange={(e) => setPanelKeyInput(e.target.value)}
                         placeholder="API key"
-                        className="w-full rounded-xl border border-linestrong bg-paper py-2 pl-3 pr-9 font-mono text-xs text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none"
+                        className="w-full rounded-xl border border-ink/20 bg-paper py-2 pl-3 pr-9 font-mono text-xs text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none"
                       />
                       <button
                         type="button"
                         onClick={() => setShowPanelKey((s) => !s)}
                         aria-label={showPanelKey ? 'Hide API key' : 'Show API key'}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-faint hover:text-ink-soft"
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink/40 hover:text-ink/80"
                       >
                         {showPanelKey ? (
                           <EyeOff className="h-4 w-4" />
@@ -1166,7 +1166,7 @@ export function AdminConsole() {
                   <button
                     type="submit"
                     disabled={savingPanel}
-                    className="inline-flex h-[38px] w-full items-center justify-center rounded-xl border border-accent-600 bg-accent-50 px-4 text-xs font-semibold text-accent-800 transition hover:bg-accent-100 disabled:opacity-60 sm:w-auto"
+                    className="inline-flex h-[38px] w-full items-center justify-center rounded-xl border border-accent bg-accent/10 px-4 text-xs font-semibold text-accent transition hover:bg-accent/15 disabled:opacity-60 sm:w-auto"
                   >
                     {savingPanel ? 'Verifying…' : 'Save HiddenCloud'}
                   </button>
@@ -1179,14 +1179,14 @@ export function AdminConsole() {
 
         {/* Members access control */}
         {tab === 'members' && (
-          <section className="rounded-2xl border border-line bg-paper p-4 shadow-sm sm:p-5">
+          <section className="rounded-2xl border border-ink/10 bg-paper p-4 shadow-sm sm:p-5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="flex items-center gap-2 text-sm font-bold text-ink sm:text-base">
-                <UserCheck className="h-4 w-4 text-accent-600" />
+                <UserCheck className="h-4 w-4 text-accent" />
                 Members
               </h2>
 
-              <div className="flex items-center gap-1 rounded-xl bg-wash p-1 text-xs">
+              <div className="flex items-center gap-1 rounded-xl bg-ink/5 p-1 text-xs">
                 {(['all', 'allowed', 'disallowed'] as MemberFilter[]).map((f) => (
                   <button
                     key={f}
@@ -1195,7 +1195,7 @@ export function AdminConsole() {
                     className={`rounded-lg px-2.5 py-1 font-semibold capitalize transition ${
                       memberFilter === f
                         ? 'bg-paper text-ink shadow-sm'
-                        : 'text-muted hover:text-ink'
+                        : 'text-ink/60 hover:text-ink'
                     }`}
                   >
                     {f}
@@ -1204,27 +1204,27 @@ export function AdminConsole() {
               </div>
             </div>
 
-            {data.users.some((item) => item.approval === 'pending') && <div role="region" className="mt-4 rounded-xl border border-warn-200 bg-warn-50 p-3" aria-label="Pending link approvals">
-              <h3 className="text-xs font-bold text-warn-900">Link requests</h3>
-              <p className="mt-1 text-[11px] text-warn-800">Members link first. Approve only after their connection is ready.</p>
+            {data.users.some((item) => item.approval === 'pending') && <div role="region" className="mt-4 rounded-xl border border-accent/25 bg-accent/10 p-3" aria-label="Pending link approvals">
+              <h3 className="text-xs font-bold text-accent">Link requests</h3>
+              <p className="mt-1 text-[11px] text-accent">Members link first. Approve only after their connection is ready.</p>
               <div className="mt-2 space-y-2">{data.users.filter((item) => item.approval === 'pending').map((item) => {
                 const linked = data.botReachable && data.accounts?.some((account) => account.number === item.number && account.sessionId && account.claimCurrent === true && ['connected', 'connecting', 'paused'].includes(account.state));
                 return <div key={item.number} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-paper p-2.5">
-                  <div className="min-w-0"><p className="truncate text-xs font-semibold text-ink-soft">{item.label || 'Member'} · {item.number}</p><p className="truncate text-[11px] text-muted">{item.addedBy || 'Member'} · {linked ? 'Linked, awaiting approval' : 'Waiting for link or service'}</p></div>
-                  <div className="flex gap-2"><button type="button" disabled={!linked || busyNumber === item.number} onClick={() => void handleApproval(item.number, 'approve')} className="min-h-[40px] rounded-lg bg-accent-700 px-3 text-xs font-semibold text-white disabled:opacity-40">Approve</button><button type="button" disabled={busyNumber === item.number} onClick={() => void handleApproval(item.number, 'reject')} className="min-h-[40px] rounded-lg border border-line px-3 text-xs font-semibold text-muted disabled:opacity-40">Reject</button></div>
+                  <div className="min-w-0"><p className="truncate text-xs font-semibold text-ink/80">{item.label || 'Member'} · {item.number}</p><p className="truncate text-[11px] text-ink/60">{item.addedBy || 'Member'} · {linked ? 'Linked, awaiting approval' : 'Waiting for link or service'}</p></div>
+                  <div className="flex gap-2"><button type="button" disabled={!linked || busyNumber === item.number} onClick={() => void handleApproval(item.number, 'approve')} className="min-h-[40px] rounded-lg bg-accent px-3 text-xs font-semibold text-paper disabled:opacity-40">Approve</button><button type="button" disabled={busyNumber === item.number} onClick={() => void handleApproval(item.number, 'reject')} className="min-h-[40px] rounded-lg border border-ink/10 px-3 text-xs font-semibold text-ink/60 disabled:opacity-40">Reject</button></div>
                 </div>;
               })}</div>
             </div>}
 
-            <p className="mt-2 text-xs leading-5 text-muted">{allowedMembersCount} of {data.members.length} allowed.</p>
+            <p className="mt-2 text-xs leading-5 text-ink/60">{allowedMembersCount} of {data.members.length} allowed.</p>
             <form
               onSubmit={handleAddMember}
-              className="mt-3.5 grid grid-cols-1 gap-2.5 rounded-xl border border-line bg-wash/70 p-3 sm:grid-cols-[1.2fr_1fr_auto] sm:items-end"
+              className="mt-3.5 grid grid-cols-1 gap-2.5 rounded-xl border border-ink/10 bg-ink/5 p-3 sm:grid-cols-[1.2fr_1fr_auto] sm:items-end"
             >
               <div className="min-w-0">
                 <label
                   htmlFor="add-member-email"
-                  className="mb-1 block text-xs font-medium text-ink-soft"
+                  className="mb-1 block text-xs font-medium text-ink/80"
                 >
                   Email
                 </label>
@@ -1235,13 +1235,13 @@ export function AdminConsole() {
                   value={newMemberEmail}
                   onChange={(e) => setNewMemberEmail(e.target.value)}
                   placeholder="member@gmail.com"
-                  className="w-full rounded-xl border border-linestrong bg-paper px-3 py-2 text-sm text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none"
+                  className="w-full rounded-xl border border-ink/20 bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none"
                 />
               </div>
               <div className="min-w-0">
                 <label
                   htmlFor="add-member-name"
-                  className="mb-1 block text-xs font-medium text-ink-soft"
+                  className="mb-1 block text-xs font-medium text-ink/80"
                 >
                   Name
                 </label>
@@ -1251,13 +1251,13 @@ export function AdminConsole() {
                   value={newMemberName}
                   onChange={(e) => setNewMemberName(e.target.value)}
                   placeholder="Optional"
-                  className="w-full rounded-xl border border-linestrong bg-paper px-3 py-2 text-sm text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none"
+                  className="w-full rounded-xl border border-ink/20 bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none"
                 />
               </div>
               <button
                 type="submit"
                 disabled={addingMember}
-                className="inline-flex h-[38px] items-center justify-center gap-1.5 rounded-xl bg-accent-600 px-4 text-xs font-semibold text-white shadow-sm transition hover:bg-accent-700 disabled:opacity-60"
+                className="inline-flex h-[38px] items-center justify-center gap-1.5 rounded-xl bg-accent px-4 text-xs font-semibold text-paper shadow-sm transition hover:bg-accent disabled:opacity-60"
               >
                 <UserPlus className="h-4 w-4" />
                 {addingMember ? 'Saving…' : 'Allow'}
@@ -1265,19 +1265,19 @@ export function AdminConsole() {
             </form>
 
             <div className="relative mt-3.5">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink/40" />
               <input
                 type="search"
                 value={memberSearch}
                 onChange={(e) => setMemberSearch(e.target.value)}
                 placeholder="Filter members…"
-                className="w-full rounded-xl border border-line bg-wash py-2 pl-9 pr-3 text-xs text-ink placeholder:text-faint focus:border-accent-600 focus:bg-paper focus:outline-none"
+                className="w-full rounded-xl border border-ink/10 bg-ink/5 py-2 pl-9 pr-3 text-xs text-ink placeholder:text-ink/40 focus:border-accent focus:bg-paper focus:outline-none"
               />
             </div>
 
-            <div className="mt-3 divide-y divide-wash">
+            <div className="mt-3 divide-y divide-ink/5">
               {filteredMembers.length === 0 ? (
-                <p className="py-8 text-center font-mono text-xs text-faint">
+                <p className="py-8 text-center font-mono text-xs text-ink/40">
                   No members found
                 </p>
               ) : (
@@ -1294,37 +1294,37 @@ export function AdminConsole() {
                             {member.name}
                           </span>
                           {member.isAdmin ? (
-                            <span className="rounded-full bg-accent-50 px-2 py-0.5 text-[10px] font-bold uppercase text-accent-800 ring-1 ring-accent-200">
+                            <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-bold uppercase text-accent ring-1 ring-accent/25">
                               Root
                             </span>
                           ) : member.allowed ? (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-ok-50 px-2 py-0.5 text-[10px] font-bold uppercase text-ok-700 ring-1 ring-ok-200">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-ink/5 px-2 py-0.5 text-[10px] font-bold uppercase text-ink ring-1 ring-ink/15">
                               <ShieldCheck className="h-3 w-3" />
                               Allowed
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-bad-50 px-2 py-0.5 text-[10px] font-bold uppercase text-bad-700 ring-1 ring-bad-200">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-bold uppercase text-accent ring-1 ring-accent/25">
                               <ShieldBan className="h-3 w-3" />
                               Blocked
                             </span>
                           )}
                         </div>
-                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted">
-                          <span className="break-all font-mono text-ink-soft">
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink/60">
+                          <span className="break-all font-mono text-ink/80">
                             {member.email}
                           </span>
                           <span>·</span>
                           <span>{member.numbersCount} {member.numbersCount === 1 ? 'number' : 'numbers'}</span>
                           <span>·</span><span>{member.isVerified ? 'Verified' : 'Not verified'}</span>
                         </div>
-                        {!member.isAdmin && events.find((event) => event.actor === member.email) && <p className="mt-1 text-xs text-muted">Last recorded activity {new Date(events.find((event) => event.actor === member.email)!.createdAt).toLocaleDateString()}</p>}
+                        {!member.isAdmin && events.find((event) => event.actor === member.email) && <p className="mt-1 text-xs text-ink/60">Last recorded activity {new Date(events.find((event) => event.actor === member.email)!.createdAt).toLocaleDateString()}</p>}
                       </div>
 
                       <div className="flex shrink-0 flex-wrap gap-2">
                         {member.isAdmin ? (
-                          <span className="font-mono text-[11px] font-semibold text-faint">Owner</span>
+                          <span className="font-mono text-[11px] font-semibold text-ink/40">Owner</span>
                         ) : (<>
-                          <button type="button" disabled={busy} onClick={() => handleToggleMember(member.email, !member.allowed, member.name)} className={`min-h-10 rounded-xl px-3.5 text-xs font-semibold transition disabled:opacity-50 ${member.allowed ? 'border border-bad-200 bg-bad-50 text-bad-700 hover:bg-bad-100' : 'bg-accent-600 text-white hover:bg-accent-700'}`}>
+                          <button type="button" disabled={busy} onClick={() => handleToggleMember(member.email, !member.allowed, member.name)} className={`min-h-10 rounded-xl px-3.5 text-xs font-semibold transition disabled:opacity-50 ${member.allowed ? 'border border-accent/25 bg-accent/10 text-accent hover:bg-accent/15' : 'bg-accent text-paper hover:bg-accent'}`}>
                             {busy ? 'Saving…' : member.allowed ? 'Block' : 'Allow'}
                           </button>
                         </>)}

@@ -292,9 +292,9 @@ export function MemberPortal() {
 
   if (checking || !user) {
     return (
-      <div className="bg-canvas flex min-h-screen items-center justify-center px-4">
-        <div className="flex items-center gap-2.5 rounded-2xl border border-line bg-paper px-4 py-3 text-xs font-semibold text-ink-soft shadow-sm">
-          <Loader2 className="h-4 w-4 animate-spin text-accent-600" />
+      <div className="bg-paper flex min-h-screen items-center justify-center px-4">
+        <div className="flex items-center gap-2.5 rounded-2xl border border-ink/10 bg-paper px-4 py-3 text-xs font-semibold text-ink/80 shadow-sm">
+          <Loader2 className="h-4 w-4 animate-spin text-accent" />
           Connecting…
         </div>
       </div>
@@ -340,15 +340,15 @@ export function MemberPortal() {
             role={notice.bad ? 'alert' : 'status'}
             className={`mb-4 flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-medium ${
               notice.bad
-                ? 'border-bad-200 bg-bad-50 text-bad-800'
-                : 'border-accent-200 bg-accent-50 text-accent-900'
+                ? 'border-accent/25 bg-accent/10 text-accent'
+                : 'border-accent/25 bg-accent/10 text-accent'
             }`}
           >
             <div className="flex min-w-0 items-center gap-2">
               {notice.bad ? (
-                <AlertCircle className="h-4 w-4 shrink-0 text-bad-600" />
+                <AlertCircle className="h-4 w-4 shrink-0 text-accent" />
               ) : (
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-accent-600" />
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-accent" />
               )}
               <span className="min-w-0 break-words">{notice.text}</span>
             </div>
@@ -373,7 +373,7 @@ export function MemberPortal() {
         )}
 
         {!overview.memberAllowed && (
-          <div className="mb-4 rounded-xl border border-bad-200 bg-bad-50 px-3.5 py-2.5 text-xs font-semibold text-bad-800">
+          <div className="mb-4 rounded-xl border border-accent/25 bg-accent/10 px-3.5 py-2.5 text-xs font-semibold text-accent">
             Account restricted
           </div>
         )}
@@ -383,7 +383,7 @@ export function MemberPortal() {
         {tab === 'status' && (
           <div className="space-y-4">
             <h1 className="font-display px-0.5 text-[28px] font-semibold tracking-tight text-ink">Service status</h1>
-            {statusUnavailable && <p role="alert" className="text-xs text-bad-700">Status could not be refreshed.</p>}
+            {statusUnavailable && <p role="alert" className="text-xs text-accent">Status could not be refreshed.</p>}
             <LiveAnalytics
               reachable={statusUnavailable ? false : overview.botReachable}
               connected={statusUnavailable ? null : overview.botConnected}
@@ -398,18 +398,18 @@ export function MemberPortal() {
         )}
 
         {tab === 'numbers' && (
-          <section className="rounded-2xl border border-line bg-paper p-4 shadow-sm sm:p-5">
+          <section className="rounded-2xl border border-ink/10 bg-paper p-4 shadow-sm sm:p-5">
             <div className="flex items-center justify-between gap-2">
               <h1 className="text-sm font-bold text-ink sm:text-base">
                 WhatsApp numbers
               </h1>
-              <span className="font-mono text-xs text-muted tabular-nums">
+              <span className="font-mono text-xs text-ink/60 tabular-nums">
                 {overview.numbers.length} approved
               </span>
             </div>
 
-            <div className="mt-3 rounded-xl bg-wash px-3 py-2.5 text-xs leading-5 text-muted"><span className="font-semibold">{overview.whitelistSync === 'synced' ? 'Service reports the latest number list' : overview.whitelistSync === 'pending' ? 'Waiting for service sync' : 'Number sync not confirmed'}</span><span className="block">Approve your number, then request a code. Other linked accounts stay connected.</span></div>
-            {!overview.botEnabledForMembers && !user.isAdmin && <p className="mt-3 rounded-xl bg-warn-50 px-3 py-2.5 text-xs leading-5 text-warn-800">New number approvals and pairing are paused. Existing approvals remain enabled.</p>}
+            <div className="mt-3 rounded-xl bg-ink/5 px-3 py-2.5 text-xs leading-5 text-ink/60"><span className="font-semibold">{overview.whitelistSync === 'synced' ? 'Service reports the latest number list' : overview.whitelistSync === 'pending' ? 'Waiting for service sync' : 'Number sync not confirmed'}</span><span className="block">Approve your number, then request a code. Other linked accounts stay connected.</span></div>
+            {!overview.botEnabledForMembers && !user.isAdmin && <p className="mt-3 rounded-xl bg-accent/10 px-3 py-2.5 text-xs leading-5 text-accent">New number approvals and pairing are paused. Existing approvals remain enabled.</p>}
             <form
               onSubmit={handleAllowNumber}
               className="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-[1.15fr_0.95fr_auto] sm:items-end"
@@ -417,7 +417,7 @@ export function MemberPortal() {
               <div className="min-w-0">
                 <label
                   htmlFor="member-wa-number"
-                  className="mb-1 block text-xs font-medium text-ink-soft"
+                  className="mb-1 block text-xs font-medium text-ink/80"
                 >
                   Number (with country code)
                 </label>
@@ -430,14 +430,14 @@ export function MemberPortal() {
                   value={number}
                   onChange={(e) => setNumber(e.target.value)}
                   placeholder="265991234567"
-                  className="w-full rounded-xl border border-linestrong bg-paper px-3.5 py-2.5 font-mono text-sm text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none disabled:bg-wash tabular-nums"
+                  className="w-full rounded-xl border border-ink/20 bg-paper px-3.5 py-2.5 font-mono text-sm text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none disabled:bg-ink/5 tabular-nums"
                 />
               </div>
 
               <div className="min-w-0">
                 <label
                   htmlFor="member-wa-label"
-                  className="mb-1 block text-xs font-medium text-ink-soft"
+                  className="mb-1 block text-xs font-medium text-ink/80"
                 >
                   Label
                 </label>
@@ -449,14 +449,14 @@ export function MemberPortal() {
                   value={label}
                   onChange={(e) => setLabel(e.target.value)}
                   placeholder="Mobile"
-                  className="w-full rounded-xl border border-linestrong bg-paper px-3.5 py-2.5 text-sm text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none disabled:bg-wash"
+                  className="w-full rounded-xl border border-ink/20 bg-paper px-3.5 py-2.5 text-sm text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none disabled:bg-ink/5"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={!canLinkNumbers || submitting}
-                className="inline-flex h-[42px] items-center justify-center gap-1.5 rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-accent-700 disabled:opacity-50"
+                className="inline-flex h-[42px] items-center justify-center gap-1.5 rounded-xl bg-accent px-4 text-sm font-semibold text-paper shadow-sm transition hover:bg-accent disabled:opacity-50"
               >
                 <Plus className="h-4 w-4" />
                 {submitting ? 'Saving…' : 'Allow'}
@@ -473,10 +473,10 @@ export function MemberPortal() {
               />
             </div>
 
-            <div className="relative mt-3"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" /><input type="search" aria-label="Search my numbers" value={numberSearch} onChange={(event) => setNumberSearch(event.target.value)} placeholder="Search number or label" className="min-h-11 w-full rounded-xl border border-line bg-wash py-2 pl-9 pr-3 text-base text-ink outline-none focus:border-accent-600 focus:bg-paper sm:text-sm" /></div>
-            <div className="mt-2 divide-y divide-wash">
+            <div className="relative mt-3"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink/40" /><input type="search" aria-label="Search my numbers" value={numberSearch} onChange={(event) => setNumberSearch(event.target.value)} placeholder="Search number or label" className="min-h-11 w-full rounded-xl border border-ink/10 bg-ink/5 py-2 pl-9 pr-3 text-base text-ink outline-none focus:border-accent focus:bg-paper sm:text-sm" /></div>
+            <div className="mt-2 divide-y divide-ink/5">
               {filteredNumbers.length === 0 ? (
-                <p className="py-8 text-center font-mono text-xs text-faint">
+                <p className="py-8 text-center font-mono text-xs text-ink/40">
                   {overview.numbers.length ? 'No matching numbers' : 'No numbers approved'}
                 </p>
               ) : (
@@ -497,16 +497,16 @@ export function MemberPortal() {
                           <span
                             className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
                               item.enabled
-                                ? 'bg-ok-50 text-ok-700 ring-1 ring-ok-200'
-                                : 'bg-wash text-muted'
+                                ? 'bg-ink/5 text-ink ring-1 ring-ink/15'
+                                : 'bg-ink/5 text-ink/60'
                             }`}
                           >
                             {item.enabled ? 'Allowed' : 'Paused'}
                           </span>
                         </div>
-                        <p className="mt-1 text-xs font-medium text-accent-700">{accountStatusLabel(statusUnavailable || overview.botReachable === false ? null : overview.accounts, item.number)}</p>
+                        <p className="mt-1 text-xs font-medium text-accent">{accountStatusLabel(statusUnavailable || overview.botReachable === false ? null : overview.accounts, item.number)}</p>
                         {item.label && (
-                          <p className="mt-0.5 truncate text-xs text-muted">
+                          <p className="mt-0.5 truncate text-xs text-ink/60">
                             {item.label}
                           </p>
                         )}
@@ -523,7 +523,7 @@ export function MemberPortal() {
                             accountState === 'connected' || accountState === 'connecting'
                           }
                           onClick={() => handleRequestCode(item.number)}
-                          className="inline-flex min-h-11 items-center gap-1 rounded-xl bg-accent-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-accent-700 disabled:opacity-40"
+                          className="inline-flex min-h-11 items-center gap-1 rounded-xl bg-accent px-3 py-1.5 text-xs font-semibold text-paper shadow-sm transition hover:bg-accent disabled:opacity-40"
                         >
                           <Link2 className="h-3.5 w-3.5" />
                           {overview.botReachable === false ? 'Offline' : 'Get Code'}
@@ -535,7 +535,7 @@ export function MemberPortal() {
                           onClick={() =>
                             handleToggleOwnNumber(item.number, !item.enabled)
                           }
-                          className="min-h-11 rounded-xl border border-line bg-wash px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:bg-wash disabled:opacity-50"
+                          className="min-h-11 rounded-xl border border-ink/10 bg-ink/5 px-3 py-1.5 text-xs font-semibold text-ink/80 transition hover:bg-ink/5 disabled:opacity-50"
                         >
                           {item.enabled ? 'Pause' : 'Enable'}
                         </button>
@@ -545,14 +545,14 @@ export function MemberPortal() {
                             <button
                               type="button"
                               onClick={() => handleDeleteOwnNumber(item.number)}
-                              className="min-h-11 rounded-xl bg-bad-600 px-2.5 py-1.5 text-xs font-semibold text-white"
+                              className="min-h-11 rounded-xl bg-accent px-2.5 py-1.5 text-xs font-semibold text-paper"
                             >
                               Confirm
                             </button>
                             <button
                               type="button"
                               onClick={() => setConfirmDelete(null)}
-                              className="min-h-11 rounded-xl bg-wash px-2.5 py-1.5 text-xs font-medium text-muted"
+                              className="min-h-11 rounded-xl bg-ink/5 px-2.5 py-1.5 text-xs font-medium text-ink/60"
                             >
                               Cancel
                             </button>
@@ -562,7 +562,7 @@ export function MemberPortal() {
                             type="button"
                             onClick={() => setConfirmDelete(item.number)}
                             aria-label="Remove number"
-                            className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-line bg-paper px-2.5 py-1.5 text-xs font-semibold text-bad-600 hover:border-bad-200 hover:bg-bad-50"
+                            className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-ink/10 bg-paper px-2.5 py-1.5 text-xs font-semibold text-accent hover:border-accent/25 hover:bg-accent/10"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                             Remove

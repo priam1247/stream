@@ -22,9 +22,9 @@ export default function RootRouterPage() {
   }, [router]);
 
   return (
-    <div className="bg-canvas flex min-h-screen items-center justify-center">
-      <div className="flex items-center gap-3 rounded-2xl border border-line bg-paper px-5 py-3.5 text-sm font-medium text-ink-soft shadow-sm">
-        <Loader2 className="h-4 w-4 animate-spin text-accent-600" />
+    <div className="bg-paper flex min-h-screen items-center justify-center">
+      <div className="flex items-center gap-3 rounded-2xl border border-ink/10 bg-paper px-5 py-3.5 text-sm font-medium text-ink/80 shadow-sm">
+        <Loader2 className="h-4 w-4 animate-spin text-accent" />
         Opening your workspace…
       </div>
     </div>
