@@ -18,7 +18,7 @@ const config: Config = {
       },
       borderRadius: { lg: '12px', xl: '14px', '2xl': '16px' },
       boxShadow: {
-        card: '0 1px 2px rgba(26,24,20,0.05), 0 12px 32px -18px rgba(26,24,20,0.28)',
+        card: 'inset 0 1px 0 rgba(251,250,246,0.9), 0 1px 2px rgba(26,24,20,0.05), 0 16px 40px -24px rgba(26,24,20,0.4)',
         lift: '0 2px 4px rgba(26,24,20,0.06), 0 18px 44px -18px rgba(26,24,20,0.35)',
       },
     },

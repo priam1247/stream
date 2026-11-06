@@ -46,7 +46,7 @@ function Navigation<T extends string>({ groups, current, label, onChoose }: {
     <nav aria-label={label} className="space-y-7 px-3">
       {groups.map((group) => (
         <div key={group.label}>
-          <p className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-ink/40">{group.label}</p>
+          <p className="px-3 pb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-paper/35">{group.label}</p>
           <div className="space-y-1">
             {group.items.map(({ id, label: itemLabel, icon: Icon, ariaLabel, badge, alert }) => (
               <button
@@ -58,13 +58,13 @@ function Navigation<T extends string>({ groups, current, label, onChoose }: {
                 onClick={() => onChoose(id)}
                 className={`group  flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-left text-[13px] font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
                   current === id
-                    ? 'bg-ink/5 text-ink'
-                    : 'text-ink/60 hover:bg-ink/5 hover:text-ink'
+                    ? 'bg-accent text-paper'
+                    : 'text-paper/60 hover:bg-paper/5 hover:text-paper'
                 }`}
               >
-                <Icon aria-hidden="true" className={`h-[18px] w-[18px] shrink-0 ${current === id ? 'text-accent' : 'text-ink/40 group-hover:text-accent'}`} strokeWidth={1.8} />
+                <Icon aria-hidden="true" className={`h-[18px] w-[18px] shrink-0 ${current === id ? 'text-paper' : 'text-paper/45 group-hover:text-paper'}`} strokeWidth={1.8} />
                 <span className="min-w-0 flex-1 truncate">{itemLabel}</span>
-                {badge !== undefined && <span aria-hidden="true" className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${alert ? 'bg-accent/10 text-accent' : 'bg-ink/5 text-ink/60'}`}>{badge}</span>}
+                {badge !== undefined && <span aria-hidden="true" className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${alert ? 'bg-accent text-paper' : 'bg-paper/10 text-paper/70'}`}>{badge}</span>}
               </button>
             ))}
           </div>
@@ -86,27 +86,27 @@ function Sidebar<T extends string>({ kind, user, groups, current, navLabel, onCh
   onClose?: () => void;
 }) {
   return (
-    <div className="flex h-full min-h-0 flex-col bg-paper">
-      <div className="flex min-h-[76px] items-center gap-3 border-b border-ink/5 px-5">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-ink text-paper"><ZafarFox compact /></span>
+    <div className="flex h-full min-h-0 flex-col bg-ink">
+      <div className="flex min-h-[76px] items-center gap-3 border-b border-paper/10 px-5">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent text-paper"><ZafarFox compact /></span>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-bold tracking-tight text-ink">{kind === 'owner' ? 'Control Room' : 'My Workspace'}</p>
-          <p className="mt-0.5 truncate text-[11px] font-medium text-ink/60">{kind === 'owner' ? 'Owner workspace' : 'Personal workspace'}</p>
+          <p className="truncate text-sm font-bold tracking-tight text-paper">{kind === 'owner' ? 'Control Room' : 'My Workspace'}</p>
+          <p className="mt-0.5 truncate text-[11px] font-medium text-paper/45">{kind === 'owner' ? 'Owner workspace' : 'Personal workspace'}</p>
         </div>
-        {onClose && <button type="button" onClick={onClose} aria-label="Close workspace menu" className=" flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-ink/60 hover:bg-ink/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><X aria-hidden="true" className="h-5 w-5" /></button>}
+        {onClose && <button type="button" onClick={onClose} aria-label="Close workspace menu" className=" flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-paper/60 hover:bg-paper/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><X aria-hidden="true" className="h-5 w-5" /></button>}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto py-6">
         <Navigation groups={groups} current={current} label={navLabel} onChoose={onChoose} />
       </div>
 
-      <div className="border-t border-ink/5 p-3">
-        <div className=" flex items-center gap-1 rounded-2xl bg-ink/5 p-1.5">
-          <button type="button" onClick={onAccount} aria-label="Open account settings" className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-xl px-1.5 text-left hover:bg-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-xs font-bold uppercase text-accent">{(user.name || user.email).slice(0, 2)}</span>
-            <span className="min-w-0"><span className="block truncate text-xs font-bold text-ink/80">{user.name || 'Account'}</span><span className="block truncate text-[11px] text-ink/60">{kind === 'owner' ? 'Owner' : 'Member'}</span></span>
+      <div className="border-t border-paper/10 p-3">
+        <div className=" flex items-center gap-1 rounded-2xl bg-paper/5 p-1.5">
+          <button type="button" onClick={onAccount} aria-label="Open account settings" className="flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-xl px-1.5 text-left hover:bg-paper/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-accent text-xs font-bold uppercase text-paper">{(user.name || user.email).slice(0, 2)}</span>
+            <span className="min-w-0"><span className="block truncate text-xs font-bold text-paper/90">{user.name || 'Account'}</span><span className="block truncate text-[11px] text-paper/45">{kind === 'owner' ? 'Owner' : 'Member'}</span></span>
           </button>
-          <button type="button" onClick={() => void onSignOut()} aria-label="Sign out" title="Sign out" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-ink/40 hover:bg-paper hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><LogOut aria-hidden="true" className="h-4 w-4" /></button>
+          <button type="button" onClick={() => void onSignOut()} aria-label="Sign out" title="Sign out" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-paper/45 hover:bg-paper/10 hover:text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"><LogOut aria-hidden="true" className="h-4 w-4" /></button>
         </div>
       </div>
     </div>

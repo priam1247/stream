@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { AlertCircle, ArrowRight, Check, ChevronRight, Copy, Link2, Loader2, LogOut, MessageSquare, ShieldCheck } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, ChevronRight, Copy, LayoutDashboard, Link2, Loader2, LogOut, MessageSquare, ShieldCheck } from 'lucide-react';
 import { authHeaders, performSignOut } from '@/lib/client-session';
 import { formatCountdown, normalizeMalawiNumber } from '@/lib/member-link';
 import type { AuthUser, MemberOverviewPayload } from '@/lib/types';
@@ -28,6 +28,8 @@ interface LinkCache {
 }
 
 const storeKey = (user: AuthUser) => `zafar-member-link-v1:${String(user.email).toLowerCase()}`;
+const exploreKey = (user: AuthUser) => `zafar-member-explore-v1:${String(user.email).toLowerCase()}`;
+const EMPTY_OVERVIEW: MemberOverviewPayload = { ok: true, adminEmail: '', memberAllowed: true, botEnabledForMembers: false, botServerLinked: false, botConnected: null, botNumber: null, numbers: [] };
 function readCache(key: string): LinkCache {
   try {
     const raw = JSON.parse(localStorage.getItem(key) || '{}');
@@ -58,6 +60,7 @@ function writeCache(key: string, value: LinkCache) {
 export function MemberConnection({ user }: { user: AuthUser }) {
   const router = useRouter();
   const key = storeKey(user);
+  const [explore, setExplore] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [cache, setCache] = useState<LinkCache>({});
   const [name, setName] = useState(user.name || '');
@@ -81,8 +84,13 @@ export function MemberConnection({ user }: { user: AuthUser }) {
     setCache(saved);
     setName(saved.name || user.name || '');
     setPhone(saved.number || '');
+    try { setExplore(localStorage.getItem(exploreKey(user)) === '1'); } catch { setExplore(false); }
     setHydrated(true);
-  }, [key, user.name]);
+  }, [key, user]);
+  const applyExplore = (next: boolean) => {
+    setExplore(next);
+    try { if (next) localStorage.setItem(exploreKey(user), '1'); else localStorage.removeItem(exploreKey(user)); } catch { /* storage unavailable */ }
+  };
   useEffect(() => { if (hydrated) writeCache(key, cache); }, [cache, hydrated, key]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -356,7 +364,7 @@ export function MemberConnection({ user }: { user: AuthUser }) {
     try { await navigator.clipboard.writeText(text); setCopied(text); window.setTimeout(() => setCopied(''), 1800); }
     catch { setNotice({ text: 'Copy is unavailable. Select the text and copy it instead.', bad: true }); }
   };
-  const signOut = async () => { try { localStorage.removeItem(key); } catch { /* ignore */ } await performSignOut(); router.replace('/login'); };
+  const signOut = async () => { try { localStorage.removeItem(key); localStorage.removeItem(exploreKey(user)); } catch { /* ignore */ } await performSignOut(); router.replace('/login'); };
 
   const cooldownMs = Math.min(180_000, Math.max(0, (cache.retryAt || 0) - now));
   const codeMs = cache.code && cache.issuedAt ? Math.min((cache.expiresInSeconds || 60) * 1000, Math.max(0, cache.issuedAt + (cache.expiresInSeconds || 60) * 1000 - now)) : 0;
@@ -379,6 +387,13 @@ export function MemberConnection({ user }: { user: AuthUser }) {
       }} onUnlink={() => void unlink()} onSignOut={signOut} />;
   }
 
+  if (!loading && explore) {
+    return <MemberWorkspace user={user} overview={overview ?? EMPTY_OVERVIEW} statusError={statusError} busy={busy}
+      unlinking={false} supportUnread={supportUnread} notice={notice}
+      onRefresh={() => void refreshStatus()} onReconnect={() => applyExplore(false)} onUnlink={() => undefined}
+      onSignOut={signOut} onLinkNumber={() => applyExplore(false)} />;
+  }
+
   return (
     <div className="min-h-screen bg-paper text-ink">
       <header className="border-b border-ink/10 bg-paper/90">
@@ -391,7 +406,8 @@ export function MemberConnection({ user }: { user: AuthUser }) {
         {loading ? <div className="flex min-h-40 items-center justify-center gap-2 text-xs text-ink/60"><Loader2 className="h-4 w-4 animate-spin" /> Loading your connection…</div> : <>
             {cache.relinking && confirmed && <button type="button" onClick={() => setCache((old) => ({ ...old, relinking: false }))} className="mb-4 min-h-10 text-xs font-semibold text-accent">← Back to workspace</button>}
             <div className="mb-4"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-accent">Your WhatsApp connection</p><h1 className="font-display mt-2 text-[26px] font-semibold tracking-tight">{disconnected ? 'Your number got disconnected' : headingName ? `Welcome, ${headingName}` : 'Welcome to zAfAr'}</h1><p className="mt-1 text-xs leading-5 text-ink/60">{disconnected ? 'Let’s get your number connected again.' : 'One quick step to get started.'}</p></div>
-            <div className=" mb-5 flex items-center gap-3 px-3 py-2"><ZafarFox /><div className="min-w-0"><p className="text-xs font-bold text-accent">{disconnected ? 'I’m ready when you are.' : 'Hi, I’m here to help.'}</p><p className="mt-1 text-xs leading-5 text-accent/80">{disconnected ? 'Get a new code to reconnect your number.' : 'Let’s link your number to the zAfAr WhatsApp bot.'}</p></div></div>
+            <div className="mb-3 flex items-start gap-3 rounded-2xl bg-accent/10 px-4 py-3"><div className="mt-0.5 shrink-0"><ZafarFox compact /></div><div className="min-w-0"><p className="text-xs font-bold text-accent">{disconnected ? 'I’m ready when you are.' : 'Hi, I’m here to help.'}</p><p className="mt-1 text-xs leading-5 text-accent/80">{disconnected ? 'Get a new code to reconnect your number.' : 'Link your number and run the zAfAr WhatsApp bot from your own phone.'}</p></div></div>
+            <button type="button" onClick={() => applyExplore(true)} className="mb-5 flex min-h-[52px] w-full items-center gap-3 rounded-2xl border border-ink/10 bg-paper px-4 text-left shadow-sm transition hover:border-accent/40"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink text-paper"><LayoutDashboard className="h-4 w-4" /></span><span className="min-w-0 flex-1"><span className="block text-xs font-bold text-ink">Explore the dashboard first</span><span className="mt-0.5 block text-[11px] leading-4 text-ink/60">No number needed — you can look around and link anytime.</span></span><ArrowRight className="h-4 w-4 shrink-0 text-accent" /></button>
             <section className="rounded-[22px] border border-ink/10 bg-paper p-4 shadow-card"><div className="mb-4 flex items-start gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent"><Link2 className="h-4 w-4" /></div><div><h2 className="text-sm font-bold">Link your number</h2><p className="mt-1 text-[11px] text-ink/60">Enter your details to get a WhatsApp code.</p></div></div>
               {!overview?.memberAllowed && <p className="mb-3 rounded-xl bg-accent/10 p-3 text-xs text-accent">Your account access has been restricted.</p>}
               {overview?.memberAllowed && !overview.botEnabledForMembers && <p className="mb-3 rounded-xl bg-accent/10 p-3 text-xs text-accent">New number linking is currently paused.</p>}

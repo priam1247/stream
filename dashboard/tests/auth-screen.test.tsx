@@ -6,14 +6,14 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 it('keeps the sign-in card with accessible fields and changes the fox greeting for registration', () => {
   render(<AuthScreen onAuthenticated={vi.fn()} />);
-  expect(screen.getByText('Sign in to manage your number and the bot.')).toBeTruthy();
+  expect(screen.getByText('Sign in to the dashboard — link your number whenever you’re ready.')).toBeTruthy();
   expect(screen.queryByText('Control Room')).toBeNull();
   expect(screen.queryByText('Console Access')).toBeNull();
   expect(screen.getByLabelText('Email').getAttribute('autocomplete')).toBe('email');
   expect(screen.getByLabelText('Password').getAttribute('autocomplete')).toBe('current-password');
   expect(screen.getByLabelText('Email').className).toContain('text-base');
   fireEvent.click(screen.getByRole('button', { name: 'Register' }));
-  expect(screen.getByText('Create your account to link your number with the bot.')).toBeTruthy();
+  expect(screen.getByText('Create your account. Explore the dashboard first — linking comes later.')).toBeTruthy();
   expect(screen.getByLabelText('Password').getAttribute('autocomplete')).toBe('new-password');
 });
 
