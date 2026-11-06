@@ -1,20 +1,12 @@
 import type { AdminOverviewPayload, PanelLiveStatus } from './types';
-import type { ScribdStatusPayload } from './scribd-types';
 
-export type OwnerTab = 'overview' | 'server' | 'scribd' | 'members' | 'activity' | 'support';
+export type OwnerTab = 'overview' | 'server' | 'members' | 'activity' | 'support';
 export type WhatsAppPage = 'numbers' | 'commands' | 'service' | 'power' | 'sync' | 'hosting';
-export type ScribdPage = 'search' | 'queue' | 'files';
 export type ActivityPage = 'alerts' | 'history';
 export type RoomTarget =
   | { tab: 'server'; page?: WhatsAppPage }
-  | { tab: 'scribd'; page?: ScribdPage }
   | { tab: 'activity'; page?: ActivityPage }
   | { tab: 'overview' | 'members' | 'support' };
-export interface ScribdSnapshot {
-  status: ScribdStatusPayload | null;
-  error: string | null;
-  checkedAt: number | null;
-}
 export interface RoomAlert {
   id: string;
   title: string;
@@ -28,7 +20,6 @@ export function getRoomAlerts(
   data: AdminOverviewPayload,
   overviewCheckedAt: number | null,
   overviewError: string | null,
-  scribd: ScribdSnapshot,
   panel: PanelLiveStatus | null = null,
 ): RoomAlert[] {
   const alerts: RoomAlert[] = [];
@@ -56,23 +47,12 @@ export function getRoomAlerts(
     } else if (data.botReachable && data.connected === false) {
       alerts.push({ id: 'whatsapp', title: 'WhatsApp is disconnected', detail: 'The service is reachable, but its WhatsApp connection is not active.', target: { tab: 'server', page: 'numbers' }, level: 'warning' });
     }
-    if (data.scribdTokenConfigured === false) {
-      alerts.push({ id: 'scribd-token', title: 'Scribd direct access may be open', detail: 'Dashboard permissions do not protect the service port. Configure a server token or restrict its network access.', target: { tab: 'scribd' }, level: 'warning' });
-    }
-    if (data.scribdSecureTransport === false) {
-      alerts.push({ id: 'scribd-transport', title: 'Scribd connection is unencrypted', detail: 'Use HTTPS or a trusted private network to protect library traffic and any token.', target: { tab: 'scribd' }, level: 'warning' });
-    }
     if (data.whitelistSync === 'pending') {
       alerts.push({ id: 'number-sync', title: 'Number list awaiting sync', detail: 'The service has not yet reported the latest dashboard list.', target: { tab: 'server', page: 'numbers' }, level: 'warning' });
     }
     if (data.botReachable && data.diskUsedMB != null && data.diskBudgetMB != null && data.diskBudgetMB > 0 && data.diskUsedMB / data.diskBudgetMB >= 0.85) {
       alerts.push({ id: 'disk', title: 'Storage is running low', detail: 'The service reports at least 85% of its disk budget in use.', target: { tab: 'server', page: 'service' }, level: 'warning' });
     }
-  }
-  if (scribd.error) {
-    alerts.push({ id: 'scribd-offline', title: 'Scribd status unavailable', detail: 'The last check could not confirm service status. Open Scribd for details.', target: { tab: 'scribd' }, level: 'danger' });
-  } else if (scribd.status && scribd.status.failed > 0) {
-    alerts.push({ id: 'scribd-failed', title: `${scribd.status.failed} failed Scribd ${scribd.status.failed === 1 ? 'job' : 'jobs'}`, detail: 'There are failed items in the shared queue history. Open Scribd for details.', target: { tab: 'scribd', page: 'queue' }, level: 'warning' });
   }
   return alerts;
 }

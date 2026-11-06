@@ -1,12 +1,12 @@
-import type { RoomAlert, ScribdSnapshot } from './control-room';
+import type { RoomAlert } from './control-room';
 import type { AdminOverviewPayload, PanelLiveStatus } from './types';
 
 export type ReadRoomAlerts = Record<string, string>;
 const PREFIX = 'zafar-room-alert-reads-v1:';
 const ALERT_IDS = new Set([
   'panel-suspended', 'panel-offline', 'panel-credentials', 'panel-status',
-  'status', 'bot-link', 'bot-unreachable', 'whatsapp', 'scribd-token',
-  'scribd-transport', 'number-sync', 'disk', 'scribd-offline', 'scribd-failed',
+  'status', 'bot-link', 'bot-unreachable', 'whatsapp',
+  'number-sync', 'disk',
 ]);
 
 export function roomAlertReadKey(email: string): string {
@@ -50,7 +50,6 @@ export function resolvedRoomAlertIds(
   data: AdminOverviewPayload,
   overviewCheckedAt: number | null,
   overviewError: string | null,
-  scribd: ScribdSnapshot,
   panel: PanelLiveStatus | null,
 ): string[] {
   const resolved: string[] = [];
@@ -64,18 +63,12 @@ export function resolvedRoomAlertIds(
         resolved.push('disk');
       }
     }
-    if (data.scribdTokenConfigured === true) resolved.push('scribd-token');
-    if (data.scribdSecureTransport === true) resolved.push('scribd-transport');
     if (data.whitelistSync === 'synced') resolved.push('number-sync');
   }
   if (panel && !panel.error && (panel.reachable === true || panel.configured === false)) {
     resolved.push('panel-status', 'panel-credentials');
     if (panel.configured === false || (panel.state !== 'unknown' && panel.state !== 'offline')) resolved.push('panel-offline');
     if (panel.configured === false || (panel.state !== 'unknown' && panel.state !== 'suspended')) resolved.push('panel-suspended');
-  }
-  if (scribd.status && !scribd.error) {
-    resolved.push('scribd-offline');
-    if (scribd.status.failed === 0) resolved.push('scribd-failed');
   }
   return resolved;
 }

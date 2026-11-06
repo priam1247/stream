@@ -13,7 +13,7 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock('../lib/auth-engine', () => ({
   getAuthenticatedSession: vi.fn(async () => state.role === 'anonymous' ? null : {
-    user: { email: 'member@example.com', memberAllowed: true, scribdAllowed: false },
+    user: { email: 'member@example.com', memberAllowed: true },
   }),
 }));
 vi.mock('../lib/bot-proxy', () => ({

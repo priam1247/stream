@@ -1,16 +1,15 @@
 'use client';
 
-import { ArrowRight, BookOpen, Command, Library, LockKeyhole, Smartphone, type LucideIcon } from 'lucide-react';
+import { ArrowRight, BookOpen, Command, Smartphone, type LucideIcon } from 'lucide-react';
 import type { AuthUser, MemberOverviewPayload } from '@/lib/types';
 import { ZafarBubble, ZafarFox } from './zafar-fox';
 
-export type MemberDestination = 'numbers' | 'commands' | 'vault' | 'scribd' | 'status';
+export type MemberDestination = 'numbers' | 'commands' | 'vault' | 'status';
 
 interface MemberHomeProps {
   user: AuthUser;
   overview: MemberOverviewPayload;
   statusUnavailable: boolean;
-  canAccessScribd: boolean;
   onNavigate: (destination: MemberDestination) => void;
 }
 
@@ -33,7 +32,7 @@ function ToolCard({ icon: Icon, title, detail, onClick, locked = false }: {
   );
 }
 
-export function MemberHome({ user, overview, statusUnavailable, canAccessScribd, onNavigate }: MemberHomeProps) {
+export function MemberHome({ user, overview, statusUnavailable, onNavigate }: MemberHomeProps) {
   const name = (user.name || '').trim().split(/\s+/)[0];
   const access = statusUnavailable ? 'Unknown' : overview.memberAllowed ? 'Allowed' : 'Restricted';
   const bridge = statusUnavailable || overview.botReachable == null
@@ -72,7 +71,6 @@ export function MemberHome({ user, overview, statusUnavailable, canAccessScribd,
           <ToolCard icon={Smartphone} title="My numbers" detail={statusUnavailable ? 'Status unavailable' : `${count} saved · manage linking`} onClick={() => onNavigate('numbers')} />
           <ToolCard icon={Command} title="Commands" detail="Browse available commands" onClick={() => onNavigate('commands')} />
           <ToolCard icon={BookOpen} title="Vault" detail="Papers and providers" onClick={() => onNavigate('vault')} />
-          <ToolCard icon={canAccessScribd ? Library : LockKeyhole} title="Scribd" detail={statusUnavailable ? 'Access status unavailable' : canAccessScribd ? 'Open the shared library' : 'Access requires approval'} locked={!canAccessScribd} onClick={() => onNavigate('scribd')} />
         </div>
       </section>
     </div>

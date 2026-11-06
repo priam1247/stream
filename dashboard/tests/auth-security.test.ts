@@ -12,7 +12,6 @@ const db = vi.hoisted(() => ({
 vi.mock('../lib/storage', () => ({
   findAccountByEmailOrUsername: vi.fn(async () => db.account),
   isMemberEmailAllowed: vi.fn(async () => true),
-  isMemberScribdAllowed: vi.fn(async () => false),
   setMemberPermission: vi.fn(),
   upsertAccount: db.upsert,
 }));
@@ -26,7 +25,6 @@ vi.mock('../lib/email-service', () => ({
 import { POST as verifyRoute } from '../app/api/auth/verify/route';
 import { completePasswordReset, getAuthenticatedSession, registerUserAccount } from '../lib/auth-engine';
 import { SESSION_VERSION, signSessionJwt, verifySessionJwt } from '../lib/jwt';
-import { signScribdDownloadTicket } from '../lib/scribd-download-ticket';
 
 function account(overrides: Partial<StoredPortalAccount> = {}): StoredPortalAccount {
   return {
@@ -124,15 +122,15 @@ describe('verification and session security', () => {
     }
   });
 
-  it('requires an explicit full-session header and rejects restored cookies or file tickets', async () => {
+  it('requires an explicit full-session header and rejects restored cookies or bearer impostors', async () => {
     db.account = account({ isVerified: true });
     const token = signSessionJwt({ sub: 'owner@example.com' });
     const cookieRequest = new NextRequest('http://dashboard.test/api/auth/me', { headers: { cookie: `zafar_session=${token}` } });
     const headerRequest = new NextRequest('http://dashboard.test/api/auth/me', { headers: { authorization: `Bearer ${token}` } });
-    const fileTicket = signScribdDownloadTicket('owner@example.com', 'book.pdf');
-    const ticketRequest = new NextRequest('http://dashboard.test/api/auth/me', { headers: { authorization: `Bearer ${fileTicket}` } });
+    const impostorToken = 'not-a-valid-session-token';
+    const impostorRequest = new NextRequest('http://dashboard.test/api/auth/me', { headers: { authorization: `Bearer ${impostorToken}` } });
     expect(await getAuthenticatedSession(cookieRequest)).toBeNull();
-    expect(await getAuthenticatedSession(ticketRequest)).toBeNull();
+    expect(await getAuthenticatedSession(impostorRequest)).toBeNull();
     expect(await getAuthenticatedSession(headerRequest)).toMatchObject({ user: { email: 'owner@example.com' } });
   });
 

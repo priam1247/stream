@@ -6,15 +6,14 @@ import type { AdminOverviewPayload, PanelLiveStatus } from '../lib/types';
 const overview: AdminOverviewPayload = {
   ok: true, adminEmail: '', botServerLinked: true, botReachable: true, connected: true,
   botApiUrl: '', hasBotToken: false, botEnabledForMembers: true, storageEngine: 'cloudflare-d1',
-  botNumber: null, users: [], members: [], whitelistSync: 'pending', scribdTokenConfigured: false,
+  botNumber: null, users: [], members: [], whitelistSync: 'pending',
 };
-const scribd = { status: null, error: null, checkedAt: null };
 
 afterEach(() => localStorage.clear());
 
 describe('unread health alerts', () => {
   it('keeps read state separate for each owner on this device', () => {
-    const alert = getRoomAlerts(overview, Date.now(), null, scribd).find((item) => item.id === 'number-sync')!;
+    const alert = getRoomAlerts(overview, Date.now(), null).find((item) => item.id === 'number-sync')!;
     const first = roomAlertReadKey('OWNER@example.com');
     const second = roomAlertReadKey('other@example.com');
     saveRoomAlertReads(first, { [alert.id]: roomAlertFingerprint(alert) });
@@ -35,12 +34,12 @@ describe('unread health alerts', () => {
     const now = Date.now();
     const panel: PanelLiveStatus = { configured: true, reachable: false, state: 'unknown', error: 'Unavailable', checkedAt: now };
     const unknown = { ...overview, botReachable: false, connected: null, whitelistSync: 'unknown' as const };
-    const unresolved = resolvedRoomAlertIds(unknown, now, null, { status: null, error: 'Unavailable', checkedAt: now }, panel);
-    for (const id of ['number-sync', 'bot-unreachable', 'whatsapp', 'panel-offline', 'scribd-offline']) {
+    const unresolved = resolvedRoomAlertIds(unknown, now, null, panel);
+    for (const id of ['number-sync', 'bot-unreachable', 'whatsapp', 'panel-offline']) {
       expect(unresolved).not.toContain(id);
     }
-    const healthy = resolvedRoomAlertIds({ ...overview, whitelistSync: 'synced', scribdTokenConfigured: true }, now, null, scribd,
+    const healthy = resolvedRoomAlertIds({ ...overview, whitelistSync: 'synced' }, now, null,
       { configured: true, reachable: true, state: 'running', error: null, checkedAt: now });
-    expect(healthy).toEqual(expect.arrayContaining(['number-sync', 'bot-unreachable', 'whatsapp', 'panel-offline', 'scribd-token']));
+    expect(healthy).toEqual(expect.arrayContaining(['number-sync', 'bot-unreachable', 'whatsapp', 'panel-offline']));
   });
 });

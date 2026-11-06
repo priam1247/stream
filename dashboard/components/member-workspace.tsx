@@ -4,18 +4,17 @@ import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Activity, ArrowRight, Check, CircleHelp, Clock3, Command, Copy, ExternalLink,
-  Home, Library, LogOut, MessageSquare, Search, Settings2, ShieldCheck, Smartphone, Unlink,
+  Home, LogOut, MessageSquare, Search, Settings2, ShieldCheck, Smartphone, Unlink,
 } from 'lucide-react';
 import { MEMBER_COMMANDS } from '@/lib/bot-data';
 import { authHeaders, setSavedSessionToken } from '@/lib/client-session';
 import { memberAnalytics } from '@/lib/member-analytics';
 import { maskMemberNumber } from '@/lib/member-link';
 import type { AuthUser, MemberOverviewPayload, WhatsAppAccountStatus } from '@/lib/types';
-import { ScribdDesk } from './scribd-desk';
 import { WorkspaceShell, type WorkspaceNavGroup } from './workspace-shell';
 import { ZafarBubble, ZafarFox } from './zafar-fox';
 
-type Page = 'home' | 'commands' | 'settings' | 'scribd' | 'support';
+type Page = 'home' | 'commands' | 'settings' | 'support';
 type Category = 'all' | 'general' | 'media' | 'vault';
 
 const card = 'rounded-[22px] border border-slate-200/80 bg-white shadow-[0_10px_35px_-28px_rgba(15,45,37,0.3)]';
@@ -90,7 +89,6 @@ export function MemberWorkspace({ user: initialUser, overview, number, account, 
       { id: 'settings', label: 'Settings', icon: Settings2 },
     ] },
     { label: 'More', items: [
-      ...(overview.memberAllowed && overview.scribdAllowed ? [{ id: 'scribd' as const, label: 'Scribd', icon: Library }] : []),
       { id: 'support', label: 'Support', icon: MessageSquare, ...(supportUnread ? { badge: supportUnread, alert: true } : {}) },
     ] },
   ];
@@ -184,9 +182,6 @@ export function MemberWorkspace({ user: initialUser, overview, number, account, 
           <section className={`${card} p-4 sm:p-6`}><h2 className="text-sm font-bold">Need a hand?</h2><p className="mt-1 text-xs leading-5 text-slate-500">Send a message to support.{supportUnread ? ` ${supportUnread} unread.` : ''}</p><button type="button" onClick={() => navigate('support')} className="mt-3 inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-teal-700"><CircleHelp className="h-4 w-4" /> Open support <ExternalLink className="h-3.5 w-3.5" /></button></section>
           <section className={`${card} p-4 sm:p-6`}><h2 className="text-sm font-bold">Session</h2><p className="mt-1 text-xs leading-5 text-slate-500">Sign in again after closing or refreshing this page.</p><button type="button" onClick={() => void onSignOut()} className="mt-3 inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-rose-700"><LogOut className="h-4 w-4" /> Sign out</button></section></div>
       </>}
-      {page === 'scribd' && (overview.memberAllowed && overview.scribdAllowed
-        ? <ScribdDesk />
-        : <section className={`${card} p-6`}><h1 className="text-base font-bold">Scribd is unavailable</h1><p className="mt-2 text-xs text-slate-500">Contact support for access.</p></section>)}
       {profileMessage && <p role={profileMessage.bad ? 'alert' : 'status'} className={`mt-4 text-xs ${profileMessage.bad ? 'text-rose-700' : 'text-teal-700'}`}>{profileMessage.text}</p>}
     </div>
     {confirmUnlink && <div role="alertdialog" aria-modal="true" aria-labelledby="member-unlink-title" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"><div className="w-full max-w-[360px] rounded-2xl bg-white p-5 shadow-xl"><h2 id="member-unlink-title" className="text-base font-bold">Unlink this number?</h2><p className="mt-2 text-xs leading-5 text-slate-600">The WhatsApp session will disconnect. You can link again later.</p><div className="mt-4 flex justify-end gap-2"><button type="button" onClick={() => setConfirmUnlink(false)} className="min-h-11 rounded-xl px-4 text-xs font-semibold text-slate-600">Cancel</button><button type="button" disabled={busy} onClick={() => { setConfirmUnlink(false); onUnlink(); }} className="min-h-11 rounded-xl bg-rose-700 px-4 text-xs font-semibold text-white disabled:opacity-50">{busy ? 'Unlinking…' : 'Yes, unlink'}</button></div></div></div>}

@@ -65,7 +65,7 @@ separate deployment branch remains owner-managed.
 - Sign-in is kept only in the current page's memory. A full refresh or a closed,
   reopened or restored tab requires sign-in again; pending member pairing progress
   and its resend cooldown remain recoverable after signing in.
-- The owner home combines bot bridge, WhatsApp, Scribd, number-list and optional
+- The owner home combines bot bridge, WhatsApp, number-list and optional
   Botkeep server checks. Status is requested only with a Botkeep Developer API
   key and explicit server ID, at most once per minute during routine polling while
   the page is open. Unreachable or unrecognized responses remain **unknown**,
@@ -130,97 +130,3 @@ local disk. For **isolated local development only**, set
 `ZAFAR_DEV_STANDALONE_FALLBACK=1` to opt into the disk fallback. Never use that
 override for a dashboard connected to live accounts. It has no effect in
 production. Encrypted session recovery always requires D1.
-
-The Scribd contract test requires Python 3 and the `scribd` directory
-from this repository. It runs the unmodified web handler against temporary
-state, with search, covers, and conversion stubbed; it does not contact Scribd
-or Drime.
-
-## Scribd Library tab
-
-The dashboard integrates with the **existing** `../scribd/scribd_web.py`
-service. Only the dashboard adapter changes; no server modification is required.
-The browser talks to the dashboard's `/api/scribd/*` routes, and the dashboard
-calls the web service server-to-server. The web service token is not sent to the
-browser.
-
-### Server address and token
-
-The dashboard uses the built-in HTTPS proxy `https://troy.hidenplay.net`. No address
-entry is needed, and `SCRIBD_WEB_URL` is ignored, including an old HTTP value. If the
-service moves, change the address in `lib/scribd-config.ts` and deploy the dashboard
-again. The existing server-side `SCRIBD_WEB_TOKEN` is still used.
-
-The service must be running and reachable; deploying the dashboard does not start
-`scribd_web.py`. The public `/health` endpoint should return `ok`; `/api/job` should
-return a job list, or HTTP 401 if a token is required. A successful health check
-alone does not verify the token, search, or downloads.
-
-HTTPS protects the dashboard's connection to the reverse proxy. The proxy may
-forward to the service over HTTP, and the direct service port may still be public;
-protect that hop and restrict direct access where the host permits it.
-
-`SCRIBD_WEB_TOKEN` is the same token configured on the running service via
-`--token` or `WEB_TOKEN`. With the default `auto` setting, the service keeps it
-in its private `.webtoken` file and prints it in the startup URL after `?t=`.
-Copy that value yourself into the dashboard deployment's secret environment
-settings; do not put it in source code, a `NEXT_PUBLIC_` variable, or a message.
-The command-line `--token` takes priority over `WEB_TOKEN` from the process
-environment or the service's `.env`.
-
-If the server has no token, anyone who can reach its port can use it directly.
-Protect it before public exposure. The service sends tokens in a query string,
-which upstream access logs may record; configure the HTTPS proxy not to log them.
-Token-bearing HTTP is otherwise allowed only for loopback development addresses
-(`localhost`, `127.0.0.1`, or `::1`).
-
-Legacy saved panel addresses/keys and `SCRIBD_PANEL_URL` / `SCRIBD_PANEL_KEY` no
-longer change this connection. The old admin configuration endpoint reports the
-effective connection, but rejects attempts to save legacy settings.
-
-### Behaviour and limitations
-
-- Search proxies `GET /api/search` and preserves real cover URLs. Covers are
-  fetched through the web service and dashboard; failed covers show a placeholder.
-- **Show more results** reveals existing results in batches and requests the next
-  search page. The web service does not report a page count, so the dashboard
-  stops when a page returns no new items (at most 40 pages).
-- Download submits document IDs, titles, and page counts to `POST /api/download`.
-  The server ignores IDs already in its queue or history, including failures;
-  the dashboard retains those selections and explains how to clear the queue.
-  Its duplicate pre-check cannot be atomic with submissions by other clients,
-  because the service does not return an explicit list of accepted IDs.
-- Live job states, reported page counts, errors, cancel, and clear are mapped from
-  `/api/job`, `/api/cancel`, and `/api/clear`. Clearing also removes waiting jobs
-  and history but does not stop the currently running job. The current server's
-  clear operation does not itself save the changed history to disk.
-- Finished local PDFs are streamed through `/api/scribd/file`. A short-lived,
-  file-specific HttpOnly ticket lets the browser download without putting a session
-  token in the URL or buffering the entire PDF. When the server says a PDF was
-  offloaded to Drime, the dashboard uses its share link if one was provided;
-  otherwise the user must open the Drime folder. The dashboard cannot
-  retrieve a deleted local file without a share link or a separate Drime integration.
-- The web service does not support the old HMAC direct-file links. The legacy
-  `SCRIBD_PUBLIC_URL` direct-download setting is not used. Very large streamed
-  files or long searches can still exceed the deployment platform's limits.
-- Scribd is private to the owner in the dashboard by default. Under **Members**,
-  the owner can individually grant or revoke access for active members. Granted
-  members can search and see the shared job status and files, but only owners can
-  start, cancel, or clear downloads. Blocking a member also blocks Scribd regardless
-  of the saved grant. These dashboard controls do **not** protect a directly
-  reachable Scribd service; enforce its own token or restrict network access.
-- Favourites, recent searches, and the current selection are stored in the browser
-  on that device, separated by dashboard account. They do not sync across devices;
-  clearing browser data removes them. Sorting applies only to already-loaded results.
-- The existing service supports cancellation and clearing only for the shared queue,
-  not retry/cancel of individual items. The dashboard does not invent those actions.
-  The service reports whether a job completed; the dashboard cannot independently
-  guarantee that every page is present in a PDF.
-
-| file | role |
-|---|---|
-| `lib/scribd-panel.ts` | server-side adapter and web-service token |
-| `lib/scribd-search.ts` / `lib/scribd-job.ts` | cover/document validation and job-file mapping |
-| `lib/scribd-guard.ts` | session gate for the dashboard routes |
-| `app/api/scribd/*/route.ts` | authenticated search, status, download, cancel, clear, cover and file proxies |
-| `components/scribd-desk.tsx` | compact results, selection, progress, and file UI |

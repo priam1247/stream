@@ -6,7 +6,6 @@ import {
   Bell,
   BookOpen,
   Home,
-  Library,
   MessageSquare,
   Smartphone,
   AlertCircle,
@@ -47,15 +46,13 @@ import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
 import { MemberCommandControls } from './member-command-controls';
 import { SupportDesk } from './support-desk';
-import { ScribdDesk } from './scribd-desk';
 import { ControlRoomHome } from './control-room-home';
 import { ControlRoomActivity } from './control-room-activity';
 import { SectionNav } from './section-nav';
 import { WorkspaceShell, type WorkspaceNavGroup } from './workspace-shell';
-import { getRoomAlerts, type ActivityPage, type OwnerTab, type RoomAlert, type RoomTarget, type ScribdPage, type ScribdSnapshot, type WhatsAppPage } from '@/lib/control-room';
+import { getRoomAlerts, type ActivityPage, type OwnerTab, type RoomAlert, type RoomTarget, type WhatsAppPage } from '@/lib/control-room';
 import { isRoomAlertRead, resolvedRoomAlertIds } from '@/lib/room-alert-reads';
 import { useRoomAlertReads } from './use-room-alert-reads';
-import type { ScribdStatusPayload } from '@/lib/scribd-types';
 
 type AdminTab = OwnerTab;
 type MemberFilter = 'all' | 'allowed' | 'disallowed';
@@ -77,16 +74,12 @@ export function AdminConsole() {
 
   const [tab, setTab] = useState<AdminTab>('overview');
   const [whatsAppPage, setWhatsAppPage] = useState<WhatsAppPage>('numbers');
-  const [scribdPage, setScribdPage] = useState<ScribdPage>('search');
   const [activityPage, setActivityPage] = useState<ActivityPage>('alerts');
-  const [scribdVisited, setScribdVisited] = useState(false);
   const [activityVisited, setActivityVisited] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState<{ text: string; bad?: boolean; pair?: boolean } | null>(null);
   const [overviewCheckedAt, setOverviewCheckedAt] = useState<number | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
-  const [scribd, setScribd] = useState<ScribdSnapshot>({ status: null, error: null, checkedAt: null });
-  const scribdCheckInFlight = useRef(false);
   const [panelStatus, setPanelStatus] = useState<PanelLiveStatus | null>(null);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [eventsStorage, setEventsStorage] = useState<'cloudflare-d1' | 'local' | null>(null);
@@ -185,19 +178,6 @@ export function AdminConsole() {
     [router],
   );
 
-  const loadScribdStatus = useCallback(async () => {
-    if (scribdCheckInFlight.current) return;
-    scribdCheckInFlight.current = true;
-    try {
-      const res = await fetch('/api/scribd/status', { headers: authHeaders(), cache: 'no-store' });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(typeof json.error === 'string' ? json.error : 'Could not reach Scribd.');
-      setScribd({ status: { ...json, items: Array.isArray(json.items) ? json.items : [] } as ScribdStatusPayload, error: null, checkedAt: Date.now() });
-    } catch (error) {
-      setScribd({ status: null, error: error instanceof Error ? error.message : 'Could not reach Scribd.', checkedAt: Date.now() });
-    }
-  }, []);
-
   const loadPanelStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/admin/panel/status', { headers: authHeaders(), cache: 'no-store' });
@@ -244,16 +224,14 @@ export function AdminConsole() {
 
   useEffect(() => {
     if (!user) return;
-    void loadScribdStatus();
     void loadActivity(false);
     const id = setInterval(() => {
       if (document.hidden) return;
       void loadOverview(true, false);
-      void loadScribdStatus();
       void loadActivity();
     }, 15_000);
     return () => clearInterval(id);
-  }, [user, loadOverview, loadScribdStatus, loadActivity]);
+  }, [user, loadOverview, loadActivity]);
 
   useEffect(() => {
     if (!user) return;
@@ -282,20 +260,6 @@ export function AdminConsole() {
       return !query || `${item.number} ${item.label || ''} ${item.addedBy || ''}`.toLowerCase().includes(query);
     });
   }, [data.users, numberSearch, numberFilter]);
-
-  const handleToggleScribd = async (email: string, allowed: boolean) => {
-    setBusyEmail(email);
-    try {
-      const res = await fetch('/api/admin/members/scribd', { method: 'PATCH', headers: authHeaders(), body: JSON.stringify({ email, allowed }) });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || 'Could not update Scribd access.');
-      setData((prev) => ({ ...prev, members: json.members || prev.members }));
-      setNotice({ text: allowed ? `Scribd access granted to ${email}.` : `Scribd access revoked for ${email}.` });
-      void loadActivity();
-    } catch (error) {
-      setNotice({ text: error instanceof Error ? error.message : 'Could not update Scribd access.', bad: true });
-    } finally { setBusyEmail(null); }
-  };
 
   const handleApproval = async (number: string, action: 'approve' | 'reject') => {
     setBusyNumber(number);
@@ -562,7 +526,7 @@ export function AdminConsole() {
 
   const handlePanelPower = async (signal: 'restart' | 'start' | 'stop') => {
     const target = data.panelServerId ? ` Botkeep server: ${data.panelServerId}.` : '';
-    if (!window.confirm(`${signal[0].toUpperCase()}${signal.slice(1)} the WhatsApp service?${target} This does not affect Scribd.`)) return;
+    if (!window.confirm(`${signal[0].toUpperCase()}${signal.slice(1)} the WhatsApp service?${target}`)) return;
     setSendingPower(signal);
     try {
       const res = await fetch('/api/admin/panel', {
@@ -668,10 +632,6 @@ export function AdminConsole() {
 
   const navigate = (target: RoomTarget) => {
     if (target.tab === 'server' && target.page) setWhatsAppPage(target.page);
-    if (target.tab === 'scribd') {
-      setScribdVisited(true);
-      if (target.page) setScribdPage(target.page);
-    }
     if (target.tab === 'activity') {
       setActivityVisited(true);
       if (target.page) setActivityPage(target.page);
@@ -680,10 +640,10 @@ export function AdminConsole() {
     window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
-  const alerts = useMemo(() => getRoomAlerts(data, overviewCheckedAt, overviewError, scribd, panelStatus),
-    [data, overviewCheckedAt, overviewError, scribd, panelStatus]);
-  const resolvedIds = useMemo(() => resolvedRoomAlertIds(data, overviewCheckedAt, overviewError, scribd, panelStatus),
-    [data, overviewCheckedAt, overviewError, scribd, panelStatus]);
+  const alerts = useMemo(() => getRoomAlerts(data, overviewCheckedAt, overviewError, panelStatus),
+    [data, overviewCheckedAt, overviewError, panelStatus]);
+  const resolvedIds = useMemo(() => resolvedRoomAlertIds(data, overviewCheckedAt, overviewError, panelStatus),
+    [data, overviewCheckedAt, overviewError, panelStatus]);
   const { reads, markRead } = useRoomAlertReads(user?.email || '', resolvedIds);
   const unreadAlertIds = new Set(alerts.filter((alert) => !isRoomAlertRead(alert, reads)).map((alert) => alert.id));
   const openAlert = (alert: RoomAlert) => {
@@ -709,7 +669,6 @@ export function AdminConsole() {
     { label: 'Workspace', items: [
       { id: 'overview', label: 'Home', icon: Home },
       { id: 'server', label: 'WhatsApp', icon: Smartphone },
-      { id: 'scribd', label: 'Scribd', icon: Library },
     ] },
     { label: 'Management', items: [
       { id: 'members', label: 'Members', icon: Users },
@@ -725,9 +684,9 @@ export function AdminConsole() {
       groups={navGroups}
       current={tab}
       onNavigate={(next) => navigate({ tab: next } as RoomTarget)}
-      mobileItems={['overview', 'server', 'scribd', 'members', 'activity']}
+      mobileItems={['overview', 'server', 'members', 'activity']}
       refreshing={refreshing}
-      onRefresh={() => { void loadOverview(false, false); void loadScribdStatus(); void loadPanelStatus(); void loadActivity(false); }}
+      onRefresh={() => { void loadOverview(false, false); void loadPanelStatus(); void loadActivity(false); }}
       onAccount={() => setAccountOpen(true)}
       onSignOut={handleSignOut}
       alternate={{ href: '/dashboard', label: 'Member view', ariaLabel: 'Open member portal' }}
@@ -769,9 +728,8 @@ export function AdminConsole() {
           </div>
         )}
 
-        {tab === 'overview' && <ControlRoomHome data={data} overviewCheckedAt={overviewCheckedAt} overviewError={overviewError} scribd={scribd} alerts={alerts} onNavigate={navigate} onOpenAlert={openAlert} />}
-        {scribdVisited && <div hidden={tab !== 'scribd'}><ScribdDesk bottomNav active={tab === 'scribd'} page={scribdPage} onPageChange={setScribdPage} /></div>}
-        {activityVisited && <div hidden={tab !== 'activity'}><ControlRoomActivity alerts={alerts} unreadAlertIds={unreadAlertIds} events={events} storage={eventsStorage} loading={eventsLoading} error={eventsError} page={activityPage} onPageChange={setActivityPage} onRefresh={() => { void loadActivity(false); void loadOverview(true, false); void loadScribdStatus(); void loadPanelStatus(); }} onOpenAlert={openAlert} /></div>}
+        {tab === 'overview' && <ControlRoomHome data={data} overviewCheckedAt={overviewCheckedAt} overviewError={overviewError} alerts={alerts} onNavigate={navigate} onOpenAlert={openAlert} />}
+        {activityVisited && <div hidden={tab !== 'activity'}><ControlRoomActivity alerts={alerts} unreadAlertIds={unreadAlertIds} events={events} storage={eventsStorage} loading={eventsLoading} error={eventsError} page={activityPage} onPageChange={setActivityPage} onRefresh={() => { void loadActivity(false); void loadOverview(true, false); void loadPanelStatus(); }} onOpenAlert={openAlert} /></div>}
 
         {tab === 'server' && (
           <div className="space-y-4">
@@ -1257,7 +1215,7 @@ export function AdminConsole() {
               })}</div>
             </div>}
 
-            <p className="mt-2 text-xs leading-5 text-slate-500">{allowedMembersCount} of {data.members.length} allowed. Scribd is private until granted; members cannot control downloads.</p>
+            <p className="mt-2 text-xs leading-5 text-slate-500">{allowedMembersCount} of {data.members.length} allowed.</p>
             <form
               onSubmit={handleAddMember}
               className="mt-3.5 grid grid-cols-1 gap-2.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3 sm:grid-cols-[1.2fr_1fr_auto] sm:items-end"
@@ -1358,16 +1316,13 @@ export function AdminConsole() {
                           <span>{member.numbersCount} {member.numbersCount === 1 ? 'number' : 'numbers'}</span>
                           <span>·</span><span>{member.isVerified ? 'Verified' : 'Not verified'}</span>
                         </div>
-                        {!member.isAdmin && <p className="mt-1 text-xs text-slate-500">Scribd: {member.scribdAllowed ? (member.allowed ? 'shared access granted' : 'grant suspended while blocked') : 'private'}{events.find((event) => event.actor === member.email) ? ` · Last recorded activity ${new Date(events.find((event) => event.actor === member.email)!.createdAt).toLocaleDateString()}` : ''}</p>}
+                        {!member.isAdmin && events.find((event) => event.actor === member.email) && <p className="mt-1 text-xs text-slate-500">Last recorded activity {new Date(events.find((event) => event.actor === member.email)!.createdAt).toLocaleDateString()}</p>}
                       </div>
 
                       <div className="flex shrink-0 flex-wrap gap-2">
                         {member.isAdmin ? (
                           <span className="font-mono text-[11px] font-semibold text-slate-400">Owner</span>
                         ) : (<>
-                          <button type="button" disabled={busy} onClick={() => handleToggleScribd(member.email, !member.scribdAllowed)} aria-label={`${member.scribdAllowed ? 'Revoke' : 'Grant'} Scribd access for ${member.email}`} className={`min-h-10 rounded-xl border px-3 text-xs font-semibold transition disabled:opacity-50 ${member.scribdAllowed ? 'border-teal-200 bg-teal-50 text-teal-800' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}>
-                            {member.scribdAllowed ? 'Scribd: Granted' : 'Grant Scribd'}
-                          </button>
                           <button type="button" disabled={busy} onClick={() => handleToggleMember(member.email, !member.allowed, member.name)} className={`min-h-10 rounded-xl px-3.5 text-xs font-semibold transition disabled:opacity-50 ${member.allowed ? 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100' : 'bg-teal-600 text-white hover:bg-teal-700'}`}>
                             {busy ? 'Saving…' : member.allowed ? 'Block' : 'Allow'}
                           </button>

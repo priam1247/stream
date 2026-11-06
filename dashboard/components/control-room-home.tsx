@@ -1,15 +1,14 @@
 'use client';
 
-import { Activity, ArrowRight, Bell, CheckCircle2, ChevronRight, CircleAlert, Library, ListChecks, Server, Smartphone, Users, type LucideIcon } from 'lucide-react';
+import { Activity, ArrowRight, Bell, CheckCircle2, ChevronRight, CircleAlert, ListChecks, Server, Smartphone, Users, type LucideIcon } from 'lucide-react';
 import type { AdminOverviewPayload } from '@/lib/types';
-import { formatCheckedTime, type RoomAlert, type RoomTarget, type ScribdSnapshot } from '@/lib/control-room';
+import { formatCheckedTime, type RoomAlert, type RoomTarget } from '@/lib/control-room';
 import { ZafarBubble, ZafarFox } from './zafar-fox';
 
 interface Props {
   data: AdminOverviewPayload;
   overviewCheckedAt: number | null;
   overviewError: string | null;
-  scribd: ScribdSnapshot;
   alerts: RoomAlert[];
   onNavigate: (target: RoomTarget) => void;
   onOpenAlert: (alert: RoomAlert) => void;
@@ -44,18 +43,16 @@ function WorkspaceLink({ icon: Icon, title, detail, onClick }: {
   );
 }
 
-export function ControlRoomHome({ data, overviewCheckedAt, overviewError, scribd, alerts, onNavigate, onOpenAlert }: Props) {
+export function ControlRoomHome({ data, overviewCheckedAt, overviewError, alerts, onNavigate, onOpenAlert }: Props) {
   const hasBotCheck = overviewCheckedAt != null && !overviewError;
   const botValue = !hasBotCheck ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked';
   const whatsappValue = !hasBotCheck || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected';
-  const scribdValue = scribd.status?.panelOnline ? 'Reachable' : scribd.status || scribd.error ? 'Unavailable' : 'Checking';
   const syncValue = !hasBotCheck || !data.whitelistSync || data.whitelistSync === 'unknown'
     ? 'Unconfirmed' : data.whitelistSync === 'synced' ? 'Up to date' : 'Pending';
   const enabledNumbers = data.users.filter((item) => item.enabled).length;
   const allowedMembers = data.members.filter((item) => item.allowed).length;
   const numberSummary = hasBotCheck ? `${enabledNumbers} enabled ${enabledNumbers === 1 ? 'number' : 'numbers'}` : 'Status unavailable';
   const memberSummary = hasBotCheck ? `${allowedMembers} allowed ${allowedMembers === 1 ? 'member' : 'members'}` : 'Status unavailable';
-  const librarySummary = scribd.status?.panelOnline ? `${scribd.status.active} active · ${scribd.status.finished} finished` : scribd.status || scribd.error ? 'Status unavailable' : 'Checking status';
 
   return (
     <div className="space-y-5">
@@ -67,7 +64,7 @@ export function ControlRoomHome({ data, overviewCheckedAt, overviewError, scribd
             <h1 className="mt-1 text-2xl text-slate-950 sm:text-3xl">Overview</h1>
           </div>
           <ZafarBubble className="hidden max-w-sm flex-1 bg-white/70 text-xs text-slate-700 md:block">
-            I’m checking the service bridge, WhatsApp connection, and Scribd availability for you.
+            I’m checking the service bridge and WhatsApp connection for you.
           </ZafarBubble>
         </div>
         <span className="inline-flex items-center gap-1.5 text-xs text-slate-500"><Activity className="h-3.5 w-3.5 text-teal-600" /> {formatCheckedTime(overviewCheckedAt)}</span>
@@ -76,7 +73,6 @@ export function ControlRoomHome({ data, overviewCheckedAt, overviewError, scribd
       <section aria-label="Service status" className="grid grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3">
         <StatusCard icon={Server} label="Service bridge" value={botValue} tone={!hasBotCheck ? 'muted' : data.botReachable ? 'good' : 'warning'} onClick={() => onNavigate({ tab: 'server', page: 'service' })} />
         <StatusCard icon={Smartphone} label="WhatsApp" value={whatsappValue} tone={!hasBotCheck || !data.botReachable || data.connected == null ? 'muted' : data.connected ? 'good' : 'warning'} onClick={() => onNavigate({ tab: 'server', page: 'numbers' })} />
-        <StatusCard icon={Library} label="Scribd" value={scribdValue} tone={scribd.status?.panelOnline ? 'good' : scribd.error || scribd.status ? 'warning' : 'muted'} onClick={() => onNavigate({ tab: 'scribd', page: 'queue' })} />
         <StatusCard icon={ListChecks} label="Number list" value={syncValue} tone={syncValue === 'Up to date' ? 'good' : syncValue === 'Pending' ? 'warning' : 'muted'} onClick={() => onNavigate({ tab: 'server', page: 'numbers' })} />
       </section>
 
@@ -105,7 +101,6 @@ export function ControlRoomHome({ data, overviewCheckedAt, overviewError, scribd
           <div className="flex items-center justify-between gap-3"><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-teal-700">Your workspace</p><h2 className="mt-1 text-base font-bold text-slate-900">Quick access</h2></div><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500">OWNER</span></div>
           <div className="mt-2 divide-y divide-slate-100">
             <WorkspaceLink icon={Smartphone} title="WhatsApp" detail={numberSummary} onClick={() => onNavigate({ tab: 'server', page: 'numbers' })} />
-            <WorkspaceLink icon={Library} title="Scribd library" detail={librarySummary} onClick={() => onNavigate({ tab: 'scribd', page: 'search' })} />
             <WorkspaceLink icon={Users} title="Members" detail={memberSummary} onClick={() => onNavigate({ tab: 'members' })} />
           </div>
         </section>

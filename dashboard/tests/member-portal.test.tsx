@@ -8,14 +8,13 @@ import { MEMBER_COMMANDS } from '../lib/bot-data';
 const navigation = vi.hoisted(() => ({ replace: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => navigation }));
 vi.mock('next/link', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }));
-vi.mock('../components/scribd-desk', () => ({ ScribdDesk: () => <div>Scribd desk</div> }));
 
 const user = { id: 1, name: 'Maya Member', email: 'maya@example.com', isAdmin: false, memberAllowed: true, isVerified: true, username: 'maya' };
 const number = '265991234567';
 const storeKey = 'zafar-member-link-v1:maya@example.com';
 const reply = (body: unknown, status = 200): Response => ({ ok: status >= 200 && status < 300, status, json: async () => body } as Response);
 
-function setup(options: { state?: string; reachable?: boolean; existing?: boolean; confirmed?: boolean; approval?: 'pending' | 'approved' | 'rejected'; role?: 'admin' | 'member'; pair?: Record<string, unknown>; unlink?: Record<string, unknown>; usage?: unknown; scribd?: boolean } = {}) {
+function setup(options: { state?: string; reachable?: boolean; existing?: boolean; confirmed?: boolean; approval?: 'pending' | 'approved' | 'rejected'; role?: 'admin' | 'member'; pair?: Record<string, unknown>; unlink?: Record<string, unknown>; usage?: unknown } = {}) {
   const state = {
     numbers: options.existing ? [{ number, enabled: options.approval !== 'pending', label: 'Maya', addedBy: user.email, approval: options.approval || 'approved' }] : [] as { number: string; enabled: boolean; label: string; addedBy: string; approval: string }[],
     accounts: options.state ? [{ number, state: options.state, sessionId: 'a'.repeat(24), linkedAt: Date.UTC(2026, 0, 2) }] : [],
@@ -35,7 +34,7 @@ function setup(options: { state?: string; reachable?: boolean; existing?: boolea
       if (state.reachable && state.accounts.some((account) => ['connected', 'connecting', 'paused'].includes(account.state))) {
         state.confirmedLinks = [{ number, linkedAt: Date.UTC(2026, 0, 2) }];
       }
-      return reply({ ok: true, memberAllowed: true, scribdAllowed: options.scribd === true, botEnabledForMembers: true,
+      return reply({ ok: true, memberAllowed: true, botEnabledForMembers: true,
         botServerLinked: true, botReachable: state.reachable, botConnected: state.reachable, numbers: state.numbers, accounts: state.reachable ? state.accounts : null,
         confirmedLinks: state.confirmedLinks, personalUsage: options.usage || null, commandsTotal: 999 });
     }
@@ -339,7 +338,7 @@ describe('member linking experience', () => {
 
   it('renders only personal measured activity, grouped commands, profile settings and permitted tools', async () => {
     const today = new Date().toISOString().slice(0, 10);
-    const { fetchMock } = setup({ existing: true, state: 'connected', scribd: true, usage: [{ number, trackedSince: Date.now() - 2 * 86_400_000, updatedAt: Date.now(),
+    const { fetchMock } = setup({ existing: true, state: 'connected', usage: [{ number, trackedSince: Date.now() - 2 * 86_400_000, updatedAt: Date.now(),
       days: [{ date: today, commands: { song: 4, paper: 2 } }], lastAt: Date.now(), lastCommand: 'paper' }] });
     render(<MemberPortal />);
     const activity = await screen.findByRole('region', { name: 'Command activity' });
@@ -357,15 +356,15 @@ describe('member linking experience', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     expect(await screen.findByText('Profile saved.')).toBeTruthy();
     expect(fetchMock.mock.calls.some(([url, init]) => String(url) === '/api/auth/me' && init?.method === 'PATCH')).toBe(true);
-    fireEvent.click(within(nav).getByRole('button', { name: 'Scribd' }));
-    expect(screen.getByText('Scribd desk')).toBeTruthy();
+    fireEvent.click(within(nav).getByRole('button', { name: 'Support' }));
+    expect(navigation.push).toHaveBeenCalledWith('/support');
   });
 
   it('retains the existing tool navigation for an administrator', async () => {
     setup({ role: 'admin' });
     render(<MemberPortal />);
     const nav = await screen.findByRole('navigation', { name: 'Console sections' });
-    for (const title of ['Numbers (0)', 'Commands', 'Vault', 'Scribd', 'Status']) {
+    for (const title of ['Numbers (0)', 'Commands', 'Vault', 'Status']) {
       expect(within(nav).getByRole('button', { name: title })).toBeTruthy();
     }
   });
