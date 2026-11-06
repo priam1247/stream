@@ -1,0 +1,1451 @@
+/**
+ * ZaFar Bot — local YouTube download engine   v3
+ *
+ * Why this module exists
+ * ----------------------
+ * "Blocked in your region" was never a diagnosis: the old build printed it for
+ * *every* failure, including the two that actually happen on hosting panels:
+ *
+ *   1. YouTube asks the host's IP to prove it is not a bot. Authentication
+ *      may help but does not guarantee access from a hosting IP, and
+ *   2. YouTube changes its player, so an old yt-dlp build can stop working.
+ *      Updates and different supported clients may help.
+ *
+ * This module does the work properly:
+ *   • finds a runnable local yt-dlp without automatically installing it,
+ *   • detects which options the *installed* build actually supports, so an old
+ *     build never dies with "no such option",
+ *   • escalates through several YouTube player clients with a global deadline,
+ *   • supports cookies (file / raw / base64 / JSON) and a proxy, changeable at
+ *     runtime from WhatsApp (.cookies / .ytdl proxy),
+ *   • classifies the real failure and returns an accurate, actionable message.
+ */
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const https = require('https');
+const crypto = require('crypto');
+const { Transform } = require('stream');
+const { pipeline } = require('stream/promises');
+const { spawn, execFile, execFileSync } = require('child_process');
+const { promisify } = require('util');
+const axios = require('axios');
+const config = require('../../config');
+const settings = require('../mediaSettings');
+const getFfmpeg = require('../ffmpeg');
+const { probeMedia } = require('../mediaTransfer');
+const { getTempDir } = require('../tempManager');
+
+const execFileAsync = promisify(execFile);
+
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+// Where cookies the *bot* manages live. Never inside temp/ — the cleanup timer
+// would delete them mid-job (the old build wrote them to temp and they vanished).
+const COOKIE_STORE = path.join(process.cwd(), 'database', 'yt_cookies.txt');
+// Inline configuration takes precedence, but must never overwrite an owner's
+// separately uploaded .cookies set file.
+const INLINE_COOKIE_STORE = path.join(process.cwd(), 'database', 'yt_cookies_inline.txt');
+
+// ─── URL / ID HELPERS ─────────────────────────────────────────────────────────
+
+/** Pull the first http(s) URL out of a text blob. */
+const extractUrl = (text) => {
+  const m = String(text || '').match(/https?:\/\/[^\s"'<>]+/i);
+  return m ? m[0].replace(/[),.;]+$/, '') : null;
+};
+
+// Match the URL's host, not a substring in a different host, path or query.
+// Keep accepting the scheme-less YouTube links supported by the old helper.
+function youtubeUrl(text) {
+  const input = String(text || '').trim();
+  const bare = input.match(/^(?:(?:www|m|music)\.)?(?:youtube\.com|youtube-nocookie\.com|youtu\.be)\/[^\s"'<>]*/i);
+  const candidate = extractUrl(input) || (bare ? `https://${bare[0]}` : '');
+  if (!candidate) return null;
+  try {
+    const parsed = new URL(candidate);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+    const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
+    const allowed = ['youtube.com', 'youtube-nocookie.com', 'youtu.be'];
+    return allowed.some((d) => host === d || host.endsWith(`.${d}`)) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+const isYouTubeUrl = (text) => Boolean(youtubeUrl(text));
+
+function extractVideoId(text) {
+  const url = youtubeUrl(text);
+  if (!url) return null;
+  const parts = url.pathname.split('/').filter(Boolean);
+  const isShortHost = url.hostname.toLowerCase().replace(/\.$/, '').endsWith('youtu.be');
+  const id = isShortHost ? parts[0]
+    : parts[0] === 'watch' ? url.searchParams.get('v')
+      : ['shorts', 'live', 'embed', 'v'].includes(parts[0]) ? parts[1] : null;
+  return /^[-_0-9A-Za-z]{11}$/.test(id || '') ? id : null;
+}
+
+const youtubeId = (url) => extractVideoId(url);
+
+/**
+ * Any accepted input -> a canonical youtube URL (or the raw URL for other
+ * sites). Extra words next to a link ("check this https://youtu.be/x out")
+ * are stripped so yt-dlp never sees junk.
+ */
+const normalizeYouTubeUrl = (text) => {
+  const id = extractVideoId(text);
+  if (id) return `https://www.youtube.com/watch?v=${id}`;
+  return extractUrl(text) || String(text || '').trim();
+};
+
+// ─── BINARY RESOLUTION ────────────────────────────────────────────────────────
+
+const BIN_DIR = path.join(process.cwd(), 'bin');
+const LOCAL_BIN = path.join(BIN_DIR, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+const USER_BIN = path.join(os.homedir(), '.local', 'bin', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+
+let _cmd; // undefined = not probed, null = absent, [bin, ...prefixArgs] = usable
+
+const candidates = () => [
+  [LOCAL_BIN],
+  [USER_BIN],
+  ['yt-dlp'],
+  ['/usr/local/bin/yt-dlp'],
+  ['/usr/bin/yt-dlp'],
+  ['python3', '-m', 'yt_dlp'],
+  ['python', '-m', 'yt_dlp'],
+];
+
+function probeCommand(cmd) {
+  try {
+    const out = execFileSync(cmd[0], [...cmd.slice(1), '--version'], {
+      timeout: 8000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const v = String(out || '').trim().split('\n').pop().trim();
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
+/** @returns {string[]|null} argv prefix for yt-dlp, or null when absent. */
+function resolveCommand({ force = false } = {}) {
+  if (!force && _cmd !== undefined) return _cmd;
+  _cmd = null;
+  for (const cmd of candidates()) {
+    if (probeCommand(cmd)) { _cmd = cmd; break; }
+  }
+  return _cmd;
+}
+
+const version = () => {
+  const cmd = resolveCommand();
+  return cmd ? probeCommand(cmd) : null;
+};
+
+let _installError = null;
+const installError = () => _installError;
+
+// Download the official standalone build over verified TLS, check its published
+// SHA-256, and only replace the installed file after it is complete and runs.
+// The checksum is obtained over the same trusted HTTPS channel (not a separate
+// signature verification). A failed or partial download is never executed.
+async function downloadStandaloneBinary() {
+  const release = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download';
+  const agent = new https.Agent({ keepAlive: false });
+  const headers = { 'User-Agent': UA, Accept: '*/*' };
+  const requireHttps = (options) => {
+    if (options.protocol !== 'https:') throw new Error('yt-dlp release redirected to an insecure URL');
+  };
+  fs.mkdirSync(BIN_DIR, { recursive: true });
+  const temp = `${LOCAL_BIN}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    const sums = await axios.get(`${release}/SHA2-256SUMS`, {
+      responseType: 'text', timeout: 30000, maxRedirects: 10,
+      maxContentLength: 1024 * 1024, httpsAgent: agent, beforeRedirect: requireHttps, headers,
+    });
+    const match = String(sums.data).match(/^([a-f0-9]{64})\s+\*?yt-dlp\s*$/im);
+    if (!match) throw new Error('official yt-dlp checksum is missing');
+
+    const res = await axios.get(`${release}/yt-dlp`, {
+      responseType: 'stream', timeout: 180000, maxRedirects: 10,
+      httpsAgent: agent, beforeRedirect: requireHttps, headers,
+    });
+    const hash = crypto.createHash('sha256');
+    let size = 0;
+    const verifyStream = new Transform({
+      transform(chunk, _encoding, done) {
+        size += chunk.length;
+        if (size > 80 * 1024 * 1024) return done(new Error('yt-dlp download exceeds size limit'));
+        hash.update(chunk);
+        done(null, chunk);
+      },
+    });
+    await pipeline(res.data, verifyStream, fs.createWriteStream(temp, { mode: 0o600, flags: 'wx' }));
+    if (!size || hash.digest('hex') !== match[1].toLowerCase()) throw new Error('yt-dlp checksum mismatch');
+    fs.chmodSync(temp, 0o755);
+    if (!probeCommand([temp])) throw new Error('downloaded yt-dlp is not runnable (python3 missing on this host?)');
+    fs.renameSync(temp, LOCAL_BIN);
+    return LOCAL_BIN;
+  } finally {
+    try { fs.unlinkSync(temp); } catch { /* already renamed or not created */ }
+    agent.destroy();
+  }
+}
+
+async function pipInstall() {
+  const pipCmds = [
+    ['python3', '-m', 'pip', 'install', '--user', '-q', '--break-system-packages', '--upgrade', 'yt-dlp[default]'],
+    ['python3', '-m', 'pip', 'install', '--user', '-q', '--upgrade', 'yt-dlp[default]'],
+    ['pip3', 'install', '--user', '-q', '--break-system-packages', '--upgrade', 'yt-dlp[default]'],
+    ['pip', 'install', '-q', '--upgrade', 'yt-dlp[default]'],
+  ];
+  for (const cmd of pipCmds) {
+    try {
+      await execFileAsync(cmd[0], cmd.slice(1), { timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+      if (resolveCommand({ force: true })) return true;
+    } catch { /* try the next pip flavour */ }
+  }
+  return false;
+}
+
+let _ensurePromise = null;
+
+/**
+ * Make sure yt-dlp exists. Installs it once (standalone binary first, then pip)
+ * when the host has none — the old build just told the user "not installed".
+ */
+async function ensureInstalled() {
+  if (resolveCommand()) return resolveCommand();
+  if (_ensurePromise) return _ensurePromise;
+
+  _ensurePromise = (async () => {
+    _installError = null;
+    try { await downloadStandaloneBinary(); console.log('[ytdlp] installed standalone binary at', LOCAL_BIN); }
+    catch (e) { _installError = `binary download: ${e.message}`; console.warn('[ytdlp] binary download failed:', e.message); }
+    if (!resolveCommand({ force: true })) {
+      try {
+        if (await pipInstall()) console.log('[ytdlp] installed via pip');
+        else _installError = `${_installError || ''} | pip install failed (tried --user and --break-system-packages)`.trim();
+      } catch (e) { _installError = e.message; console.warn('[ytdlp] pip install failed:', e.message); }
+    }
+    if (resolveCommand({ force: true })) capabilities({ force: true });
+    return resolveCommand({ force: true });
+  })().finally(() => { _ensurePromise = null; });
+
+  return _ensurePromise;
+}
+
+/** Manually update the optional local engine. Returns the new version. */
+async function update({ quick = false } = {}) {
+  const cmd = resolveCommand();
+  const isLocal = cmd && cmd[0] === LOCAL_BIN;
+  let ok = false;
+  if (isLocal) {
+    try {
+      await execFileAsync(LOCAL_BIN, ['-U'], { timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+      ok = Boolean(resolveCommand({ force: true }));
+    } catch (e) { console.warn('[ytdlp] self-update failed:', String(e.message).split('\n')[0]); }
+  }
+  if (!ok && !quick) ok = await pipInstall();
+  if (!ok && !cmd && !quick) ok = Boolean(await ensureInstalled());
+  capabilities({ force: true }); // flags may have changed with the version
+  // A still-runnable old binary does not mean the attempted update succeeded.
+  return ok ? version() : null;
+}
+
+// ─── CAPABILITIES (which options does the installed build understand?) ────────
+//
+// The old build always passed --js-runtimes and --remote-components. A build
+// older than those options exits with "no such option" and *every* download
+// fails, no matter the video. We probe --help once and only use what exists.
+
+let _caps = null;
+
+function capabilities({ force = false } = {}) {
+  if (_caps && !force) return _caps;
+
+  const caps = {
+    version: null,
+    flags: new Set(),
+    jsRuntimes: false,
+    remoteComponents: false,
+    impersonate: false,
+    impersonateBroken: false,
+    matchFilter: null,
+    forceIpv4: false,
+    noCheckCertificates: false,
+    extractorRetries: false,
+    noCheckFormats: false,
+    concurrentFragments: false,
+    maxFilesize: false,
+    newline: false,
+    progressTemplate: false,
+  };
+
+  const cmd = resolveCommand();
+  if (!cmd) { _caps = caps; return caps; }
+
+  caps.version = probeCommand(cmd);
+
+  let help = '';
+  try {
+    help = String(execFileSync(cmd[0], [...cmd.slice(1), '--help'], {
+      timeout: 20000, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+    }) || '');
+  } catch { /* a build too old for --help: keep the conservative defaults */ }
+
+  for (const m of help.matchAll(/--([a-z0-9][a-z0-9-]+)/g)) caps.flags.add(m[1]);
+  const has = (name) => caps.flags.has(name) || caps.flags.has(`${name}s`);
+
+  caps.jsRuntimes = caps.flags.has('js-runtimes');
+  caps.remoteComponents = caps.flags.has('remote-components');
+  caps.impersonate = caps.flags.has('impersonate');
+  // argparse accepts unambiguous abbreviations, so --match-filter works even on
+  // builds that only document --match-filters.
+  caps.matchFilter = has('match-filter') ? '--match-filter' : null;
+  caps.forceIpv4 = caps.flags.has('force-ipv4');
+  caps.noCheckCertificates = caps.flags.has('no-check-certificates');
+  caps.extractorRetries = caps.flags.has('extractor-retries');
+  caps.noCheckFormats = caps.flags.has('no-check-formats');
+  caps.concurrentFragments = caps.flags.has('concurrent-fragments');
+  caps.maxFilesize = caps.flags.has('max-filesize');
+  caps.newline = caps.flags.has('newline');
+  caps.progressTemplate = caps.flags.has('progress-template');
+
+  _caps = caps;
+  return caps;
+}
+
+/** Called when a run proves --impersonate unusable (no curl_cffi on the host). */
+const disableImpersonation = () => { if (_caps) _caps.impersonateBroken = true; };
+
+// ─── COOKIES ──────────────────────────────────────────────────────────────────
+
+const looksLikeCookieFile = (text) =>
+  typeof text === 'string' && (text.includes('\t') || /^#\s*(Netscape|HTTP Cookie File)/im.test(text));
+
+/** Browser-extension JSON export -> Netscape cookie text (people send this a lot). */
+function jsonCookiesToNetscape(text) {
+  let arr;
+  try { arr = JSON.parse(text); } catch { return null; }
+  if (!Array.isArray(arr) || !arr.length || !arr[0] || typeof arr[0] !== 'object') return null;
+  if (!('domain' in arr[0]) || !('name' in arr[0])) return null;
+
+  const lines = ['# Netscape HTTP Cookie File', '# converted from JSON', ''];
+  const bool = (v) => (v === true || v === 'TRUE' || v === 'True' ? 'TRUE' : 'FALSE');
+  for (const c of arr) {
+    if (!c || !c.domain || !c.name) continue;
+    const domain = String(c.domain);
+    const includeSub = c.hostOnly === true ? 'FALSE' : (domain.startsWith('.') ? 'TRUE' : 'FALSE');
+    const expires = Number.isFinite(Number(c.expirationDate)) ? Math.floor(Number(c.expirationDate))
+      : Number.isFinite(Number(c.expires)) ? Math.floor(Number(c.expires)) : 0;
+    lines.push([
+      `${c.httpOnly === true ? '#HttpOnly_' : ''}${domain}`, includeSub, String(c.path || '/'), bool(c.secure),
+      String(expires), String(c.name), String(c.value ?? ''),
+    ].join('\t'));
+  }
+  return lines.length > 3 ? lines.join('\n') + '\n' : null;
+}
+
+/**
+ * Normalise anything the user gave us (Netscape text, base64 of it, or a JSON
+ * export) into Netscape cookie text. Returns null when it is not cookies.
+ */
+function normaliseCookieText(raw) {
+  let text = String(raw || '').trim();
+  if (!text) return null;
+  if (!looksLikeCookieFile(text)) {
+    const fromJson = jsonCookiesToNetscape(text);
+    if (fromJson) return fromJson;
+    try {
+      const decoded = Buffer.from(text.replace(/\s+/g, ''), 'base64').toString('utf8');
+      if (looksLikeCookieFile(decoded)) text = decoded;
+      else {
+        const decodedJson = jsonCookiesToNetscape(decoded);
+        if (decodedJson) return decodedJson;
+      }
+    } catch { /* not base64 */ }
+  }
+  if (!looksLikeCookieFile(text)) return null;
+  return text.endsWith('\n') ? text : `${text}\n`;
+}
+
+/**
+ * Persist cookies on the host so they survive restarts (.cookies set).
+ * @returns {{file:string,count:number}}
+ */
+function setCookies(raw) {
+  const text = normaliseCookieText(raw);
+  const count = text ? countCookies(text) : 0;
+  if (!text || !count) {
+    const err = new Error('That does not contain any Netscape cookie records');
+    err.code = 'BAD_COOKIES';
+    throw err;
+  }
+  fs.mkdirSync(path.dirname(COOKIE_STORE), { recursive: true });
+  fs.writeFileSync(COOKIE_STORE, text, { mode: 0o600 });
+  try { fs.chmodSync(COOKIE_STORE, 0o600); } catch { /* windows */ }
+  _cookieInfoCache = null;
+  return { file: COOKIE_STORE, count };
+}
+
+function clearCookies() {
+  let removed = false;
+  for (const p of [COOKIE_STORE, INLINE_COOKIE_STORE, path.join(process.cwd(), 'cookies.txt')]) {
+    try { if (fs.existsSync(p)) { fs.unlinkSync(p); removed = true; } } catch { /* ignore */ }
+  }
+  _cookieInfoCache = null;
+  return removed;
+}
+
+const countCookies = (text) => String(text || '')
+  .split('\n')
+  .filter((line) => {
+    const value = line.replace(/\r$/, '').trimStart();
+    if (!value || (value.startsWith('#') && !value.startsWith('#HttpOnly_'))) return false;
+    return value.split('\t').length >= 7;
+  })
+  .length;
+
+let _cookieInfoCache = null;
+
+/**
+ * Which cookie source is in use, how many cookies, how old.
+ * A cached *positive* answer is reused for a few seconds; a cached negative one
+ * is re-checked every time (four existsSync calls), otherwise cookies added
+ * while the bot is running (.cookies set) would be ignored until a restart.
+ */
+function cookieInfo() {
+  if (_cookieInfoCache) {
+    const age = Date.now() - _cookieInfoCache.checkedAt;
+    const cachedFile = _cookieInfoCache.file;
+    if (_cookieInfoCache.source && cachedFile && fs.existsSync(cachedFile) && age < 30000) return _cookieInfoCache;
+    if (_cookieInfoCache.source && !cachedFile && age < 30000) return _cookieInfoCache;
+  }
+
+  const cfg = config.ytdlp || {};
+  const candidates = [
+    { source: 'inline (config/env)', file: null, text: cfg.cookies || process.env.YOUTUBE_COOKIES || '' },
+    { source: 'managed (.cookies set)', file: COOKIE_STORE, text: null },
+    { source: 'config file', file: cfg.cookiesFile || process.env.YOUTUBE_COOKIES_FILE || '', text: null },
+    { source: 'cookies.txt (service folder)', file: path.join(process.cwd(), 'cookies.txt'), text: null },
+  ];
+
+  for (const c of candidates) {
+    if (c.text && String(c.text).trim()) {
+      const normalised = normaliseCookieText(c.text);
+      if (normalised) {
+        _cookieInfoCache = { source: c.source, file: null, count: countCookies(normalised), mtime: null, checkedAt: Date.now() };
+        return _cookieInfoCache;
+      }
+    }
+    if (c.file && fs.existsSync(c.file)) {
+      let mtime = null, count = 0;
+      try {
+        mtime = fs.statSync(c.file).mtimeMs;
+        count = countCookies(fs.readFileSync(c.file, 'utf8'));
+      } catch { /* unreadable */ }
+      _cookieInfoCache = { source: c.source, file: c.file, count, mtime, checkedAt: Date.now() };
+      return _cookieInfoCache;
+    }
+  }
+
+  _cookieInfoCache = { source: null, file: null, count: 0, mtime: null, checkedAt: Date.now() };
+  return _cookieInfoCache;
+}
+
+const hasCookies = () => Boolean(cookieInfo().source);
+
+/**
+ * Resolve the cookies flag value for yt-dlp.
+ * Inline cookies use a separate private file, so they cannot overwrite the
+ * owner's managed upload. Both paths survive temp cleanup.
+ */
+function cookieFile() {
+  const cfg = config.ytdlp || {};
+  const inline = cfg.cookies || process.env.YOUTUBE_COOKIES || '';
+  if (String(inline).trim()) {
+    const text = normaliseCookieText(inline);
+    if (text) {
+      try {
+        fs.mkdirSync(path.dirname(INLINE_COOKIE_STORE), { recursive: true });
+        if (!fs.existsSync(INLINE_COOKIE_STORE) || fs.readFileSync(INLINE_COOKIE_STORE, 'utf8') !== text) {
+          fs.writeFileSync(INLINE_COOKIE_STORE, text, { mode: 0o600 });
+          try { fs.chmodSync(INLINE_COOKIE_STORE, 0o600); } catch { /* windows */ }
+        }
+        return INLINE_COOKIE_STORE;
+      } catch { /* fall through to other sources */ }
+    }
+  }
+  const info = cookieInfo();
+  return info.file || null;
+}
+
+// ─── PROXY ────────────────────────────────────────────────────────────────────
+
+const { maskUrlCredentials } = require('../safeLog');
+
+let _warnedInvalidProxy = '';
+
+const rawConfiguredProxy = () => {
+  const cfg = config.ytdlp || {};
+  const runtime = settings.get('proxy', '');
+  return String(runtime || cfg.proxy || process.env.YTDLP_PROXY || '').trim();
+};
+
+const proxyUrl = () => {
+  const raw = rawConfiguredProxy();
+  if (!raw) return '';
+  if (typeof settings.validateProxyUrl === 'function') {
+    const check = settings.validateProxyUrl(raw);
+    if (!check.ok) {
+      if (_warnedInvalidProxy !== raw) {
+        _warnedInvalidProxy = raw;
+        console.warn(`[ytdlp] ignoring invalid proxy configuration (${check.reason}): ${maskUrlCredentials(raw)}`);
+      }
+      return '';
+    }
+    return check.url;
+  }
+  return raw;
+};
+
+const invalidProxyReason = () => {
+  const raw = rawConfiguredProxy();
+  if (!raw || typeof settings.validateProxyUrl !== 'function') return null;
+  const check = settings.validateProxyUrl(raw);
+  return check.ok ? null : `${maskUrlCredentials(raw)} (${check.reason})`;
+};
+
+// ─── ARGUMENT BUILDING ────────────────────────────────────────────────────────
+
+/**
+ * Optional, cosmetic/robustness flags. If a build ever rejects one of them the
+ * engine drops them all and retries once (see runWithProfiles) instead of
+ * failing every download with "no such option".
+ */
+let _minimalBaseArgs = false;
+const setMinimalBaseArgs = (on = true) => { _minimalBaseArgs = Boolean(on); };
+const usingMinimalBaseArgs = () => _minimalBaseArgs;
+
+const PROGRESS_PREFIX = '@@ZFPROG@@';
+const PROGRESS_TEMPLATE =
+  `${PROGRESS_PREFIX}%(progress.downloaded_bytes)s|%(progress.total_bytes)s|` +
+  '%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s';
+
+/**
+ * @param {{progress?:boolean,noProxy?:boolean}} opts
+ */
+function baseArgs({ progress = false, noProxy = false } = {}) {
+  const cfg = config.ytdlp || {};
+  const caps = capabilities();
+
+  const args = [
+    '--no-playlist',
+    '--no-warnings',
+    '--ignore-config',
+    '--retries', '2',
+    '--fragment-retries', '2',
+    '--socket-timeout', '20',
+  ];
+
+  if (!_minimalBaseArgs) {
+    args.push('--no-color', '--user-agent', UA, '--add-header', 'Accept-Language: en-US,en;q=0.9');
+    if (caps.extractorRetries) args.push('--extractor-retries', '1');
+    if (caps.forceIpv4 && cfg.ipv4 !== false) args.push('--force-ipv4');
+
+    // The bot already runs on Node. EJS is needed for full YouTube support;
+    // yt-dlp can use its installed copy or fetch the official component. Enable
+    // this on the first attempt, not only on a late profile that may never run.
+    if (caps.jsRuntimes) args.push('--js-runtimes', `node:${process.execPath}`);
+    if (caps.remoteComponents) args.push('--remote-components', 'ejs:github');
+  }
+  // Do not disable certificate verification for downloads or credentials.
+
+  const cookies = cookieFile();
+  if (cookies) args.push('--cookies', cookies);
+
+  const proxy = noProxy ? '' : proxyUrl();
+  if (proxy) args.push('--proxy', proxy);
+
+  if (!_minimalBaseArgs && progress && caps.newline && caps.progressTemplate) {
+    args.push('--newline', '--progress-template', PROGRESS_TEMPLATE);
+  } else {
+    args.push('--no-progress');
+  }
+
+  return args;
+}
+
+/**
+ * Escalating attempt profiles. YouTube's per-client rules change constantly;
+ * trying several client sets is what actually keeps downloads working.
+ * Only flags the installed yt-dlp understands are ever used.
+ */
+function attemptProfiles(url) {
+  const caps = capabilities();
+  if (!isYouTubeUrl(url)) return [{ name: 'default', args: [] }];
+
+  const list = [{ name: 'default', args: [] }];
+  list.push({ name: 'tv', args: ['--extractor-args', 'youtube:player_client=tv,web_safari'] });
+  list.push({ name: 'android_vr', args: ['--extractor-args', 'youtube:player_client=android_vr,web_embedded'] });
+  list.push({ name: 'ios', args: ['--extractor-args', 'youtube:player_client=ios,mweb'] });
+  if (caps.impersonate && !caps.impersonateBroken) {
+    list.push({ name: 'impersonate', args: ['--impersonate', 'chrome'] });
+  }
+  list.push({ name: 'web_safari', args: ['--extractor-args', 'youtube:player_client=web_safari,web'] });
+  if (caps.remoteComponents) {
+    list.push({ name: 'ejs', args: ['--extractor-args', 'youtube:player_client=default,web_embedded'] });
+  }
+  list.push({ name: 'missing_pot', args: ['--extractor-args', 'youtube:player_client=default;formats=missing_pot'] });
+  return list;
+}
+
+// Kept as a stable export for older callers / diagnostics output.
+const ATTEMPT_PROFILES = [
+  { name: 'default', args: [] },
+  { name: 'tv', args: ['--extractor-args', 'youtube:player_client=tv,web_safari'] },
+  { name: 'android_vr', args: ['--extractor-args', 'youtube:player_client=android_vr,web_embedded'] },
+  { name: 'ios', args: ['--extractor-args', 'youtube:player_client=ios,mweb'] },
+  { name: 'impersonate', args: ['--impersonate', 'chrome'] },
+  { name: 'web_safari', args: ['--extractor-args', 'youtube:player_client=web_safari,web'] },
+  { name: 'ejs', args: ['--extractor-args', 'youtube:player_client=default,web_embedded'] },
+  { name: 'missing_pot', args: ['--extractor-args', 'youtube:player_client=default;formats=missing_pot'] },
+];
+
+// ─── RUNNER ───────────────────────────────────────────────────────────────────
+
+const MAX_CAPTURE = 256 * 1024;
+
+/**
+ * Spawn yt-dlp and capture output with hard caps.
+ * `onProgress({percent,speed,eta})` is called while downloading when the
+ * `progress` option is on — used by local video-download flows to show progress.
+ */
+function spawnYtdlp(args, { timeout = 120000, onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    const cmd = resolveCommand() || null;
+    if (!cmd) {
+      return reject(Object.assign(new Error('yt-dlp is not installed'), { code: 'NO_YTDLP' }));
+    }
+
+    let child;
+    try {
+      child = spawn(cmd[0], [...cmd.slice(1), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      return reject(Object.assign(new Error(`could not start yt-dlp: ${e.message}`), { code: 'NO_YTDLP' }));
+    }
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let killedByTimeout = false;
+
+    const timer = timeout > 0 ? setTimeout(() => {
+      killedByTimeout = true;
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }, timeout) : null;
+
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      fn(value);
+    };
+
+    const handleLine = (line) => {
+      if (!onProgress || !line.startsWith(PROGRESS_PREFIX)) return;
+      const [downloaded, total, estimate, speed, eta] = line.slice(PROGRESS_PREFIX.length).split('|');
+      const done = Number(downloaded);
+      const size = Number(total) || Number(estimate);
+      if (!Number.isFinite(done) || !Number.isFinite(size) || size <= 0) return;
+      onProgress({
+        percent: Math.max(0, Math.min(100, Math.round((done / size) * 100))),
+        speed: Number.isFinite(Number(speed)) ? Number(speed) : String(speed || '').trim(),
+        eta: Number(eta) || 0,
+      });
+    };
+
+    let outTail = '';
+    child.stdout.on('data', (d) => {
+      const text = String(d);
+      if (stdout.length < MAX_CAPTURE) stdout += text;
+      if (onProgress) {
+        const lines = (outTail + text).split('\n');
+        outTail = lines.pop() || '';
+        for (const line of lines) handleLine(line.trim());
+      }
+    });
+
+    child.stderr.on('data', (d) => {
+      const text = String(d);
+      if (stderr.length < MAX_CAPTURE) stderr += text;
+      // yt-dlp prints progress to stderr in some versions
+      if (onProgress) {
+        for (const line of text.split('\n')) handleLine(line.trim());
+      }
+    });
+
+    child.on('error', (e) => {
+      finish(reject, Object.assign(new Error(e.message), { code: 'NO_YTDLP' }));
+    });
+
+    child.on('close', (code, signal) => {
+      if (code === 0) return finish(resolve, { stdout, stderr });
+      const err = new Error(killedByTimeout ? 'yt-dlp timed out' : `yt-dlp exited with code ${code}`);
+      err.stderr = stderr;
+      err.stdout = stdout;
+      err.exitCode = code;
+      err.signal = signal;
+      if (killedByTimeout) err.killed = true;
+      finish(reject, err);
+    });
+  });
+}
+
+/** One-shot yt-dlp run (metadata, diagnostics). */
+async function run(args, { timeout = 120000 } = {}) {
+  return spawnYtdlp(args, { timeout });
+}
+
+// ─── ERROR CLASSIFICATION ─────────────────────────────────────────────────────
+
+const RULES = [
+  { code: 'PROXY_ERROR',    re: /nonnumeric port|unable to connect to proxy|tunnel connection failed|proxyerror|407 proxy authentication|sockshttps?connectionpool|proxy.*(?:connection refused|timed out|unreachable)/i },
+  { code: 'RATE_LIMIT',     re: /HTTP Error 429|too many requests|rate.?limit/i },
+  // Age must be checked before the generic "sign in" rule: yt-dlp words an
+  // age-restriction as "Sign in to confirm your age", which is not a bot-check.
+  { code: 'AGE_RESTRICTED', re: /age.?restricted|sign in to confirm your age|inappropriate for some users/i },
+  { code: 'BOT_CHECK',      re: /not a bot|confirm you'?re not a bot|sign in to confirm|please sign in|use --cookies|login required|this content isn'?t available to bots|cookies for the authentication/i },
+  { code: 'GEO_BLOCK',      re: /available in your country|available in your location|available in your region|not available in this country|geo.?restrict|blocked in your country|unavailable in your region|has blocked (?:this|it) (?:video|content) in your|not made this video available/i },
+  { code: 'PRIVATE',        re: /private video|this video is private/i },
+  { code: 'MEMBERS_ONLY',   re: /members-only|members only|only available to (?:channel )?members|join this channel|channel membership/i },
+  { code: 'LIVE_EVENT',     re: /live event will begin|premieres in|is currently live|this live event has ended/i },
+  { code: 'DRM',            re: /drm protected|protected by drm|encrypted media/i },
+  { code: 'PO_TOKEN',       re: /po.?token|missing pot|requires a po token/i },
+  { code: 'UNAVAILABLE',    re: /video unavailable|this video is not available|has been removed|no longer available|does not exist|removed by the uploader|account (?:has been )?(?:terminated|suspended)|unavailable video|not available on this app|requested video is not available/i },
+  { code: 'TOO_LONG',       re: /is longer than|exceeds the duration|duration filter|does not pass (?:the )?filter/i },
+  { code: 'TOO_BIG',        re: /larger than max-filesize|file is larger than|skipping due to --max-filesize|exceeds (?:the )?max.?filesize/i },
+  { code: 'BAD_ARGS',       re: /no such option|unrecognized arguments|unrecognised arguments|invalid argument|invalid value for/i },
+  { code: 'FFMPEG_MISSING', re: /ffmpeg (?:is )?not (?:installed|found)|ffprobe and ffmpeg not found|postprocessing.*ffmpeg|requested merging of multiple formats|you have requested merging|\b(?:won['’]t|will not) be merged\b/i },
+  { code: 'IMPERSONATE',    re: /impersonat\w+ (?:target|request)|curl_cffi|impersonate.*not (?:available|supported)/i },
+  { code: 'UNSUPPORTED_URL', re: /unsupported url|no suitable extractor|unknown extractor|is not a valid url|no video formats found for this url/i },
+  { code: 'NO_AUDIO',       re: /no audio track|has no audio/i },
+  { code: 'NO_FORMATS',     re: /requested format (?:is )?not available|no video formats found|only images are available|no video formats|unable to extract (?:any )?(?:video|data)|no formats? found for|some formats may be missing/i },
+  { code: 'TLS_ERROR',      re: /certificate.verify.failed|unable to verify (?:the first )?certificate|self.signed certificate|certificate has expired|CERT_HAS_EXPIRED|UNABLE_TO_GET_ISSUER_CERT/i },
+  { code: 'NETWORK',        re: /unable to download (?:webpage|api page|video data|json)|timed out|timeout|temporary failure|connection (?:refused|reset|aborted)|getaddrinfo|ssl|certificate|EOF occurred|HTTP Error 5\d\d|network is unreachable|remote end closed|tls\/ssl connection has been closed/i },
+  { code: 'NO_YTDLP',       re: /yt-dlp is not installed|ENOENT|not recognized as an internal or external command/i },
+];
+
+function firstErrorLine(text) {
+  const lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const errors = lines.filter(l => /^(ERROR|WARNING):/i.test(l));
+  const line = errors.length ? errors[errors.length - 1] : (lines[lines.length - 1] || '');
+  return line.replace(/^(ERROR|WARNING):\s*/i, '').slice(0, 300);
+}
+
+/**
+ * Turn any yt-dlp failure into { code, detail, text }.
+ * Unknown failures stay UNKNOWN instead of being blamed on the region.
+ */
+function classify(err) {
+  // NOTE: err.message from execFile contains the full command line ("Command
+  // failed: yt-dlp ... --match-filter duration < 3600 ..."), which used to make
+  // innocent failures look like duration/size errors. Only real yt-dlp output
+  // is used for matching.
+  const parts = [];
+  if (err && err.stderr) parts.push(String(err.stderr));
+  if (err && err.stdout) parts.push(String(err.stdout));
+  if (err && err.message && !/^Command failed/i.test(String(err.message))) parts.push(String(err.message));
+  const text = parts.join('\n');
+
+  if (err && typeof err === 'object' && err.code && typeof err.code === 'string' && !/^(ERR_|E[A-Z]+$)/.test(err.code)) {
+    if (RULES.some(r => r.code === err.code)) {
+      return { code: err.code, detail: firstErrorLine(text), text };
+    }
+  }
+  if (err && err.killed) return { code: 'NETWORK', detail: 'download timed out', text };
+
+  for (const rule of RULES) {
+    if (rule.re.test(text)) return { code: rule.code, detail: firstErrorLine(text), text };
+  }
+  return { code: 'UNKNOWN', detail: firstErrorLine(text), text };
+}
+
+// Failures worth retrying with a different player client.
+const RETRY_CODES = new Set(['BOT_CHECK', 'NO_FORMATS', 'UNKNOWN', 'NETWORK', 'AGE_RESTRICTED', 'IMPERSONATE', 'PO_TOKEN', 'PROXY_ERROR']);
+// UNSUPPORTED_URL is final: retrying other player clients cannot help.
+
+const isRetryable = (code) => RETRY_CODES.has(code);
+
+// ─── USER-FACING MESSAGES ─────────────────────────────────────────────────────
+
+const USER_HINTS = {
+  PROXY_ERROR: '❌ Could not reach the media site right now (proxy connection failed). Please try again shortly.',
+  NO_AUDIO: '❌ The download carries no audio track — refusing to send a silent video. Try another link or quality.',
+  NO_YTDLP: '❌ The media downloader is temporarily unavailable on this server. Please try again later.',
+  BOT_CHECK: '❌ YouTube temporarily blocked automated access for this video (access check, not a region block). Please try again shortly or try another link.',
+  AGE_RESTRICTED: '❌ This video is age-restricted on YouTube and cannot be downloaded right now.',
+  GEO_BLOCK: '❌ This video is not available in the server\'s region.',
+  PRIVATE: '❌ This video is private — only its owner can download it.',
+  MEMBERS_ONLY: '❌ This video is members-only (paid channel membership).',
+  LIVE_EVENT: '❌ This is a live stream or a not-yet-started premiere. Only normal videos can be downloaded.',
+  DRM: '❌ This media is DRM-protected and is not supported by this downloader.',
+  PO_TOKEN: '❌ YouTube blocked automated access to this stream right now. Please try another link.',
+  UNAVAILABLE: '❌ This video is unavailable — deleted, removed by the uploader, or a dead link.',
+  TOO_LONG: '❌ That media is longer than the allowed limit.',
+  TOO_BIG: '❌ That file is bigger than the size limit — try a lower quality.',
+  FFMPEG_MISSING: '❌ Media conversion is temporarily unavailable on this server.',
+  UNSUPPORTED_URL: '❌ The downloader could not recognize that link. Try a direct link to a public post or video, rather than a profile or search page.',
+  NO_FORMATS: '❌ No downloadable stream was returned for that video. Try a different quality (e.g. 360p) or another video.',
+  IMPERSONATE: '❌ That site rejected automated requests from this server.',
+  BAD_ARGS: '❌ The media downloader on this server needs an update. Please try again later.',
+  RATE_LIMIT: '❌ YouTube is rate-limiting requests right now (HTTP 429). Wait a few minutes and try again.',
+  TLS_ERROR: '❌ The server could not verify the media site’s secure connection. Please try again later.',
+  NETWORK: '❌ Could not reach the media site right now (network timeout). Please try again in a moment.',
+  UNKNOWN: '❌ Download failed. Please check the link and try again.',
+};
+
+const OWNER_HINTS = {
+  PROXY_ERROR: 'Admin: clear or fix the proxy with `{p}ytdl proxy off`.',
+  GEO_BLOCK: 'Admin: check regional availability; an appropriate proxy can be configured with `{p}ytdl proxy <url>`. Restrictions may still apply.',
+  FFMPEG_MISSING: 'Admin: install `ffmpeg` on the host.',
+  TLS_ERROR: 'Admin: check the host’s clock and trusted CA certificates; certificate verification is required.',
+  NETWORK: 'Admin: check the host’s internet connection and proxy configuration.',
+  UNKNOWN: 'Admin: run `{p}ytdl` to inspect the last failure.',
+};
+
+const OTHER_SITE_HINTS = {
+  BOT_CHECK: '❌ This site requires sign-in or is restricting automated access from the server.',
+  AGE_RESTRICTED: '❌ This media is age-restricted or requires an eligible account.',
+  RATE_LIMIT: '❌ This site is rate-limiting requests. Please wait and try again.',
+  PO_TOKEN: '❌ This site requires an access token the downloader could not obtain.',
+};
+
+/**
+ * Accurate, safe message for any error thrown by this module. Optional
+ * diagnostic hints are only shown to owners; raw downloader output is hidden.
+ *
+ * @param {any} err
+ * @param {{ isOwner?: boolean }} [opts]
+ */
+function friendlyError(err, { isOwner = false, isYouTube = true } = {}) {
+  const info = classify(err);
+  const base = (!isYouTube && OTHER_SITE_HINTS[info.code]) || USER_HINTS[info.code] || USER_HINTS.UNKNOWN;
+  if (!isOwner) return base;
+  const otherSiteTip = !isYouTube && ['BOT_CHECK', 'AGE_RESTRICTED', 'PO_TOKEN'].includes(info.code)
+    ? 'Admin: check the site’s account requirements and try `{p}ytdl update`.' : null;
+  const hint = otherSiteTip || OWNER_HINTS[info.code];
+  const ownerTip = hint ? `\n${hint.replace(/\{p\}/g, config.prefix || '.')}` : '';
+  return base + ownerTip;
+}
+
+/** One-line summary of every engine that was tried (for the final error). */
+const displayCode = (code) => String(code || '').replace(/BOT_CHECK/gi, 'ACCESS_CHECK');
+
+function attemptsSummary(attempts) {
+  if (!Array.isArray(attempts)) return '';
+  const names = new Set();
+  for (const attempt of attempts) {
+    const engine = typeof attempt?.engine === 'string' ? attempt.engine : '';
+    if (/^hector$/i.test(engine)) names.add('Hector');
+    else if (/^yt-dlp(?::|$)/i.test(engine)) names.add('yt-dlp');
+    else if (/^innertube(?::|$)/i.test(engine)) names.add('Innertube');
+    else if (/^yt1d$/i.test(engine)) names.add('yt1d');
+    else if (/^gifted$/i.test(engine)) names.add('Gifted');
+    else if (/^cobalt$/i.test(engine)) names.add('Cobalt');
+  }
+  // Only fixed engine names are shown: raw provider errors can contain URLs or
+  // credentials. One line also survives the commands' short-message limit.
+  return names.size ? `\nTried: ${[...names].join(', ')}.` : '';
+}
+
+// ─── INFO / DOWNLOAD ──────────────────────────────────────────────────────────
+
+let _lastError = null;
+const lastError = () => _lastError;
+
+const recordFailure = (info) => {
+  _lastError = {
+    code: info.code,
+    detail: info.detail,
+    attempts: info.attempts || [],
+    at: Date.now(),
+    url: info.url || null,
+  };
+  return _lastError;
+};
+
+const remember = (err, url, attempts) => {
+  const info = classify(err);
+  recordFailure({ ...info, url, attempts });
+  return info;
+};
+
+/**
+ * Video metadata via yt-dlp (no download).
+ * @returns {Promise<{title:string,duration:number,uploader:string,thumbnail:string,id:string}>}
+ */
+async function fetchInfo(url, { timeout = 60000 } = {}) {
+  const caps = capabilities();
+  const parseLine = (stdout) => {
+    const line = String(stdout || '').trim().split('\n').pop() || '';
+    const [title, duration, uploader, thumbnail, id] = line.split('\t');
+    return {
+      title: (title || '').trim(),
+      duration: Number(duration) || 0,
+      uploader: (uploader || '').trim(),
+      thumbnail: (thumbnail || '').trim(),
+      id: (id || '').trim(),
+    };
+  };
+
+  const buildPrintArgs = (extra = [], noProxy = false) => {
+    const args = [...baseArgs({ noProxy }), ...extra, '--skip-download'];
+    if (caps.noCheckFormats) args.push('--no-check-formats');
+    args.push('--print', '%(title)s\t%(duration)s\t%(uploader)s\t%(thumbnail)s\t%(id)s', url);
+    return args;
+  };
+
+  try {
+    const { stdout } = await run(buildPrintArgs([], false), { timeout });
+    return parseLine(stdout);
+  } catch (err) {
+    let last = err;
+    const hadProxy = Boolean(proxyUrl());
+    const firstCode = classify(err).code;
+
+    // If configured proxy itself failed, immediately try direct without proxy.
+    if (hadProxy && (firstCode === 'PROXY_ERROR' || firstCode === 'NETWORK')) {
+      try {
+        const { stdout } = await run(buildPrintArgs([], true), { timeout });
+        return parseLine(stdout);
+      } catch (e) { last = e; }
+    }
+
+    // Metadata is often the first thing a bot-check kills; try the escalations
+    // before giving up so search results still resolve.
+    const useNoProxy = hadProxy && firstCode === 'PROXY_ERROR';
+    for (const profile of attemptProfiles(url).slice(1, 4)) {
+      try {
+        const { stdout } = await run(buildPrintArgs(profile.args, useNoProxy), { timeout });
+        return parseLine(stdout);
+      } catch (e) { last = e; }
+    }
+
+    if (hadProxy && !useNoProxy) {
+      try {
+        const { stdout } = await run(buildPrintArgs([], true), { timeout });
+        return parseLine(stdout);
+      } catch (e) { last = e; }
+    }
+    throw last;
+  }
+}
+
+const INFO_CACHE_TTL_MS = 10 * 60 * 1000;
+const INFO_CACHE_MAX = 100;
+const infoCache = new Map();
+
+function getInfo(url, options = {}) {
+  const key = String(url || '');
+  const now = Date.now();
+  const cached = infoCache.get(key);
+  if (cached && now - cached.ts < INFO_CACHE_TTL_MS) {
+    infoCache.delete(key);
+    infoCache.set(key, cached);
+    return cached.promise || Promise.resolve(cached.value);
+  }
+  if (cached) infoCache.delete(key);
+
+  const entry = { ts: now, promise: null, value: null };
+  entry.promise = fetchInfo(url, options).then((value) => {
+    if (infoCache.get(key) === entry) {
+      entry.value = value;
+      entry.promise = null;
+      entry.ts = Date.now();
+    }
+    return value;
+  }).catch((error) => {
+    if (infoCache.get(key) === entry) infoCache.delete(key);
+    throw error;
+  });
+  infoCache.set(key, entry);
+  while (infoCache.size > INFO_CACHE_MAX) infoCache.delete(infoCache.keys().next().value);
+  return entry.promise;
+}
+
+/**
+ * Raw probe for diagnostics: run yt-dlp with the given client profile and give
+ * back everything it printed (used by `.ytdl raw <link>`).
+ */
+async function probeRaw(url, { timeout = 60000, client = null } = {}) {
+  const args = [...baseArgs(), '--skip-download', '--simulate', '--verbose'];
+  if (client) args.push('--extractor-args', `youtube:player_client=${client}`);
+  args.push(url);
+  try {
+    const { stdout, stderr } = await run(args, { timeout });
+    return { ok: true, stdout, stderr };
+  } catch (e) {
+    return { ok: false, stdout: e.stdout || '', stderr: e.stderr || String(e.message), code: classify(e).code };
+  }
+}
+
+/**
+ * Search YouTube through yt-dlp (API endpoints, so it survives the HTML
+ * scraping blocks that break yt-search on hosting IPs).
+ * @returns {Promise<Array<{id,title,duration,uploader,thumbnail}>>}
+ */
+async function searchVideos(query, { limit = 5, timeout = 60000, prefix = 'ytsearch' } = {}) {
+  const caps = capabilities();
+  const n = Math.max(1, Math.min(20, Number(limit) || 5));
+  // `scsearch` rows are SoundCloud tracks, so their real page URL is needed
+  // instead of synthesising a YouTube watch link from a numeric id.
+  const searchPrefix = prefix === 'scsearch' ? 'scsearch' : 'ytsearch';
+  const printTemplate = searchPrefix === 'scsearch'
+    ? '%(id)s\t%(title)s\t%(duration)s\t%(uploader)s\t%(thumbnail)s\t%(webpage_url)s'
+    : '%(id)s\t%(title)s\t%(duration)s\t%(uploader)s\t%(thumbnail)s';
+  const buildSearchArgs = (noProxy = false) => {
+    const args = [
+      // --no-playlist would collapse a search into a single entry
+      ...baseArgs({ noProxy }).filter(a => a !== '--no-playlist'),
+      '--flat-playlist',
+      '--skip-download',
+    ];
+    if (caps.noCheckFormats) args.push('--no-check-formats');
+    args.push('--print', printTemplate, `${searchPrefix}${n}:${query}`);
+    return args;
+  };
+
+  let stdout;
+  try {
+    ({ stdout } = await run(buildSearchArgs(false), { timeout }));
+  } catch (err) {
+    if (proxyUrl()) {
+      ({ stdout } = await run(buildSearchArgs(true), { timeout }));
+    } else {
+      throw err;
+    }
+  }
+  return String(stdout || '')
+    .trim()
+    .split('\n')
+    .map(line => line.split('\t'))
+    .filter(parts => parts[0] && parts[0] !== 'NA')
+    .map(([id, title, duration, uploader, thumbnail, webpageUrl]) => {
+      const videoId = id.trim();
+      const page = String(webpageUrl || '').trim();
+      return {
+        id: videoId,
+        url: searchPrefix === 'scsearch' && /^https?:\/\//i.test(page)
+          ? page
+          : `https://www.youtube.com/watch?v=${videoId}`,
+        title: (title || '').trim(),
+        duration: Number(duration) || 0,
+        uploader: (uploader || '').trim(),
+        thumbnail: /^https?:/i.test(String(thumbnail || '')) ? String(thumbnail).trim() : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      };
+    });
+}
+
+/** Find the file yt-dlp produced for `outBase` (it picks the extension). */
+function findProduced(outBase) {
+  const dir = path.dirname(outBase);
+  const base = path.basename(outBase);
+  const exts = ['.mp3', '.m4a', '.opus', '.ogg', '.webm', '.aac', '.wav', '.flac',
+    '.mp4', '.mkv', '.mov', '.3gp', '.m4v'];
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return null; }
+
+  // exactly "<base>.<ext>" — anything longer belongs to another step
+  const own = names.filter(f => f.startsWith(`${base}.`) && f.slice(base.length + 1).indexOf('.') === -1 && !PART_RE.test(f));
+  const hit = own.find(f => exts.includes(path.extname(f).toLowerCase())) || own[0];
+  return hit ? path.join(dir, hit) : null;
+}
+
+const PART_RE = /\.f[0-9A-Za-z_-]+\.[a-z0-9]+$|\.(part|ytdl|temp|tmp)$|\.part-Frag\d+/i;
+
+/** Leftover per-format parts for `outBase` (a merge that never happened). */
+function leftoverParts(outBase) {
+  const dir = path.dirname(outBase);
+  const base = path.basename(outBase);
+  try { return fs.readdirSync(dir).filter(f => f.startsWith(`${base}.`) && PART_RE.test(f)).map(f => path.join(dir, f)); }
+  catch { return []; }
+}
+
+function mergeVideoParts(outBase, parts) {
+  if (parts.length !== 2) return null;
+  const videoExts = new Set(['.mp4', '.mkv', '.webm', '.mov', '.m4v', '.ts']);
+  const audioExts = new Set(['.m4a', '.mp3', '.opus', '.ogg', '.aac', '.wav', '.flac']);
+  const videos = parts.filter(file => videoExts.has(path.extname(file).toLowerCase()));
+  const audios = parts.filter(file => audioExts.has(path.extname(file).toLowerCase()));
+  if (videos.length !== 1 || audios.length !== 1 || videos[0] === audios[0]) return null;
+
+  const ffmpeg = getFfmpeg();
+  const output = `${outBase}.mp4`;
+  try {
+    execFileSync(ffmpeg, [
+      '-y', '-nostdin', '-i', videos[0], '-i', audios[0],
+      '-map', '0:v:0', '-map', '1:a:0', '-c', 'copy', '-movflags', '+faststart', output,
+    ], { timeout: 10 * 60 * 1000, stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 4 * 1024 * 1024 });
+  } catch (error) {
+    try { fs.unlinkSync(output); } catch { /* ignore */ }
+    throw error;
+  }
+  if (!fs.existsSync(output) || !fs.statSync(output).size) {
+    try { fs.unlinkSync(output); } catch { /* ignore */ }
+    return null;
+  }
+  return output;
+}
+
+/**
+ * yt-dlp exits 0 when --max-filesize aborts a download ("File is larger than
+ * max-filesize … Aborting."), leaving no file — or only the video half of a
+ * DASH pair. Turn that into a proper TOO_BIG error.
+ */
+function assertProduced(outBase, stdout, what) {
+  const file = findProduced(outBase);
+  const tooBig = /larger than max-filesize/i.test(String(stdout || ''));
+  if (file && !tooBig) return file;
+  if (!file && !tooBig && what === 'video') {
+    const parts = leftoverParts(outBase);
+    if (parts.length === 2 && getFfmpeg.works()) {
+      try {
+        const merged = mergeVideoParts(outBase, parts);
+        if (merged) {
+          for (const part of parts) {
+            try { fs.unlinkSync(part); } catch { /* ignore */ }
+          }
+          return merged;
+        }
+      } catch (error) {
+        console.warn('[ytdlp] failed to merge leftover video/audio parts:', error.message || error);
+      }
+    }
+  }
+  for (const f of [file, ...leftoverParts(outBase)].filter(Boolean)) {
+    try { fs.unlinkSync(f); } catch { /* ignore */ }
+  }
+  if (tooBig) throw Object.assign(new Error('File is larger than max-filesize'), { code: 'TOO_BIG' });
+  throw Object.assign(new Error(`yt-dlp produced no ${what} file`), { code: 'NO_FORMATS' });
+}
+
+/** Report local availability without installing, deleting or updating anything. */
+async function healthCheck() {
+  const cmd = resolveCommand({ force: true });
+  return cmd && probeCommand(cmd) ? cmd : null;
+}
+
+/**
+ * Run one download with the escalating client profiles, under a global deadline
+ * so a hopeless job can never hang the user for an hour.
+ *
+ * @param {string} url
+ * @param {(profile:{name:string,args:string[]})=>string[]} buildArgs
+ * @param {{timeout?:number,deadlineMs?:number,progress?:boolean,onAttempt?:Function,onProgress?:Function}} opts
+ */
+async function runWithProfiles(url, buildArgs, {
+  timeout = 12 * 60 * 1000,
+  deadlineMs = Number(config.ytdlp?.deadlineMs) || 10 * 60 * 1000,
+  progress = false,
+  onAttempt,
+  onProgress,
+} = {}) {
+  const startedAt = Date.now();
+  const profiles = attemptProfiles(url);
+  const attempts = [];
+  let lastErr = null;
+  let lastCode = 'UNKNOWN';
+  const hadProxy = Boolean(proxyUrl());
+
+  const runPass = async (noProxy) => {
+    let botChecksInPass = 0;
+    for (let i = 0; i < profiles.length; i++) {
+      const profile = profiles[i];
+      const elapsed = Date.now() - startedAt;
+      const remaining = deadlineMs - elapsed;
+      if (remaining <= 5000) {
+        console.warn(`[ytdlp] deadline reached after ${attempts.length} attempt(s)`);
+        break;
+      }
+
+      const tag = noProxy && hadProxy ? `${profile.name}(direct)` : profile.name;
+      try {
+        const args = [...baseArgs({ progress, noProxy }), ...profile.args, ...buildArgs(profile)];
+        const { stdout } = await spawnYtdlp(args, {
+          timeout: Math.min(timeout, remaining),
+          onProgress: onProgress ? (p) => { try { onProgress(p, tag); } catch { /* ignore */ } } : undefined,
+        });
+        return { profile: tag, attempts, stdout };
+      } catch (err) {
+        const info = classify(err);
+        lastErr = err;
+        lastCode = info.code;
+        attempts.push({ engine: `yt-dlp:${tag}`, code: info.code, detail: info.detail });
+        if (onAttempt) onAttempt(tag, err, info);
+
+        // If the configured proxy itself is unreachable or broken, stop burning
+        // profiles on it and immediately switch to direct egress.
+        if (!noProxy && hadProxy && info.code === 'PROXY_ERROR') {
+          console.warn(`[ytdlp] proxy failed (${info.detail}) — retrying directly without proxy`);
+          return null;
+        }
+
+        // A build that cannot impersonate will not learn to: drop that profile.
+        if (info.code === 'IMPERSONATE' && profile.name === 'impersonate') disableImpersonation();
+
+        // Some builds reject one of the optional flags (usually because they are
+        // much older than expected). Drop them and retry the same profile once
+        // instead of failing every download with "no such option".
+        if (info.code === 'BAD_ARGS' && !_minimalBaseArgs) {
+          console.warn('[ytdlp] this build rejected an optional option — retrying with minimal arguments');
+          setMinimalBaseArgs(true);
+          i--;
+          continue;
+        }
+
+        // Bound repeated unauthenticated bot-checks, but allow the distinct iOS
+        // and impersonation profiles to run before switching to other engines.
+        if ((info.code === 'BOT_CHECK' || info.code === 'PO_TOKEN') && !hasCookies()) {
+          botChecksInPass += 1;
+          if (botChecksInPass >= 5) break;
+        }
+
+        // "Video unavailable" style failures are final — retrying other clients
+        // only wastes minutes of the user's time.
+        if (!isRetryable(info.code)) break;
+      }
+    }
+    return null;
+  };
+
+  const firstPass = await runPass(false);
+  if (firstPass) return firstPass;
+
+  // Automatic direct fallback when a configured proxy fails with proxy/network/bot errors
+  if (hadProxy && (Date.now() - startedAt) < deadlineMs - 8000 &&
+      ['PROXY_ERROR', 'NETWORK', 'BOT_CHECK', 'UNKNOWN'].includes(lastCode)) {
+    const directPass = await runPass(true);
+    if (directPass) return directPass;
+  }
+
+  if (lastErr) {
+    const info = classify(lastErr);
+    const code = info.code === 'UNKNOWN' && lastCode ? lastCode : info.code;
+    const wrapped = Object.assign(new Error(info.detail || 'yt-dlp failed'), {
+      code, detail: info.detail, stderr: info.text, attempts,
+    });
+    remember(wrapped, url, attempts);
+    throw wrapped;
+  }
+  throw Object.assign(new Error('yt-dlp did not run'), { code: 'NO_YTDLP' });
+}
+
+/**
+ * Download the best audio-only stream and convert it to MP3 when ffmpeg is
+ * available (falls back to the raw container otherwise).
+ * @returns {Promise<{file:string,ext:string,profile:string,attempts:Array}>}
+ */
+async function downloadAudio(url, { outBase, maxMB = 200, maxSeconds = 0, onAttempt, onProgress, deadlineMs } = {}) {
+  const ffmpeg = getFfmpeg();
+  const ffmpegWorks = getFfmpeg.works();
+  const caps = capabilities();
+  const base = outBase || path.join(getTempDir(), `audio_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+
+  // "<?N" keeps the filter optional when YouTube hides the duration —
+  // "--match-filter duration < N" used to reject those videos with a
+  // misleading "too long" error.
+  const durationFilter = maxSeconds > 0 && caps.matchFilter
+    ? [caps.matchFilter, `duration <?${Math.floor(maxSeconds)}`]
+    : [];
+
+  const sizeLimit = caps.maxFilesize ? ['--max-filesize', `${maxMB}M`] : [];
+  const fragments = caps.concurrentFragments
+    ? ['--concurrent-fragments', String(Math.max(1, Number(config.ytdlp?.fragments) || 4))]
+    : [];
+
+  // ── 1. THE OFFICIAL AUDIO, UNTOUCHED ─────────────────────────────────────
+  // Highest quality = whatever YouTube serves: m4a (AAC) first, opus second.
+  // No re-encode, therefore no ffmpeg needed and no generation loss.
+  const rawArgs = () => [
+    '-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio[ext=webm]/bestaudio/best',
+    ...durationFilter,
+    ...sizeLimit,
+    ...fragments,
+    '-o', `${base}.%(ext)s`, url,
+  ];
+
+  try {
+    const { profile, attempts, stdout } = await runWithProfiles(url, rawArgs, {
+      onAttempt, onProgress, progress: Boolean(onProgress), deadlineMs,
+    });
+    const file = assertProduced(base, stdout, 'audio');
+    return { file, ext: path.extname(file).slice(1).toLowerCase(), profile, attempts, transcoded: false };
+  } catch (err) {
+    const info = classify(err);
+    // Only a missing raw audio stream is worth converting for; bot-checks and
+    // network problems would fail exactly the same way.
+    if (!ffmpegWorks || (info.code !== 'NO_FORMATS' && info.code !== 'FFMPEG_MISSING')) throw err;
+
+    console.warn('[ytdlp] no raw audio stream — re-encoding to mp3 instead');
+    const convertArgs = () => [
+      '-f', 'bestaudio[ext=m4a]/bestaudio/best',
+      '--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0',
+      ...ffmpegLocationArgs(ffmpeg),
+      ...durationFilter,
+      ...sizeLimit,
+      ...fragments,
+      '-o', `${base}.%(ext)s`, url,
+    ];
+    const { profile, attempts, stdout } = await runWithProfiles(url, convertArgs, {
+      onAttempt, onProgress, progress: Boolean(onProgress), deadlineMs,
+    });
+    const file = assertProduced(base, stdout, 'audio');
+    return { file, ext: path.extname(file).slice(1).toLowerCase(), profile, attempts, transcoded: true };
+  }
+}
+
+function ffmpegLocationArgs(ffmpeg = getFfmpeg()) {
+  return path.isAbsolute(String(ffmpeg || '')) && fs.existsSync(ffmpeg)
+    ? ['--ffmpeg-location', ffmpeg]
+    : [];
+}
+
+/**
+ * Download a video (H.264/MP4 preferred so WhatsApp accepts it without a
+ * transcode) capped by height, size and duration.
+ * @returns {Promise<{file:string,profile:string,attempts:Array}>}
+ */
+async function downloadVideo(url, { height = 720, outBase, maxMB = 300, maxSeconds = 3600, onAttempt, onProgress, deadlineMs } = {}) {
+  const ffmpeg = getFfmpeg();
+  const ffmpegWorks = getFfmpeg.works();
+  const caps = capabilities();
+  const base = outBase || path.join(getTempDir(), `video_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+  const h = Number(height) || 720;
+
+  const durationFilter = maxSeconds > 0 && caps.matchFilter
+    ? [caps.matchFilter, `duration <?${Math.floor(maxSeconds)}`]
+    : [];
+
+  // A video-only stream is worse than useless when ffmpeg is missing: the file
+  // arrives without sound. Two hard rules below:
+  //   • every selector requires an audio track (vcodec!=none AND acodec!=none)
+  //   • merging is only attempted when ffmpeg actually runs on this host
+  const sizeFilter = caps.maxFilesize ? ['--max-filesize', `${maxMB}M`] : [];
+  const fragments = caps.concurrentFragments
+    ? ['--concurrent-fragments', String(Math.max(1, Number(config.ytdlp?.fragments) || 4))]
+    : [];
+
+  const progressive = [
+    `b[ext=mp4][height<=${h}][vcodec!=none][acodec!=none]`,
+    `b[height<=${h}][vcodec!=none][acodec!=none]`,
+    'b[vcodec!=none][acodec!=none]',
+  ].join('/');
+
+  // Audio is not optional: AAC first (WhatsApp plays it everywhere), then any
+  // m4a, then whatever audio stream exists. A video-only pick is never offered.
+  const merged = [
+    `bv*[vcodec^=avc1][height<=${h}]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=${h}]+ba[ext=m4a]/bv*[height<=${h}]+ba`,
+    `b[ext=mp4][height<=${h}][vcodec!=none][acodec!=none]`,
+    `b[height<=${h}][vcodec!=none][acodec!=none]`,
+  ].join('/');
+
+  const argsFor = (selector) => () => [
+    '-f', selector,
+    ...(ffmpegWorks ? ['--merge-output-format', 'mp4', ...ffmpegLocationArgs(ffmpeg)] : []),
+    ...sizeFilter, ...durationFilter, ...fragments,
+    '-o', `${base}.%(ext)s`, url,
+  ];
+
+  const startedAt = Date.now();
+  const totalDeadline = deadlineMs || Number(config.ytdlp?.deadlineMs) || 10 * 60 * 1000;
+  const first = await runWithProfiles(url, argsFor(ffmpegWorks ? merged : progressive), {
+    onAttempt, onProgress, progress: Boolean(onProgress), deadlineMs: totalDeadline,
+  });
+  let file = assertProduced(base, first.stdout, 'video');
+
+  if (!ffmpegWorks) return { file, profile: first.profile, attempts: first.attempts, hasAudio: null };
+
+  let info = await probeMedia(file);
+  if (!info.probed || info.hasAudio) {
+    return { file, profile: first.profile, attempts: first.attempts, hasAudio: info.probed ? true : null };
+  }
+
+  // The merge produced a video with no sound: drop it and ask for a stream
+  // that carries its own audio (format 18 / 22 style progressive files).
+  console.warn('[ytdlp] downloaded video has no audio track — retrying with a progressive (audio+video) stream');
+  try { fs.unlinkSync(file); } catch { /* ignore */ }
+  const remaining = Math.max(20000, totalDeadline - (Date.now() - startedAt));
+  const second = await runWithProfiles(url, argsFor(progressive), {
+    onAttempt, onProgress, progress: Boolean(onProgress), deadlineMs: remaining,
+  });
+  file = assertProduced(base, second.stdout, 'video');
+  info = await probeMedia(file);
+  if (info.probed && !info.hasAudio) {
+    try { fs.unlinkSync(file); } catch { /* ignore */ }
+    throw Object.assign(new Error('the downloaded video has no audio track'), { code: 'NO_AUDIO' });
+  }
+  return { file, profile: second.profile, attempts: [...first.attempts, ...second.attempts], hasAudio: info.probed ? true : null };
+}
+
+// ─── DIAGNOSTICS (.ytdl) ──────────────────────────────────────────────────────
+
+async function diagnostics() {
+  const cmd = resolveCommand();
+  const ff = getFfmpeg();
+  let ffVersion = null;
+  try {
+    const { stdout, stderr } = await execFileAsync(ff, ['-version'], { timeout: 8000 });
+    ffVersion = String(stdout || stderr).split('\n')[0].replace(/^ffmpeg version\s*/i, '').split(' ')[0];
+  } catch { /* ffmpeg missing */ }
+
+  const caps = capabilities();
+  const ci = cookieInfo();
+
+  return {
+    installed: Boolean(cmd),
+    source: cmd ? cmd.join(' ') : null,
+    version: cmd ? probeCommand(cmd) : null,
+    ffmpeg: ffVersion,
+    cookies: ci.file || (ci.source ? ci.source : null),
+    cookieSource: ci.source,
+    cookieCount: ci.count,
+    cookieAgeMs: ci.mtime ? Date.now() - ci.mtime : null,
+    proxy: maskUrlCredentials(proxyUrl()) || null,
+    invalidProxy: invalidProxyReason(),
+    capabilities: {
+      version: caps.version,
+      impersonate: caps.impersonate && !caps.impersonateBroken,
+      jsRuntimes: caps.jsRuntimes,
+      remoteComponents: caps.remoteComponents,
+      matchFilter: caps.matchFilter,
+      ipv4: caps.forceIpv4,
+    },
+    minimalArgs: _minimalBaseArgs,
+    installError: _installError,
+    lastError: _lastError,
+    settingsFile: settings.filePath(),
+  };
+}
+
+module.exports = {
+  // helpers
+  isYouTubeUrl, extractVideoId, youtubeId, extractUrl, normalizeYouTubeUrl,
+  // engine
+  resolveCommand, version, ensureInstalled, update, run, spawnYtdlp,
+  getInfo, probeRaw, searchVideos, downloadAudio, downloadVideo, runWithProfiles, findProduced,
+  ffmpegLocationArgs, assertProduced,
+  capabilities, disableImpersonation, setMinimalBaseArgs, usingMinimalBaseArgs,
+  healthCheck,
+  // cookies & proxy
+  setCookies, clearCookies, cookieInfo, cookieFile, hasCookies, normaliseCookieText, proxyUrl, invalidProxyReason,
+  // errors
+  classify, isRetryable, friendlyError, lastError, recordFailure, attemptsSummary, displayCode,
+  // diagnostics
+  diagnostics, baseArgs, attemptProfiles, ATTEMPT_PROFILES, installError,
+  COOKIE_STORE,
+};
