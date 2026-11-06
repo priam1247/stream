@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
 import { JwtConfigError } from '@/lib/jwt';
-import { BOTKEEP_API_BASE, isBotkeepWorkloadId } from '@/lib/botkeep-config';
+import { PANEL_BASE_URL, isPanelServerId } from '@/lib/panel-config';
 import { readPanelStatus, sendPanelPowerSignal } from '@/lib/panel-client';
 import { getPanelConnectionConfig, savePanelConnectionConfig } from '@/lib/storage';
 
@@ -23,12 +23,12 @@ export async function POST(req: NextRequest) {
 
   if (action === 'save') {
     // Never forward a credential to a URL supplied by the browser or an older configuration.
-    if (typeof body.panelUrl === 'string' && body.panelUrl.trim() && body.panelUrl.trim() !== BOTKEEP_API_BASE) {
-      return NextResponse.json({ error: 'Only the Botkeep Developer API is supported.' }, { status: 400 });
+    if (typeof body.panelUrl === 'string' && body.panelUrl.trim() && body.panelUrl.trim() !== PANEL_BASE_URL) {
+      return NextResponse.json({ error: 'Only the HiddenCloud panel is supported.' }, { status: 400 });
     }
     const id = typeof body.panelServerId === 'string' ? body.panelServerId.trim() : undefined;
     const key = typeof body.panelApiKey === 'string' && body.panelApiKey !== '••••••••' ? body.panelApiKey.trim() : undefined;
-    if (id && !isBotkeepWorkloadId(id)) return NextResponse.json({ error: 'Invalid Botkeep server ID.' }, { status: 400 });
+    if (id && !isPanelServerId(id)) return NextResponse.json({ error: 'Invalid HiddenCloud server ID.' }, { status: 400 });
     if (key && !/^[\x21-\x7e]{16,512}$/.test(key)) return NextResponse.json({ error: 'Invalid Botkeep API key.' }, { status: 400 });
     const saved = await savePanelConnectionConfig({ panelServerId: id, panelApiKey: key });
     const status = await readPanelStatus(saved);
@@ -44,19 +44,19 @@ export async function POST(req: NextRequest) {
     }
     const cfg = await getPanelConnectionConfig();
     if (!cfg.panelApiKey || !cfg.panelServerId) {
-      return NextResponse.json({ error: 'Configure Botkeep power controls or manage the server in Botkeep.' }, { status: 400 });
+      return NextResponse.json({ error: 'Configure HiddenCloud power controls or manage the server in HiddenCloud.' }, { status: 400 });
     }
     // Tie confirmation to the exact target even if another tab changes settings.
     if (body.serverId !== cfg.panelServerId) return NextResponse.json({ error: 'Server settings changed. Refresh and confirm the target again.' }, { status: 409 });
     const res = await sendPanelPowerSignal(signal, cfg);
     if (res.ok) {
-      await recordActivity({ category: 'bot', action: `Service ${signal} requested`, actor: session.user.email, outcome: 'requested', detail: 'Botkeep accepted the request.' }).catch(() => {});
-      return NextResponse.json({ ok: true, via: 'botkeep-api', serverId: res.serverId, message: res.message });
+      await recordActivity({ category: 'bot', action: `Service ${signal} requested`, actor: session.user.email, outcome: 'requested', detail: 'HiddenCloud accepted the request.' }).catch(() => {});
+      return NextResponse.json({ ok: true, via: 'hiddencloud-api', serverId: res.serverId, message: res.message });
     }
     // Never queue a second action: older service code may still have its own
     // remote power target, and an uncertain API response may have succeeded.
-    await recordActivity({ category: 'bot', action: `Service ${signal} request failed`, actor: session.user.email, outcome: 'failed', detail: 'Botkeep did not confirm the request.' }).catch(() => {});
-    return NextResponse.json({ error: res.error || 'Botkeep did not confirm the request.' },
+    await recordActivity({ category: 'bot', action: `Service ${signal} request failed`, actor: session.user.email, outcome: 'failed', detail: 'HiddenCloud did not confirm the request.' }).catch(() => {});
+    return NextResponse.json({ error: res.error || 'HiddenCloud did not confirm the request.' },
       { status: res.status >= 400 && res.status <= 599 ? res.status : 502 });
   }
   return NextResponse.json({ error: 'Unknown action.' }, { status: 400 });

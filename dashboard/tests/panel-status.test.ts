@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
-import { BOTKEEP_API_BASE } from '../lib/botkeep-config';
+import { PANEL_BASE_URL } from '../lib/panel-config';
 
 const state = vi.hoisted(() => ({
   role: 'admin' as 'admin' | 'member' | 'anonymous',
@@ -23,7 +23,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-describe('owner-only panel resource status', () => {
+describe('owner-only HiddenCloud panel resource status', () => {
   it('rejects unauthenticated users and members before probing', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -53,7 +53,7 @@ describe('owner-only panel resource status', () => {
     const first = await GET(request());
     expect(await first.json()).toMatchObject({ configured: true, reachable: true, state: 'running' });
     expect(first.headers.get('cache-control')).toContain('no-store');
-    expect(fetchMock.mock.calls[0][0]).toBe(`${BOTKEEP_API_BASE}/workloads/server-1`);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${PANEL_BASE_URL}/api/client/servers/server-1/resources`);
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: 'error', headers: { Authorization: 'Bearer secret-panel-key' } });
     expect(await (await GET(request())).json()).toMatchObject({ state: 'suspended' });
   });

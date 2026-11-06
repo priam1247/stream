@@ -25,7 +25,7 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 | `ZAFAR_AUTH_API_URL` | Optional (legacy migration only) | Leave empty. If set during migration from an older external auth service, existing accounts are verified once (6 s cap) and migrated permanently into local D1. |
 | `BOT_SYNC_TOKEN` | Recommended | Shared private token for the bot’s outbound sync. |
 | `BOTKEEP_BOT_API_URL` / `BOTKEEP_BOT_ADMIN_TOKEN` | Optional | Direct bot bridge defaults. `BOTKEEP_BOT_API_URL` defaults to the service reverse proxy `https://troy.hidenplay.net`; set it to override, or save an empty URL in the dashboard for heartbeat-only. Both are still required for direct calls. Old generic bridge addresses and tokens are not used for inbound control. |
-| `BOTKEEP_WORKLOAD_ID` / `BOTKEEP_API_KEY` | Optional | Explicit Botkeep server ID and Developer API key for server status and power. The key needs `workloads:read` and `power:write`. |
+| `HIDENCLOUD_SERVER_ID` / `HIDENCLOUD_API_KEY` | Optional | HiddenCloud panel (Pterodactyl-compatible client API) for server status and power. The API key is a client key (`ptlc_…`) with Control permission from **Account → API Credentials**. The server ID defaults to `a6451c6c` (troyzafarings – Free Server #236941); the panel address is hardcoded to `https://freepanel.hidencloud.com`. Legacy `BOTKEEP_WORKLOAD_ID` / `BOTKEEP_API_KEY` are still honored as fallbacks. |
 
 ## Linking Botkeep securely
 
@@ -49,11 +49,12 @@ and old hosting-panel credentials are intentionally ignored, so they cannot
 silently target a previous host. Prefer HTTPS for all token traffic. A
 heartbeat is a report by the bot, not proof of hosting power state.
 
-Botkeep server controls are optional. In **WhatsApp → Hosting**, explicitly
-enter the Botkeep server/workload ID and a Botkeep Developer API key. The
-server sends credentials only to the fixed official HTTPS Developer API. It
-does not discover or choose a server automatically. Power requests require an
-owner confirmation and an accepted request does not mean it has completed.
+HiddenCloud server controls are optional. In **WhatsApp → Hosting**, enter a
+server ID (prefilled with `a6451c6c`) and a client API key (`ptlc_…`) from
+**Account → API Credentials**. The server sends credentials only to the fixed
+panel address (`https://freepanel.hidencloud.com`, Pterodactyl-compatible
+client API); it is never sent to a browser-supplied URL. Power requests require
+an owner confirmation and an accepted request does not mean it has completed.
 
 If an older coordinated bot is still running on Botkeep, stop it before
 updating the bot code and synchronizing the single-host token. The older code
@@ -63,14 +64,14 @@ separate deployment branch remains owner-managed.
 
 ## Owner control room and security
 
-- **WhatsApp → Status** shows the single service and optional Botkeep server
+- **WhatsApp → Status** shows the single service and optional HiddenCloud server
   state. A missing check-in is not proof that the server is powered off.
 - Sign-in is kept only in the current page's memory. A full refresh or a closed,
   reopened or restored tab requires sign-in again; pending member pairing progress
   and its resend cooldown remain recoverable after signing in.
 - The owner home combines bot bridge, WhatsApp, number-list and optional
-  Botkeep server checks. Status is requested only with a Botkeep Developer API
-  key and explicit server ID, at most once per minute during routine polling while
+  HiddenCloud server checks. Status is requested only with a client API key and
+  server ID, at most once per minute during routine polling while
   the page is open. Unreachable or unrecognized responses remain **unknown**,
   not automatically offline. Power actions require confirmation and are never
   retried against a different server or queued to an older bot.
