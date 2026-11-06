@@ -41,7 +41,12 @@ describe('single Botkeep storage with old database values', () => {
     vi.stubEnv('PANEL_URL', 'https://old-host.invalid'); vi.stubEnv('PANEL_API_KEY', 'old-key'); vi.stubEnv('PANEL_SERVER_ID', 'old-server');
     vi.stubEnv('BOT_API_URL', 'https://old-host.invalid'); vi.stubEnv('ADMIN_DASHBOARD_TOKEN', 'legacy-environment-secret');
     expect(await getPanelConnectionConfig()).toMatchObject({ panelUrl: BOTKEEP_API_BASE, panelServerId: '', panelApiKey: '' });
-    expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: '', botAdminToken: '', botSyncToken: 'current-sync-secret' });
+    expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: 'https://troy.hidenplay.net', botAdminToken: '', botSyncToken: 'current-sync-secret' });
+    // A saved blank URL explicitly leaves heartbeat-only mode.
+    await saveBotConnectionConfig({ botApiUrl: '' });
+    expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: '' });
+    await saveBotConnectionConfig({ botApiUrl: 'https://override.example' });
+    expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: 'https://override.example' });
     await savePanelConnectionConfig({ panelServerId: 'workload-1', panelApiKey: 'botkeep-key-123456789' });
     expect(await getPanelConnectionConfig()).toMatchObject({ panelUrl: BOTKEEP_API_BASE, panelServerId: 'workload-1', panelApiKey: 'botkeep-key-123456789' });
     expect(db.prepare("SELECT value FROM portal_settings WHERE key = 'panel_api_key'").get()).toMatchObject({ value: 'old-key' });
