@@ -66,19 +66,19 @@ export function CommandDirectory({ hideOwnerCommands = false }: CommandDirectory
 
   return (
     <section className="space-y-3.5">
-      <div className="flex flex-col gap-2.5 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-4">
+      <div className="flex flex-col gap-2.5 rounded-2xl border border-line bg-paper p-3.5 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-4">
         <div className="relative min-w-0 flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
           <input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Filter commands…"
-            className="w-full rounded-xl border border-slate-300 bg-slate-50 py-2 pl-9 pr-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:bg-white focus:outline-none"
+            className="w-full rounded-xl border border-linestrong bg-wash py-2 pl-9 pr-3 text-sm text-ink placeholder:text-faint focus:border-accent-600 focus:bg-paper focus:outline-none"
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-1 rounded-xl bg-slate-100 p-1">
+        <div className="flex flex-wrap items-center gap-1 rounded-xl bg-wash p-1">
           {categories.map((cat) => (
             <button
               key={cat.id}
@@ -86,8 +86,8 @@ export function CommandDirectory({ hideOwnerCommands = false }: CommandDirectory
               onClick={() => setCategory(cat.id)}
               className={`rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
                 category === cat.id
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-paper text-ink shadow-sm'
+                  : 'text-muted hover:text-ink'
               }`}
             >
               {cat.label}
@@ -97,8 +97,8 @@ export function CommandDirectory({ hideOwnerCommands = false }: CommandDirectory
       </div>
 
       {filtered.length === 0 ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
-          <p className="text-sm font-semibold text-slate-700">No matches</p>
+        <div className="rounded-2xl border border-line bg-paper p-6 text-center shadow-sm">
+          <p className="text-sm font-semibold text-ink-soft">No matches</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -107,18 +107,18 @@ export function CommandDirectory({ hideOwnerCommands = false }: CommandDirectory
             return (
               <article
                 key={cmd.name}
-                className="flex min-w-0 flex-col justify-between rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm sm:p-4"
+                className="flex min-w-0 flex-col justify-between rounded-2xl border border-line bg-paper p-3.5 shadow-sm sm:p-4"
               >
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                      <span className="inline-flex items-center gap-1 rounded-lg bg-teal-50 px-2 py-0.5 font-mono text-xs font-bold text-teal-800 ring-1 ring-teal-200">
-                        <Terminal className="h-3 w-3 text-teal-600" />.{cmd.name}
+                      <span className="inline-flex items-center gap-1 rounded-lg bg-accent-50 px-2 py-0.5 font-mono text-xs font-bold text-accent-800 ring-1 ring-accent-200">
+                        <Terminal className="h-3 w-3 text-accent-600" />.{cmd.name}
                       </span>
                       {cmd.aliases.slice(0, 2).map((alias) => (
                         <span
                           key={alias}
-                          className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[11px] text-slate-600"
+                          className="rounded border border-line bg-wash px-1.5 py-0.5 font-mono text-[11px] text-muted"
                         >
                           .{alias}
                         </span>
@@ -126,11 +126,11 @@ export function CommandDirectory({ hideOwnerCommands = false }: CommandDirectory
                     </div>
 
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] font-medium text-slate-500">
+                      <span className="text-[11px] font-medium text-muted">
                         {cmd.summary}
                       </span>
                       {cmd.ownerOnly && (
-                        <span className="inline-flex items-center gap-0.5 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-800 ring-1 ring-amber-200">
+                        <span className="inline-flex items-center gap-0.5 rounded bg-warn-50 px-1.5 py-0.5 text-[10px] font-bold uppercase text-warn-800 ring-1 ring-warn-200">
                           <Lock className="h-2.5 w-2.5" />
                           {cmd.adminOk ? 'Owner / Admin' : 'Owner'}
                         </span>
@@ -138,23 +138,23 @@ export function CommandDirectory({ hideOwnerCommands = false }: CommandDirectory
                     </div>
                   </div>
 
-                  <div className="mt-2.5 break-all rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 font-mono text-[11px] text-slate-700">
+                  <div className="mt-2.5 break-all rounded-lg border border-line bg-wash px-2.5 py-1.5 font-mono text-[11px] text-ink-soft">
                     {cmd.usage}
                   </div>
                 </div>
 
-                <div className="mt-2.5 flex min-w-0 items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
-                  <code className="min-w-0 truncate font-mono text-xs text-slate-600">
+                <div className="mt-2.5 flex min-w-0 items-center justify-between gap-2 border-t border-wash pt-2.5">
+                  <code className="min-w-0 truncate font-mono text-xs text-muted">
                     {cmd.example}
                   </code>
                   <button
                     type="button"
                     onClick={() => copyExample(cmd.example)}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-800"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-line bg-wash px-2.5 py-1 text-[11px] font-semibold text-ink-soft transition hover:border-accent-200 hover:bg-accent-50 hover:text-accent-800"
                   >
                     {isCopied ? (
                       <>
-                        <Check className="h-3 w-3 text-teal-600" />
+                        <Check className="h-3 w-3 text-accent-600" />
                         Copied
                       </>
                     ) : (

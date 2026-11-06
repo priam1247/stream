@@ -26,9 +26,9 @@ export default function LoginPage() {
 
   if (checking) {
     return (
-      <div className="bg-portal-canvas flex min-h-screen items-center justify-center">
-        <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-3.5 text-sm font-medium text-slate-700 shadow-sm">
-          <Loader2 className="h-4 w-4 animate-spin text-teal-600" />
+      <div className="bg-canvas flex min-h-screen items-center justify-center">
+        <div className="flex items-center gap-3 rounded-2xl border border-line bg-paper px-5 py-3.5 text-sm font-medium text-ink-soft shadow-sm">
+          <Loader2 className="h-4 w-4 animate-spin text-accent-600" />
           Checking session…
         </div>
       </div>
