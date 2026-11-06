@@ -37,7 +37,7 @@ function dayLabel(date: string) {
 interface Props {
   user: AuthUser;
   overview: MemberOverviewPayload;
-  number: string;
+  number?: string;
   account?: WhatsAppAccountStatus;
   linkedAt?: number;
   statusError: boolean;
@@ -49,9 +49,10 @@ interface Props {
   onReconnect: () => void;
   onUnlink: () => void;
   onSignOut: () => void | Promise<void>;
+  onLinkNumber?: () => void;
 }
 
-export function MemberWorkspace({ user: initialUser, overview, number, account, linkedAt, statusError, busy, unlinking, supportUnread, notice, onRefresh, onReconnect, onUnlink, onSignOut }: Props) {
+export function MemberWorkspace({ user: initialUser, overview, number, account, linkedAt, statusError, busy, unlinking, supportUnread, notice, onRefresh, onReconnect, onUnlink, onSignOut, onLinkNumber }: Props) {
   const router = useRouter();
   const [user, setUser] = useState(initialUser);
   const [page, setPage] = useState<Page>('home');
@@ -63,16 +64,17 @@ export function MemberWorkspace({ user: initialUser, overview, number, account, 
   const [saving, setSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState<{ text: string; bad?: boolean } | null>(null);
 
-  const current = overview.numbers.find((item) => item.number === number);
+  const linked = Boolean(number);
+  const current = linked ? overview.numbers.find((item) => item.number === number) : undefined;
   const approval = current?.approval || 'approved';
   const reachable = !statusError && overview.botReachable === true;
-  const state = reachable ? account?.state : undefined;
-  const connection = statusError ? 'Status unavailable' : !reachable ? 'Bot offline' : state === 'connected' ? 'Bot active' : state === 'connecting' ? 'Reconnecting' :
+  const state = linked ? (reachable ? account?.state : undefined) : undefined;
+  const connection = !linked ? 'Not linked' : statusError ? 'Status unavailable' : !reachable ? 'Bot offline' : state === 'connected' ? 'Bot active' : state === 'connecting' ? 'Reconnecting' :
     state === 'paused' ? 'Connection paused' : state === 'logged_out' ? 'WhatsApp disconnected' :
       state === 'awaiting_link' ? 'Link in progress' : state === 'expired' ? 'Connection expired' : 'Session not reporting';
-  const access = !overview.memberAllowed ? 'Access restricted' : approval === 'pending' ? 'Awaiting approval' :
+  const access = !linked ? 'Not linked' : !overview.memberAllowed ? 'Access restricted' : approval === 'pending' ? 'Awaiting approval' :
     approval === 'rejected' ? 'Not approved' : current?.enabled === false ? 'Access paused' : 'Approved';
-  const canReconnect = reachable && (state === 'logged_out' || state === 'expired' || state === 'awaiting_link' || !account);
+  const canReconnect = linked && reachable && (state === 'logged_out' || state === 'expired' || state === 'awaiting_link' || !account);
   const usage = overview.personalUsage?.find((item) => item.number === number) || null;
   const analytics = useMemo(() => usage ? memberAnalytics(usage) : null, [usage]);
   const maxBar = Math.max(1, ...(analytics?.days.map((day) => day.total || 0) || []));
@@ -138,6 +140,8 @@ export function MemberWorkspace({ user: initialUser, overview, number, account, 
               ? 'I can’t reach your status right now. Try refresh and I’ll check again.'
               : state === 'connected'
                 ? 'You’re connected. Your recent activity and tools are ready here.'
+                : !linked
+                ? 'No number linked yet. The bot only answers linked numbers — you can explore everything here first.'
                 : `Your connection is ${connection.toLowerCase()}. Visit Settings to manage it.`}
           </ZafarBubble>
         </div>
@@ -154,8 +158,10 @@ export function MemberWorkspace({ user: initialUser, overview, number, account, 
             </> : <div className="flex min-h-[205px] flex-col items-center justify-center text-center"><span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/10 text-accent"><Activity className="h-5 w-5" /></span><p className="mt-3 text-sm font-semibold text-ink/80">Waiting for activity data</p><p className="mt-1 max-w-[230px] text-xs leading-5 text-ink/60">Personal stats appear when the service reports them.</p></div>}
           </section>
           <section aria-label="Linked number" className={`${card} overflow-hidden`}>
-            <div className="border-b border-ink/5 bg-ink/5 p-4 sm:p-6"><div className="flex items-start justify-between gap-3"><div><p className={eyebrow}>Your WhatsApp</p><h2 className="mt-1 text-lg font-bold tracking-tight">Connection</h2></div><span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-paper text-accent shadow-sm"><Smartphone className="h-5 w-5" /></span></div><p className="mt-5 font-mono text-[17px] font-bold tracking-tight text-ink">{maskMemberNumber(number)}</p><p className="mt-1 text-xs text-ink/60">Linked {formatDate(linkedAt)}</p></div>
-            <div className="space-y-3 p-4 text-xs sm:p-6"><div className="flex items-center justify-between gap-3"><span className="text-ink/60">Connection</span><span className="font-semibold text-ink/80">{connection}</span></div><div className="flex items-center justify-between gap-3"><span className="text-ink/60">Access</span><span className="font-semibold text-ink/80">{access}</span></div><button type="button" onClick={() => navigate('settings')} className="mt-1 inline-flex min-h-10 items-center gap-1.5 font-semibold text-accent hover:text-accent">Manage connection <ArrowRight className="h-3.5 w-3.5" /></button></div>
+            <div className="border-b border-ink/5 bg-ink/5 p-4 sm:p-6"><div className="flex items-start justify-between gap-3"><div><p className={eyebrow}>Your WhatsApp</p><h2 className="mt-1 text-lg font-bold tracking-tight">Connection</h2></div><span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-paper text-accent shadow-sm"><Smartphone className="h-5 w-5" /></span></div><p className="mt-5 font-mono text-[17px] font-bold tracking-tight text-ink">{linked ? maskMemberNumber(number!) : 'No number yet'}</p><p className="mt-1 text-xs text-ink/60">{linked ? `Linked ${formatDate(linkedAt)}` : 'One code from WhatsApp and you are in'}</p></div>
+            <div className="space-y-3 p-4 text-xs sm:p-6"><div className="flex items-center justify-between gap-3"><span className="text-ink/60">Connection</span><span className="font-semibold text-ink/80">{connection}</span></div><div className="flex items-center justify-between gap-3"><span className="text-ink/60">Access</span><span className="font-semibold text-ink/80">{access}</span></div>{linked
+              ? <button type="button" onClick={() => navigate('settings')} className="mt-1 inline-flex min-h-10 items-center gap-1.5 font-semibold text-accent">Manage connection <ArrowRight className="h-3.5 w-3.5" /></button>
+              : onLinkNumber && <button type="button" onClick={onLinkNumber} className="mt-1 inline-flex min-h-10 items-center gap-1.5 font-semibold text-accent">Link your number <ArrowRight className="h-3.5 w-3.5" /></button>}</div>
           </section>
         </div>
         <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(240px,0.8fr)]">
@@ -178,7 +184,7 @@ export function MemberWorkspace({ user: initialUser, overview, number, account, 
       {page === 'settings' && <>
         <div className="mb-5"><p className={eyebrow}>Your account</p><h1 className="font-display mt-1.5 text-[27px] font-semibold tracking-tight">Settings</h1><p className="mt-1 text-xs text-ink/60">Manage your profile and connection.</p></div>
         <div className="grid gap-4 lg:grid-cols-2"><section className={`${card} p-4 sm:p-6`}><div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent"><ShieldCheck className="h-5 w-5" /></span><div><h2 className="text-sm font-bold">Profile</h2><p className="mt-0.5 text-[11px] text-ink/60">Your personal details</p></div></div><form onSubmit={(event) => void saveProfile(event)} className="mt-5 space-y-4"><div><label htmlFor="member-profile-name" className="mb-1.5 block text-xs font-semibold text-ink/60">Display name</label><input id="member-profile-name" required maxLength={100} value={profileName} onChange={(event) => setProfileName(event.target.value)} className="min-h-12 w-full rounded-xl border border-ink/10 px-3 text-base outline-none focus:border-accent" /></div><div><span className="block text-xs font-semibold text-ink/60">Email</span><p className="mt-1 break-all text-xs text-ink/60">{user.email}</p></div><button type="submit" disabled={saving} className="min-h-11 rounded-xl bg-accent px-4 text-xs font-bold text-paper hover:bg-accent disabled:opacity-50">{saving ? 'Saving…' : 'Save changes'}</button></form></section>
-          <section className={`${card} p-4 sm:p-6`}><div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent"><Smartphone className="h-5 w-5" /></span><div><h2 className="text-sm font-bold">WhatsApp connection</h2><p className="mt-0.5 text-[11px] text-ink/60">{maskMemberNumber(number)}</p></div></div><div className="mt-5 space-y-3 rounded-2xl bg-ink/5 p-4 text-xs"><div className="flex justify-between gap-2"><span className="text-ink/60">Connection</span><span className="font-semibold">{connection}</span></div><div className="flex justify-between gap-2"><span className="text-ink/60">Approval</span><span className="font-semibold">{access}</span></div><div className="flex justify-between gap-2"><span className="text-ink/60">Linked</span><span className="font-semibold">{formatDate(linkedAt)}</span></div></div><div className="mt-4 flex flex-wrap gap-2">{canReconnect && <button type="button" disabled={!overview.memberAllowed || !overview.botEnabledForMembers || unlinking} onClick={onReconnect} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-accent px-3 text-xs font-semibold text-paper disabled:opacity-50"><Smartphone className="h-4 w-4" />{state === 'awaiting_link' ? 'View linking code' : 'Reconnect'}</button>}<button type="button" disabled={busy || unlinking} onClick={() => setConfirmUnlink(true)} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-accent/25 px-3 text-xs font-semibold text-accent disabled:opacity-50"><Unlink className="h-4 w-4" />{unlinking ? 'Unlinking…' : 'Unlink'}</button></div></section>
+          <section className={`${card} p-4 sm:p-6`}><div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent"><Smartphone className="h-5 w-5" /></span><div><h2 className="text-sm font-bold">WhatsApp connection</h2><p className="mt-0.5 text-[11px] text-ink/60">{linked ? maskMemberNumber(number!) : 'Not linked yet'}</p></div></div><div className="mt-5 space-y-3 rounded-2xl bg-ink/5 p-4 text-xs"><div className="flex justify-between gap-2"><span className="text-ink/60">Connection</span><span className="font-semibold">{connection}</span></div><div className="flex justify-between gap-2"><span className="text-ink/60">Approval</span><span className="font-semibold">{access}</span></div><div className="flex justify-between gap-2"><span className="text-ink/60">Linked</span><span className="font-semibold">{linked ? formatDate(linkedAt) : 'Not yet'}</span></div></div><div className="mt-4 flex flex-wrap gap-2">{!linked && onLinkNumber && <button type="button" onClick={onLinkNumber} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-accent px-3 text-xs font-semibold text-paper"><Smartphone className="h-4 w-4" />Link your number</button>}{linked && canReconnect && <button type="button" disabled={!overview.memberAllowed || !overview.botEnabledForMembers || unlinking} onClick={onReconnect} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-accent px-3 text-xs font-semibold text-paper disabled:opacity-50"><Smartphone className="h-4 w-4" />{state === 'awaiting_link' ? 'View linking code' : 'Reconnect'}</button>}{linked && <button type="button" disabled={busy || unlinking} onClick={() => setConfirmUnlink(true)} className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-accent/25 px-3 text-xs font-semibold text-accent disabled:opacity-50"><Unlink className="h-4 w-4" />{unlinking ? 'Unlinking…' : 'Unlink'}</button>}</div></section>
           <section className={`${card} p-4 sm:p-6`}><h2 className="text-sm font-bold">Need a hand?</h2><p className="mt-1 text-xs leading-5 text-ink/60">Send a message to support.{supportUnread ? ` ${supportUnread} unread.` : ''}</p><button type="button" onClick={() => navigate('support')} className="mt-3 inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-accent"><CircleHelp className="h-4 w-4" /> Open support <ExternalLink className="h-3.5 w-3.5" /></button></section>
           <section className={`${card} p-4 sm:p-6`}><h2 className="text-sm font-bold">Session</h2><p className="mt-1 text-xs leading-5 text-ink/60">Sign in again after closing or refreshing this page.</p><button type="button" onClick={() => void onSignOut()} className="mt-3 inline-flex min-h-11 items-center gap-2 text-xs font-semibold text-accent"><LogOut className="h-4 w-4" /> Sign out</button></section></div>
       </>}
