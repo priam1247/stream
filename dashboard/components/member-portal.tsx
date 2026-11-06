@@ -292,9 +292,9 @@ export function MemberPortal() {
 
   if (checking || !user) {
     return (
-      <div className="bg-portal-canvas flex min-h-screen items-center justify-center px-4">
-        <div className="flex items-center gap-2.5 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-semibold text-slate-700 shadow-sm">
-          <Loader2 className="h-4 w-4 animate-spin text-teal-600" />
+      <div className="bg-canvas flex min-h-screen items-center justify-center px-4">
+        <div className="flex items-center gap-2.5 rounded-2xl border border-line bg-paper px-4 py-3 text-xs font-semibold text-ink-soft shadow-sm">
+          <Loader2 className="h-4 w-4 animate-spin text-accent-600" />
           Connecting…
         </div>
       </div>
@@ -340,15 +340,15 @@ export function MemberPortal() {
             role={notice.bad ? 'alert' : 'status'}
             className={`mb-4 flex items-center justify-between gap-2 rounded-xl border px-3.5 py-2.5 text-xs font-medium ${
               notice.bad
-                ? 'border-rose-200 bg-rose-50 text-rose-800'
-                : 'border-teal-200 bg-teal-50 text-teal-900'
+                ? 'border-bad-200 bg-bad-50 text-bad-800'
+                : 'border-accent-200 bg-accent-50 text-accent-900'
             }`}
           >
             <div className="flex min-w-0 items-center gap-2">
               {notice.bad ? (
-                <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                <AlertCircle className="h-4 w-4 shrink-0 text-bad-600" />
               ) : (
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-teal-600" />
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-accent-600" />
               )}
               <span className="min-w-0 break-words">{notice.text}</span>
             </div>
@@ -373,7 +373,7 @@ export function MemberPortal() {
         )}
 
         {!overview.memberAllowed && (
-          <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-semibold text-rose-800">
+          <div className="mb-4 rounded-xl border border-bad-200 bg-bad-50 px-3.5 py-2.5 text-xs font-semibold text-bad-800">
             Account restricted
           </div>
         )}
@@ -382,8 +382,8 @@ export function MemberPortal() {
 
         {tab === 'status' && (
           <div className="space-y-4">
-            <h1 className="px-0.5 text-2xl font-bold tracking-tight text-slate-950">Service status</h1>
-            {statusUnavailable && <p role="alert" className="text-xs text-rose-700">Status could not be refreshed.</p>}
+            <h1 className="font-display px-0.5 text-[28px] font-semibold tracking-tight text-ink">Service status</h1>
+            {statusUnavailable && <p role="alert" className="text-xs text-bad-700">Status could not be refreshed.</p>}
             <LiveAnalytics
               reachable={statusUnavailable ? false : overview.botReachable}
               connected={statusUnavailable ? null : overview.botConnected}
@@ -398,18 +398,18 @@ export function MemberPortal() {
         )}
 
         {tab === 'numbers' && (
-          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+          <section className="rounded-2xl border border-line bg-paper p-4 shadow-sm sm:p-5">
             <div className="flex items-center justify-between gap-2">
-              <h1 className="text-sm font-bold text-slate-900 sm:text-base">
+              <h1 className="text-sm font-bold text-ink sm:text-base">
                 WhatsApp numbers
               </h1>
-              <span className="font-mono text-xs text-slate-500 tabular-nums">
+              <span className="font-mono text-xs text-muted tabular-nums">
                 {overview.numbers.length} approved
               </span>
             </div>
 
-            <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600"><span className="font-semibold">{overview.whitelistSync === 'synced' ? 'Service reports the latest number list' : overview.whitelistSync === 'pending' ? 'Waiting for service sync' : 'Number sync not confirmed'}</span><span className="block">Approve your number, then request a code. Other linked accounts stay connected.</span></div>
-            {!overview.botEnabledForMembers && !user.isAdmin && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-800">New number approvals and pairing are paused. Existing approvals remain enabled.</p>}
+            <div className="mt-3 rounded-xl bg-wash px-3 py-2.5 text-xs leading-5 text-muted"><span className="font-semibold">{overview.whitelistSync === 'synced' ? 'Service reports the latest number list' : overview.whitelistSync === 'pending' ? 'Waiting for service sync' : 'Number sync not confirmed'}</span><span className="block">Approve your number, then request a code. Other linked accounts stay connected.</span></div>
+            {!overview.botEnabledForMembers && !user.isAdmin && <p className="mt-3 rounded-xl bg-warn-50 px-3 py-2.5 text-xs leading-5 text-warn-800">New number approvals and pairing are paused. Existing approvals remain enabled.</p>}
             <form
               onSubmit={handleAllowNumber}
               className="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-[1.15fr_0.95fr_auto] sm:items-end"
@@ -417,7 +417,7 @@ export function MemberPortal() {
               <div className="min-w-0">
                 <label
                   htmlFor="member-wa-number"
-                  className="mb-1 block text-xs font-medium text-slate-700"
+                  className="mb-1 block text-xs font-medium text-ink-soft"
                 >
                   Number (with country code)
                 </label>
@@ -430,14 +430,14 @@ export function MemberPortal() {
                   value={number}
                   onChange={(e) => setNumber(e.target.value)}
                   placeholder="265991234567"
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 font-mono text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none disabled:bg-slate-100 tabular-nums"
+                  className="w-full rounded-xl border border-linestrong bg-paper px-3.5 py-2.5 font-mono text-sm text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none disabled:bg-wash tabular-nums"
                 />
               </div>
 
               <div className="min-w-0">
                 <label
                   htmlFor="member-wa-label"
-                  className="mb-1 block text-xs font-medium text-slate-700"
+                  className="mb-1 block text-xs font-medium text-ink-soft"
                 >
                   Label
                 </label>
@@ -449,14 +449,14 @@ export function MemberPortal() {
                   value={label}
                   onChange={(e) => setLabel(e.target.value)}
                   placeholder="Mobile"
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none disabled:bg-slate-100"
+                  className="w-full rounded-xl border border-linestrong bg-paper px-3.5 py-2.5 text-sm text-ink placeholder:text-faint focus:border-accent-600 focus:outline-none disabled:bg-wash"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={!canLinkNumbers || submitting}
-                className="inline-flex h-[42px] items-center justify-center gap-1.5 rounded-xl bg-teal-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50"
+                className="inline-flex h-[42px] items-center justify-center gap-1.5 rounded-xl bg-accent-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-accent-700 disabled:opacity-50"
               >
                 <Plus className="h-4 w-4" />
                 {submitting ? 'Saving…' : 'Allow'}
@@ -473,10 +473,10 @@ export function MemberPortal() {
               />
             </div>
 
-            <div className="relative mt-3"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" /><input type="search" aria-label="Search my numbers" value={numberSearch} onChange={(event) => setNumberSearch(event.target.value)} placeholder="Search number or label" className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-base text-slate-900 outline-none focus:border-teal-400 focus:bg-white sm:text-sm" /></div>
-            <div className="mt-2 divide-y divide-slate-100">
+            <div className="relative mt-3"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" /><input type="search" aria-label="Search my numbers" value={numberSearch} onChange={(event) => setNumberSearch(event.target.value)} placeholder="Search number or label" className="min-h-11 w-full rounded-xl border border-line bg-wash py-2 pl-9 pr-3 text-base text-ink outline-none focus:border-accent-600 focus:bg-paper sm:text-sm" /></div>
+            <div className="mt-2 divide-y divide-wash">
               {filteredNumbers.length === 0 ? (
-                <p className="py-8 text-center font-mono text-xs text-slate-400">
+                <p className="py-8 text-center font-mono text-xs text-faint">
                   {overview.numbers.length ? 'No matching numbers' : 'No numbers approved'}
                 </p>
               ) : (
@@ -491,22 +491,22 @@ export function MemberPortal() {
                     >
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-mono text-sm font-bold text-slate-900 tabular-nums">
+                          <span className="font-mono text-sm font-bold text-ink tabular-nums">
                             +{item.number}
                           </span>
                           <span
                             className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
                               item.enabled
-                                ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
-                                : 'bg-slate-100 text-slate-600'
+                                ? 'bg-ok-50 text-ok-700 ring-1 ring-ok-200'
+                                : 'bg-wash text-muted'
                             }`}
                           >
                             {item.enabled ? 'Allowed' : 'Paused'}
                           </span>
                         </div>
-                        <p className="mt-1 text-xs font-medium text-teal-700">{accountStatusLabel(statusUnavailable || overview.botReachable === false ? null : overview.accounts, item.number)}</p>
+                        <p className="mt-1 text-xs font-medium text-accent-700">{accountStatusLabel(statusUnavailable || overview.botReachable === false ? null : overview.accounts, item.number)}</p>
                         {item.label && (
-                          <p className="mt-0.5 truncate text-xs text-slate-500">
+                          <p className="mt-0.5 truncate text-xs text-muted">
                             {item.label}
                           </p>
                         )}
@@ -523,7 +523,7 @@ export function MemberPortal() {
                             accountState === 'connected' || accountState === 'connecting'
                           }
                           onClick={() => handleRequestCode(item.number)}
-                          className="inline-flex min-h-11 items-center gap-1 rounded-xl bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-40"
+                          className="inline-flex min-h-11 items-center gap-1 rounded-xl bg-accent-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-accent-700 disabled:opacity-40"
                         >
                           <Link2 className="h-3.5 w-3.5" />
                           {overview.botReachable === false ? 'Offline' : 'Get Code'}
@@ -535,7 +535,7 @@ export function MemberPortal() {
                           onClick={() =>
                             handleToggleOwnNumber(item.number, !item.enabled)
                           }
-                          className="min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
+                          className="min-h-11 rounded-xl border border-line bg-wash px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:bg-wash disabled:opacity-50"
                         >
                           {item.enabled ? 'Pause' : 'Enable'}
                         </button>
@@ -545,14 +545,14 @@ export function MemberPortal() {
                             <button
                               type="button"
                               onClick={() => handleDeleteOwnNumber(item.number)}
-                              className="min-h-11 rounded-xl bg-rose-600 px-2.5 py-1.5 text-xs font-semibold text-white"
+                              className="min-h-11 rounded-xl bg-bad-600 px-2.5 py-1.5 text-xs font-semibold text-white"
                             >
                               Confirm
                             </button>
                             <button
                               type="button"
                               onClick={() => setConfirmDelete(null)}
-                              className="min-h-11 rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600"
+                              className="min-h-11 rounded-xl bg-wash px-2.5 py-1.5 text-xs font-medium text-muted"
                             >
                               Cancel
                             </button>
@@ -562,7 +562,7 @@ export function MemberPortal() {
                             type="button"
                             onClick={() => setConfirmDelete(item.number)}
                             aria-label="Remove number"
-                            className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-600 hover:border-rose-200 hover:bg-rose-50"
+                            className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-line bg-paper px-2.5 py-1.5 text-xs font-semibold text-bad-600 hover:border-bad-200 hover:bg-bad-50"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                             Remove
@@ -577,7 +577,7 @@ export function MemberPortal() {
           </section>
         )}
 
-        {visitedTabs.includes('commands') && <div hidden={tab !== 'commands'} className="space-y-4"><h1 className="px-0.5 text-2xl font-bold tracking-tight text-slate-950">Commands</h1><CommandDirectory hideOwnerCommands /></div>}
+        {visitedTabs.includes('commands') && <div hidden={tab !== 'commands'} className="space-y-4"><h1 className="font-display px-0.5 text-[28px] font-semibold tracking-tight text-ink">Commands</h1><CommandDirectory hideOwnerCommands /></div>}
         {visitedTabs.includes('vault') && <div hidden={tab !== 'vault'}><MediaVaultDesk /></div>}
       <AccountModal
         open={accountOpen}

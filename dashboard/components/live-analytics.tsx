@@ -86,45 +86,45 @@ export function LiveAnalytics({
   return (
     <section
       aria-label="Live Server Analytics"
-      className="mb-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+      className="mb-5 overflow-hidden rounded-2xl border border-line bg-paper shadow-sm"
     >
       {/* Server Telemetry Header Strip */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50 px-3.5 py-2.5 text-slate-900 sm:px-5">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-wash bg-wash px-3.5 py-2.5 text-ink sm:px-5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="relative flex h-2.5 w-2.5 shrink-0">
             {reachable && (
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75 motion-reduce:animate-none" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ok-600 opacity-75 motion-reduce:animate-none" />
             )}
             <span
               className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
                 reachable && connected === true
-                  ? 'bg-emerald-400'
+                  ? 'bg-ok-600'
                   : reachable && connected === false
-                    ? 'bg-amber-400'
-                    : 'bg-slate-400'
+                    ? 'bg-warn-600'
+                    : 'bg-faint'
               }`}
             />
           </span>
-          <Activity className="h-3.5 w-3.5 shrink-0 text-teal-600" />
+          <Activity className="h-3.5 w-3.5 shrink-0 text-accent-600" />
           <span className="text-xs font-bold">
             Analytics
           </span>
           <span
             className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
               reachable && connected === true
-                ? 'bg-emerald-100 text-emerald-800'
+                ? 'bg-ok-100 text-ok-800'
                 : reachable && connected === false
-                  ? 'bg-amber-100 text-amber-800'
-                  : 'bg-slate-200 text-slate-600'
+                  ? 'bg-warn-100 text-warn-800'
+                  : 'bg-line text-muted'
             }`}
           >
             {reachable && connected === true ? 'WhatsApp connected' : reachable && connected === false ? 'WhatsApp disconnected' : 'No current status'}
           </span>
         </div>
 
-        <div className="flex min-w-0 items-center gap-2.5 font-mono text-[11px] text-slate-600 tabular-nums">
+        <div className="flex min-w-0 items-center gap-2.5 font-mono text-[11px] text-muted tabular-nums">
           {lastSeenSecondsAgo != null && (
-            <span className="text-slate-400">
+            <span className="text-faint">
               sync {Math.max(0, lastSeenSecondsAgo)}s
             </span>
           )}
@@ -132,28 +132,28 @@ export function LiveAnalytics({
       </div>
 
       {/* 4 Core Live Counters: Commands, Successful Downloads, Failed, Uptime */}
-      <div className="grid grid-cols-2 divide-x divide-y divide-slate-100 sm:grid-cols-4 sm:divide-y-0">
+      <div className="grid grid-cols-2 divide-x divide-y divide-wash sm:grid-cols-4 sm:divide-y-0">
         <div className="min-w-0 p-3.5 sm:p-4">
-          <div className="flex items-center justify-between gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <div className="flex items-center justify-between gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
             <span className="truncate">Commands</span>
-            <Terminal className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+            <Terminal className="h-3.5 w-3.5 shrink-0 text-faint" />
           </div>
-          <div className="mt-1 font-mono text-xl font-extrabold text-slate-900 tabular-nums sm:text-2xl">
+          <div className="mt-1 font-mono text-xl font-extrabold text-ink tabular-nums sm:text-2xl">
             {cmds == null ? '—' : cmds.toLocaleString()}
           </div>
         </div>
 
         <div className="min-w-0 p-3.5 sm:p-4">
-          <div className="flex items-center justify-between gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <div className="flex items-center justify-between gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
             <span className="truncate" title="Successful downloads">Downloads OK</span>
-            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-ok-600" />
           </div>
           <div className="mt-1 flex items-baseline gap-1.5">
-            <span className="font-mono text-xl font-extrabold text-emerald-700 tabular-nums sm:text-2xl">
+            <span className="font-mono text-xl font-extrabold text-ok-700 tabular-nums sm:text-2xl">
               {okCount == null ? '—' : okCount.toLocaleString()}
             </span>
             {successRate !== null && (
-              <span className="font-mono text-[11px] font-semibold text-emerald-600 tabular-nums">
+              <span className="font-mono text-[11px] font-semibold text-ok-600 tabular-nums">
                 {successRate}%
               </span>
             )}
@@ -161,21 +161,21 @@ export function LiveAnalytics({
         </div>
 
         <div className="min-w-0 p-3.5 sm:p-4">
-          <div className="flex items-center justify-between gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <div className="flex items-center justify-between gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
             <span className="truncate">Failed</span>
-            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-500" />
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-bad-500" />
           </div>
-          <div className="mt-1 font-mono text-xl font-extrabold text-rose-600 tabular-nums sm:text-2xl">
+          <div className="mt-1 font-mono text-xl font-extrabold text-bad-600 tabular-nums sm:text-2xl">
             {failCount == null ? '—' : failCount.toLocaleString()}
           </div>
         </div>
 
         <div className="min-w-0 p-3.5 sm:p-4">
-          <div className="flex items-center justify-between gap-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <div className="flex items-center justify-between gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
             <span className="truncate">Uptime</span>
-            <Clock className="h-3.5 w-3.5 shrink-0 text-teal-600" />
+            <Clock className="h-3.5 w-3.5 shrink-0 text-accent-600" />
           </div>
-          <div className="mt-1 truncate font-mono text-lg font-extrabold text-slate-900 tabular-nums sm:text-2xl">
+          <div className="mt-1 truncate font-mono text-lg font-extrabold text-ink tabular-nums sm:text-2xl">
             {formatUptime(liveUptime, reachable)}
           </div>
         </div>
@@ -183,32 +183,32 @@ export function LiveAnalytics({
 
       {/* Live Server Resource Strip (RAM, Disk, Queues) */}
       {showResources && (
-        <div className="grid grid-cols-1 gap-2 border-t border-slate-100 bg-slate-50/80 px-3.5 py-2.5 text-xs sm:grid-cols-3 sm:gap-4 sm:px-5">
-          <div className="flex min-w-0 items-center justify-between gap-2 font-mono text-[11px] text-slate-600 tabular-nums">
-            <span className="inline-flex items-center gap-1.5 font-sans font-semibold text-slate-500">
-              <Cpu className="h-3.5 w-3.5 text-teal-600" />
+        <div className="grid grid-cols-1 gap-2 border-t border-wash bg-wash/80 px-3.5 py-2.5 text-xs sm:grid-cols-3 sm:gap-4 sm:px-5">
+          <div className="flex min-w-0 items-center justify-between gap-2 font-mono text-[11px] text-muted tabular-nums">
+            <span className="inline-flex items-center gap-1.5 font-sans font-semibold text-muted">
+              <Cpu className="h-3.5 w-3.5 text-accent-600" />
               RAM
             </span>
-            <span className="font-bold text-slate-800">
+            <span className="font-bold text-ink-soft">
               {ramUsedMB != null ? `${ramUsedMB} MB` : '—'}
             </span>
           </div>
 
-          <div className="flex min-w-0 items-center justify-between gap-2 font-mono text-[11px] text-slate-600 tabular-nums">
-            <span className="inline-flex shrink-0 items-center gap-1.5 font-sans font-semibold text-slate-500">
-              <HardDrive className="h-3.5 w-3.5 text-teal-600" />
+          <div className="flex min-w-0 items-center justify-between gap-2 font-mono text-[11px] text-muted tabular-nums">
+            <span className="inline-flex shrink-0 items-center gap-1.5 font-sans font-semibold text-muted">
+              <HardDrive className="h-3.5 w-3.5 text-accent-600" />
               Disk
             </span>
             <div className="flex min-w-0 items-center gap-2">
               {diskPct !== null && (
-                <div className="hidden h-1.5 w-14 overflow-hidden rounded-full bg-slate-200 xs:block sm:block">
+                <div className="hidden h-1.5 w-14 overflow-hidden rounded-full bg-line xs:block sm:block">
                   <div
-                    className={`h-full ${diskPct > 85 ? 'bg-rose-500' : 'bg-teal-600'}`}
+                    className={`h-full ${diskPct > 85 ? 'bg-bad-500' : 'bg-accent-600'}`}
                     style={{ width: `${diskPct}%` }}
                   />
                 </div>
               )}
-              <span className="truncate font-bold text-slate-800">
+              <span className="truncate font-bold text-ink-soft">
                 {diskUsedMB != null && diskBudgetMB != null
                   ? `${diskUsedMB} / ${diskBudgetMB} MB`
                   : '—'}
@@ -216,12 +216,12 @@ export function LiveAnalytics({
             </div>
           </div>
 
-          <div className="flex min-w-0 items-center justify-between gap-2 font-mono text-[11px] text-slate-600 tabular-nums">
-            <span className="inline-flex items-center gap-1.5 font-sans font-semibold text-slate-500">
-              <Layers className="h-3.5 w-3.5 text-teal-600" />
+          <div className="flex min-w-0 items-center justify-between gap-2 font-mono text-[11px] text-muted tabular-nums">
+            <span className="inline-flex items-center gap-1.5 font-sans font-semibold text-muted">
+              <Layers className="h-3.5 w-3.5 text-accent-600" />
               Queues
             </span>
-            <span className="font-bold text-slate-800">
+            <span className="font-bold text-ink-soft">
               L:{queueLight ?? '—'} · H:{queueHeavy ?? '—'}
             </span>
           </div>

@@ -5,30 +5,18 @@
 @layer base {
   :root {
     color-scheme: light;
-    --background: oklch(1 0 0);
-    --canvas: oklch(0.987 0.002 90);
-    --foreground: oklch(0 0 0);
-    --primary: oklch(0 0 0);
-    --muted-foreground: oklch(0.45 0.012 80);
-    --mint: oklch(0.965 0.035 165);
-    --success: oklch(0.55 0.14 150);
-    --warning: oklch(0.68 0.15 70);
-    --destructive: oklch(0.56 0.21 27);
-    --border: oklch(0.9 0.008 85);
-    --radius: 0px;
-
-    /* Compatibility tokens used by the existing Next.js components. */
-    --ink: var(--foreground);
-    --paper: var(--background);
-    --muted: var(--muted-foreground);
-    --line: var(--border);
-    --wash: var(--canvas);
-  }
-
-  *,
-  *::before,
-  *::after {
-    border-radius: 0 !important;
+    --canvas: #f4f3ec;
+    --paper: #fcfcf9;
+    --wash: #eceae0;
+    --line: #e0decf;
+    --line-strong: #c9c6b6;
+    --ink: #1a1814;
+    --ink-soft: #33312a;
+    --muted: #66634f;
+    --faint: #a09c8c;
+    --accent: #d9480f;
+    --accent-hover: #b93e0d;
+    --accent-soft: rgba(217, 72, 15, 0.1);
   }
 
   html,
@@ -36,27 +24,33 @@
     max-width: 100vw;
     min-height: 100%;
     overflow-x: hidden;
-    background: var(--background);
-    color: var(--foreground);
+    background: var(--canvas);
+    color: var(--ink);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
   body {
-    font-family: 'Archivo Variable', Archivo, sans-serif;
+    font-family: 'Archivo Variable', Archivo, ui-sans-serif, system-ui, sans-serif;
     font-size: 14px;
+    font-weight: 500;
   }
 
-  h1,
-  h2,
-  h3,
-  h4 {
-    font-family: 'Archivo Variable', Archivo, sans-serif;
-    font-stretch: 125%;
-    font-variation-settings: 'wdth' 125;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    text-transform: lowercase;
+  /* Faint engineering-dot paper texture. Quiet by design. */
+  .paper-grid {
+    background-image: radial-gradient(rgba(26, 24, 20, 0.07) 1px, transparent 1.1px);
+    background-size: 22px 22px;
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: #fff7ed;
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
   }
 
   button,
@@ -66,547 +60,221 @@
     font: inherit;
   }
 
-  ::selection {
-    background: var(--foreground);
-    color: var(--background);
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(26, 24, 20, 0.22) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: rgba(26, 24, 20, 0.2);
+    border-radius: 999px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .eyebrow {
+    font-family: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
   }
 
-  :root :focus-visible {
-    outline: 2px solid var(--foreground) !important;
-    outline-offset: 2px;
+  .font-display {
+    font-family: 'Fraunces Variable', Fraunces, Georgia, serif;
+    font-optical-sizing: auto;
+    letter-spacing: -0.02em;
   }
-}
 
-/* Keep the existing working dashboard, but give it dashboard 2's ink-and-paper system. */
-.bg-portal-canvas,
-[class~="bg-[#f6f8f7]"] {
-  background: var(--canvas) !important;
-}
+  .panel {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    box-shadow: 0 1px 2px rgba(26, 24, 20, 0.05), 0 12px 32px -18px rgba(26, 24, 20, 0.22);
+  }
 
-[class*="shadow-"] {
-  box-shadow: none !important;
-}
+  .well {
+    background: var(--wash);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
 
-[class*="bg-gradient"] {
-  background-image: none !important;
-  background-color: var(--mint) !important;
-}
+  .field {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
 
-/* Monochrome surface mapping; explicit status colors remain meaningful. */
-[class*="bg-teal-600"],
-[class*="bg-teal-700"],
-[class*="bg-teal-800"],
-[class*="bg-teal-900"] {
-  background-color: var(--primary) !important;
-}
+  .field input,
+  .field textarea,
+  .field select {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: 0;
+    outline: none;
+  }
 
-[class*="bg-teal-50"],
-[class*="bg-teal-100"],
-[class*="bg-teal-200"] {
-  background-color: var(--mint) !important;
-}
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background: var(--accent);
+    color: #fff7ed;
+    padding: 0.72rem 1.15rem;
+    border-radius: 12px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    transition: background-color 160ms ease, transform 160ms ease;
+    box-shadow: 0 1px 2px rgba(150, 52, 8, 0.35), 0 10px 24px -12px rgba(217, 72, 15, 0.55);
+  }
 
-[class*="hover:bg-teal-600"]:hover,
-[class*="hover:bg-teal-700"]:hover,
-[class*="hover:bg-teal-800"]:hover,
-[class*="hover:bg-teal-900"]:hover {
-  background-color: #292823 !important;
-}
+  .btn:hover {
+    background: var(--accent-hover);
+  }
 
-[class*="hover:bg-teal-50"]:hover,
-[class*="hover:bg-teal-100"]:hover {
-  background-color: var(--mint) !important;
-}
+  .btn:active {
+    transform: translateY(1px);
+  }
 
-[class*="text-teal-"] {
-  color: var(--foreground) !important;
-}
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+    box-shadow: none;
+  }
 
-[class*="border-teal-"] {
-  border-color: var(--border) !important;
-}
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    background: var(--paper);
+    border: 1px solid var(--line-strong);
+    color: var(--ink);
+    padding: 0.5rem 0.85rem;
+    border-radius: 12px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    transition: background-color 150ms ease, border-color 150ms ease;
+  }
 
-[class*="ring-teal-"] {
-  --tw-ring-color: var(--foreground) !important;
-}
+  .btn-ghost:hover {
+    background: var(--wash);
+    border-color: var(--ink-soft);
+  }
 
-[class*="bg-slate-50"],
-[class*="bg-slate-100"] {
-  background-color: var(--canvas) !important;
-}
+  .seg {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    background: var(--wash);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
 
-[class*="bg-slate-200"] {
-  background-color: var(--border) !important;
-}
+  .seg > button {
+    padding: 0.42rem 0.9rem;
+    border-radius: 9px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--muted);
+    white-space: nowrap;
+    transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+  }
 
-[class*="text-slate-950"],
-[class*="text-slate-900"],
-[class*="text-slate-800"],
-[class*="text-slate-700"] {
-  color: var(--foreground) !important;
-}
+  .seg > button:hover {
+    color: var(--ink);
+  }
 
-[class*="text-slate-600"],
-[class*="text-slate-500"],
-[class*="text-slate-400"] {
-  color: var(--muted-foreground) !important;
-}
+  .seg > button[aria-pressed='true'] {
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: 0 1px 2px rgba(26, 24, 20, 0.12);
+  }
 
-[class*="border-slate-"] {
-  border-color: var(--border) !important;
-}
+  /* Status dot with a soft pulse; respects reduced motion. */
+  .dot {
+    position: relative;
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: currentColor;
+    flex: none;
+  }
 
-[class*="hover:border-teal-"]:hover,
-[class*="focus:border-teal-"]:focus {
-  border-color: var(--foreground) !important;
-}
+  .dot--live::after {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 999px;
+    border: 1.5px solid currentColor;
+    opacity: 0;
+    animation: dot-pulse 2.4s ease-out infinite;
+  }
 
-[class*="focus:ring-teal-"]:focus {
-  --tw-ring-color: var(--foreground) !important;
-}
-
-/* Underlined fields; retain the checkbox/radio/file controls' native affordances. */
-input:not([type='checkbox']):not([type='radio']):not([type='file']),
-textarea,
-select {
-  border: 0 !important;
-  border-radius: 0 !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  color: var(--foreground) !important;
-}
-
-input:not([type='checkbox']):not([type='radio']):not([type='file']):focus,
-textarea:focus,
-select:focus {
-  outline: none;
-}
-
-input::placeholder,
-textarea::placeholder {
-  color: var(--muted-foreground) !important;
-  opacity: 1;
-}
-
-.font-mono,
-code,
-pre,
-kbd {
-  font-family: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
-}
-
-/* Shared design utilities for consistent ink borders, fields, tabs and actions. */
-.eyebrow {
-  color: var(--muted-foreground);
-  font-size: 0.68rem;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.field {
-  display: flex;
-  position: relative;
-  isolation: isolate;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.55rem 0;
-}
-
-.field input,
-.field textarea,
-.field select {
-  flex: 1;
-  min-width: 0;
-  border: 0 !important;
-  background: transparent !important;
-  outline: none;
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  border: 0;
-  background: var(--primary) !important;
-  color: var(--background) !important;
-  padding: 0.7rem 1.1rem;
-  font-size: 0.9rem;
-  font-weight: 600;
-  transition: opacity 150ms;
-}
-
-.btn:hover {
-  opacity: 0.85;
-}
-
-.btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.4;
-}
-
-.btn-ghost {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-  border: 2px solid var(--foreground) !important;
-  background: transparent;
-  color: var(--foreground);
-  padding: 0.45rem 0.8rem;
-  font-size: 0.82rem;
-  font-weight: 600;
-  transition: background-color 150ms;
-}
-
-.btn-ghost:hover {
-  background: var(--canvas);
-}
-
-.seg {
-  display: inline-flex;
-  position: relative;
-  border: 0 !important;
-}
-
-.seg::after,
-.btn-ghost::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border: 2px solid var(--foreground);
-  filter: url(#zafar-ink-wobble);
-  pointer-events: none;
-}
-
-.seg > button {
-  padding: 0.4rem 0.9rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.seg > button[aria-pressed='true'] {
-  background: var(--primary);
-  color: var(--background);
-}
-
-/* Ink outline is a separate filtered layer; text and icons stay crisp. */
-.ink,
-[class~='border']:not(input):not(textarea):not(select),
-[class*='rounded'][class*='border']:not(input):not(textarea):not(select):not([class~='border-t']):not([class~='border-b']):not([class~='border-r']):not([class~='border-l']):not([class~='border-x']):not([class~='border-y']):not([class*=' border-t-']):not([class*=' border-b-']):not([class*=' border-r-']):not([class*=' border-l-']):not([class*=' border-x-']):not([class*=' border-y-']) {
-  position: relative;
-  isolation: isolate;
-  border-color: transparent !important;
-}
-
-.ink::after,
-[class~='border']:not(input):not(textarea):not(select)::after,
-[class*='rounded'][class*='border']:not(input):not(textarea):not(select):not([class~='border-t']):not([class~='border-b']):not([class~='border-r']):not([class~='border-l']):not([class~='border-x']):not([class~='border-y']):not([class*=' border-t-']):not([class*=' border-b-']):not([class*=' border-r-']):not([class*=' border-l-']):not([class*=' border-x-']):not([class*=' border-y-'])::after {
-  content: '';
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  border: 2px solid var(--foreground);
-  border-radius: 0;
-  filter: url(#zafar-ink-wobble);
-  pointer-events: none;
-}
-
-/* The selected dashboard 2 language uses square, quiet surfaces, not card shadows. */
-.zafar-fox {
-  display: inline-block;
-  width: 96px;
-  height: 96px;
-  flex: none;
-}
-
-.zafar-fox--compact {
-  width: 58px;
-  height: 58px;
-}
-
-.zafar-fox svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-
-.zafar-fox__float {
-  display: block;
-  transform-origin: 50% 80%;
-  animation: fox-sway 4.6s ease-in-out infinite;
-}
-
-@keyframes fox-sway {
-  0%, 100% { transform: rotate(-1deg) translateY(0); }
-  50% { transform: rotate(1deg) translateY(-2px); }
-}
-
-.zafar-ink-filter {
-  position: absolute;
-  width: 0;
-  height: 0;
+  @keyframes dot-pulse {
+    0% { transform: scale(0.6); opacity: 0.7; }
+    70%, 100% { transform: scale(1.35); opacity: 0; }
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .zafar-fox,
-  .zafar-fox *,
-  .btn-ghost::after,
-  .seg::after {
-    animation: none !important;
-    filter: none !important;
-    transition: none !important;
+  .dot--live::after {
+    animation: none;
   }
-
   *,
   *::before,
   *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
     scroll-behavior: auto !important;
   }
 }
-/* Hand-inked edges for every directional border, divider and field underline. */
-[class~='border-t'],
-[class~='border-b'],
-[class~='border-r'],
-[class~='border-l'],
-[class~='border-x'],
-[class~='border-y'],
-[class*=' border-t-'],
-[class*=' border-b-'],
-[class*=' border-r-'],
-[class*=' border-l-'],
-[class*=' border-x-'],
-[class*=' border-y-'] {
-  position: relative;
-  isolation: isolate;
+
+@layer components {
+  .zafar-fox {
+    display: inline-block;
+    width: 88px;
+    height: 88px;
+    flex: none;
+  }
+  .zafar-fox--compact {
+    width: 24px;
+    height: 24px;
+  }
+  .zafar-fox--full {
+    width: 100%;
+    height: 100%;
+  }
+  .zafar-fox svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  .zafar-fox__float {
+    display: block;
+    transform-origin: 50% 80%;
+    animation: fox-sway 5.5s ease-in-out infinite;
+  }
+  @keyframes fox-sway {
+    0%, 100% { transform: rotate(-1.2deg) translateY(0); }
+    50% { transform: rotate(1.2deg) translateY(-3px); }
+  }
 }
-
-[class~='border-t'],
-[class*=' border-t-'] { border-top-color: transparent !important; }
-[class~='border-b'],
-[class*=' border-b-'] { border-bottom-color: transparent !important; }
-[class~='border-r'],
-[class*=' border-r-'] { border-right-color: transparent !important; }
-[class~='border-l'],
-[class*=' border-l-'] { border-left-color: transparent !important; }
-[class~='border-x'],
-[class*=' border-x-'] { border-left-color: transparent !important; border-right-color: transparent !important; }
-[class~='border-y'],
-[class*=' border-y-'] { border-top-color: transparent !important; border-bottom-color: transparent !important; }
-
-[class~='border-t']::after,
-[class*=' border-t-']::after,
-[class~='border-b']::after,
-[class*=' border-b-']::after,
-[class~='border-r']::after,
-[class*=' border-r-']::after,
-[class~='border-l']::after,
-[class*=' border-l-']::after,
-[class~='border-x']::after,
-[class*=' border-x-']::after,
-[class~='border-y']::after,
-[class*=' border-y-']::after {
-  content: '';
-  position: absolute;
-  z-index: 1;
-  inset: 0;
-  border: 0;
-  filter: url(#zafar-ink-wobble);
-  pointer-events: none;
-}
-
-[class~='border-t']::after,
-[class*=' border-t-']::after { border-top: 2px solid var(--foreground); }
-[class~='border-b']::after,
-[class*=' border-b-']::after { border-bottom: 2px solid var(--foreground); }
-[class~='border-r']::after,
-[class*=' border-r-']::after { border-right: 2px solid var(--foreground); }
-[class~='border-l']::after,
-[class*=' border-l-']::after { border-left: 2px solid var(--foreground); }
-[class~='border-x']::after,
-[class*=' border-x-']::after { border-left: 2px solid var(--foreground); border-right: 2px solid var(--foreground); }
-[class~='border-y']::after,
-[class*=' border-y-']::after { border-top: 2px solid var(--foreground); border-bottom: 2px solid var(--foreground); }
-
-/* Tailwind's divide utilities draw the same filtered stroke between rows. */
-[class~='divide-y'] > :not(:first-child),
-[class~='divide-y-reverse'] > :not(:first-child) {
-  position: relative;
-  border-top-color: transparent !important;
-}
-
-[class~='divide-y'] > :not(:first-child)::before,
-[class~='divide-y-reverse'] > :not(:first-child)::before {
-  content: '';
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  left: 0;
-  right: 0;
-  border-top: 2px solid var(--foreground);
-  filter: url(#zafar-ink-wobble);
-  pointer-events: none;
-}
-
-/* Inputs cannot own pseudo-elements, so their direct wrapper draws the underline. */
-*:not(.ink-field):has(> input:not([type='checkbox']):not([type='radio']):not([type='file'])),
-*:not(.ink-field):has(> textarea),
-*:not(.ink-field):has(> select) {
-  position: relative;
-  isolation: isolate;
-}
-
-input:not([type='checkbox']):not([type='radio']):not([type='file']),
-textarea,
-select {
-  border: 0 !important;
-  background: transparent !important;
-}
-
-*:not(.ink-field):has(> input:not([type='checkbox']):not([type='radio']):not([type='file']))::before,
-*:not(.ink-field):has(> textarea)::before,
-*:not(.ink-field):has(> select)::before {
-  content: '';
-  position: absolute;
-  z-index: 1;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  border-bottom: 2px solid var(--foreground);
-  filter: url(#zafar-ink-wobble);
-  pointer-events: none;
-}
-
-*:not(.ink-field):has(> input:focus:not([type='checkbox']):not([type='radio']):not([type='file']))::before,
-*:not(.ink-field):has(> textarea:focus)::before,
-*:not(.ink-field):has(> select:focus)::before {
-  border-bottom-width: 2px;
-}
-
-.ink-field {
-  position: relative;
-  isolation: isolate;
-  border-bottom: 0 !important;
-}
-
-.ink-field::before {
-  content: '';
-  position: absolute;
-  z-index: 1;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  border-bottom: 2px solid var(--foreground);
-  filter: url(#zafar-ink-wobble);
-  pointer-events: none;
-}
-
-.ink-field:focus-within::before {
-  border-bottom-width: 2.5px;
-}
-
-.field {
-  border-bottom: 0 !important;
-}
-
-/* The segment tabs share the same wobbled frame, with an inked divider. */
-.seg > button {
-  position: relative;
-  font-weight: 700 !important;
-}
-
-.seg > button + button::before {
-  content: '';
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  border-left: 2px solid var(--foreground);
-  filter: url(#zafar-ink-wobble);
-  pointer-events: none;
-}
-
-.seg > button[aria-pressed='true'] + button::before {
-  border-left-color: var(--background);
-}
-
-hr {
-  position: relative;
-  border: 0 !important;
-  background: transparent !important;
-}
-
-hr::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-top: 2px solid var(--foreground);
-  filter: url(#zafar-ink-wobble);
-}
-
-/* Filled actions keep a hand-inked silhouette instead of a crisp rectangular edge. */
-button[class*='bg-teal-']:not([class~='border']),
-button[class*='bg-rose-']:not([class~='border']),
-button[class*='bg-amber-']:not([class~='border']),
-button[class*='bg-emerald-']:not([class~='border']),
-button[class~='bg-black']:not([class~='border']) {
-  position: relative;
-  isolation: isolate;
-}
-
-button[class*='bg-teal-']:not([class~='border'])::after,
-button[class*='bg-rose-']:not([class~='border'])::after,
-button[class*='bg-amber-']:not([class~='border'])::after,
-button[class*='bg-emerald-']:not([class~='border'])::after,
-button[class~='bg-black']:not([class~='border'])::after {
-  content: '';
-  position: absolute;
-  z-index: 2;
-  inset: -2px;
-  border: 2px solid var(--foreground);
-  filter: url(#zafar-ink-wobble);
-  pointer-events: none;
-}
-
-/* Give type and controls a slightly stronger, consistent weight everywhere. */
-body { font-weight: 500; }
-h1, h2, h3, h4 { font-weight: 750 !important; }
-.font-medium { font-weight: 600 !important; }
-.font-semibold { font-weight: 700 !important; }
-.font-bold { font-weight: 750 !important; }
-.font-extrabold, .font-black { font-weight: 800 !important; }
-button, label { font-weight: 600; }
 
 @media (prefers-reduced-motion: reduce) {
-  [class~='border-t']::after,
-  [class*=' border-t-']::after,
-  [class~='border-b']::after,
-  [class*=' border-b-']::after,
-  [class~='border-r']::after,
-  [class*=' border-r-']::after,
-  [class~='border-l']::after,
-  [class*=' border-l-']::after,
-  [class~='border-x']::after,
-  [class*=' border-x-']::after,
-  [class~='border-y']::after,
-  [class*=' border-y-']::after,
-  [class~='divide-y'] > :not(:first-child)::before,
-  [class~='divide-y-reverse'] > :not(:first-child)::before,
-  *:not(.ink-field):has(> input:not([type='checkbox']):not([type='radio']):not([type='file']))::before,
-  *:not(.ink-field):has(> textarea)::before,
-  *:not(.ink-field):has(> select)::before,
-  .ink-field::before,
-  .seg > button + button::before,
-  button[class*='bg-teal-']:not([class~='border'])::after,
-  button[class*='bg-rose-']:not([class~='border'])::after,
-  button[class*='bg-amber-']:not([class~='border'])::after,
-  button[class*='bg-emerald-']:not([class~='border'])::after,
-  button[class~='bg-black']:not([class~='border'])::after,
-  hr::after {
-    filter: none;
+  .zafar-fox__float {
+    animation: none;
   }
 }

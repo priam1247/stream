@@ -1,9 +1,9 @@
 /** Original zAfAr fox mascot, drawn as a monochrome, hand-inked inline SVG. */
 import type { ReactNode } from 'react';
 
-export function ZafarFox({ compact = false }: { compact?: boolean }) {
+export function ZafarFox({ compact = false, full = false }: { compact?: boolean; full?: boolean }) {
   return (
-    <span className={`zafar-fox${compact ? ' zafar-fox--compact' : ''}`} aria-hidden="true">
+    <span className={`zafar-fox${compact ? ' zafar-fox--compact' : ''}${full ? ' zafar-fox--full' : ''}`} aria-hidden="true">
       <span className="zafar-fox__float">
         <svg
           viewBox="0 0 100 100"
@@ -29,7 +29,7 @@ export function ZafarFox({ compact = false }: { compact?: boolean }) {
 
 export function ZafarBubble({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
-    <div className={`ink min-w-0 px-4 py-3 text-sm leading-snug ${className}`}>
+    <div className={` min-w-0 px-4 py-3 text-sm leading-snug ${className}`}>
       {children}
     </div>
   );

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@fontsource-variable/archivo": "^5.3.0",
+    "@fontsource-variable/fraunces": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "bcryptjs": "^3.0.3",
     "lucide-react": "^0.511.0",
