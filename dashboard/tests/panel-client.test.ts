@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BOTKEEP_API_BASE } from '../lib/botkeep-config';
+import { PANEL_BASE_URL } from '../lib/panel-config';
 
 const store = vi.hoisted(() => ({ config: { panelUrl: 'https://untrusted-old-panel.invalid', panelApiKey: 'secret-panel-key-for-testing', panelServerId: 'workload-123' } }));
 vi.mock('../lib/storage', () => ({ getPanelConnectionConfig: vi.fn(async () => ({ ...store.config })) }));
@@ -8,7 +8,7 @@ import { readPanelStatus, sendPanelPowerSignal } from '../lib/panel-client';
 beforeEach(() => { store.config = { panelUrl: 'https://untrusted-old-panel.invalid', panelApiKey: 'secret-panel-key-for-testing', panelServerId: 'workload-123' }; });
 afterEach(() => vi.unstubAllGlobals());
 
-describe('Botkeep Developer API', () => {
+describe('HiddenCloud panel client API', () => {
   it('requires an explicit ID and key and refuses unsafe IDs without calling any host', async () => {
     const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
     store.config.panelServerId = '';
@@ -21,14 +21,14 @@ describe('Botkeep Developer API', () => {
   });
 
   it('posts one documented action with bearer and unique idempotency keys to the exact workload', async () => {
-    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 202 })); vi.stubGlobal('fetch', fetchMock);
-    expect(await sendPanelPowerSignal('restart')).toMatchObject({ ok: true, status: 202, serverId: 'workload-123' });
-    expect(await sendPanelPowerSignal('stop')).toMatchObject({ ok: true, status: 202 });
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 204 })); vi.stubGlobal('fetch', fetchMock);
+    expect(await sendPanelPowerSignal('restart')).toMatchObject({ ok: true, status: 204, serverId: 'workload-123' });
+    expect(await sendPanelPowerSignal('stop')).toMatchObject({ ok: true, status: 204 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe(`${BOTKEEP_API_BASE}/workloads/workload-123/actions`);
-    expect(init).toMatchObject({ method: 'POST', redirect: 'error', headers: { Authorization: 'Bearer secret-panel-key-for-testing', 'Content-Type': 'application/json' } });
-    expect(JSON.parse(String(init.body))).toEqual({ action: 'restart' });
+    expect(url).toBe(`${PANEL_BASE_URL}/api/client/servers/workload-123/power`);
+    expect(init).toMatchObject({ method: 'POST', redirect: 'error', headers: { Authorization: 'Bearer secret-panel-key-for-testing', Accept: 'application/vnd.pterodactyl.v1+json', 'Content-Type': 'application/json' } });
+    expect(JSON.parse(String(init.body))).toEqual({ signal: 'restart' });
     const key1 = (init.headers as Record<string, string>)['Idempotency-Key'];
     const key2 = ((fetchMock.mock.calls[1] as unknown as [string, RequestInit])[1].headers as Record<string, string>)['Idempotency-Key'];
     expect(key1).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
@@ -44,7 +44,7 @@ describe('Botkeep Developer API', () => {
     expect(failed).toMatchObject({ ok: false, status: 500 });
     expect(failed.error).toMatch(/check server status before retrying/i);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls.every(([url]) => String(url) === `${BOTKEEP_API_BASE}/workloads/workload-123/actions`)).toBe(true);
+    expect(fetchMock.mock.calls.every(([url]) => String(url) === `${PANEL_BASE_URL}/api/client/servers/workload-123/power`)).toBe(true);
   });
 
   it('reports unknown when response shape or remote state is unfamiliar, without exposing errors', async () => {
@@ -56,7 +56,7 @@ describe('Botkeep Developer API', () => {
     const unreachable = await readPanelStatus();
     expect(unreachable).toMatchObject({ reachable: false, state: 'unknown' });
     expect(JSON.stringify([rejected, unreachable])).not.toContain('secret-panel-key-for-testing');
-    expect(fetchMock.mock.calls[0][0]).toBe(`${BOTKEEP_API_BASE}/workloads/workload-123`);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${PANEL_BASE_URL}/api/client/servers/workload-123/resources`);
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: 'error' });
   });
 });

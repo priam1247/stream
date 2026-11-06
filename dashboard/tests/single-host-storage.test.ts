@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { BOTKEEP_API_BASE } from '../lib/botkeep-config';
+import { PANEL_BASE_URL, DEFAULT_PANEL_SERVER_ID } from '../lib/panel-config';
 import { cancelPendingWhatsAppUser, claimPairCooldown, claimPendingBotCommands, completeBotCommand, deleteWhatsAppUserIfOwned, getBotConnectionConfig, getBotHeartbeat, getPanelConnectionConfig,
   importLocalWhatsAppUser, listConfirmedMemberLinks, releaseClaimedBotCommands, saveBotConnectionConfig, saveBotHeartbeat,
   saveBotHeartbeatIfNewer, saveConfirmedMemberLinks, savePanelConnectionConfig, sessionBackupClaim, getStoredWhatsAppUser, resolvePendingWhatsAppUser } from '../lib/storage';
@@ -21,7 +21,7 @@ beforeEach(() => {
     CREATE TABLE portal_bot_failover (id TEXT PRIMARY KEY, owner_role TEXT, owner_instance TEXT, expires_at INTEGER, epoch INTEGER);`);
   globalThis.__zafarD1SchemaV6Ready = true;
   vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test'); vi.stubEnv('D1_DATABASE_ID', 'test'); vi.stubEnv('CLOUDFLARE_API_TOKEN', 'test');
-  for (const key of ['BOT_SYNC_TOKEN', 'ADMIN_DASHBOARD_TOKEN', 'BOT_BOTKEEP_SYNC_TOKEN', 'BOTKEEP_BOT_API_URL', 'BOTKEEP_BOT_ADMIN_TOKEN', 'BOTKEEP_WORKLOAD_ID', 'BOTKEEP_API_KEY']) vi.stubEnv(key, '');
+  for (const key of ['BOT_SYNC_TOKEN', 'ADMIN_DASHBOARD_TOKEN', 'BOT_BOTKEEP_SYNC_TOKEN', 'BOTKEEP_BOT_API_URL', 'BOTKEEP_BOT_ADMIN_TOKEN', 'HIDENCLOUD_SERVER_ID', 'HIDENCLOUD_API_KEY', 'BOTKEEP_WORKLOAD_ID', 'BOTKEEP_API_KEY']) vi.stubEnv(key, '');
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
     const { sql, params } = JSON.parse(String(init.body)) as { sql: string; params: (string | number | null)[] };
     try { return Response.json({ success: true, result: [{ results: db.prepare(sql).all(...params) }] }); }
@@ -40,7 +40,7 @@ describe('single Botkeep storage with old database values', () => {
     })) setting(key, val);
     vi.stubEnv('PANEL_URL', 'https://old-host.invalid'); vi.stubEnv('PANEL_API_KEY', 'old-key'); vi.stubEnv('PANEL_SERVER_ID', 'old-server');
     vi.stubEnv('BOT_API_URL', 'https://old-host.invalid'); vi.stubEnv('ADMIN_DASHBOARD_TOKEN', 'legacy-environment-secret');
-    expect(await getPanelConnectionConfig()).toMatchObject({ panelUrl: BOTKEEP_API_BASE, panelServerId: '', panelApiKey: '' });
+    expect(await getPanelConnectionConfig()).toMatchObject({ panelUrl: PANEL_BASE_URL, panelServerId: DEFAULT_PANEL_SERVER_ID, panelApiKey: '' });
     expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: 'https://troy.hidenplay.net', botAdminToken: '', botSyncToken: 'current-sync-secret' });
     // A saved blank URL explicitly leaves heartbeat-only mode.
     await saveBotConnectionConfig({ botApiUrl: '' });
@@ -48,7 +48,7 @@ describe('single Botkeep storage with old database values', () => {
     await saveBotConnectionConfig({ botApiUrl: 'https://override.example' });
     expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: 'https://override.example' });
     await savePanelConnectionConfig({ panelServerId: 'workload-1', panelApiKey: 'botkeep-key-123456789' });
-    expect(await getPanelConnectionConfig()).toMatchObject({ panelUrl: BOTKEEP_API_BASE, panelServerId: 'workload-1', panelApiKey: 'botkeep-key-123456789' });
+    expect(await getPanelConnectionConfig()).toMatchObject({ panelUrl: PANEL_BASE_URL, panelServerId: 'workload-1', panelApiKey: 'botkeep-key-123456789' });
     expect(db.prepare("SELECT value FROM portal_settings WHERE key = 'panel_api_key'").get()).toMatchObject({ value: 'old-key' });
   });
   it('does not misreport the previous host heartbeat as Botkeep', async () => {

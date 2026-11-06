@@ -29,7 +29,7 @@ beforeEach(() => {
   state.status.mockResolvedValue({ configured: true, reachable: true, state: 'running', error: null, checkedAt: Date.now() });
 });
 
-describe('owner Botkeep controls', () => {
+describe('owner HiddenCloud controls', () => {
   it('never assumes an action or sends power to an unconfirmed target', async () => {
     expect((await POST(request({ action: 'power' }))).status).toBe(400);
     expect((await POST(request({ action: 'power', signal: 'restart' }))).status).toBe(409);
@@ -39,7 +39,7 @@ describe('owner Botkeep controls', () => {
   it('sends the confirmed snapshot and reports accepted rather than completed', async () => {
     state.powerResult = { ok: true, status: 202, serverId: 'workload-1', message: 'Accepted.' };
     const response = await POST(request({ action: 'power', signal: 'start', serverId: 'workload-1' }));
-    expect(await response.json()).toMatchObject({ ok: true, via: 'botkeep-api', serverId: 'workload-1' });
+    expect(await response.json()).toMatchObject({ ok: true, via: 'hiddencloud-api', serverId: 'workload-1' });
     expect(state.send).toHaveBeenCalledOnce();
     expect(state.send).toHaveBeenCalledWith('start', state.config);
   });

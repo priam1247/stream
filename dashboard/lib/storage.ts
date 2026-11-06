@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BOTKEEP_API_BASE, DEFAULT_BOT_API_URL } from './botkeep-config';
+import { PANEL_BASE_URL, DEFAULT_BOT_API_URL, DEFAULT_PANEL_SERVER_ID } from './panel-config';
 import {
   ActivityEvent,
   ApprovedUser,
@@ -1260,27 +1260,32 @@ export async function revokeSessionBackup(slot: string, generation?: string): Pr
   }
 }
 
-/** Botkeep credentials have a separate namespace; older panel settings are never used. */
+/** HiddenCloud panel credentials have a separate namespace; older panels are never used.
+ *  HiddenCloud client API keys are ptlc_...; the server ID defaults to the
+ *  hardcoded troyzafarings Free Server identifier (DEFAULT_PANEL_SERVER_ID).
+ *  The D1/disk keys keep their historical names so an already-saved key survives. */
 export async function getPanelConnectionConfig(): Promise<PanelConnectionConfig> {
-  const envId = (process.env.BOTKEEP_WORKLOAD_ID || '').trim();
-  const envKey = (process.env.BOTKEEP_API_KEY || '').trim();
+  const envId = (process.env.HIDENCLOUD_SERVER_ID || process.env.BOTKEEP_WORKLOAD_ID || '').trim();
+  const envKey = (process.env.HIDENCLOUD_API_KEY || process.env.BOTKEEP_API_KEY || '').trim();
   if (await ensureD1Tables()) {
     const rows = await queryD1(`SELECT key, value, updated_at FROM portal_settings
       WHERE key IN ('botkeep_workload_id', 'botkeep_api_key')`);
     if (rows !== null) {
       const map = new Map(rows.map((row) => [String(row.key), String(row.value)]));
+      const savedId = map.has('botkeep_workload_id') ? map.get('botkeep_workload_id')! : envId || DEFAULT_PANEL_SERVER_ID;
       return {
-        panelUrl: BOTKEEP_API_BASE,
-        panelServerId: (map.has('botkeep_workload_id') ? map.get('botkeep_workload_id')! : envId).trim(),
+        panelUrl: PANEL_BASE_URL,
+        panelServerId: savedId.trim(),
         panelApiKey: (map.has('botkeep_api_key') ? map.get('botkeep_api_key')! : envKey).trim(),
         updatedAt: rows.find((row) => row.updated_at)?.updated_at as string | undefined,
       };
     }
   }
   const store = readDiskStore();
+  const diskId = Object.hasOwn(store.settings, 'botkeep_workload_id') ? store.settings.botkeep_workload_id : envId || DEFAULT_PANEL_SERVER_ID;
   return {
-    panelUrl: BOTKEEP_API_BASE,
-    panelServerId: (Object.hasOwn(store.settings, 'botkeep_workload_id') ? store.settings.botkeep_workload_id : envId).trim(),
+    panelUrl: PANEL_BASE_URL,
+    panelServerId: String(diskId).trim(),
     panelApiKey: (Object.hasOwn(store.settings, 'botkeep_api_key') ? store.settings.botkeep_api_key : envKey).trim(),
     updatedAt: store.settings.botkeep_updated_at,
   };
@@ -1297,7 +1302,7 @@ export async function savePanelConnectionConfig(patch: {
   const entries: [string, string][] = [];
   if (typeof patch.panelServerId === 'string') entries.push(['botkeep_workload_id', nextId]);
   if (typeof patch.panelApiKey === 'string') entries.push(['botkeep_api_key', nextKey]);
-  const result = { panelUrl: BOTKEEP_API_BASE, panelServerId: nextId, panelApiKey: nextKey, updatedAt: now };
+  const result = { panelUrl: PANEL_BASE_URL, panelServerId: nextId, panelApiKey: nextKey, updatedAt: now };
   if (await ensureD1Tables()) {
     if (!entries.length) return result;
     const rows = await queryD1(`INSERT INTO portal_settings (key, value, updated_at)

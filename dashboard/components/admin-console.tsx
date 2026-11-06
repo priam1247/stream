@@ -123,7 +123,7 @@ export function AdminConsole() {
   const [showBotToken, setShowBotToken] = useState(false);
   const [savingBot, setSavingBot] = useState(false);
 
-  // Optional Botkeep Developer API controls
+  // Optional HiddenCloud panel client API controls
   const [panelServerIdInput, setPanelServerIdInput] = useState('');
   const [panelKeyInput, setPanelKeyInput] = useState('');
   const [showPanelKey, setShowPanelKey] = useState(false);
@@ -499,25 +499,25 @@ export function AdminConsole() {
         }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || 'Could not save Botkeep settings');
+      if (!res.ok) throw new Error(json?.error || 'Could not save HiddenCloud settings');
       if (json.panelServerId) setPanelServerIdInput(json.panelServerId);
       if (json.hasPanelApiKey) setPanelKeyInput('••••••••');
       await loadOverview(true, false);
       void loadPanelStatus();
 
       if (json.verified) {
-        setNotice({ text: 'Saved. Botkeep responded; check server status for its state.' });
+        setNotice({ text: 'Saved. HiddenCloud responded; check server status for its state.' });
       } else if (json.verificationError) {
         setNotice({
           text: `Saved (${json.verificationError})`,
           bad: true,
         });
       } else {
-        setNotice({ text: 'Botkeep settings saved.' });
+        setNotice({ text: 'HiddenCloud settings saved.' });
       }
     } catch (err) {
       setNotice({
-        text: err instanceof Error ? err.message : 'Failed to save Botkeep settings',
+        text: err instanceof Error ? err.message : 'Failed to save HiddenCloud settings',
         bad: true,
       });
     } finally {
@@ -526,7 +526,7 @@ export function AdminConsole() {
   };
 
   const handlePanelPower = async (signal: 'restart' | 'start' | 'stop') => {
-    const target = data.panelServerId ? ` Botkeep server: ${data.panelServerId}.` : '';
+    const target = data.panelServerId ? ` HiddenCloud server: ${data.panelServerId}.` : '';
     if (!window.confirm(`${signal[0].toUpperCase()}${signal.slice(1)} the WhatsApp service?${target}`)) return;
     setSendingPower(signal);
     try {
@@ -741,7 +741,7 @@ export function AdminConsole() {
                 <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
                   <h2 className="text-sm font-bold text-slate-900 sm:text-base">Service status</h2>
                   <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Botkeep server</p><p className="mt-1 text-sm font-semibold capitalize text-slate-800">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p>{panelStatus?.error && <p className="mt-1 break-words text-[11px] text-slate-500">{panelStatus.error}</p>}</div>
+                    <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">HiddenCloud server</p><p className="mt-1 text-sm font-semibold capitalize text-slate-800">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p>{panelStatus?.error && <p className="mt-1 break-words text-[11px] text-slate-500">{panelStatus.error}</p>}</div>
                     <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Service bridge</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-slate-500">{overviewError ? 'Last check failed' : overviewCheckedAt == null ? 'Awaiting first check' : data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
                     <div className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">WhatsApp</p><p className="mt-1 text-sm font-semibold text-slate-800">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p></div>
                   </div>
@@ -805,7 +805,7 @@ export function AdminConsole() {
                   </button>
                 </div>
 
-                <p className="w-full text-[11px] leading-5 text-slate-500">Power targets the selected Botkeep server and requires the optional Developer API settings.</p>
+                <p className="w-full text-[11px] leading-5 text-slate-500">Power targets the selected HiddenCloud server and requires the optional client API key.</p>
                 {lastRestartEvent && <p className="w-full text-[11px] text-slate-500">Last restart request: {new Date(lastRestartEvent.createdAt).toLocaleString()}. A request is not confirmation of a completed restart.</p>}
               </section>
             )}
@@ -1111,7 +1111,7 @@ export function AdminConsole() {
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="flex items-center gap-2 text-sm font-bold text-slate-900">
                     <Power className="h-4 w-4 text-teal-600" />
-                    Botkeep server controls
+                    HiddenCloud server controls
                   </h2>
                   <span
                     className={`rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase ${
@@ -1125,11 +1125,11 @@ export function AdminConsole() {
                 </div>
 
                 <form onSubmit={handleSavePanel} className="mt-3.5 space-y-3">
-                  <p className="text-xs leading-5 text-slate-500">Optional: use a Botkeep Developer API key with workload read and power access. Server status and power controls need both fields.</p>
+                  <p className="text-xs leading-5 text-slate-500">Optional: paste a HiddenCloud client API key (ptlc_…, Account → API Credentials) with Control permission. Server status and power controls need both fields; the server ID comes prefilled with the troyzafarings server.</p>
                   <div className="min-w-0">
-                    <label htmlFor="admin-panel-sid" className="mb-1 block text-[11px] font-semibold text-slate-600">Botkeep server ID</label>
+                    <label htmlFor="admin-panel-sid" className="mb-1 block text-[11px] font-semibold text-slate-600">HiddenCloud server ID</label>
                     <input id="admin-panel-sid" type="text" value={panelServerIdInput}
-                      onChange={(e) => setPanelServerIdInput(e.target.value)} placeholder="Server ID from Botkeep"
+                      onChange={(e) => setPanelServerIdInput(e.target.value)} placeholder="a6451c6c"
                       className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none" />
                   </div>
 
@@ -1138,7 +1138,7 @@ export function AdminConsole() {
                       htmlFor="admin-panel-key"
                       className="mb-1 block font-mono text-[11px] font-semibold text-slate-600"
                     >
-                      Botkeep Developer API key
+                      HiddenCloud client API key
                     </label>
                     <div className="relative">
                       <input
@@ -1169,7 +1169,7 @@ export function AdminConsole() {
                     disabled={savingPanel}
                     className="inline-flex h-[38px] w-full items-center justify-center rounded-xl border border-teal-600 bg-teal-50 px-4 text-xs font-semibold text-teal-800 transition hover:bg-teal-100 disabled:opacity-60 sm:w-auto"
                   >
-                    {savingPanel ? 'Verifying…' : 'Save Botkeep'}
+                    {savingPanel ? 'Verifying…' : 'Save HiddenCloud'}
                   </button>
                 </form>
               </section>}

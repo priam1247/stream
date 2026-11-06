@@ -180,10 +180,10 @@ describe('owner control room', () => {
     fireEvent.click(within(pages).getByRole('button', { name: 'Sync' }));
     const token = screen.getByLabelText('BOT_SYNC_TOKEN') as HTMLInputElement;
     fireEvent.change(token, { target: { value: 'draft sync token' } });
-    expect(screen.queryByLabelText('Botkeep server ID')).toBeNull();
+    expect(screen.queryByLabelText('HiddenCloud server ID')).toBeNull();
     fireEvent.click(within(pages).getByRole('button', { name: 'Hosting' }));
-    expect(screen.getByLabelText('Botkeep server ID')).toBeTruthy();
-    expect(screen.getByLabelText('Botkeep Developer API key')).toBeTruthy();
+    expect(screen.getByLabelText('HiddenCloud server ID')).toBeTruthy();
+    expect(screen.getByLabelText('HiddenCloud client API key')).toBeTruthy();
     expect(screen.queryByLabelText('PANEL_URL')).toBeNull();
     expect(screen.queryByLabelText('BOT_SYNC_TOKEN')).toBeNull();
     fireEvent.click(within(pages).getByRole('button', { name: 'Sync' }));
