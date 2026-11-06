@@ -1067,14 +1067,14 @@ export function AdminConsole() {
                         htmlFor="admin-bot-url"
                         className="mb-1 block font-mono text-[11px] font-semibold text-slate-600"
                       >
-                        Botkeep inbound URL (optional)
+                        Botkeep inbound URL
                       </label>
                       <input
                         id="admin-bot-url"
                         type="url"
                         value={botUrlInput}
                         onChange={(e) => setBotUrlInput(e.target.value)}
-                        placeholder="Blank = outbound"
+                        placeholder="Defaults to https://troy.hidenplay.net"
                         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-teal-600 focus:outline-none"
                       />
                     </div>

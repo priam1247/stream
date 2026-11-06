@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { BOTKEEP_API_BASE } from './botkeep-config';
+import { BOTKEEP_API_BASE, DEFAULT_BOT_API_URL } from './botkeep-config';
 import {
   ActivityEvent,
   ApprovedUser,
@@ -658,7 +658,7 @@ export async function listAllMembers(
 export async function getBotConnectionConfig(): Promise<BotConnectionConfig> {
   // Direct bridge settings are intentionally isolated from older hosts. The
   // existing outbound sync token remains usable by the current installation.
-  const envUrl = process.env.BOTKEEP_BOT_API_URL?.trim() || '';
+  const envUrl = process.env.BOTKEEP_BOT_API_URL?.trim() || DEFAULT_BOT_API_URL;
   const envToken = process.env.BOTKEEP_BOT_ADMIN_TOKEN?.trim() || '';
   const envSyncToken = process.env.BOT_SYNC_TOKEN?.trim() || '';
   const envLegacyAdmin = process.env.ADMIN_DASHBOARD_TOKEN?.trim() || '';

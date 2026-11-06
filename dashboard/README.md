@@ -24,7 +24,7 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Pick Resend **or** SMTP | Direct SMTP mail delivery (e.g. Gmail App Password on port `587` or `465`). |
 | `ZAFAR_AUTH_API_URL` | Optional (legacy migration only) | Leave empty. If set during migration from an older external auth service, existing accounts are verified once (6 s cap) and migrated permanently into local D1. |
 | `BOT_SYNC_TOKEN` | Recommended | Shared private token for the bot’s outbound sync. |
-| `BOTKEEP_BOT_API_URL` / `BOTKEEP_BOT_ADMIN_TOKEN` | Optional | Botkeep-only direct bridge defaults; older generic bridge addresses and tokens are not used for inbound control. |
+| `BOTKEEP_BOT_API_URL` / `BOTKEEP_BOT_ADMIN_TOKEN` | Optional | Direct bot bridge defaults. `BOTKEEP_BOT_API_URL` defaults to the service reverse proxy `https://troy.hidenplay.net`; set it to override, or save an empty URL in the dashboard for heartbeat-only. Both are still required for direct calls. Old generic bridge addresses and tokens are not used for inbound control. |
 | `BOTKEEP_WORKLOAD_ID` / `BOTKEEP_API_KEY` | Optional | Explicit Botkeep server ID and Developer API key for server status and power. The key needs `workloads:read` and `power:write`. |
 
 ## Linking Botkeep securely
@@ -41,10 +41,13 @@ Botkeep client; bearer-only clients must be updated.
 
 An optional direct bot bridge can be enabled separately on Botkeep. Enter its
 HTTPS address and token under **WhatsApp → Sync**, or set
-`BOTKEEP_BOT_API_URL` and `BOTKEEP_BOT_ADMIN_TOKEN` server-side. Old generic
-bridge addresses and old hosting-panel credentials are intentionally ignored,
-so they cannot silently target a previous host. Prefer HTTPS for all token
-traffic. A heartbeat is a report by the bot, not proof of hosting power state.
+`BOTKEEP_BOT_API_URL` and `BOTKEEP_BOT_ADMIN_TOKEN` server-side. When no
+address is configured anywhere, the dashboard defaults to the service's
+reverse proxy (`https://troy.hidenplay.net`); saving an empty URL in the
+dashboard opts back into heartbeat-only mode. Old generic bridge addresses
+and old hosting-panel credentials are intentionally ignored, so they cannot
+silently target a previous host. Prefer HTTPS for all token traffic. A
+heartbeat is a report by the bot, not proof of hosting power state.
 
 Botkeep server controls are optional. In **WhatsApp → Hosting**, explicitly
 enter the Botkeep server/workload ID and a Botkeep Developer API key. The
