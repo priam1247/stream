@@ -41,22 +41,22 @@ export function PairingCodeBanner({ activePair, onDismiss }: PairingCodeBannerPr
   };
 
   return (
-    <div className="mb-4 max-w-full overflow-hidden rounded-2xl border border-accent-200 bg-accent-50/70 p-3.5 shadow-sm sm:p-4">
+    <div className="mb-4 max-w-full overflow-hidden rounded-2xl border border-accent/25 bg-accent/10 p-3.5 shadow-sm sm:p-4">
       <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1.5 font-mono text-xs font-bold uppercase tracking-wider text-accent-800">
-          <Smartphone className="h-3.5 w-3.5 shrink-0 text-accent-600" />
+        <div className="flex min-w-0 items-center gap-1.5 font-mono text-xs font-bold uppercase tracking-wider text-accent">
+          <Smartphone className="h-3.5 w-3.5 shrink-0 text-accent" />
           <span className="truncate">+{activePair.number}</span>
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          <span className={`font-mono text-xs font-semibold tabular-nums ${remaining <= 20 ? 'text-bad-600' : 'text-muted'}`}>
+          <span className={`font-mono text-xs font-semibold tabular-nums ${remaining <= 20 ? 'text-accent' : 'text-ink/60'}`}>
             {remaining > 0 ? `${remaining}s` : 'Expired'}
           </span>
           <button
             type="button"
             onClick={onDismiss}
             aria-label="Dismiss pairing code"
-            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-muted hover:bg-paper hover:text-ink-soft"
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-ink/60 hover:bg-paper hover:text-ink/80"
           >
             <X className="h-4 w-4" />
           </button>
@@ -64,25 +64,25 @@ export function PairingCodeBanner({ activePair, onDismiss }: PairingCodeBannerPr
       </div>
 
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
-        <code className="min-w-0 max-w-full break-all rounded-xl border border-accent-200 bg-paper px-3 py-2 font-mono text-lg font-extrabold tracking-[0.14em] text-ink shadow-sm tabular-nums sm:px-4 sm:text-xl sm:tracking-[0.2em]">
+        <code className="min-w-0 max-w-full break-all rounded-xl border border-accent/25 bg-paper px-3 py-2 font-mono text-lg font-extrabold tracking-[0.14em] text-ink shadow-sm tabular-nums sm:px-4 sm:text-xl sm:tracking-[0.2em]">
           {remaining > 0 ? activePair.code : 'Code expired'}
         </code>
         <button
           type="button"
           onClick={handleCopy}
           disabled={remaining <= 0}
-          className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-accent-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-accent-700 disabled:opacity-50"
+          className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl bg-accent px-3.5 py-2 text-xs font-semibold text-paper shadow-sm transition hover:bg-accent disabled:opacity-50"
         >
           {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
 
-      <p className="mt-2 text-xs leading-5 text-accent-900">On that phone: WhatsApp → Linked devices → Link a device → Link with phone number instead. Enter the code and keep it private. Connection status updates only after linking succeeds.</p>
-      <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-line">
+      <p className="mt-2 text-xs leading-5 text-accent">On that phone: WhatsApp → Linked devices → Link a device → Link with phone number instead. Enter the code and keep it private. Connection status updates only after linking succeeds.</p>
+      <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-ink/10">
         <div
           className={`h-full transition-[width] duration-500 ${
-            remaining > 20 ? 'bg-accent-600' : 'bg-bad-500'
+            remaining > 20 ? 'bg-accent' : 'bg-accent'
           }`}
           style={{ width: `${pct}%` }}
         />

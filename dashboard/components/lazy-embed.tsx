@@ -111,7 +111,7 @@ export function LazyEmbed({
       {showSpinner ? (
         <span className="sr-only" role="status">Loading embed…</span>
       ) : null}
-      <a href={src} target="_blank" rel="noreferrer" className="text-xs text-accent-700 underline">
+      <a href={src} target="_blank" rel="noreferrer" className="text-xs text-accent underline">
         {fallbackLabel}
       </a>
     </div>
