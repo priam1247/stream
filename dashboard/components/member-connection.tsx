@@ -397,17 +397,32 @@ export function MemberConnection({ user }: { user: AuthUser }) {
   return (
     <div className="min-h-screen bg-paper text-ink">
       <header className="border-b border-ink/10 bg-paper/90">
-        <div className="mx-auto flex h-16 w-full max-w-[500px] items-center justify-between px-4">
+        <div className="mx-auto flex h-16 w-full max-w-[500px] items-center justify-between px-4 lg:h-[72px] lg:max-w-5xl lg:px-8">
           <div className="flex items-center gap-2.5"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-ink text-paper"><ZafarFox compact /></span><span className="text-[15px] font-extrabold tracking-tight">zAfAr</span></div>
           <button type="button" onClick={() => void signOut()} className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-ink/60 hover:text-accent"><LogOut className="h-4 w-4" /> Sign out</button>
         </div>
       </header>
-      <main className="mx-auto w-full max-w-[500px] px-4 pb-12 pt-7">
-        {loading ? <div className="flex min-h-40 items-center justify-center gap-2 text-xs text-ink/60"><Loader2 className="h-4 w-4 animate-spin" /> Loading your connection…</div> : <>
-            {cache.relinking && confirmed && <button type="button" onClick={() => setCache((old) => ({ ...old, relinking: false }))} className="mb-4 min-h-10 text-xs font-semibold text-accent">← Back to workspace</button>}
-            <div className="mb-4"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-accent">Your WhatsApp connection</p><h1 className="font-display mt-2 text-[26px] font-semibold tracking-tight">{disconnected ? 'Your number got disconnected' : headingName ? `Welcome, ${headingName}` : 'Welcome to zAfAr'}</h1><p className="mt-1 text-xs leading-5 text-ink/60">{disconnected ? 'Let’s get your number connected again.' : 'One quick step to get started.'}</p></div>
-            <div className="mb-3 flex items-start gap-3 rounded-2xl bg-accent/10 px-4 py-3"><div className="mt-0.5 shrink-0"><ZafarFox compact /></div><div className="min-w-0"><p className="text-xs font-bold text-accent">{disconnected ? 'I’m ready when you are.' : 'Hi, I’m here to help.'}</p><p className="mt-1 text-xs leading-5 text-accent/80">{disconnected ? 'Get a new code to reconnect your number.' : 'Link your number and run the zAfAr WhatsApp bot from your own phone.'}</p></div></div>
-            <button type="button" onClick={() => applyExplore(true)} className="mb-5 flex min-h-[52px] w-full items-center gap-3 rounded-2xl border border-ink/10 bg-paper px-4 text-left shadow-sm transition hover:border-accent/40"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink text-paper"><LayoutDashboard className="h-4 w-4" /></span><span className="min-w-0 flex-1"><span className="block text-xs font-bold text-ink">Explore the dashboard first</span><span className="mt-0.5 block text-[11px] leading-4 text-ink/60">No number needed — you can look around and link anytime.</span></span><ArrowRight className="h-4 w-4 shrink-0 text-accent" /></button>
+      <main className="mx-auto w-full max-w-[500px] px-4 pb-14 pt-6 lg:max-w-5xl lg:px-8 lg:pt-10">
+        {loading ? <div className="flex min-h-40 items-center justify-center gap-2 text-xs text-ink/60"><Loader2 className="h-4 w-4 animate-spin" /> Loading your connection…</div> : (
+          <div className="flex flex-col lg:grid lg:grid-cols-[minmax(0,1.12fr)_minmax(0,1fr)] lg:items-start lg:gap-10">
+            <div className="order-1 lg:col-start-1 lg:row-start-1">
+              {cache.relinking && confirmed && <button type="button" onClick={() => setCache((old) => ({ ...old, relinking: false }))} className="mb-4 min-h-10 text-xs font-semibold text-accent">← Back to workspace</button>}
+              <div className="mb-4"><p className="text-[10px] font-bold uppercase tracking-[.18em] text-accent">Your WhatsApp connection</p><h1 className="font-display mt-2 text-[26px] font-semibold tracking-tight lg:text-[36px] lg:leading-[1.02]">{disconnected ? 'Your number got disconnected' : headingName ? `Welcome, ${headingName}` : 'Welcome to zAfAr'}</h1><p className="mt-1.5 text-xs leading-5 text-ink/60 sm:text-sm">{disconnected ? 'Let’s get your number connected again.' : 'One quick step to get started.'}</p></div>
+              <div className="mb-5 flex items-start gap-3 rounded-2xl bg-accent/10 px-4 py-3"><div className="mt-0.5 shrink-0"><ZafarFox compact /></div><div className="min-w-0"><p className="text-xs font-bold text-accent">{disconnected ? 'I’m ready when you are.' : 'Hi, I’m here to help.'}</p><p className="mt-1 text-xs leading-5 text-accent/80">{disconnected ? 'Get a new code to reconnect your number.' : 'Link your number and run the zAfAr WhatsApp bot from your own phone.'}</p></div></div>
+            </div>
+            <aside className="order-2 mb-6 lg:col-start-2 lg:row-start-1 lg:row-span-2 lg:mb-0 lg:pt-1">
+              <div className="rounded-[22px] border border-ink bg-ink p-5 text-paper shadow-card sm:p-6">
+                <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-accent text-paper"><LayoutDashboard className="h-5 w-5" /></span>
+                <p className="mt-5 text-[10px] font-bold uppercase tracking-[0.18em] text-paper/50">No number needed</p>
+                <h2 className="mt-1.5 text-[23px] font-extrabold leading-[1.08] tracking-tight">Visit the dashboard<br />before you link.</h2>
+                <p className="mt-2.5 text-xs leading-5 text-paper/70">The dashboard is open to every member — linking just switches the bot on for you, and you can do it anytime from Settings.</p>
+                <ul className="mt-5 space-y-2.5 border-t border-paper/10 pt-5">
+                  {['Browse every WhatsApp command', 'See your activity once you link', 'Link in one code, right from Settings'].map((item) => <li key={item} className="flex items-start gap-2 text-xs leading-5 text-paper/85"><Check className="mt-0.5 h-4 w-4 shrink-0 text-accent" /><span className="min-w-0">{item}</span></li>)}
+                </ul>
+                <button type="button" onClick={() => applyExplore(true)} className="mt-6 flex min-h-[50px] w-full items-center justify-center gap-2 rounded-xl bg-accent px-4 text-xs font-bold text-paper transition hover:bg-accent/90">Open the dashboard <ArrowRight className="h-4 w-4" /></button>
+              </div>
+            </aside>
+            <div className="order-3 lg:col-start-1 lg:row-start-2">
             <section className="rounded-[22px] border border-ink/10 bg-paper p-4 shadow-card"><div className="mb-4 flex items-start gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent/10 text-accent"><Link2 className="h-4 w-4" /></div><div><h2 className="text-sm font-bold">Link your number</h2><p className="mt-1 text-[11px] text-ink/60">Enter your details to get a WhatsApp code.</p></div></div>
               {!overview?.memberAllowed && <p className="mb-3 rounded-xl bg-accent/10 p-3 text-xs text-accent">Your account access has been restricted.</p>}
               {overview?.memberAllowed && !overview.botEnabledForMembers && <p className="mb-3 rounded-xl bg-accent/10 p-3 text-xs text-accent">New number linking is currently paused.</p>}
@@ -425,8 +440,10 @@ export function MemberConnection({ user }: { user: AuthUser }) {
               {!cache.starting && <div className="mt-4 border-t border-ink/5 pt-3"><p className="text-xs font-semibold text-ink/80">On your phone</p><p className="mt-2 flex flex-wrap items-center gap-1 text-xs leading-5 text-ink/60">WhatsApp <ChevronRight className="h-3 w-3" /> Linked devices <ChevronRight className="h-3 w-3" /> Link with phone number</p><p className="mt-2 text-[11px] text-ink/40">This page updates automatically once connected.</p></div>}
             </section>}
           <button type="button" onClick={() => router.push('/support')} className="mt-6 flex min-h-[52px] w-full items-center gap-3 rounded-2xl border border-ink/10 bg-paper px-4 text-left text-xs font-bold text-ink/80"><MessageSquare className="h-4 w-4 text-accent"/> Report a problem {supportUnread > 0 && <span className="rounded-full bg-accent/10 px-2 py-1 text-[10px] text-accent">{supportUnread} new</span>}<ChevronRight className="ml-auto h-4 w-4 text-ink/40"/></button>
-          {notice && <div role={notice.bad ? 'alert' : 'status'} className={`mt-4 flex items-start gap-2 rounded-xl border px-3.5 py-3 text-xs leading-5 ${notice.bad ? 'border-accent/25 bg-accent/10 text-accent' : 'border-accent/15 bg-accent/10 text-accent'}`}><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{notice.text}</div>}
-        </>}
+              {notice && <div role={notice.bad ? 'alert' : 'status'} className={`mt-4 flex items-start gap-2 rounded-xl border px-3.5 py-3 text-xs leading-5 ${notice.bad ? 'border-accent/25 bg-accent/10 text-accent' : 'border-accent/15 bg-accent/10 text-accent'}`}><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{notice.text}</div>}
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

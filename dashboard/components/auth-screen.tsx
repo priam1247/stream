@@ -253,12 +253,6 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
         <p className="mt-3 max-w-[280px] text-[15px] leading-6 text-ink/60">
           Link your number, run the commands, keep the record.
         </p>
-        <p className="mt-4 max-w-[290px] text-[12px] leading-5 text-ink/60"><span className="font-bold text-accent">No number yet?</span> Sign in anyway — you can visit the dashboard without linking.</p>
-        <div className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[9px] font-bold uppercase tracking-[0.22em] text-ink/35">
-          <span>Build 2.2.0</span><span aria-hidden="true" className="h-1 w-1 rounded-full bg-accent" />
-          <span>Private relay</span><span aria-hidden="true" className="h-1 w-1 rounded-full bg-accent" />
-          <span>10s sync</span>
-        </div>
 
         <div className="panel mt-6 p-5">
 
@@ -291,8 +285,8 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
           {(step === 'login' || step === 'register') && (
             <p aria-live="polite" className="mb-4 mt-1.5 text-xs leading-5 text-ink/60">
               {step === 'register'
-                ? 'Create your account. Explore the dashboard first — linking comes later.'
-                : 'Sign in to the dashboard — link your number whenever you’re ready.'}
+                ? 'Create your account to link your number with the bot.'
+                : 'Sign in to manage your number and the bot.'}
             </p>
           )}
 
