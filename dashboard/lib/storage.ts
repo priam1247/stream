@@ -529,11 +529,6 @@ export async function setMemberPermission(
   writeDiskStore(store);
 }
 
-export async function removeMemberPermissionRecord(email: string): Promise<void> {
-  const clean = email.trim().toLowerCase();
-  await setMemberPermission(clean, false);
-}
-
 export async function listAllMembers(
   checkAdmin: (email: string) => boolean,
 ): Promise<MemberRecord[]> {

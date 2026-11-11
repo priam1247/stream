@@ -36,16 +36,6 @@ function isProductionRuntime(): boolean {
   );
 }
 
-export function assertProductionJwtSecret(): void {
-  if (!isProductionRuntime()) return;
-  const configured = process.env.JWT_SECRET_KEY?.trim() || '';
-  if (configured.length < MIN_SECRET_LENGTH) {
-    throw new JwtConfigError(
-      `FATAL: JWT_SECRET_KEY must be set to at least ${MIN_SECRET_LENGTH} characters in production.`,
-    );
-  }
-}
-
 function getSigningSecret(): string {
   const configured = process.env.JWT_SECRET_KEY?.trim() || '';
   if (configured) {

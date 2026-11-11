@@ -80,12 +80,6 @@ export interface PanelConnectionConfig {
   updatedAt?: string;
 }
 
-export interface PanelServerSummary {
-  id: string;
-  uuid: string;
-  name: string;
-}
-
 export type WhatsAppAccountState = 'connected' | 'connecting' | 'awaiting_link' | 'expired' | 'logged_out' | 'paused';
 export interface WhatsAppAccountStatus {
   number: string;

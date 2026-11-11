@@ -2,16 +2,16 @@
 
 This repository contains several related applications and tools:
 
-- [`dashboard 2/`](./dashboard%202/) — the newer TanStack Start dashboard app, kept self-contained with its own source, Vite configuration, and package manifest.
-- [`dashboard/`](./dashboard/) — the existing Next.js operations dashboard.
-- [`Whatsapp bot/`](./Whatsapp%20bot/) — the WhatsApp bot and media engine.
+- [`dashboard/`](./dashboard/) — the Next.js 16 operations dashboard: member sign-in, WhatsApp number self-service, and the owner console (`/admin`).
+- [`the bot/`](./the%20bot/) — the WhatsApp bot, gateway, and media engine that the dashboard synchronizes with.
 - [`scribd/`](./scribd/) — Scribd-related tools.
+- [`.github/`](./.github/) — CI workflow plus repository-level safety tests.
 
-To work on the newer dashboard:
+To work on the dashboard:
 
 ```sh
-cd 'dashboard 2'
-npm install
+cd dashboard
+npm ci
 npm run dev
 ```
 

@@ -4,7 +4,7 @@ Standalone Next.js 16 application for member sign-in, WhatsApp number self-servi
 
 ## Deploying on Vercel (or Self-Hosted Node)
 
-The WhatsApp bot lives in `Whatsapp bot/` (`cd "Whatsapp bot" && npm start`). This portal is separate and has its own `dashboard/package.json` and `dashboard/package-lock.json`:
+The WhatsApp bot lives in `the bot/` at the repository root (`cd "the bot" && npm start`). This portal is separate and has its own `dashboard/package.json` and `dashboard/package-lock.json`:
 
 1. **Vercel → Project → Settings → General → Root Directory** → set to `dashboard` and click **Save**.
 2. Keep the framework preset on **Next.js** (`npm install` / `npm run build`).
