@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
-import { fetchLiveBotStatus, parseAndValidateBotUrl } from '@/lib/bot-proxy';
+import { fetchLiveBotStatus } from '@/lib/bot-proxy';
 import { saveBotConnectionConfig, setFastPollWindow } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
+
+const RETIRED_FIELDS = ['botApiUrl', 'botAdminToken', 'bridgeTarget', 'upstreamHost'] as const;
 
 export async function POST(req: NextRequest) {
   const session = await getAuthenticatedSession(req);
@@ -23,22 +25,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
 
-  if ((typeof body.botApiUrl === 'string' || (typeof body.botAdminToken === 'string' && body.botAdminToken !== '••••••••')) && body.bridgeTarget !== 'botkeep') {
-    return NextResponse.json({ error: 'Confirm the Botkeep bridge in the current settings page.' }, { status: 400 });
-  }
-  if (typeof body.botApiUrl === 'string' && body.botApiUrl.trim()) {
-    const parsed = parseAndValidateBotUrl(body.botApiUrl);
-    if (parsed.error) {
-      return NextResponse.json({ error: parsed.error }, { status: 400 });
-    }
+  // Reject rather than ignore: a stale settings page must not believe it saved
+  // an inbound bridge that no longer exists.
+  const retired = RETIRED_FIELDS.find((field) => field in body);
+  if (retired) {
+    return NextResponse.json(
+      { error: 'The dashboard no longer stores an inbound service URL or admin token. The service syncs outbound with BOT_SYNC_TOKEN.' },
+      { status: 400 },
+    );
   }
 
   const saved = await saveBotConnectionConfig({
-    botApiUrl: typeof body.botApiUrl === 'string' ? body.botApiUrl : undefined,
-    botAdminToken:
-      typeof body.botAdminToken === 'string' && body.botAdminToken !== '••••••••'
-        ? body.botAdminToken
-        : undefined,
     botSyncToken:
       typeof body.botSyncToken === 'string' && body.botSyncToken !== '••••••••'
         ? body.botSyncToken
@@ -51,21 +48,13 @@ export async function POST(req: NextRequest) {
 
   await setFastPollWindow(30_000).catch(() => {});
   await recordActivity({ category: 'bot', action: typeof body.botEnabledForMembers === 'boolean'
-    ? (body.botEnabledForMembers ? 'Member linking enabled' : 'Member linking paused') : 'Service connection updated',
+    ? (body.botEnabledForMembers ? 'Member linking enabled' : 'Member linking paused') : 'Service sync token updated',
     actor: session.user.email, outcome: 'success', detail: '' });
 
-  const parsed = parseAndValidateBotUrl(saved.botApiUrl);
-  const probe = parsed.baseUrl
-    ? await fetchLiveBotStatus({
-        baseUrl: parsed.baseUrl,
-        token: saved.botAdminToken,
-      })
-    : await fetchLiveBotStatus();
+  const probe = await fetchLiveBotStatus();
 
   return NextResponse.json({
     ok: true,
-    botApiUrl: saved.botApiUrl,
-    hasBotToken: Boolean(saved.botAdminToken),
     hasBotSyncToken: Boolean(saved.botSyncToken),
     botEnabledForMembers: saved.botEnabledForMembers,
     probe,

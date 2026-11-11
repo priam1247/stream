@@ -4,7 +4,7 @@ import {
   getAuthenticatedSession,
   updateUserDisplayName,
 } from '@/lib/auth-engine';
-import { clearSessionCookie, JwtConfigError } from '@/lib/jwt';
+import { JwtConfigError } from '@/lib/jwt';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,8 +44,7 @@ export async function PATCH(req: NextRequest) {
       req,
       String(body.name || ''),
     );
-    const res = NextResponse.json({ ok: true, user, token: sessionToken });
-    return clearSessionCookie(res);
+    return NextResponse.json({ ok: true, user, token: sessionToken });
   } catch (err) {
     if (err instanceof JwtConfigError) {
       return NextResponse.json({ error: err.message }, { status: 503 });

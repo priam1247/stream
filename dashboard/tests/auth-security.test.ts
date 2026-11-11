@@ -80,9 +80,8 @@ describe('verification and session security', () => {
     expect(response.status).toBe(200);
     expect(body.token).toBeTruthy();
     expect(verifySessionJwt(body.token)).toMatchObject({ sub: 'owner@example.com', ver: SESSION_VERSION });
-    expect(response.headers.get('set-cookie')).toContain('zafar_session=');
-    expect(response.headers.get('set-cookie')).toContain('Max-Age=0');
-    expect(response.headers.get('set-cookie')).not.toContain(body.token);
+    // The token is returned in the body for page memory only; no cookie is set.
+    expect(response.headers.get('set-cookie')).toBeNull();
     expect(db.account).toMatchObject({ isVerified: true, verificationCode: null, codeExpiresAt: null });
     const replay = await verifyRoute(request());
     expect(replay.status).toBe(400);

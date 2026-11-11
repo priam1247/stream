@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { recordActivity } from '@/lib/activity';
 import { AuthServiceError, verifyUserEmailCode } from '@/lib/auth-engine';
-import { clearSessionCookie } from '@/lib/jwt';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,15 +19,14 @@ export async function POST(req: NextRequest) {
     if (result.user) {
       await recordActivity({ category: 'account', action: 'Email verified', actor: result.user.email, outcome: 'success', detail: '' });
     }
-    const res = NextResponse.json({
+    // The session token is returned once and kept in page memory only; this
+    // route never sets a cookie.
+    return NextResponse.json({
       ok: true,
       message: result.message,
       token: result.sessionToken || null,
       user: result.user || null,
     });
-
-    // Expire any cookie left over from the old persistent-session design.
-    return result.sessionToken ? clearSessionCookie(res) : res;
   } catch (err) {
     if (err instanceof AuthServiceError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

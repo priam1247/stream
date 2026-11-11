@@ -154,25 +154,15 @@ module.exports = {
   // QR — or leave empty to pair interactively from the web dashboard.
   pairNumber: env.PAIR_NUMBER || '',
 
-  // ─── Dashboard control API ───────────────────────────────────────────────
-  // The bot normally syncs outbound to the dashboard with a shared token.
-  // An inbound /admin/api/{status,users,pair} bridge is optional.
+  // ─── Dashboard outbound sync ─────────────────────────────────────────────
+  // The bot only ever connects outward to the dashboard; the dashboard has no
+  // inbound route into this process.
   //
-  //   ADMIN_DASHBOARD_TOKEN  same value saved in the dashboard's Admin Console
-  //   ADMIN_API_PORT         port to listen on inside the panel (default 3000)
-  //   DASHBOARD_URL          dashboard origin, enables whitelist pull sync
+  //   BOT_SYNC_TOKEN         shared secret the dashboard also stores
+  //   DASHBOARD_URL          dashboard origin, enables outbound sync
   admin: {
-    token: env.ADMIN_DASHBOARD_TOKEN || '',
-    syncToken: env.BOT_SYNC_TOKEN || env.ADMIN_DASHBOARD_TOKEN || '',
-    apiEnabled: !/^(0|false|no|off)$/i.test(String(env.ADMIN_API_ENABLED ?? 'true')),
-    // Pterodactyl hands the container a port (SERVER_PORT / PORT); on other
-    // hosts ADMIN_API_PORT (or ADMIN_PORT) is the one to set. 3000 is last resort.
-    port: Number(env.ADMIN_API_PORT || env.ADMIN_PORT || env.SERVER_PORT || env.PORT || 3000),
+    syncToken: env.BOT_SYNC_TOKEN || '',
     dashboardUrl: (env.DASHBOARD_URL || '').replace(/\/+$/, ''),
-    corsOrigins: String(env.ADMIN_CORS_ORIGINS || '')
-      .split(',')
-      .map((s) => s.trim().replace(/\/+$/, ''))
-      .filter(Boolean),
     syncMinutes: Number(env.DASHBOARD_SYNC_MINUTES || 5),
     syncIntervalMs: Number(env.DASHBOARD_SYNC_INTERVAL_MS || 10_000),
   },

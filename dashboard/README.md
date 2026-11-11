@@ -1,10 +1,10 @@
 # ZaFar Control Room (Web Portal)
 
-Standalone Next.js 16 application for member sign-in, WhatsApp number self-service, and the administrator console (`/admin`). The Botkeep service synchronizes outbound over HTTPS; an optional direct bridge can be configured separately. Secrets stay server-side.
+Standalone Next.js 16 application for member sign-in, WhatsApp number self-service, and the administrator console (`/admin`). The WhatsApp service synchronizes outbound over HTTPS and the dashboard never dials it. Secrets stay server-side.
 
 ## Deploying on Vercel (or Self-Hosted Node)
 
-The WhatsApp bot lives in `Whatsapp bot/` (`cd "Whatsapp bot" && npm start`). This portal is separate and has its own `dashboard/package.json` and `dashboard/package-lock.json`:
+The WhatsApp bot lives in `the bot/` at the repository root (`cd "the bot" && npm start`). This portal is separate and has its own `dashboard/package.json` and `dashboard/package-lock.json`:
 
 1. **Vercel → Project → Settings → General → Root Directory** → set to `dashboard` and click **Save**.
 2. Keep the framework preset on **Next.js** (`npm install` / `npm run build`).
@@ -19,12 +19,10 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 | `JWT_SECRET_KEY` | **Required in production** | Signs HS256 session tokens (min 16 chars; generate via `openssl rand -hex 32`). Production startup refuses to run without it. |
 | `ADMIN_EMAIL` | Recommended | Comma-separated administrator email(s) allowed into `/admin` (default: `troykunsauka@gmail.com`). |
 | `ADMIN_INITIAL_PASSWORD` | Optional | Bootstraps the verified `ADMIN_EMAIL` account in D1 on first sign-in before email delivery is configured. |
-| `CLOUDFLARE_ACCOUNT_ID` / `D1_DATABASE_ID` / `CLOUDFLARE_API_TOKEN` | Required for durable serverless state | Cloudflare D1 stores accounts, permissions, numbers, bot settings, activity, support messages, and encrypted session backups. Without D1 the portal uses `.data/zafar-db.json` on local disk, which must be writable and may be ephemeral or inconsistent across serverless instances. |
+| `CLOUDFLARE_ACCOUNT_ID` / `D1_DATABASE_ID` / `CLOUDFLARE_API_TOKEN` | **Required** | Cloudflare D1 is the only store: accounts, permissions, numbers, bot settings, activity, support messages, queued commands and encrypted session backups. Without it every storage call fails loudly with `Cloudflare D1 is required`; there is no local-file fallback. |
 | `RESEND_API_KEY` + `EMAIL_FROM` | Pick Resend **or** SMTP | Sends 6-digit verification & password-reset codes over HTTPS (works cleanly on serverless/edge hosts). |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Pick Resend **or** SMTP | Direct SMTP mail delivery (e.g. Gmail App Password on port `587` or `465`). |
-| `ZAFAR_AUTH_API_URL` | Optional (legacy migration only) | Leave empty. If set during migration from an older external auth service, existing accounts are verified once (6 s cap) and migrated permanently into local D1. |
-| `BOT_SYNC_TOKEN` | Recommended | Shared private token for the bot’s outbound sync. |
-| `BOTKEEP_BOT_API_URL` / `BOTKEEP_BOT_ADMIN_TOKEN` | Optional | Direct bot bridge defaults. `BOTKEEP_BOT_API_URL` defaults to the service reverse proxy `https://troy.hidenplay.net`; set it to override, or save an empty URL in the dashboard for heartbeat-only. Both are still required for direct calls. Old generic bridge addresses and tokens are not used for inbound control. |
+| `BOT_SYNC_TOKEN` | Recommended | The one shared private token for the bot’s outbound sync. The dashboard holds no other bot credential and never calls the bot directly. |
 | `HIDENCLOUD_SERVER_ID` / `HIDENCLOUD_API_KEY` | Optional | HiddenCloud panel (Pterodactyl-compatible client API) for server status and power. The API key is a client key (`ptlc_…`) with Control permission from **Account → API Credentials**. The server ID defaults to `a6451c6c` (troyzafarings – Free Server #236941); the panel address is hardcoded to `https://freepanel.hidencloud.com`. Legacy `BOTKEEP_WORKLOAD_ID` / `BOTKEEP_API_KEY` are still honored as fallbacks. |
 
 ## Linking Botkeep securely
@@ -33,20 +31,19 @@ For normal operation set `DASHBOARD_URL` and a private `BOT_SYNC_TOKEN` on the
 Botkeep service, and configure the same token under **WhatsApp → Sync** or as a
 dashboard environment secret. The bot initiates the connection; no inbound bot
 port is needed. Keep `SESSION_BACKUP_KEY` unchanged if encrypted recovery is in
-use. Old saved single-host sync credentials remain supported; a saved Botkeep
-role token is used only when no single-host token or legacy admin token exists.
-The owner can explicitly save the matching token if needed. Sync and recovery
-requests must include the timestamped HMAC signature and nonce used by the
-Botkeep client; bearer-only clients must be updated.
+The token is resolved from exactly two places: the value saved under
+**WhatsApp → Sync**, then the `BOT_SYNC_TOKEN` environment variable. Retired
+`ADMIN_DASHBOARD_TOKEN`, `BOT_BOTKEEP_SYNC_TOKEN`, `BOTKEEP_BOT_API_URL` and
+`BOTKEEP_BOT_ADMIN_TOKEN` values are ignored, so a stale environment cannot
+silently authenticate a previous host. Sync and recovery requests must include
+the timestamped HMAC signature and nonce used by the bot; bearer-only clients
+must be updated.
 
-An optional direct bot bridge can be enabled separately on Botkeep. Enter its
-HTTPS address and token under **WhatsApp → Sync**, or set
-`BOTKEEP_BOT_API_URL` and `BOTKEEP_BOT_ADMIN_TOKEN` server-side. When no
-address is configured anywhere, the dashboard defaults to the service's
-reverse proxy (`https://troy.hidenplay.net`); saving an empty URL in the
-dashboard opts back into heartbeat-only mode. Old generic bridge addresses
-and old hosting-panel credentials are intentionally ignored, so they cannot
-silently target a previous host. Prefer HTTPS for all token traffic. A
+The dashboard is outbound-only. It never dials the bot: there is no inbound bot
+port, no `/admin/api/*` bridge and no direct status probe. Everything the owner
+sees comes from the bot's signed heartbeat over `/api/bot/sync`, so a missing or
+stale heartbeat is reported as such rather than guessed. Pairing, unlink and
+number changes are queued in D1 and the bot claims them on its next poll. A
 heartbeat is a report by the bot, not proof of hosting power state.
 
 HiddenCloud server controls are optional and require a HidenCloud plan with API access — the **free** tier deletes client API keys every 30 minutes, so status/power cannot stay configured there; control the server from the panel instead. On plans with API access, in **WhatsApp → Hosting**, enter a
@@ -80,7 +77,7 @@ separate deployment branch remains owner-managed.
   a member changes that member's stored numbers too; allowing re-enables them.
 - Activity is owner-only and best effort: actions are recorded without passwords,
   pairing codes, tokens or full phone numbers. D1 retains entries for approximately
-  90 days (cleanup occurs when writing); local fallback keeps the latest 1,000.
+  90 days (cleanup occurs when writing).
   Alerts are derived from checks while a page is open; there is no background or
   email notification when the website is closed. Opening an alert marks it read
   in that owner's browser, but the active warning stays visible until resolved.
@@ -105,8 +102,8 @@ separate deployment branch remains owner-managed.
   changed by the dashboard.
 - **Report a problem** is a private member/administrator conversation. The
   server derives the member from the signed-in account and checks the admin role.
-  Production reports require D1 rather than silently using ephemeral Vercel disk;
-  local disk is for development only. Reports are website-only and are not email
+  Reports are stored in D1; there is no ephemeral disk copy. They are
+  website-only and are not email
   notifications. Members should not send passwords or pairing codes.
 - Optional encrypted WhatsApp recovery requires D1, HTTPS bot sync, the updated
   bot, a private stable `SESSION_BACKUP_KEY` on that bot, and a successfully saved
@@ -127,8 +124,8 @@ npm test
 npm run build
 ```
 
-If D1 is configured but unreachable, requests fail rather than silently using
-local disk. For **isolated local development only**, set
-`ZAFAR_DEV_STANDALONE_FALLBACK=1` to opt into the disk fallback. Never use that
-override for a dashboard connected to live accounts. It has no effect in
-production. Encrypted session recovery always requires D1.
+D1 is required in every environment, including local development: the tests
+run against an in-memory SQLite stand-in for the D1 HTTP API. If D1 is not
+configured or cannot be reached, requests fail with an explicit error instead
+of falling back to a local file, so a missing database can never look like
+saved state. Encrypted session recovery needs D1 as well.

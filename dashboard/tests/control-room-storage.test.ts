@@ -1,30 +1,22 @@
 // @vitest-environment node
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const disk = vi.hoisted(() => ({ text: null as string | null, fail: false }));
-vi.mock('node:fs', () => ({
-  default: {
-    existsSync: () => disk.text !== null,
-    readFileSync: () => disk.text,
-    mkdirSync: () => { if (disk.fail) throw new Error('read-only'); },
-    writeFileSync: (_path: string, value: string) => { if (disk.fail) throw new Error('read-only'); disk.text = value; },
-  },
-}));
+import type { DatabaseSync } from 'node:sqlite';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { startSqliteD1, stopSqliteD1 } from './helpers/sqlite-d1';
 import { appendActivity, claimPairCooldown, completeBotCommand, deleteWhatsAppUserIfOwned, enqueueBotCommand, getBotCommandById, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, updateStoredWhatsAppUser, resolvePendingWhatsAppUser, setMemberPermission, addSupportMessage, listSupportMessages, listSupportThreads, countMemberSupportUnread, listRecentActivity, releasePairCooldown, saveCompletedPairResult, saveMemberWhatsAppUser, saveStoredWhatsAppUser, serializeWhitelistUsers } from '../lib/storage';
 import { whitelistVersionFor } from '../lib/storage';
 import { maskedNumber } from '../lib/activity';
 
+let db: DatabaseSync;
+let control: ReturnType<typeof startSqliteD1>;
+
 beforeEach(() => {
-  disk.text = null;
-  disk.fail = false;
-  delete process.env.CLOUDFLARE_ACCOUNT_ID;
-  delete process.env.D1_DATABASE_ID;
-  delete process.env.CLOUDFLARE_API_TOKEN;
+  control = startSqliteD1();
+  db = control.db;
 });
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => stopSqliteD1(db));
 
-describe('local control-room persistence', () => {
+describe('control-room persistence on D1', () => {
   it('records bounded, masked activity rather than full phone numbers', async () => {
     const detail = maskedNumber('+265 991 234 567');
     await appendActivity({ category: 'numbers', action: 'Number added', actor: 'OWNER@example.com', outcome: 'success', detail });
@@ -32,23 +24,22 @@ describe('local control-room persistence', () => {
     const events = await listRecentActivity(1);
     expect(events).toHaveLength(1);
     expect(events[0].action).toBe('Member blocked');
-    const saved = JSON.parse(disk.text!);
-    expect(saved.activity[1]).toMatchObject({ actor: 'owner@example.com', detail: 'Number ending 4567' });
-    expect(disk.text).not.toContain('265991234567');
+    const rows = db.prepare('SELECT * FROM portal_activity').all() as Record<string, unknown>[];
+    expect(rows.find((row) => row.action === 'Number added')).toMatchObject({ actor: 'owner@example.com', detail: 'Number ending 4567' });
+    expect(JSON.stringify(rows)).not.toContain('265991234567');
   });
 
   it('records the first result receipt once, ignoring repeated reports', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-10-29T12:00:00Z'));
+    const before = Date.now();
     const cmd = await enqueueBotCommand({ type: 'pair', payload: { number: '15550001111' } });
-    await vi.advanceTimersByTimeAsync(1_000);
     const receivedAt = Date.now();
+    expect(receivedAt).toBeGreaterThanOrEqual(before);
     await completeBotCommand({ id: cmd.id, ok: true, result: { code: 'FIRST', _dashboardReceivedAt: 1 } });
-    await vi.advanceTimersByTimeAsync(5_000);
     await completeBotCommand({ id: cmd.id, ok: true, result: { code: 'SECOND' } });
-    expect(await getBotCommandById(cmd.id)).toMatchObject({
-      status: 'completed', result: { code: 'FIRST', _dashboardReceivedAt: receivedAt },
-    });
+    const stored = await getBotCommandById(cmd.id);
+    expect(stored).toMatchObject({ status: 'completed', result: { code: 'FIRST' } });
+    expect(Number((stored!.result as { _dashboardReceivedAt: number })._dashboardReceivedAt))
+      .toBeGreaterThanOrEqual(before);
   });
 
   it('keeps claim IDs stable and serializes the bot whitelist contract fields', async () => {
@@ -94,7 +85,8 @@ describe('local control-room persistence', () => {
   });
 
   it('grandfathers old numbers but requires approval for each new member link', async () => {
-    disk.text = JSON.stringify({ whatsappUsers: [{ number: '11111111', enabled: true, addedBy: 'old@example.com' }] });
+    db.prepare(`INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at, approval_status, claim_id)
+      VALUES ('11111111', 'Legacy', 1, 'old@example.com', ?, 'approved', 'legacy-claim')`).run(new Date().toISOString());
     expect(await getStoredWhatsAppUser('11111111')).toMatchObject({ approval: 'approved', enabled: true });
     expect(await saveMemberWhatsAppUser('265991234567', 'Maya', 'maya@example.com')).toBe(true);
     expect(await getStoredWhatsAppUser('265991234567')).toMatchObject({ approval: 'pending', enabled: false, pairAllowed: true });
@@ -121,7 +113,8 @@ describe('local control-room persistence', () => {
     expect(whitelistVersionFor([pending!], true)).not.toBe(whitelistVersionFor([rejected!], true));
     const samePermissions = { ...pending!, pairAllowed: false };
     expect(whitelistVersionFor([samePermissions], true)).not.toBe(whitelistVersionFor([rejected!], true));
-    disk.text = JSON.stringify({ whatsappUsers: [{ number: '11111111', enabled: true, approval: 'unexpected' }] });
+    db.prepare(`INSERT INTO portal_whatsapp_access (number, label, enabled, added_by, added_at, approval_status, claim_id)
+      VALUES ('11111111', 'Legacy', 1, 'old@example.com', ?, 'unexpected', 'legacy-claim')`).run(new Date().toISOString());
     expect(await getStoredWhatsAppUser('11111111')).toMatchObject({ approval: 'rejected', enabled: false, pairAllowed: false });
   });
 
@@ -139,14 +132,19 @@ describe('local control-room persistence', () => {
     expect((await listSupportThreads()).find((thread) => thread.email === 'one@example.com')?.unread).toBe(0);
   });
 
-  it('does not report successful permission changes when local storage is read-only', async () => {
-    disk.fail = true;
-    await expect(setMemberPermission('member@example.com', false)).rejects.toThrow(/storage is unavailable/i);
+  it('fails loudly instead of reporting a write that the database rejected', async () => {
+    control.breakQueries(true);
+    await expect(setMemberPermission('member@example.com', false)).rejects.toThrow(/unreachable/);
+    control.breakQueries(false);
+    const row = db.prepare(`SELECT allowed FROM portal_member_permissions WHERE email = 'member@example.com'`).get();
+    expect(row).toBeUndefined();
   });
 
-  it('does not overwrite a corrupt local store with an empty one', async () => {
-    disk.text = '{not valid json';
-    await expect(setMemberPermission('member@example.com', false)).rejects.toThrow(/could not be read/i);
-    expect(disk.text).toBe('{not valid json');
+  it('does not answer from an empty store when the database is unreachable', async () => {
+    await saveStoredWhatsAppUser('265991234567', 'Member', 'member@example.com');
+    control.breakQueries(true);
+    await expect(getStoredWhatsAppUser('265991234567')).rejects.toThrow(/unreachable/);
+    control.breakQueries(false);
+    expect(await getStoredWhatsAppUser('265991234567')).toMatchObject({ number: '265991234567' });
   });
 });

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
-import { fetchLiveBotStatus, normalizePhoneNumber, removeNumberFromLiveBot, requestLiveBotUnlink } from '@/lib/bot-proxy';
+import { fetchLiveBotStatus, normalizePhoneNumber, requestLiveBotUnlink, requestWhitelistSync } from '@/lib/bot-proxy';
 import { deleteWhatsAppUserIfOwned, getBotCommandById, getStoredWhatsAppUser, listStoredWhatsAppUsers, sessionBackupClaim } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -15,7 +15,7 @@ async function finishUnlink(number: string, owner: string, expectedClaim: string
       sessionBackupClaim(existing).identity.key !== expectedClaim || !(await deleteWhatsAppUserIfOwned(number, owner, expectedClaim))) {
     return NextResponse.json({ error: 'This number no longer belongs to your account.' }, { status: 409, headers });
   }
-  await removeNumberFromLiveBot(number);
+  await requestWhitelistSync();
   await recordActivity({ category: 'numbers', action: 'Number unlinked', actor: owner, outcome: 'success', detail: maskedNumber(number) });
   return NextResponse.json({ ok: true, numbers: await listStoredWhatsAppUsers(owner) }, { headers });
 }

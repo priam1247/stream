@@ -38,7 +38,7 @@ afterEach(async () => {
   if (root) fs.rmSync(root, { recursive: true, force: true }); root = '';
   email.codes.clear(); vi.unstubAllGlobals(); vi.unstubAllEnvs();
   globalThis.__zafarD1SchemaV6Ready = undefined; globalThis.__zafarD1SchemaV6Promise = undefined;
-  globalThis.__zafarD1UnreachableInDev = undefined; globalThis.__zafarBotReplayNonces?.clear();
+  globalThis.__zafarBotReplayNonces?.clear();
 });
 
 function request(url: string, body?: unknown, token?: string) {

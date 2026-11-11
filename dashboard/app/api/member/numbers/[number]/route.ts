@@ -4,8 +4,7 @@ import { getAuthenticatedSession } from '@/lib/auth-engine';
 import {
   fetchLiveBotStatus,
   normalizePhoneNumber,
-  removeNumberFromLiveBot,
-  syncNumberToLiveBot,
+  requestWhitelistSync,
 } from '@/lib/bot-proxy';
 import {
   deleteWhatsAppUserIfOwned,
@@ -52,12 +51,7 @@ export async function PATCH(
   });
 
   if (updated) {
-    await syncNumberToLiveBot(
-      updated.number,
-      `${updated.label || 'Member'} (${session.user.email})`,
-      updated.enabled,
-      updated.pairAllowed === true,
-    );
+    await requestWhitelistSync();
   }
 
   if (updated) await recordActivity({ category: 'numbers', action: updated.enabled ? 'Number enabled' : 'Number paused', actor: session.user.email, outcome: 'success', detail: maskedNumber(cleanNumber) });
@@ -96,7 +90,7 @@ export async function DELETE(
   if (!(await deleteWhatsAppUserIfOwned(cleanNumber, session.user.email, sessionBackupClaim(existing).identity.key))) {
     return NextResponse.json({ error: 'Number no longer belongs to your account.' }, { status: 409 });
   }
-  await removeNumberFromLiveBot(cleanNumber);
+  await requestWhitelistSync();
   await recordActivity({ category: 'numbers', action: 'Number removed', actor: session.user.email, outcome: 'success', detail: maskedNumber(cleanNumber) });
 
   const numbers = await listStoredWhatsAppUsers(session.user.email);

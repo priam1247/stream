@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { Check, Copy, Lock, Search, Terminal } from 'lucide-react';
 import { BOT_COMMANDS } from '@/lib/bot-data';
-import { scoreCommandQuery } from '@/lib/embed-utils';
+import { scoreCommandQuery } from '@/lib/command-search';
 
 type CategoryFilter = 'all' | 'general' | 'media' | 'vault' | 'admin';
 

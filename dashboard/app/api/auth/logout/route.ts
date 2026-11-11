@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
-import { clearSessionCookie } from '@/lib/jwt';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Sign-out is client-side: the session token only ever lived in page memory,
+ * so there is no server cookie or session record to clear.
+ */
 export async function POST() {
-  const res = NextResponse.json({ ok: true });
-  return clearSessionCookie(res);
+  return NextResponse.json({ ok: true });
 }

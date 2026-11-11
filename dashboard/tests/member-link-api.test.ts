@@ -30,14 +30,14 @@ vi.mock('../lib/auth-engine', () => ({
 vi.mock('../lib/activity', () => ({ recordActivity: vi.fn(), maskedNumber: () => 'masked' }));
 vi.mock('../lib/bot-proxy', () => ({
   normalizePhoneNumber: (value: unknown) => String(value || '').replace(/\D/g, ''),
-  getResolvedBotTarget: vi.fn(async () => ({ botEnabledForMembers: true })),
   fetchLiveBotStatus: vi.fn(async () => ({ reachable: state.reachable, accounts: state.account ? [state.account] : [] })),
   requestLiveBotUnlink: mocks.unlink,
-  removeNumberFromLiveBot: mocks.removed,
+  requestWhitelistSync: mocks.removed,
   requestLiveBotPairingCode: mocks.pair,
   checkQueuedPairCommand: vi.fn(),
 }));
 vi.mock('../lib/storage', () => ({
+  getBotConnectionConfig: vi.fn(async () => ({ botSyncToken: '', botEnabledForMembers: true })),
   getStoredWhatsAppUser: vi.fn(async () => ({ number: '265991234567', enabled: true, label: 'Member', addedBy: state.storedOwner, claimId: state.claimKey })),
   sessionBackupClaim: (user: { claimId: string }) => ({ token: user.claimId === 'claim-one' ? 'claim-token' : 'different-token', identity: { key: user.claimId } }),
   listStoredWhatsAppUsers: vi.fn(async () => []),

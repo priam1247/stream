@@ -3,11 +3,10 @@ import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
 import {
   checkQueuedPairCommand,
-  getResolvedBotTarget,
   normalizePhoneNumber,
   requestLiveBotPairingCode,
 } from '@/lib/bot-proxy';
-import { claimPairCooldown, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, releasePairCooldown, saveCompletedPairResult, sessionBackupClaim } from '@/lib/storage';
+import { claimPairCooldown, getBotConnectionConfig, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, releasePairCooldown, saveCompletedPairResult, sessionBackupClaim } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 const privateHeaders = { 'Cache-Control': 'private, no-store' };
@@ -66,7 +65,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const target = await getResolvedBotTarget();
+  const target = await getBotConnectionConfig();
   if (!target.botEnabledForMembers && !session.user.isAdmin) {
     return NextResponse.json(
       { error: 'WhatsApp linking is temporarily paused by the administrator.' },

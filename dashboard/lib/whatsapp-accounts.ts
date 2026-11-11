@@ -20,11 +20,6 @@ export function readAccountStatuses(value: unknown): WhatsAppAccountStatus[] | u
   return [...accounts.values()];
 }
 
-// Historical activity and older servers may still return the former name.
-export function serviceText(value: string): string {
-  return value.replace(/zafar\s*bot/gi, 'WhatsApp service').replace(/zafar/gi, 'WhatsApp').replace(/\bbot\b/gi, 'service');
-}
-
 export function accountStatusLabel(accounts: WhatsAppAccountStatus[] | null | undefined, number: string): string {
   if (!accounts) return 'Link status unknown';
   const state = accounts.find((account) => account.number === number)?.state;

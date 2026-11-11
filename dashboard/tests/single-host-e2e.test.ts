@@ -17,7 +17,7 @@ afterEach(() => {
   memberTelemetry?._resetForTests(null); memberTelemetry = undefined;
   if (root) fs.rmSync(root, { recursive: true, force: true });
   vi.unstubAllEnvs(); vi.unstubAllGlobals(); globalThis.__zafarD1SchemaV6Ready = undefined;
-  globalThis.__zafarD1SchemaV6Promise = undefined; globalThis.__zafarD1UnreachableInDev = undefined;
+  globalThis.__zafarD1SchemaV6Promise = undefined;
   globalThis.__zafarBotReplayNonces?.clear();
 });
 

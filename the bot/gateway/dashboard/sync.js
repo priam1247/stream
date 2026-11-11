@@ -104,9 +104,7 @@ function startDashboardSync(opts = {}) {
   const baseUrl = String(opts.dashboardUrl ?? env.DASHBOARD_URL ?? '')
     .trim()
     .replace(/\/+$/, '');
-  const token = String(
-    opts.token ?? env.BOT_SYNC_TOKEN ?? env.ADMIN_DASHBOARD_TOKEN ?? '',
-  ).trim();
+  const token = String(opts.token ?? env.BOT_SYNC_TOKEN ?? '').trim();
 
   if (!baseUrl || !token) {
     return {

@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ cfg: { botApiUrl: '', botAdminToken: 'bridge-secret-123', botSyncToken: 'botkeep-sync-secret-123', botEnabledForMembers: true }, durableNonces: new Set<string>() }));
+const state = vi.hoisted(() => ({ cfg: { botSyncToken: 'botkeep-sync-secret-123', botEnabledForMembers: true }, durableNonces: new Set<string>() }));
 vi.mock('../lib/storage', () => ({ getBotConnectionConfig: async () => state.cfg,
   consumeBotSyncNonce: async (nonce: string) => { if (state.durableNonces.has(nonce)) return false; state.durableNonces.add(nonce); return true; } }));
 import { verifyBotSyncRequest } from '../lib/bot-sync-auth';
@@ -15,15 +15,15 @@ function request(token: string, opts: { signed?: boolean; timestamp?: number; no
   return new NextRequest('https://dashboard.example/api/bot/sync', { method: 'POST', body,
     headers: { authorization: `Bearer ${token}`, ...(opts.signed === false ? {} : { 'x-bot-timestamp': ts, 'x-bot-nonce': nonce, 'x-bot-signature': sig }) } });
 }
-beforeEach(() => { state.cfg = { botApiUrl: '', botAdminToken: 'bridge-secret-123', botSyncToken: 'botkeep-sync-secret-123', botEnabledForMembers: true }; state.durableNonces.clear(); globalThis.__zafarBotReplayNonces?.clear(); });
+beforeEach(() => { state.cfg = { botSyncToken: 'botkeep-sync-secret-123', botEnabledForMembers: true }; state.durableNonces.clear(); globalThis.__zafarBotReplayNonces?.clear(); });
 afterEach(() => { vi.unstubAllEnvs(); globalThis.__zafarBotReplayNonces?.clear(); });
 
 describe('single-service sync authentication', () => {
-  it('requires signed requests and validates both supported credentials', async () => {
+  it('requires signed requests and accepts only BOT_SYNC_TOKEN', async () => {
     expect(await verifyBotSyncRequest(request(state.cfg.botSyncToken, { signed: false }), body)).toMatchObject({ ok: false, status: 401 });
-    expect(await verifyBotSyncRequest(request(state.cfg.botAdminToken, { signed: false }), body)).toMatchObject({ ok: false, status: 401 });
     expect(await verifyBotSyncRequest(request(state.cfg.botSyncToken), body)).toMatchObject({ ok: true });
-    expect(await verifyBotSyncRequest(request(state.cfg.botAdminToken), body)).toMatchObject({ ok: true });
+    // A retired admin/bridge credential is not a second way in.
+    expect(await verifyBotSyncRequest(request('bridge-secret-123'), body)).toMatchObject({ ok: false, status: 401 });
     expect(await verifyBotSyncRequest(request('wrong'), body)).toMatchObject({ ok: false, status: 401 });
     expect(await verifyBotSyncRequest(request(state.cfg.botSyncToken), body + 'changed')).toMatchObject({ ok: false, status: 401 });
   });
@@ -41,7 +41,7 @@ describe('single-service sync authentication', () => {
   it('does not authenticate a superseded environment secret independently of resolved settings', async () => {
     vi.stubEnv('BOT_SYNC_TOKEN', 'superseded-secret');
     expect(await verifyBotSyncRequest(request('superseded-secret', { signed: false }), body)).toMatchObject({ ok: false, status: 401 });
-    state.cfg.botSyncToken = ''; state.cfg.botAdminToken = '';
+    state.cfg.botSyncToken = '';
     expect(await verifyBotSyncRequest(request('superseded-secret', { signed: false }), body)).toMatchObject({ ok: false, status: 503 });
   });
 });

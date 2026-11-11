@@ -66,8 +66,7 @@ export interface ApprovedUser {
 }
 
 export interface BotConnectionConfig {
-  botApiUrl: string;
-  botAdminToken: string;
+  /** The single shared secret the bot signs its outbound sync with. */
   botSyncToken: string;
   botEnabledForMembers: boolean;
   updatedAt?: string;
@@ -78,12 +77,6 @@ export interface PanelConnectionConfig {
   panelServerId: string;
   panelApiKey: string;
   updatedAt?: string;
-}
-
-export interface PanelServerSummary {
-  id: string;
-  uuid: string;
-  name: string;
 }
 
 export type WhatsAppAccountState = 'connected' | 'connecting' | 'awaiting_link' | 'expired' | 'logged_out' | 'paused';
@@ -174,14 +167,10 @@ export interface AdminOverviewPayload {
   ok: boolean;
   adminEmail: string;
   botServerLinked: boolean;
-  botApiUrl: string;
-  hasBotToken: boolean;
   hasBotSyncToken?: boolean;
   botEnabledForMembers: boolean;
-  storageEngine: 'bot-live' | 'cloudflare-d1' | 'persistent-db';
-  connectionMode?: 'heartbeat' | 'direct' | 'unconfigured';
-  upstreamHost?: string | null;
-  isInsecureHttp?: boolean;
+  storageEngine: 'cloudflare-d1' | 'unavailable';
+  connectionMode?: 'heartbeat' | 'unconfigured';
   botReachable?: boolean;
   botError?: string | null;
   connected: boolean | null;
@@ -206,7 +195,6 @@ export interface AdminOverviewPayload {
   hasPanelApiKey?: boolean;
   users: ApprovedUser[];
   members: MemberRecord[];
-  latencyMs?: number;
   sessionBackup?: { state: 'disabled' | 'starting' | 'ready' | 'error' | 'conflict'; lastBackupAt: number | null; sessions?: number; backedUp?: number } | null;
 }
 

@@ -16,7 +16,7 @@ vi.mock('../lib/activity', () => ({ recordActivity: async () => {}, maskedNumber
 vi.mock('../lib/bot-proxy', () => ({
   normalizePhoneNumber: (value: unknown) => String(value || '').replace(/\D/g, ''),
   fetchLiveBotStatus: async () => ({ reachable: state.reachable, accounts: state.accounts }),
-  removeNumberFromLiveBot: async () => {},
+  requestWhitelistSync: async () => {},
 }));
 vi.mock('../lib/storage', () => ({
   getStoredWhatsAppUser: async () => ({ number: '265991234567', approval: 'pending', enabled: false, addedBy: 'member@example.com' }),

@@ -7,13 +7,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
   globalThis.__zafarD1SchemaV6Ready = undefined;
   globalThis.__zafarD1SchemaV6Promise = undefined;
-  globalThis.__zafarD1UnreachableInDev = undefined;
 });
 
 it('initializes D1 tables once when concurrent requests arrive on a cold start', async () => {
   globalThis.__zafarD1SchemaV6Ready = undefined;
   globalThis.__zafarD1SchemaV6Promise = undefined;
-  globalThis.__zafarD1UnreachableInDev = undefined;
   vi.stubEnv('CLOUDFLARE_ACCOUNT_ID', 'test-account');
   vi.stubEnv('D1_DATABASE_ID', 'test-db');
   vi.stubEnv('CLOUDFLARE_API_TOKEN', 'test-token');

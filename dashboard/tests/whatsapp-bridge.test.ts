@@ -4,7 +4,7 @@ import type { ApprovedUser, BotCommandRecord, BotHeartbeatRecord } from '../lib/
 
 const state = vi.hoisted(() => ({
   heartbeat: null as BotHeartbeatRecord | null,
-  config: { botApiUrl: '', botAdminToken: '', botSyncToken: 'test', botEnabledForMembers: true },
+  config: { botSyncToken: 'test', botEnabledForMembers: true },
   users: new Map<string, ApprovedUser>(),
   commands: new Map<string, BotCommandRecord>(),
   sequence: 0,
@@ -32,11 +32,11 @@ vi.mock('../lib/storage', () => ({
 }));
 
 import { checkQueuedPairCommand, fetchLiveBotStatus, requestLiveBotPairingCode } from '../lib/bot-proxy';
-import { accountStatusLabel, readAccountStatuses, serviceText } from '../lib/whatsapp-accounts';
+import { accountStatusLabel, readAccountStatuses } from '../lib/whatsapp-accounts';
 
 beforeEach(() => {
   state.heartbeat = null;
-  state.config = { botApiUrl: '', botAdminToken: '', botSyncToken: 'test', botEnabledForMembers: true };
+  state.config = { botSyncToken: 'test', botEnabledForMembers: true };
   state.users = new Map([
     ['15550001111', { number: '15550001111', label: 'One', enabled: true, addedBy: 'member@example.com' }],
     ['15550002222', { number: '15550002222', label: 'Two', enabled: true, addedBy: 'member@example.com' }],
@@ -52,8 +52,6 @@ describe('independent pairing bridge', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-10-29T12:00:00Z'));
     state.heartbeat = { lastSeenAt: Date.now(), connected: true, botNumber: '15550009999' };
-    state.config.botApiUrl = 'https://direct.example';
-    state.config.botAdminToken = 'secret';
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const one = requestLiveBotPairingCode('15550001111', 'One', 'member@example.com', true);
@@ -86,8 +84,6 @@ describe('independent pairing bridge', () => {
   });
 
   it('uses the signed sync command even when the optional direct API is configured', async () => {
-    state.config.botApiUrl = 'https://direct.example';
-    state.config.botAdminToken = 'secret';
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     expect(await requestLiveBotPairingCode('15550001111', 'One', 'member@example.com', true))
@@ -147,7 +143,6 @@ describe('reported link status', () => {
     expect(accountStatusLabel(old.accounts, '15550001111')).toBe('Link status unknown');
     expect(accountStatusLabel([{ number: '15550001111', state: 'awaiting_link' }], '15550001111')).toBe('Waiting for linking');
     expect(accountStatusLabel([{ number: '15550001111', state: 'connected' }], '15550001111')).toBe('Linked and connected');
-    expect(serviceText('ZaFar Bot is waiting')).toBe('WhatsApp service is waiting');
   });
 
   it('does not reuse stale individual account states while the service is offline', async () => {

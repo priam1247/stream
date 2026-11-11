@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
-export const SESSION_COOKIE_NAME = 'zafar_session';
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // absolute JWT lifetime
 // Reject older, persistent sessions after switching to in-memory sign-in.
 export const SESSION_VERSION = 3;
@@ -34,16 +33,6 @@ function isProductionRuntime(): boolean {
     process.env.NODE_ENV === 'production' &&
     process.env.NEXT_PHASE !== 'phase-production-build'
   );
-}
-
-export function assertProductionJwtSecret(): void {
-  if (!isProductionRuntime()) return;
-  const configured = process.env.JWT_SECRET_KEY?.trim() || '';
-  if (configured.length < MIN_SECRET_LENGTH) {
-    throw new JwtConfigError(
-      `FATAL: JWT_SECRET_KEY must be set to at least ${MIN_SECRET_LENGTH} characters in production.`,
-    );
-  }
 }
 
 function getSigningSecret(): string {
@@ -176,13 +165,3 @@ export function extractSessionToken(req: NextRequest): string | null {
   return bearer || null;
 }
 
-export function clearSessionCookie(res: NextResponse): NextResponse {
-  res.cookies.set(SESSION_COOKIE_NAME, '', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: 0,
-  });
-  return res;
-}

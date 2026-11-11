@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
-import { fetchLiveBotStatus, normalizePhoneNumber, syncNumberToLiveBot } from '@/lib/bot-proxy';
+import { fetchLiveBotStatus, normalizePhoneNumber, requestWhitelistSync } from '@/lib/bot-proxy';
 import { getStoredWhatsAppUser, resolvePendingWhatsAppUser, sessionBackupClaim } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
   }
   const updated = await resolvePendingWhatsAppUser(number, current.addedBy, action === 'approve', claim.identity.key);
   if (!updated) return NextResponse.json({ error: 'The request changed or the member is blocked. Refresh and try again.' }, { status: 409 });
-  await syncNumberToLiveBot(number, updated.label || 'Member', updated.enabled, updated.pairAllowed === true);
+  await requestWhitelistSync();
   await recordActivity({ category: 'numbers', action: action === 'approve' ? 'Link approved' : 'Link rejected', actor: session.user.email, outcome: 'success', detail: maskedNumber(number) });
   return NextResponse.json({ ok: true, user: updated, sync: 'pending' });
 }

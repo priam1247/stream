@@ -23,7 +23,6 @@ import { AuthUser, UserQuota } from './types';
 export const PRIMARY_ADMIN_EMAIL = 'troykunsauka@gmail.com';
 const CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
-const LEGACY_MIGRATION_TIMEOUT_MS = 6_000;
 
 export class AuthServiceError extends Error {
   status: number;
@@ -54,12 +53,6 @@ export function isAdminEmail(email: string): boolean {
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
   return configured.includes(clean);
-}
-
-function getOptionalLegacyAuthUrl(): string | null {
-  const raw = process.env.ZAFAR_AUTH_API_URL?.trim() || '';
-  if (!raw) return null;
-  return raw.replace(/\/+$/, '');
 }
 
 function isEmailVerificationRequired(): boolean {
@@ -112,92 +105,6 @@ async function buildAuthUser(input: {
     memberAllowed,
     createdAt: input.createdAt,
   };
-}
-
-/**
- * Optional one-way migration from a legacy external auth API (ZAFAR_AUTH_API_URL)
- * when an existing user signs in for the first time before having a D1 record.
- * Once verified, their account is persisted locally in D1 so future logins and
- * session checks never touch the external server.
- */
-async function tryMigrateLegacyAccount(
-  identifier: string,
-  password: string,
-): Promise<{ sessionToken: string; user: AuthUser } | null> {
-  const baseUrl = getOptionalLegacyAuthUrl();
-  if (!baseUrl) return null;
-
-  try {
-    const loginRes = await fetch(`${baseUrl}/auth/login`, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({ email: identifier, password }).toString(),
-      cache: 'no-store',
-      signal: AbortSignal.timeout(LEGACY_MIGRATION_TIMEOUT_MS),
-    });
-    if (!loginRes.ok) return null;
-
-    const tokenPayload = (await loginRes.json().catch(() => null)) as {
-      access_token?: string;
-    } | null;
-    if (!tokenPayload?.access_token) return null;
-
-    const meRes = await fetch(`${baseUrl}/auth/me`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${tokenPayload.access_token}`,
-      },
-      cache: 'no-store',
-      signal: AbortSignal.timeout(LEGACY_MIGRATION_TIMEOUT_MS),
-    });
-    if (!meRes.ok) return null;
-
-    const profile = (await meRes.json().catch(() => null)) as {
-      name?: string | null;
-      email?: string | null;
-      username?: string;
-      is_verified?: boolean;
-      created_at?: string;
-    } | null;
-    if (!profile) return null;
-
-    const resolvedEmail = (profile.email || identifier).trim().toLowerCase();
-    const resolvedName = (profile.name || profile.username || 'Member').trim();
-    const passwordHash = await bcrypt.hash(password, 10);
-
-    const saved = await upsertAccount({
-      email: resolvedEmail,
-      username: makeUsername(resolvedEmail, profile.username),
-      name: resolvedName,
-      passwordHash,
-      isVerified: profile.is_verified !== false,
-      verificationCode: null,
-      codeExpiresAt: null,
-      verificationAttempts: 0,
-      resetCode: null,
-      resetExpiresAt: null,
-      resetAttempts: 0,
-      createdAt: profile.created_at || new Date().toISOString(),
-    });
-
-    const currentlyAllowed = await isMemberEmailAllowed(resolvedEmail);
-    await setMemberPermission(resolvedEmail, currentlyAllowed, resolvedName);
-
-    const user = await buildAuthUser(saved);
-    const sessionToken = signSessionJwt({
-      sub: user.email,
-      email: user.email,
-      name: user.name,
-      uid: user.id,
-    });
-    return { sessionToken, user };
-  } catch {
-    return null;
-  }
 }
 
 async function ensureBootstrapAdminAccount(
@@ -461,10 +368,6 @@ export async function signInWithEmailPassword(params: {
     });
     return { sessionToken, user };
   }
-
-  // Optional one-time migration from legacy auth server if ZAFAR_AUTH_API_URL is set
-  const migrated = await tryMigrateLegacyAccount(identifier, password);
-  if (migrated) return migrated;
 
   throw new AuthServiceError(401, 'Incorrect email or password.');
 }

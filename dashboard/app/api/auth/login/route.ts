@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { recordActivity } from '@/lib/activity';
 import { AuthServiceError, signInWithEmailPassword } from '@/lib/auth-engine';
-import { clearSessionCookie, JwtConfigError } from '@/lib/jwt';
+import { JwtConfigError } from '@/lib/jwt';
 import {
   checkRateLimit,
   clearRateLimit,
@@ -62,12 +62,11 @@ export async function POST(req: NextRequest) {
     if (accountKey) clearRateLimit(accountKey);
     await recordActivity({ category: 'account', action: 'Signed in', actor: user.email, outcome: 'success', detail: '' });
 
-    const res = NextResponse.json({
+    return NextResponse.json({
       ok: true,
       token: sessionToken,
       user,
     });
-    return clearSessionCookie(res);
   } catch (err) {
     if (err instanceof JwtConfigError) {
       return NextResponse.json({ error: err.message }, { status: 503 });

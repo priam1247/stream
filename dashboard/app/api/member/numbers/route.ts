@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
 import {
-  getResolvedBotTarget,
   normalizePhoneNumber,
-  syncNumberToLiveBot,
+  requestWhitelistSync,
 } from '@/lib/bot-proxy';
 import {
+  getBotConnectionConfig,
   getStoredWhatsAppUser,
   listStoredWhatsAppUsers,
   saveStoredWhatsAppUser,
@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const target = await getResolvedBotTarget();
+  const target = await getBotConnectionConfig();
   if (!target.botEnabledForMembers && !session.user.isAdmin) {
     return NextResponse.json(
       {
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
     );
   }
   const saved = await getStoredWhatsAppUser(number);
-  if (saved) await syncNumberToLiveBot(number, `${label} (${session.user.email})`, saved.enabled, saved.pairAllowed === true);
+  if (saved) await requestWhitelistSync();
   await recordActivity({ category: 'numbers', action: 'Number added', actor: session.user.email, outcome: 'success', detail: maskedNumber(number) });
 
   const numbers = await listStoredWhatsAppUsers(session.user.email);
