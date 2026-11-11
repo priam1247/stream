@@ -1,8 +1,7 @@
 /**
  * ZaFar Bot — Access Control Helpers
  *
- * Shared by handler.js, utils/adminApi.js, utils/allowlistSync.js and
- * commands/admin/users.js.
+ * Shared by handler.js, gateway/dashboard/sync.js and commands/admin/users.js.
  *
  * - Atomic whitelist writes (temp file + fsync + rename) with a last-good .bak
  * - Corrupt whitelist.json recovers from .bak or in-memory last-good state and

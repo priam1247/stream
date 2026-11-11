@@ -1333,70 +1333,7 @@ const settings = require(path.join(REPO, 'lib/mediaSettings.js'));
     }
   });
 
-  console.log('\n── 22. dashboard bridge (admin API the web app calls) ──');
-
-  await test('status / users / pair answer with the dashboard contract', async () => {
-    const { startAdminApi } = require(path.join(REPO, 'gateway/dashboard/api.js'));
-    const port = 3311;
-    const api = startAdminApi({
-      port,
-      token: 'selftest-token',
-      hooks: {
-        status: async () => ({ connected: true, botNumber: '265894016453' }),
-        requestPair: async () => ({ code: 'ABCD-EFGH', expiresInSeconds: 60 }),
-        unlinkAccount: async (number, sessionId) => ({ number, sessionId, unlinked: true }),
-      },
-    });
-    const call = async (method, pathname, body, auth = true) => {
-      const res = await fetch(`http://127.0.0.1:${port}${pathname}`, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          ...(auth ? { Authorization: 'Bearer selftest-token' } : {}),
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-      return { status: res.status, json: await res.json().catch(() => ({})) };
-    };
-
-    try {
-      await new Promise((r) => setTimeout(r, 250));
-
-      const status = await call('GET', '/admin/api/status');
-      // lib/bot-proxy.ts reads exactly these two fields
-      assert.strictEqual(status.status, 200);
-      assert.strictEqual(status.json.connected, true);
-      assert.strictEqual(status.json.botNumber, '265894016453');
-
-      const denied = await call('GET', '/admin/api/status', null, false);
-      assert.strictEqual(denied.status, 401, 'the API answers without a token');
-
-      const added = await call('POST', '/admin/api/users', { number: '+265 99 777 8888', label: 'Test' });
-      assert.strictEqual(added.status, 201);
-      assert.strictEqual(added.json.user.number, '265997778888', 'number was not normalised');
-
-      const off = await call('PATCH', '/admin/api/users/265997778888', { enabled: false });
-      assert.strictEqual(off.json.user.enabled, false);
-
-      const pair = await call('POST', '/admin/api/pair', { number: '265997778888' });
-      assert.strictEqual(pair.json.code, 'ABCD-EFGH');
-      assert.strictEqual(pair.json.expiresInSeconds, 60);
-
-      const unauthorizedUnlink = await call('POST', '/admin/api/unlink', { number: '265997778888', sessionId: 'a'.repeat(24) }, false);
-      assert.strictEqual(unauthorizedUnlink.status, 401);
-      const unlinked = await call('POST', '/admin/api/unlink', { number: '265997778888', sessionId: 'a'.repeat(24) });
-      assert.deepStrictEqual(unlinked.json, { ok: true, number: '265997778888', sessionId: 'a'.repeat(24), unlinked: true });
-      const invalidUnlink = await call('POST', '/admin/api/unlink', { number: '265997778888', sessionId: 'bad' });
-      assert.strictEqual(invalidUnlink.status, 400);
-
-      const gone = await call('DELETE', '/admin/api/users/265997778888');
-      assert.strictEqual(gone.status, 200);
-      const list = await call('GET', '/admin/api/users');
-      assert.ok(!list.json.users.some((u) => u.number === '265997778888'), 'user was not removed');
-    } finally {
-      await api.stop();
-    }
-  });
+  console.log('\n── 22. dashboard whitelist contract ──');
 
   await test('a disabled number is in the list but not allowed to use the bot', () => {
     const { readWL, writeWL, findUserIndex, findAllowedUserIndex } = require(path.join(REPO, 'gateway/users/access.js'));
@@ -2073,45 +2010,7 @@ const settings = require(path.join(REPO, 'lib/mediaSettings.js'));
       assert.ok(!idxSrc.includes("sock.ev.on('messages.update'"), 'empty messages.update listener still in index.js');
     });
 
-    await test('Phase 5: adminApi CORS allowlist, dashboard JWT guard, local D1 auth, rate-limit, fast offline probe', async () => {
-      const { startAdminApi } = require(path.join(REPO, 'gateway/dashboard/api.js'));
-      const port = 3390 + Math.floor(Math.random() * 500);
-      const api = startAdminApi({
-        port,
-        token: 'cors-test-token',
-        allowedOrigins: ['https://portal.example.com'],
-        hooks: { status: async () => ({ connected: true, botNumber: '265991234567' }) },
-      });
-      try {
-        await new Promise((r) => setTimeout(r, 80));
-        // Server-to-server: no wildcard CORS
-        const s2s = await fetch(`http://127.0.0.1:${port}/admin/api/status`, {
-          headers: { Authorization: 'Bearer cors-test-token' },
-        });
-        assert.strictEqual(s2s.status, 200);
-        assert.strictEqual(s2s.headers.get('access-control-allow-origin'), null);
-
-        // Disallowed browser origin preflight -> 403
-        const badPreflight = await fetch(`http://127.0.0.1:${port}/admin/api/status`, {
-          method: 'OPTIONS',
-          headers: { Origin: 'https://evil.example.org' },
-        });
-        assert.strictEqual(badPreflight.status, 403);
-
-        // Allowed browser origin -> echoed origin + Vary: Origin
-        const okOrigin = await fetch(`http://127.0.0.1:${port}/admin/api/status`, {
-          headers: {
-            Authorization: 'Bearer cors-test-token',
-            Origin: 'https://portal.example.com',
-          },
-        });
-        assert.strictEqual(okOrigin.status, 200);
-        assert.strictEqual(okOrigin.headers.get('access-control-allow-origin'), 'https://portal.example.com');
-        assert.match(String(okOrigin.headers.get('vary')), /Origin/i);
-      } finally {
-        await api.stop();
-      }
-
+    await test('Phase 5: dashboard JWT guard, local D1 auth and rate-limit checks', async () => {
       if (FULL_REPOSITORY) {
         const jwtSrc = fs.readFileSync(path.join(WORKSPACE, 'dashboard/lib/jwt.ts'), 'utf8');
         assert.match(jwtSrc, /JWT_SECRET_KEY environment variable is required in production/);
@@ -2125,8 +2024,11 @@ const settings = require(path.join(REPO, 'lib/mediaSettings.js'));
         assert.match(loginSrc, /checkRateLimit/);
         assert.match(loginSrc, /status:\s*429/);
 
+        // The dashboard must stay outbound-only: no inbound bot URL, no probe.
         const proxySrc = fs.readFileSync(path.join(WORKSPACE, 'dashboard/lib/bot-proxy.ts'), 'utf8');
-        assert.match(proxySrc, /STATUS_TIMEOUT_MS\s*=\s*3_000/);
+        assert.ok(!proxySrc.includes('/admin/api/'), 'direct bot probe still in bot-proxy.ts');
+        assert.ok(!/fetch\(/.test(proxySrc), 'bot-proxy.ts still makes outbound HTTP calls');
+        assert.ok(!fs.existsSync(path.join(REPO, 'gateway/dashboard/api.js')), 'inbound admin API still exists');
       } else {
         console.log('  - Dashboard source checks skipped in standalone bot installation');
       }

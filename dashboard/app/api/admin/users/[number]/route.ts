@@ -5,7 +5,7 @@ import {
   fetchLiveBotStatus,
   normalizePhoneNumber,
   requestLiveBotUnlink,
-  syncNumberToLiveBot,
+  requestWhitelistSync,
 } from '@/lib/bot-proxy';
 import {
   deleteStoredWhatsAppUser,
@@ -36,7 +36,7 @@ export async function PATCH(
   });
   if (!user) return NextResponse.json({ error: 'Approved number not found.' }, { status: 404 });
 
-  await syncNumberToLiveBot(user.number, user.label || 'Approved number', user.enabled, user.pairAllowed === true);
+  await requestWhitelistSync();
   await recordActivity({ category: 'numbers', action: user.enabled ? 'Number allowed' : 'Number blocked', actor: session.user.email, outcome: 'success', detail: maskedNumber(user.number) });
   return NextResponse.json({ ok: true, user });
 }
@@ -87,7 +87,7 @@ export async function DELETE(
     ...(current.approval === 'pending' ? { approval: 'rejected' as const } : {}),
   });
   if (!withdrawn) return NextResponse.json({ error: 'Number approval changed; refresh and try again.' }, { status: 409, headers: privateHeaders });
-  await syncNumberToLiveBot(number, withdrawn.label || 'Approved number', false, false);
+  await requestWhitelistSync();
 
   const command = await requestLiveBotUnlink(
     number,

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
-import { fetchLiveBotStatus, normalizePhoneNumber, removeNumberFromLiveBot } from '@/lib/bot-proxy';
+import { fetchLiveBotStatus, normalizePhoneNumber, requestWhitelistSync } from '@/lib/bot-proxy';
 import { mergeConfirmedLinks } from '@/lib/member-insights-server';
 import { cancelPendingWhatsAppUser, getBotHeartbeat, getPairCooldown, getStoredWhatsAppUser, listConfirmedMemberLinks, listStoredWhatsAppUsers, sessionBackupClaim } from '@/lib/storage';
 
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
   if (!(await cancelPendingWhatsAppUser(number, session.user.email, claim.key))) {
     return NextResponse.json({ error: 'The request changed or another code was requested. Refresh and try again.' }, { status: 409, headers });
   }
-  await removeNumberFromLiveBot(number);
+  await requestWhitelistSync();
   await recordActivity({ category: 'numbers', action: 'Pending link removed', actor: session.user.email, outcome: 'success', detail: maskedNumber(number) });
   return NextResponse.json({ ok: true, numbers: await listStoredWhatsAppUsers(session.user.email) }, { headers });
 }

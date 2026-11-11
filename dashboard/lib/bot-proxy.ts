@@ -1,7 +1,6 @@
 import {
   enqueueBotCommand,
   getBotCommandById,
-  getBotConnectionConfig,
   getBotHeartbeat,
   getStoredWhatsAppUser,
   setFastPollWindow,
@@ -9,94 +8,24 @@ import {
 import type { WhatsAppAccountStatus } from './types';
 import { readAccountStatuses, serviceText } from './whatsapp-accounts';
 
-const STATUS_TIMEOUT_MS = 3_000;
-export const HEARTBEAT_FRESH_SECONDS = 45;
+/** A heartbeat older than this is reported as stale, never as a live probe. */
+const HEARTBEAT_FRESH_SECONDS = 45;
 
 export function normalizePhoneNumber(input: unknown): string {
   return String(input ?? '').replace(/[^0-9]/g, '');
 }
 
-export function parseAndValidateBotUrl(rawUrl: string): {
-  baseUrl: string | null;
-  hostLabel: string | null;
-  isInsecureHttp?: boolean;
-  error?: string;
-} {
-  const raw = rawUrl.trim();
-  if (!raw) return { baseUrl: null, hostLabel: null };
-
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return {
-        baseUrl: null,
-        hostLabel: null,
-        error: 'Service URL must start with http:// or https://',
-      };
-    }
-    const cleanPath = parsed.pathname
-      .replace(/\/admin\/api\/?$/i, '')
-      .replace(/\/admin\/?$/i, '')
-      .replace(/\/+$/, '');
-    const isLocalhost =
-      parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
-    return {
-      baseUrl: `${parsed.origin}${cleanPath}`,
-      hostLabel: parsed.host,
-      isInsecureHttp: parsed.protocol === 'http:' && !isLocalhost,
-    };
-  } catch {
-    return {
-      baseUrl: null,
-      hostLabel: null,
-      error:
-        'Invalid service URL format (use an HTTPS origin or leave blank for outbound heartbeat sync)',
-    };
-  }
-}
-
-export async function getResolvedBotTarget(): Promise<{
-  baseUrl: string | null;
-  hostLabel: string | null;
-  isInsecureHttp: boolean;
-  token: string;
-  syncToken: string;
-  botEnabledForMembers: boolean;
-  rawUrl: string;
-}> {
-  const cfg = await getBotConnectionConfig();
-  const parsed = parseAndValidateBotUrl(cfg.botApiUrl);
-  return {
-    baseUrl: parsed.baseUrl,
-    hostLabel: parsed.hostLabel,
-    isInsecureHttp: Boolean(parsed.isInsecureHttp),
-    token: cfg.botAdminToken,
-    syncToken: cfg.botSyncToken,
-    botEnabledForMembers: cfg.botEnabledForMembers,
-    rawUrl: cfg.botApiUrl,
-  };
-}
-
-function humanizeBotFetchError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : 'Unable to reach the WhatsApp server';
-  if (/aborted|timeout/i.test(raw)) {
-    return 'WhatsApp server offline or unreachable (request timed out).';
-  }
-  if (/ECONNREFUSED|fetch failed/i.test(raw)) {
-    return 'WhatsApp server offline or port closed.';
-  }
-  return serviceText(raw);
-}
-
-export async function fetchLiveBotStatus(customTarget?: {
-  baseUrl: string;
-  token: string;
-}): Promise<{
+/**
+ * Everything the dashboard knows about the service comes from its outbound
+ * heartbeat. There is no inbound bot port and no direct HTTP probe: a missing
+ * or stale heartbeat is reported as such instead of being guessed at.
+ */
+export interface BotLiveStatus {
   reachable: boolean;
   connected: boolean | null;
   botNumber: string | null;
   accounts?: WhatsAppAccountStatus[];
-  connectionMode: 'heartbeat' | 'direct' | 'unconfigured';
+  connectionMode: 'heartbeat' | 'unconfigured';
   lastSeenAt?: number | null;
   lastSeenSecondsAgo?: number | null;
   version?: string | null;
@@ -111,170 +40,71 @@ export async function fetchLiveBotStatus(customTarget?: {
   diskBudgetMB?: number | null;
   queueLight?: number | null;
   queueHeavy?: number | null;
-  latencyMs?: number;
   error?: string;
-}> {
-  if (!customTarget) {
-    const hb = await getBotHeartbeat();
-    if (hb) {
-      const ageSec = Math.max(0, Math.floor((Date.now() - hb.lastSeenAt) / 1000));
-      if (ageSec <= HEARTBEAT_FRESH_SECONDS) {
-        return {
-          reachable: true,
-          connected: typeof hb.connected === 'boolean' ? hb.connected : null,
-          botNumber: hb.botNumber || null,
-          accounts: readAccountStatuses(hb.accounts),
-          connectionMode: 'heartbeat',
-          lastSeenAt: hb.lastSeenAt,
-          lastSeenSecondsAgo: ageSec,
-          version: hb.version || null,
-          whitelistVersion: hb.whitelistVersion || null,
-          sessionBackup: hb.sessionBackup || null,
-          uptimeSeconds: hb.uptimeSeconds ?? null,
-          commandsTotal: hb.commandsTotal ?? null,
-          downloadsSuccess: hb.downloadsSuccess ?? null,
-          failedTotal: hb.failedTotal ?? null,
-          ramUsedMB: hb.ramUsedMB ?? null,
-          diskUsedMB: hb.diskUsedMB ?? null,
-          diskBudgetMB: hb.diskBudgetMB ?? null,
-          queueLight: hb.queueLight ?? null,
-          queueHeavy: hb.queueHeavy ?? null,
-        };
-      }
-    }
-
-    const resolved = await getResolvedBotTarget();
-    if (!resolved.baseUrl) {
-      if (hb) {
-        const ageSec = Math.max(0, Math.floor((Date.now() - hb.lastSeenAt) / 1000));
-        return {
-          reachable: false,
-          connected: null,
-          botNumber: hb.botNumber || null,
-          connectionMode: 'heartbeat',
-          lastSeenAt: hb.lastSeenAt,
-          lastSeenSecondsAgo: ageSec,
-          version: hb.version || null,
-          whitelistVersion: hb.whitelistVersion || null,
-          sessionBackup: hb.sessionBackup || null,
-          uptimeSeconds: null,
-          commandsTotal: null,
-          downloadsSuccess: null,
-          failedTotal: null,
-          ramUsedMB: null,
-          diskUsedMB: null,
-          diskBudgetMB: null,
-          queueLight: null,
-          queueHeavy: null,
-          error: `Offline (${ageSec}s since heartbeat).`,
-        };
-      }
-      return {
-        reachable: false,
-        connected: null,
-        botNumber: null,
-        connectionMode: 'unconfigured',
-      };
-    }
-
-    return probeDirectBotStatus(resolved);
-  }
-
-  return probeDirectBotStatus(customTarget);
 }
 
-async function probeDirectBotStatus(target: {
-  baseUrl: string | null;
-  token: string;
-}): Promise<{
-  reachable: boolean;
-  connected: boolean | null;
-  botNumber: string | null;
-  accounts?: WhatsAppAccountStatus[];
-  connectionMode: 'direct';
-  latencyMs?: number;
-  error?: string;
-}> {
-  if (!target.baseUrl) {
+export async function fetchLiveBotStatus(): Promise<BotLiveStatus> {
+  const hb = await getBotHeartbeat();
+  if (!hb) {
     return {
       reachable: false,
       connected: null,
       botNumber: null,
-      connectionMode: 'direct',
+      connectionMode: 'unconfigured',
     };
   }
-  if (!target.token) {
+
+  const ageSec = Math.max(0, Math.floor((Date.now() - hb.lastSeenAt) / 1000));
+  const base = {
+    botNumber: hb.botNumber || null,
+    connectionMode: 'heartbeat' as const,
+    lastSeenAt: hb.lastSeenAt,
+    lastSeenSecondsAgo: ageSec,
+    version: hb.version || null,
+    whitelistVersion: hb.whitelistVersion || null,
+    sessionBackup: hb.sessionBackup || null,
+  };
+
+  if (ageSec > HEARTBEAT_FRESH_SECONDS) {
     return {
+      ...base,
       reachable: false,
       connected: null,
-      botNumber: null,
-      connectionMode: 'direct',
-      error: 'ADMIN_DASHBOARD_TOKEN is not set yet.',
+      uptimeSeconds: null,
+      commandsTotal: null,
+      downloadsSuccess: null,
+      failedTotal: null,
+      ramUsedMB: null,
+      diskUsedMB: null,
+      diskBudgetMB: null,
+      queueLight: null,
+      queueHeavy: null,
+      error: `Offline (${ageSec}s since heartbeat).`,
     };
   }
 
-  const startedAt = Date.now();
-  try {
-    const res = await fetch(`${target.baseUrl}/admin/api/status`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${target.token}`,
-      },
-      cache: 'no-store',
-      redirect: 'error',
-      signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
-    });
-    const latencyMs = Date.now() - startedAt;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const errorMsg =
-        res.status === 401
-          ? 'ADMIN_DASHBOARD_TOKEN mismatch (service rejected token with HTTP 401).'
-          : data?.error || `Service returned HTTP ${res.status}`;
-      return {
-        reachable: false,
-        connected: null,
-        botNumber: null,
-        connectionMode: 'direct',
-        latencyMs,
-        error: serviceText(String(errorMsg)),
-      };
-    }
-    return {
-      reachable: true,
-      connected: typeof data.connected === 'boolean' ? data.connected : null,
-      botNumber: data.botNumber ? String(data.botNumber) : null,
-      accounts: readAccountStatuses(data.accounts),
-      connectionMode: 'direct',
-      latencyMs,
-    };
-  } catch (err) {
-    return {
-      reachable: false,
-      connected: null,
-      botNumber: null,
-      connectionMode: 'direct',
-      error: humanizeBotFetchError(err),
-    };
-  }
+  return {
+    ...base,
+    reachable: true,
+    connected: typeof hb.connected === 'boolean' ? hb.connected : null,
+    accounts: readAccountStatuses(hb.accounts),
+    uptimeSeconds: hb.uptimeSeconds ?? null,
+    commandsTotal: hb.commandsTotal ?? null,
+    downloadsSuccess: hb.downloadsSuccess ?? null,
+    failedTotal: hb.failedTotal ?? null,
+    ramUsedMB: hb.ramUsedMB ?? null,
+    diskUsedMB: hb.diskUsedMB ?? null,
+    diskBudgetMB: hb.diskBudgetMB ?? null,
+    queueLight: hb.queueLight ?? null,
+    queueHeavy: hb.queueHeavy ?? null,
+  };
 }
 
-/** Wake the outbound sync poll so the bot receives the authoritative list sooner. */
-export async function syncNumberToLiveBot(
-  _number: string,
-  _label: string,
-  _enabled: boolean,
-  _pairAllowed = false,
-): Promise<'accepted' | 'pending'> {
-  // The authoritative list is returned by /api/bot/sync. Never mirror it
-  // through the optional direct admin API.
-  await setFastPollWindow(30_000).catch(() => {});
-  return 'pending';
-}
-
-export async function removeNumberFromLiveBot(_number: string): Promise<void> {
-  // Withdrawal is reflected in the next authoritative whitelist snapshot.
+/**
+ * Wake the outbound sync poll so the bot picks up the authoritative number list
+ * sooner. The list itself only ever travels bot-ward through /api/bot/sync.
+ */
+export async function requestWhitelistSync(): Promise<void> {
   await setFastPollWindow(30_000).catch(() => {});
 }
 

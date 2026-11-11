@@ -7,7 +7,6 @@ const state = vi.hoisted(() => ({
   role: 'member' as 'member' | 'anonymous',
   accounts: undefined as WhatsAppAccountStatus[] | undefined,
   reachable: true,
-  mode: 'heartbeat' as 'heartbeat' | 'direct',
   persisted: [] as import('../lib/types').ConfirmedMemberLink[],
   heartbeat: null as import('../lib/types').BotHeartbeatRecord | null,
 }));
@@ -17,13 +16,13 @@ vi.mock('../lib/auth-engine', () => ({
   }),
 }));
 vi.mock('../lib/bot-proxy', () => ({
-  getResolvedBotTarget: vi.fn(async () => ({ baseUrl: state.mode === 'direct' ? 'https://service.example' : null, token: state.mode === 'direct' ? 'test' : '', botEnabledForMembers: true })),
   fetchLiveBotStatus: vi.fn(async () => ({
-    connectionMode: state.mode, reachable: state.reachable, connected: state.reachable ? true : null,
+    connectionMode: 'heartbeat', reachable: state.reachable, connected: state.reachable ? true : null,
     botNumber: '15550009999', accounts: state.accounts, commandsTotal: 999, downloadsSuccess: 888,
   })),
 }));
 vi.mock('../lib/storage', () => ({
+  getBotConnectionConfig: vi.fn(async () => ({ botSyncToken: 'test', botEnabledForMembers: true })),
   sessionBackupClaim: () => ({ token: 'a'.repeat(64) }),
   getBotHeartbeat: vi.fn(async () => state.heartbeat),
   listConfirmedMemberLinks: vi.fn(async () => state.persisted),
@@ -37,7 +36,7 @@ vi.mock('../lib/storage', () => ({
 vi.mock('../lib/sync-status', () => ({ whitelistSyncState: () => 'unknown' }));
 import { GET } from '../app/api/member/status/route';
 
-beforeEach(() => { state.role = 'member'; state.reachable = true; state.mode = 'heartbeat'; state.persisted = []; state.accounts = undefined; state.heartbeat = null; });
+beforeEach(() => { state.role = 'member'; state.reachable = true; state.persisted = []; state.accounts = undefined; state.heartbeat = null; });
 const request = () => new NextRequest('http://localhost/api/member/status');
 
 describe('member WhatsApp status privacy', () => {
@@ -71,8 +70,7 @@ describe('member WhatsApp status privacy', () => {
     expect(body.accounts).toEqual([{ number: '15550001111', state: 'paused', sessionId: 'b'.repeat(24) }]);
     expect(JSON.stringify(body)).not.toContain('a'.repeat(64));
   });
-  it('preserves a direct-mode link through an outage without creating a heartbeat or exposing its claim', async () => {
-    state.mode = 'direct';
+  it('preserves a heartbeat-confirmed link through an outage without creating a heartbeat or exposing its claim', async () => {
     state.accounts = [{ number: '15550001111', state: 'paused', sessionId: 'b'.repeat(24), claimToken: 'a'.repeat(64), linkedAt: Date.now() - 60_000 }];
     const live = await (await GET(request())).json();
     expect(live.confirmedLinks).toHaveLength(1);

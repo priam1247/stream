@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
-import { fetchLiveBotStatus, getResolvedBotTarget } from '@/lib/bot-proxy';
+import { fetchLiveBotStatus } from '@/lib/bot-proxy';
 import { JwtConfigError } from '@/lib/jwt';
 import { whitelistSyncState } from '@/lib/sync-status';
-import { getBotHeartbeat, listConfirmedMemberLinks, listStoredWhatsAppUsers, saveConfirmedMemberLinks, sessionBackupClaim } from '@/lib/storage';
+import { getBotConnectionConfig, getBotHeartbeat, listConfirmedMemberLinks, listStoredWhatsAppUsers, saveConfirmedMemberLinks, sessionBackupClaim } from '@/lib/storage';
 import { changedConfirmedLinks, mergeConfirmedLinks, personalInsights } from '@/lib/member-insights-server';
 
 export const dynamic = 'force-dynamic';
@@ -27,32 +27,26 @@ export async function GET(req: NextRequest) {
   }
 
   const [target, allNumbers, live, heartbeat] = await Promise.all([
-    getResolvedBotTarget(),
+    getBotConnectionConfig(),
     listStoredWhatsAppUsers(),
     fetchLiveBotStatus(),
     getBotHeartbeat(),
   ]);
   const numbers = allNumbers.filter((item) => (item.addedBy || '').toLowerCase() === session.user.email.toLowerCase());
 
-  // A direct bridge can confirm links too. Store only the observed link, never
-  // a synthetic heartbeat; approval and liveness still require a fresh probe.
+  // Only the bot's heartbeat can confirm a link. Store what it reported, never
+  // a synthetic heartbeat; approval and liveness still require a fresh one.
   const persisted = await listConfirmedMemberLinks(numbers);
-  const observed = mergeConfirmedLinks(heartbeat,
-    live.reachable && live.connectionMode === 'direct' ? live.accounts : undefined,
-    numbers, Date.now(), persisted);
+  const observed = mergeConfirmedLinks(heartbeat, live.accounts, numbers, Date.now(), persisted);
   await saveConfirmedMemberLinks(changedConfirmedLinks(observed, persisted), numbers);
   const insights = personalInsights(heartbeat, numbers, observed);
-
-  const botLinked =
-    live.connectionMode === 'heartbeat' ||
-    Boolean(target.baseUrl && target.token);
 
   return NextResponse.json({
     ok: true,
     adminEmail: '',
     memberAllowed: session.user.memberAllowed,
     botEnabledForMembers: target.botEnabledForMembers,
-    botServerLinked: botLinked,
+    botServerLinked: live.connectionMode === 'heartbeat',
     botReachable: live.reachable,
     botError: live.error || null,
     lastSeenSecondsAgo: live.lastSeenSecondsAgo ?? null,

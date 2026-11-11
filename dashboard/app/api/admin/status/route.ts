@@ -4,10 +4,11 @@ import {
   getAuthenticatedSession,
   isAdminEmail,
 } from '@/lib/auth-engine';
-import { fetchLiveBotStatus, getResolvedBotTarget } from '@/lib/bot-proxy';
+import { fetchLiveBotStatus } from '@/lib/bot-proxy';
 import { JwtConfigError } from '@/lib/jwt';
 import { whitelistSyncState } from '@/lib/sync-status';
 import {
+  getBotConnectionConfig,
   getPanelConnectionConfig,
   isUsingCloudflareD1,
   listAllMembers,
@@ -43,7 +44,7 @@ export async function GET(req: NextRequest) {
 
   const [target, panelCfg, d1Active, users, members, liveStatus] =
     await Promise.all([
-      getResolvedBotTarget(),
+      getBotConnectionConfig(),
       getPanelConnectionConfig(),
       isUsingCloudflareD1(),
       listStoredWhatsAppUsers(),
@@ -51,22 +52,16 @@ export async function GET(req: NextRequest) {
       fetchLiveBotStatus(),
     ]);
 
-  const botLinked =
-    liveStatus.connectionMode === 'heartbeat' ||
-    Boolean(target.baseUrl && target.token);
-
   return NextResponse.json({
     ok: true,
     adminEmail: getAdminEmail(),
-    botServerLinked: botLinked,
+    // Linked means the service has reported at least once; nothing else can be
+    // proven without its outbound heartbeat.
+    botServerLinked: liveStatus.connectionMode === 'heartbeat',
     connectionMode: liveStatus.connectionMode,
-    botApiUrl: target.rawUrl,
-    hasBotToken: Boolean(target.token),
-    hasBotSyncToken: Boolean(target.syncToken),
-    isInsecureHttp: target.isInsecureHttp,
+    hasBotSyncToken: Boolean(target.botSyncToken),
     botEnabledForMembers: target.botEnabledForMembers,
     storageEngine: d1Active ? 'cloudflare-d1' : 'persistent-db',
-    upstreamHost: target.hostLabel,
     botReachable: liveStatus.reachable,
     botError: liveStatus.error || null,
     connected: liveStatus.connected,
@@ -93,7 +88,6 @@ export async function GET(req: NextRequest) {
     panelUrl: panelCfg.panelUrl,
     panelServerId: panelCfg.panelServerId,
     hasPanelApiKey: Boolean(panelCfg.panelApiKey),
-    latencyMs: liveStatus.latencyMs,
     users,
     members,
   });

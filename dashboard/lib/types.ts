@@ -66,8 +66,7 @@ export interface ApprovedUser {
 }
 
 export interface BotConnectionConfig {
-  botApiUrl: string;
-  botAdminToken: string;
+  /** The single shared secret the bot signs its outbound sync with. */
   botSyncToken: string;
   botEnabledForMembers: boolean;
   updatedAt?: string;
@@ -168,14 +167,10 @@ export interface AdminOverviewPayload {
   ok: boolean;
   adminEmail: string;
   botServerLinked: boolean;
-  botApiUrl: string;
-  hasBotToken: boolean;
   hasBotSyncToken?: boolean;
   botEnabledForMembers: boolean;
   storageEngine: 'bot-live' | 'cloudflare-d1' | 'persistent-db';
-  connectionMode?: 'heartbeat' | 'direct' | 'unconfigured';
-  upstreamHost?: string | null;
-  isInsecureHttp?: boolean;
+  connectionMode?: 'heartbeat' | 'unconfigured';
   botReachable?: boolean;
   botError?: string | null;
   connected: boolean | null;
@@ -200,7 +195,6 @@ export interface AdminOverviewPayload {
   hasPanelApiKey?: boolean;
   users: ApprovedUser[];
   members: MemberRecord[];
-  latencyMs?: number;
   sessionBackup?: { state: 'disabled' | 'starting' | 'ready' | 'error' | 'conflict'; lastBackupAt: number | null; sessions?: number; backedUp?: number } | null;
 }
 

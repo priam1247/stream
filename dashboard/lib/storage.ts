@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PANEL_BASE_URL, DEFAULT_BOT_API_URL, DEFAULT_PANEL_SERVER_ID } from './panel-config';
+import { PANEL_BASE_URL, DEFAULT_PANEL_SERVER_ID } from './panel-config';
 import {
   ActivityEvent,
   ApprovedUser,
@@ -656,17 +656,14 @@ export async function listAllMembers(
 // ============================================================================
 
 export async function getBotConnectionConfig(): Promise<BotConnectionConfig> {
-  // Direct bridge settings are intentionally isolated from older hosts. The
-  // existing outbound sync token remains usable by the current installation.
-  const envUrl = process.env.BOTKEEP_BOT_API_URL?.trim() || DEFAULT_BOT_API_URL;
-  const envToken = process.env.BOTKEEP_BOT_ADMIN_TOKEN?.trim() || '';
+  // One credential: the shared secret the bot signs its outbound sync with.
+  // A value saved in the dashboard wins over the environment variable so the
+  // owner can rotate it without redeploying; nothing else is consulted.
   const envSyncToken = process.env.BOT_SYNC_TOKEN?.trim() || '';
-  const envLegacyAdmin = process.env.ADMIN_DASHBOARD_TOKEN?.trim() || '';
-  const envBotkeepSync = process.env.BOT_BOTKEEP_SYNC_TOKEN?.trim() || '';
 
   if (await ensureD1Tables()) {
     const rows = await queryD1(`SELECT key, value, updated_at FROM portal_settings WHERE key IN
-      ('botkeep_bot_api_url', 'botkeep_bot_admin_token', 'bot_sync_token', 'bot_admin_token', 'bot_botkeep_sync_token', 'bot_enabled_for_members')`);
+      ('bot_sync_token', 'bot_enabled_for_members')`);
     if (rows !== null) {
       const map = new Map<string, string>();
       let updatedAt: string | undefined;
@@ -675,9 +672,7 @@ export async function getBotConnectionConfig(): Promise<BotConnectionConfig> {
         if (r.updated_at) updatedAt = String(r.updated_at);
       }
       return {
-        botApiUrl: (map.has('botkeep_bot_api_url') ? map.get('botkeep_bot_api_url')! : envUrl).trim(),
-        botAdminToken: (map.has('botkeep_bot_admin_token') ? map.get('botkeep_bot_admin_token')! : envToken).trim(),
-        botSyncToken: (map.get('bot_sync_token') || envSyncToken || map.get('bot_admin_token') || envLegacyAdmin || map.get('bot_botkeep_sync_token') || envBotkeepSync).trim(),
+        botSyncToken: (map.get('bot_sync_token') || envSyncToken).trim(),
         botEnabledForMembers: map.get('bot_enabled_for_members') !== '0',
         updatedAt,
       };
@@ -686,27 +681,17 @@ export async function getBotConnectionConfig(): Promise<BotConnectionConfig> {
 
   const store = readDiskStore();
   return {
-    botApiUrl: (Object.hasOwn(store.settings, 'botkeep_bot_api_url') ? store.settings.botkeep_bot_api_url : envUrl).trim(),
-    botAdminToken: (Object.hasOwn(store.settings, 'botkeep_bot_admin_token') ? store.settings.botkeep_bot_admin_token : envToken).trim(),
-    botSyncToken: (store.settings.bot_sync_token || envSyncToken || store.settings.bot_admin_token || envLegacyAdmin || store.settings.bot_botkeep_sync_token || envBotkeepSync).trim(),
+    botSyncToken: (store.settings.bot_sync_token || envSyncToken).trim(),
     botEnabledForMembers: store.settings.bot_enabled_for_members !== '0',
     updatedAt: store.settings.updated_at,
   };
 }
 
 export async function saveBotConnectionConfig(patch: {
-  botApiUrl?: string;
-  botAdminToken?: string;
   botSyncToken?: string;
   botEnabledForMembers?: boolean;
 }): Promise<BotConnectionConfig> {
   const current = await getBotConnectionConfig();
-  const nextUrl =
-    typeof patch.botApiUrl === 'string' ? patch.botApiUrl.trim() : current.botApiUrl;
-  const nextToken =
-    typeof patch.botAdminToken === 'string'
-      ? patch.botAdminToken.trim()
-      : current.botAdminToken;
   const nextSyncToken =
     typeof patch.botSyncToken === 'string'
       ? patch.botSyncToken.trim()
@@ -717,12 +702,9 @@ export async function saveBotConnectionConfig(patch: {
       : current.botEnabledForMembers;
   const now = new Date().toISOString();
   const entries: [string, string][] = [];
-  if (typeof patch.botApiUrl === 'string') entries.push(['botkeep_bot_api_url', nextUrl]);
-  if (typeof patch.botAdminToken === 'string') entries.push(['botkeep_bot_admin_token', nextToken]);
   if (typeof patch.botSyncToken === 'string') entries.push(['bot_sync_token', nextSyncToken]);
   if (typeof patch.botEnabledForMembers === 'boolean') entries.push(['bot_enabled_for_members', nextEnabled ? '1' : '0']);
-  const result = { botApiUrl: nextUrl, botAdminToken: nextToken, botSyncToken: nextSyncToken,
-    botEnabledForMembers: nextEnabled, updatedAt: now };
+  const result = { botSyncToken: nextSyncToken, botEnabledForMembers: nextEnabled, updatedAt: now };
 
   if (await ensureD1Tables()) {
     if (!entries.length) return result;

@@ -10,7 +10,7 @@ vi.mock('next/link', () => ({ default: ({ href, children }: { href: string; chil
 const member = { email: 'member@example.com', name: 'A Member', isAdmin: false, isVerified: true, allowed: true, numbersCount: 1, createdAt: '2026-01-01' };
 const overview = {
   ok: true, adminEmail: 'owner@example.com', botServerLinked: true, botReachable: true, connected: true,
-  botNumber: '265991234567', botApiUrl: '', hasBotToken: false, hasBotSyncToken: true,
+  botNumber: '265991234567', hasBotSyncToken: true,
   botEnabledForMembers: true, storageEngine: 'cloudflare-d1', connectionMode: 'heartbeat', whitelistSync: 'pending',
   lastSeenSecondsAgo: 3, botVersion: '1.2.3', ramUsedMB: 32, diskUsedMB: 90, diskBudgetMB: 100, queueLight: 0, queueHeavy: 0,
   panelConfigured: true, panelUrl: 'https://panel.example.com', panelServerId: 'server-1', hasPanelApiKey: true,

@@ -41,12 +41,10 @@ describe('single Botkeep storage with old database values', () => {
     vi.stubEnv('PANEL_URL', 'https://old-host.invalid'); vi.stubEnv('PANEL_API_KEY', 'old-key'); vi.stubEnv('PANEL_SERVER_ID', 'old-server');
     vi.stubEnv('BOT_API_URL', 'https://old-host.invalid'); vi.stubEnv('ADMIN_DASHBOARD_TOKEN', 'legacy-environment-secret');
     expect(await getPanelConnectionConfig()).toMatchObject({ panelUrl: PANEL_BASE_URL, panelServerId: DEFAULT_PANEL_SERVER_ID, panelApiKey: '' });
-    expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: 'https://troy.hidenplay.net', botAdminToken: '', botSyncToken: 'current-sync-secret' });
-    // A saved blank URL explicitly leaves heartbeat-only mode.
-    await saveBotConnectionConfig({ botApiUrl: '' });
-    expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: '' });
-    await saveBotConnectionConfig({ botApiUrl: 'https://override.example' });
-    expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: 'https://override.example' });
+    // Only the single shared sync token survives; no inbound URL or admin token.
+    expect(await getBotConnectionConfig()).toMatchObject({ botSyncToken: 'current-sync-secret' });
+    expect(await getBotConnectionConfig()).not.toHaveProperty('botApiUrl');
+    expect(await getBotConnectionConfig()).not.toHaveProperty('botAdminToken');
     await savePanelConnectionConfig({ panelServerId: 'workload-1', panelApiKey: 'botkeep-key-123456789' });
     expect(await getPanelConnectionConfig()).toMatchObject({ panelUrl: PANEL_BASE_URL, panelServerId: 'workload-1', panelApiKey: 'botkeep-key-123456789' });
     expect(db.prepare("SELECT value FROM portal_settings WHERE key = 'panel_api_key'").get()).toMatchObject({ value: 'old-key' });
@@ -70,31 +68,35 @@ describe('single Botkeep storage with old database values', () => {
     await saveBotHeartbeatIfNewer({ lastSeenAt: now + 2, connected: false, botNumber: null });
     expect(await getBotHeartbeat()).toMatchObject({ lastSeenAt: now + 2, connected: false });
   });
-  it('honors only explicitly configured Botkeep bridge values, including clearing environment defaults', async () => {
-    vi.stubEnv('BOTKEEP_BOT_API_URL', 'https://botkeep-service.example'); vi.stubEnv('BOTKEEP_BOT_ADMIN_TOKEN', 'new-bridge-token');
-    expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: 'https://botkeep-service.example', botAdminToken: 'new-bridge-token' });
-    await saveBotConnectionConfig({ botApiUrl: '', botAdminToken: '' });
-    expect(await getBotConnectionConfig()).toMatchObject({ botApiUrl: '', botAdminToken: '' });
-  });
-  it('preserves existing single-host credentials and falls back to saved or environment Botkeep sync tokens', async () => {
-    setting('bot_botkeep_sync_token', 'botkeep-saved-sync');
-    expect((await getBotConnectionConfig()).botSyncToken).toBe('botkeep-saved-sync');
+  it('ignores retired bridge and Botkeep token settings', async () => {
+    vi.stubEnv('BOTKEEP_BOT_API_URL', 'https://botkeep-service.example');
+    vi.stubEnv('BOTKEEP_BOT_ADMIN_TOKEN', 'new-bridge-token');
+    vi.stubEnv('ADMIN_DASHBOARD_TOKEN', 'legacy-admin-env');
+    vi.stubEnv('BOT_BOTKEEP_SYNC_TOKEN', 'botkeep-env-sync');
     setting('bot_admin_token', 'legacy-admin-sync');
-    expect((await getBotConnectionConfig()).botSyncToken).toBe('legacy-admin-sync');
+    setting('bot_botkeep_sync_token', 'botkeep-saved-sync');
+    setting('botkeep_bot_api_url', 'https://botkeep-service.example');
+    setting('botkeep_bot_admin_token', 'new-bridge-token');
+    expect(await getBotConnectionConfig()).toMatchObject({ botSyncToken: '' });
+  });
+  it('resolves the sync token from the saved value or BOT_SYNC_TOKEN only', async () => {
+    vi.stubEnv('BOT_SYNC_TOKEN', 'env-sync');
+    expect((await getBotConnectionConfig()).botSyncToken).toBe('env-sync');
     setting('bot_sync_token', 'explicit-single-host');
     expect((await getBotConnectionConfig()).botSyncToken).toBe('explicit-single-host');
-    db.prepare('DELETE FROM portal_settings').run(); vi.stubEnv('BOT_BOTKEEP_SYNC_TOKEN', 'botkeep-env-sync');
-    expect((await getBotConnectionConfig()).botSyncToken).toBe('botkeep-env-sync');
+    await saveBotConnectionConfig({ botSyncToken: 'rotated-sync' });
+    expect((await getBotConnectionConfig()).botSyncToken).toBe('rotated-sync');
+    db.prepare('DELETE FROM portal_settings').run();
+    expect((await getBotConnectionConfig()).botSyncToken).toBe('env-sync');
   });
   it('preserves independent settings on simultaneous updates', async () => {
     await Promise.all([
       saveBotConnectionConfig({ botSyncToken: 'new-sync-token' }),
-      saveBotConnectionConfig({ botApiUrl: 'https://new-bot.example', botAdminToken: 'new-bridge-token' }),
       saveBotConnectionConfig({ botEnabledForMembers: false }),
       savePanelConnectionConfig({ panelServerId: 'workload-new' }),
       savePanelConnectionConfig({ panelApiKey: 'botkeep-api-key-123456' }),
     ]);
-    expect(await getBotConnectionConfig()).toMatchObject({ botSyncToken: 'new-sync-token', botApiUrl: 'https://new-bot.example', botAdminToken: 'new-bridge-token', botEnabledForMembers: false });
+    expect(await getBotConnectionConfig()).toMatchObject({ botSyncToken: 'new-sync-token', botEnabledForMembers: false });
     expect(await getPanelConnectionConfig()).toMatchObject({ panelServerId: 'workload-new', panelApiKey: 'botkeep-api-key-123456' });
   });
   it('maps pending, approved, rejected and legacy D1 rows correctly', async () => {

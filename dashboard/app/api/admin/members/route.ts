@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession, isAdminEmail } from '@/lib/auth-engine';
-import { syncNumberToLiveBot } from '@/lib/bot-proxy';
+import { requestWhitelistSync } from '@/lib/bot-proxy';
 import {
   listAllMembers,
   listStoredWhatsAppUsers,
@@ -75,7 +75,7 @@ export async function PATCH(req: NextRequest) {
   const memberNumbers = await listStoredWhatsAppUsers(email);
   await Promise.all(
     memberNumbers.map((item) =>
-      syncNumberToLiveBot(item.number, item.label || email, item.enabled, item.pairAllowed === true),
+      requestWhitelistSync(),
     ),
   );
 

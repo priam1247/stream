@@ -42,25 +42,19 @@ export async function verifyBotSyncRequest(
   rawBody = '',
 ): Promise<{ ok: boolean; status: number; error?: string }> {
   const cfg = await getBotConnectionConfig();
-  const validSecrets = [
-    cfg.botSyncToken,
-    cfg.botAdminToken,
-  ]
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const validSecrets = [cfg.botSyncToken].map((s) => s.trim()).filter(Boolean);
 
   if (validSecrets.length === 0) {
     return {
       ok: false,
       status: 503,
-      error: 'ADMIN_DASHBOARD_TOKEN / BOT_SYNC_TOKEN is not configured on the portal yet.',
+      error: 'BOT_SYNC_TOKEN is not configured on the portal yet.',
     };
   }
 
   const providedBearer =
     req.headers.get('authorization')?.replace(/^Bearer\s+/i, '').trim() ||
     req.headers.get('x-bot-token')?.trim() ||
-    req.headers.get('x-admin-token')?.trim() ||
     '';
 
   const matchedSecret = validSecrets.find(

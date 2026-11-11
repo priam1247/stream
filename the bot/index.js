@@ -274,16 +274,15 @@ async function startService() {
   },
 });
 
-// ── Dashboard Outbound HTTPS Sync + Optional Inbound API ─────────────────────
-// Recommended on Botkeep: set DASHBOARD_URL + BOT_SYNC_TOKEN
-// (with ADMIN_API_ENABLED=false so no open port is needed). The bot pushes live
+// ── Dashboard outbound HTTPS sync ───────────────────────────────────────────
+// Set DASHBOARD_URL + BOT_SYNC_TOKEN on the service. The bot pushes live
 // heartbeats, pulls versioned whitelist deltas, and picks up pairing requests.
+// Nothing listens for the dashboard: there is no inbound admin API or port.
 const { startSessionServices } = require('./gateway/sessions/startup');
 const bridge = await startSessionServices(sessions, async function startDashboardBridge() {
-  let sync; let api;
+  let sync;
   try {
   const admin = config.admin || {};
-  const { startAdminApi } = require('./gateway/dashboard/api');
   const { startDashboardSync } = require('./gateway/dashboard/sync');
 
   sync = startDashboardSync({
@@ -298,37 +297,16 @@ const bridge = await startSessionServices(sessions, async function startDashboar
     onPermissionsReady: () => { if (!permissionsSynced) { permissionsSynced = true; sessions.refreshPermissions(); } },
   });
 
-  if (admin.apiEnabled && admin.token) {
-    api = startAdminApi({
-      port: admin.port,
-      token: admin.token,
-      allowedOrigins: admin.corsOrigins || [],
-      hooks: {
-        status: async () => {
-          const { readWL } = require('./gateway/users/access');
-          return {
-            ...sessions.status(),
-            botName: config.botName,
-            members: readWL().users.filter((u) => u.enabled !== false).length,
-          };
-        },
-        requestPair: (number) => sessions.requestPair(number),
-        unlinkAccount: (number, sessionId) => sessions.unlinkAccount(number, sessionId),
-        whitelistChanged: () => sessions.refreshPermissions(),
-      },
-    });
-    console.log(`Dashboard API active (port ${admin.port}${sync.enabled ? ', outbound sync enabled' : ''}).`);
-  } else if (sync.enabled) {
+  if (sync.enabled) {
     console.log('Dashboard outbound sync active.');
   } else {
     console.log('Dashboard sync is off (set DASHBOARD_URL + BOT_SYNC_TOKEN to connect).');
   }
   } catch (error) {
     sync?.stop();
-    if (api) await api.stop().catch(() => {});
     throw error;
   }
-  return { sync, api };
+  return { sync };
 }, () => backup.stop());
 
 try { require('./lib/logger').banner([

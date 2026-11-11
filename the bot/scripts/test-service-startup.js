@@ -25,22 +25,20 @@ test('shutdown stops new requests, waits for sessions, and flushes encrypted rec
   const waitForWrites = new Promise((resolve) => { release = resolve; });
   const resource = {
     sync: { stop: () => events.push('sync') },
-    api: { stop: async () => events.push('api') },
     sessions: { stop: async () => { events.push('sessions-start'); await waitForWrites; events.push('sessions-done'); } },
     backup: { stop: async (options) => { assert.deepEqual(options, { flush: true }); events.push('backup'); } },
   };
   const stopping = stopSessionServices(resource);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(events, ['sync', 'api', 'sessions-start']);
+  assert.deepEqual(events, ['sync', 'sessions-start']);
   release(); await stopping;
-  assert.deepEqual(events, ['sync', 'api', 'sessions-start', 'sessions-done', 'backup']);
+  assert.deepEqual(events, ['sync', 'sessions-start', 'sessions-done', 'backup']);
 });
 
 test('shutdown still flushes the backup when another component fails', async () => {
   const events = [];
   await assert.rejects(stopSessionServices({
     sync: { stop: () => { throw new Error('sync failed'); } },
-    api: { stop: async () => { throw new Error('api failed'); } },
     sessions: { stop: async () => { events.push('sessions'); throw new Error('sessions failed'); } },
     backup: { stop: async () => events.push('backup') },
   }), AggregateError);
@@ -124,8 +122,7 @@ for (const [signal, failBackup] of [['SIGTERM', false], ['SIGINT', false], ['SIG
         './gateway/sessions/manager': { createSessionManager: () => ({ start: async () => { mark('sessions-start'); }, stop: async () => { mark('sessions-stop-start'); await new Promise((r) => setTimeout(r, 20)); mark('sessions-stop-done'); }, status: () => ({}) }) },
         './gateway/users/access': { readWL: () => ({ users: [] }) },
         './gateway/sessions/backup': { createSessionBackup: () => ({ restore: async () => {}, wrapAuth() {}, status: () => ({}), stop: async (opts) => { mark('backup-flush:' + opts?.flush); if (process.env.TEST_FAIL_BACKUP) throw new AggregateError([new Error('snapshot failed', { cause: new Error('storage failure token=secret-shutdown-fixture', { cause: new Error('disk denied') }) })], 'backup flush failed'); } }) },
-        './gateway/dashboard/sync': { startDashboardSync: () => ({ enabled: true, stop() { mark('sync-stop'); if (process.env.TEST_FAIL_BACKUP) throw new Error(({ sensitive: 'closing session token=secret-filter-fixture registrationId=12345 chainKey=private-session-fixture', private: 'closing session privateKey=secret-private-key-fixture', binary: 'closing session: Buffer barebinarysecretfixturebarebinarysecretfixture12345678', benign: 'closing session: socket offline token=secret-filter-fixture' })[process.env.TEST_FAIL_BACKUP]); } }), triggerImmediateSync() {} },
-        './gateway/dashboard/api': { startAdminApi: () => { setImmediate(() => { process.emit('unhandledRejection', undefined); process.stdout.write('SERVICE_READY\\n'); }); return { stop: async () => { mark('api-stop'); } }; } },
+        './gateway/dashboard/sync': { startDashboardSync: () => { setImmediate(() => { process.stdout.write('SERVICE_READY\\n'); }); return { enabled: true, stop() { mark('sync-stop'); if (process.env.TEST_FAIL_BACKUP) throw new Error(({ sensitive: 'closing session token=secret-filter-fixture registrationId=12345 chainKey=private-session-fixture', private: 'closing session privateKey=secret-private-key-fixture', binary: 'closing session: Buffer barebinarysecretfixturebarebinarysecretfixture12345678', benign: 'closing session: socket offline token=secret-filter-fixture' })[process.env.TEST_FAIL_BACKUP]); } }; }, triggerImmediateSync() {} },
         './lib/logger': logger,
         './lib/youtube/youtubedl': {},
         './lib/ffmpeg': ffmpeg,
@@ -175,7 +172,7 @@ for (const [signal, failBackup] of [['SIGTERM', false], ['SIGINT', false], ['SIG
       assert.doesNotMatch(output, /secret-shutdown-fixture|secret-filter-fixture|private-session-fixture|secret-private-key-fixture|barebinarysecretfixture|registrationId=12345/);
     }
     const events = fs.readFileSync(marker, 'utf8').trim().split('\n');
-    assert.deepEqual(events, ['sessions-start', 'cleanup', 'disk', 'sync-stop', 'api-stop', 'sessions-stop-start', 'sessions-stop-done', 'backup-flush:true', 'telemetry']);
+    assert.deepEqual(events, ['sessions-start', 'cleanup', 'disk', 'sync-stop', 'sessions-stop-start', 'sessions-stop-done', 'backup-flush:true', 'telemetry']);
   });
 }
 
@@ -183,15 +180,14 @@ test('shutdown errors identify each failing component and preserve their causes'
   const { safeText } = require('../lib/safeLog');
   const result = await stopSessionServices({
     sync: { stop: () => { throw new Error('sync offline token=secret-sync-fixture'); } },
-    api: { stop: async () => { throw new Error('API socket close'); } },
     sessions: { stop: async () => { throw new Error('WhatsApp socket close'); } },
     backup: { stop: async () => { throw new Error('recovery write failed'); } },
   }).then(() => null, (error) => error);
   assert.ok(result instanceof AggregateError);
   const labels = result.errors.map((error) => error.message).sort();
-  assert.deepEqual(labels, ['Dashboard API shutdown failed', 'Dashboard sync shutdown failed', 'Session backup shutdown failed', 'WhatsApp sessions shutdown failed'].sort());
+  assert.deepEqual(labels, ['Dashboard sync shutdown failed', 'Session backup shutdown failed', 'WhatsApp sessions shutdown failed'].sort());
   for (const error of result.errors) assert.ok(error.cause instanceof Error);
   const output = safeText(result);
-  for (const detail of ['sync offline', 'API socket close', 'WhatsApp socket close', 'recovery write failed']) assert.ok(output.includes(detail));
+  for (const detail of ['sync offline', 'WhatsApp socket close', 'recovery write failed']) assert.ok(output.includes(detail));
   assert.doesNotMatch(output, /secret-sync-fixture/);
 });

@@ -90,11 +90,9 @@ export function AdminConsole() {
     ok: true,
     adminEmail: '',
     botServerLinked: false,
-    botApiUrl: '',
-    hasBotToken: false,
+    hasBotSyncToken: false,
     botEnabledForMembers: true,
     storageEngine: 'persistent-db',
-    upstreamHost: null,
     connected: false,
     botNumber: null,
     users: [],
@@ -116,8 +114,6 @@ export function AdminConsole() {
   }, [user?.isAdmin]);
 
   // Bot & numbers state
-  const [botUrlInput, setBotUrlInput] = useState('');
-  const [botTokenInput, setBotTokenInput] = useState('');
   const [botSyncTokenInput, setBotSyncTokenInput] = useState('');
   const [showBotToken, setShowBotToken] = useState(false);
   const [savingBot, setSavingBot] = useState(false);
@@ -161,8 +157,6 @@ export function AdminConsole() {
         setOverviewCheckedAt(Date.now());
         setOverviewError(null);
         if (hydrateInputs) {
-          setBotUrlInput(json.botApiUrl || '');
-          setBotTokenInput(json.hasBotToken ? '••••••••' : '');
           setBotSyncTokenInput(json.hasBotSyncToken ? '••••••••' : '');
           setPanelServerIdInput(json.panelServerId || '');
           setPanelKeyInput(json.hasPanelApiKey ? '••••••••' : '');
@@ -275,20 +269,6 @@ export function AdminConsole() {
     } finally { setBusyNumber(null); }
   };
 
-  const handleSyncNumber = async (number: string) => {
-    setBusyNumber(number);
-    try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(number)}/sync`, { method: 'POST', headers: authHeaders() });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || 'Could not request sync.');
-      setNotice({ text: json.message || 'Sync requested.' });
-      void loadOverview(true, false);
-      void loadActivity();
-    } catch (error) {
-      setNotice({ text: error instanceof Error ? error.message : 'Could not request sync.', bad: true });
-    } finally { setBusyNumber(null); }
-  };
-
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMemberEmail.trim()) return;
@@ -360,9 +340,6 @@ export function AdminConsole() {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({
-          bridgeTarget: 'botkeep',
-          botApiUrl: botUrlInput.trim(),
-          botAdminToken: botTokenInput.trim(),
           botSyncToken: botSyncTokenInput.trim(),
         }),
       });
@@ -752,7 +729,7 @@ export function AdminConsole() {
                   <h2 className="text-sm font-bold text-ink sm:text-base">Service status</h2>
                   <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
                     <div className="rounded-xl bg-ink/5 p-3"><p className="text-xs text-ink/60">HiddenCloud server</p><p className="mt-1 text-sm font-semibold capitalize text-ink/80">{!panelStatus ? 'Checking' : panelStatus.configured === false ? 'Not configured' : panelStatus.state}</p>{panelStatus?.error && <p className="mt-1 break-words text-[11px] text-ink/60">{panelStatus.error}</p>}</div>
-                    <div className="rounded-xl bg-ink/5 p-3"><p className="text-xs text-ink/60">Service bridge</p><p className="mt-1 text-sm font-semibold text-ink/80">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-ink/60">{overviewError ? 'Last check failed' : overviewCheckedAt == null ? 'Awaiting first check' : data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : data.connectionMode === 'direct' ? 'Direct connection' : 'No heartbeat reported'}</p></div>
+                    <div className="rounded-xl bg-ink/5 p-3"><p className="text-xs text-ink/60">Service bridge</p><p className="mt-1 text-sm font-semibold text-ink/80">{overviewError || overviewCheckedAt == null ? 'Unknown' : data.botReachable ? 'Reachable' : data.botServerLinked ? 'Not reporting' : 'Not linked'}</p><p className="mt-1 text-[11px] text-ink/60">{overviewError ? 'Last check failed' : overviewCheckedAt == null ? 'Awaiting first check' : data.lastSeenSecondsAgo != null ? `Last heartbeat ${data.lastSeenSecondsAgo}s ago` : 'No heartbeat reported'}</p></div>
                     <div className="rounded-xl bg-ink/5 p-3"><p className="text-xs text-ink/60">WhatsApp</p><p className="mt-1 text-sm font-semibold text-ink/80">{overviewError || !data.botReachable || data.connected == null ? 'Unknown' : data.connected ? 'Connected' : 'Disconnected'}</p></div>
                   </div>
                   {overviewError && <p role="alert" className="mt-3 text-xs text-accent">Status could not be refreshed. Check Sync settings.</p>}
@@ -967,7 +944,6 @@ export function AdminConsole() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <button type="button" disabled={busy} onClick={() => handleSyncNumber(u.number)} aria-label={`Retry sync for +${u.number}`} className="inline-flex min-h-11 items-center gap-1 rounded-xl border border-ink/10 bg-paper px-2.5 py-1.5 text-xs font-semibold text-ink/80 hover:border-accent/25 hover:bg-accent/10 disabled:opacity-40"><RefreshCw className="h-3.5 w-3.5 text-accent" /> Sync</button>
                           <button
                             type="button"
                             disabled={!u.enabled || busy || accountState === 'connected' || accountState === 'connecting'}
@@ -1030,10 +1006,10 @@ export function AdminConsole() {
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="flex items-center gap-2 text-sm font-bold text-ink">
                     <Server className="h-4 w-4 text-accent" />
-                    Service Sync Bridge
+                    Service Sync
                   </h2>
                   <span className="rounded bg-ink/5 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-ink/60">
-                    {data.connectionMode || 'sync'}
+                    {data.connectionMode === 'heartbeat' ? 'outbound' : 'not linked'}
                   </span>
                 </div>
 
@@ -1066,42 +1042,6 @@ export function AdminConsole() {
                           <Eye className="h-4 w-4" />
                         )}
                       </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                    <div className="min-w-0">
-                      <label
-                        htmlFor="admin-bot-url"
-                        className="mb-1 block font-mono text-[11px] font-semibold text-ink/60"
-                      >
-                        Botkeep inbound URL
-                      </label>
-                      <input
-                        id="admin-bot-url"
-                        type="url"
-                        value={botUrlInput}
-                        onChange={(e) => setBotUrlInput(e.target.value)}
-                        placeholder="Defaults to https://troy.hidenplay.net"
-                        className="w-full rounded-xl border border-ink/20 bg-paper px-3 py-2 font-mono text-xs text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none"
-                      />
-                    </div>
-
-                    <div className="min-w-0">
-                      <label
-                        htmlFor="admin-bot-token"
-                        className="mb-1 block font-mono text-[11px] font-semibold text-ink/60"
-                      >
-                          Botkeep bridge token
-                      </label>
-                      <input
-                        id="admin-bot-token"
-                        type={showBotToken ? 'text' : 'password'}
-                        value={botTokenInput}
-                        onChange={(e) => setBotTokenInput(e.target.value)}
-                        placeholder="Optional"
-                        className="w-full rounded-xl border border-ink/20 bg-paper px-3 py-2 font-mono text-xs text-ink placeholder:text-ink/40 focus:border-accent focus:outline-none"
-                      />
                     </div>
                   </div>
 

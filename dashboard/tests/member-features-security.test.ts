@@ -14,7 +14,7 @@ vi.mock('../lib/activity', () => ({ maskedNumber: () => 'masked', recordActivity
 vi.mock('../lib/bot-proxy', () => ({
   normalizePhoneNumber: (value: unknown) => String(value || '').replace(/\D/g, ''),
   fetchLiveBotStatus: vi.fn(async () => ({ reachable: true, accounts: state.linked ? [{ number: '265991234567', state: 'paused', sessionId: 'a'.repeat(24), claimToken: state.linkClaim }] : [] })),
-  syncNumberToLiveBot: vi.fn(async () => 'pending'),
+  requestWhitelistSync: vi.fn(async () => {}),
 }));
 vi.mock('../lib/storage', () => ({
   getStoredWhatsAppUser: vi.fn(async () => ({ number: '265991234567', addedBy: 'member@example.com', approval: 'pending', enabled: false, pairAllowed: true })),

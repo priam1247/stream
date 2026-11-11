@@ -1,6 +1,6 @@
 # ZaFar Control Room (Web Portal)
 
-Standalone Next.js 16 application for member sign-in, WhatsApp number self-service, and the administrator console (`/admin`). The Botkeep service synchronizes outbound over HTTPS; an optional direct bridge can be configured separately. Secrets stay server-side.
+Standalone Next.js 16 application for member sign-in, WhatsApp number self-service, and the administrator console (`/admin`). The WhatsApp service synchronizes outbound over HTTPS and the dashboard never dials it. Secrets stay server-side.
 
 ## Deploying on Vercel (or Self-Hosted Node)
 
@@ -23,8 +23,7 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 | `RESEND_API_KEY` + `EMAIL_FROM` | Pick Resend **or** SMTP | Sends 6-digit verification & password-reset codes over HTTPS (works cleanly on serverless/edge hosts). |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Pick Resend **or** SMTP | Direct SMTP mail delivery (e.g. Gmail App Password on port `587` or `465`). |
 | `ZAFAR_AUTH_API_URL` | Optional (legacy migration only) | Leave empty. If set during migration from an older external auth service, existing accounts are verified once (6 s cap) and migrated permanently into local D1. |
-| `BOT_SYNC_TOKEN` | Recommended | Shared private token for the bot’s outbound sync. |
-| `BOTKEEP_BOT_API_URL` / `BOTKEEP_BOT_ADMIN_TOKEN` | Optional | Direct bot bridge defaults. `BOTKEEP_BOT_API_URL` defaults to the service reverse proxy `https://troy.hidenplay.net`; set it to override, or save an empty URL in the dashboard for heartbeat-only. Both are still required for direct calls. Old generic bridge addresses and tokens are not used for inbound control. |
+| `BOT_SYNC_TOKEN` | Recommended | The one shared private token for the bot’s outbound sync. The dashboard holds no other bot credential and never calls the bot directly. |
 | `HIDENCLOUD_SERVER_ID` / `HIDENCLOUD_API_KEY` | Optional | HiddenCloud panel (Pterodactyl-compatible client API) for server status and power. The API key is a client key (`ptlc_…`) with Control permission from **Account → API Credentials**. The server ID defaults to `a6451c6c` (troyzafarings – Free Server #236941); the panel address is hardcoded to `https://freepanel.hidencloud.com`. Legacy `BOTKEEP_WORKLOAD_ID` / `BOTKEEP_API_KEY` are still honored as fallbacks. |
 
 ## Linking Botkeep securely
@@ -33,20 +32,19 @@ For normal operation set `DASHBOARD_URL` and a private `BOT_SYNC_TOKEN` on the
 Botkeep service, and configure the same token under **WhatsApp → Sync** or as a
 dashboard environment secret. The bot initiates the connection; no inbound bot
 port is needed. Keep `SESSION_BACKUP_KEY` unchanged if encrypted recovery is in
-use. Old saved single-host sync credentials remain supported; a saved Botkeep
-role token is used only when no single-host token or legacy admin token exists.
-The owner can explicitly save the matching token if needed. Sync and recovery
-requests must include the timestamped HMAC signature and nonce used by the
-Botkeep client; bearer-only clients must be updated.
+The token is resolved from exactly two places: the value saved under
+**WhatsApp → Sync**, then the `BOT_SYNC_TOKEN` environment variable. Retired
+`ADMIN_DASHBOARD_TOKEN`, `BOT_BOTKEEP_SYNC_TOKEN`, `BOTKEEP_BOT_API_URL` and
+`BOTKEEP_BOT_ADMIN_TOKEN` values are ignored, so a stale environment cannot
+silently authenticate a previous host. Sync and recovery requests must include
+the timestamped HMAC signature and nonce used by the bot; bearer-only clients
+must be updated.
 
-An optional direct bot bridge can be enabled separately on Botkeep. Enter its
-HTTPS address and token under **WhatsApp → Sync**, or set
-`BOTKEEP_BOT_API_URL` and `BOTKEEP_BOT_ADMIN_TOKEN` server-side. When no
-address is configured anywhere, the dashboard defaults to the service's
-reverse proxy (`https://troy.hidenplay.net`); saving an empty URL in the
-dashboard opts back into heartbeat-only mode. Old generic bridge addresses
-and old hosting-panel credentials are intentionally ignored, so they cannot
-silently target a previous host. Prefer HTTPS for all token traffic. A
+The dashboard is outbound-only. It never dials the bot: there is no inbound bot
+port, no `/admin/api/*` bridge and no direct status probe. Everything the owner
+sees comes from the bot's signed heartbeat over `/api/bot/sync`, so a missing or
+stale heartbeat is reported as such rather than guessed. Pairing, unlink and
+number changes are queued in D1 and the bot claims them on its next poll. A
 heartbeat is a report by the bot, not proof of hosting power state.
 
 HiddenCloud server controls are optional and require a HidenCloud plan with API access — the **free** tier deletes client API keys every 30 minutes, so status/power cannot stay configured there; control the server from the panel instead. On plans with API access, in **WhatsApp → Hosting**, enter a
