@@ -2,6 +2,16 @@
 node_modules/
 bin/
 
+# Runtime state and secrets for the nested checked-in bot workspace
+the bot/.env.production
+the bot/database/*.json
+the bot/database/*.bak
+the bot/database/*.corrupt*
+the bot/database/*.tmp
+the bot/database/*.sqlite
+the bot/database/*.sqlite-wal
+the bot/database/*.sqlite-shm
+
 # WhatsApp credentials — never commit
 session/
 *.session/

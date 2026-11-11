@@ -193,11 +193,11 @@ const settings = require(path.join(REPO, 'lib/mediaSettings.js'));
     await test('nested bot runtime credentials and data remain ignored by Git', () => {
       const { spawnSync } = require('node:child_process');
       const sensitive = [
-        'Whatsapp bot/.env', 'Whatsapp bot/.env.production',
-        'Whatsapp bot/session/creds.json', 'Whatsapp bot/database/whitelist.json',
-        'Whatsapp bot/database/jobs.sqlite', 'Whatsapp bot/database/jobs.sqlite-wal',
-        'Whatsapp bot/secrets/rclone.conf', 'Whatsapp bot/cookies/youtube.txt',
-        'Whatsapp bot/node_modules/package/index.js', 'Whatsapp bot/temp/download.mp4',
+        'the bot/.env', 'the bot/.env.production',
+        'the bot/session/creds.json', 'the bot/database/whitelist.json',
+        'the bot/database/jobs.sqlite', 'the bot/database/jobs.sqlite-wal',
+        'the bot/secrets/rclone.conf', 'the bot/cookies/youtube.txt',
+        'the bot/node_modules/package/index.js', 'the bot/temp/download.mp4',
       ];
       const ignored = spawnSync('git', ['-C', WORKSPACE, 'check-ignore', '--no-index', '-z', '--stdin'], {
         input: `${sensitive.join('\0')}\0`,
@@ -205,7 +205,7 @@ const settings = require(path.join(REPO, 'lib/mediaSettings.js'));
       });
       assert.strictEqual(ignored.status, 0, ignored.stderr);
       assert.deepStrictEqual(new Set(ignored.stdout.split('\0').filter(Boolean)), new Set(sensitive));
-      const example = spawnSync('git', ['-C', WORKSPACE, 'check-ignore', '--no-index', '-q', 'Whatsapp bot/.env.example']);
+      const example = spawnSync('git', ['-C', WORKSPACE, 'check-ignore', '--no-index', '-q', 'the bot/.env.example']);
       assert.strictEqual(example.status, 1, '.env.example must remain shareable');
     });
   }
@@ -2142,7 +2142,7 @@ const settings = require(path.join(REPO, 'lib/mediaSettings.js'));
         assert.match(wf, /npm ci/);
         assert.match(wf, /npm run selftest/);
         assert.match(wf, /npm run test:sessions/);
-        assert.match(wf, /working-directory:\s*Whatsapp bot/);
+        assert.match(wf, /working-directory:\s*the bot/);
         assert.doesNotMatch(wf, /\b(?:sftp|lftp|scp|ssh|rsync)\b/i, 'CI must not upload or restart a host');
       } else {
         console.log('  - Repository workflow checks skipped in standalone bot installation');
@@ -2258,8 +2258,8 @@ const settings = require(path.join(REPO, 'lib/mediaSettings.js'));
               whitelistVersion: 'v-abc123',
               whitelistChanged: true,
               users: [
-                { number: '265991112233', label: 'Portal Member', addedBy: 'm@example.com', enabled: true },
-                { number: '265998887766', label: 'Pair Me', addedBy: 'm@example.com', enabled: true },
+                { number: '265991112233', label: 'Portal Member', addedBy: 'm@example.com', claimId: 'claim-approved-1', approval: 'approved', enabled: true },
+                { number: '265998887766', label: 'Pair Me', addedBy: 'm@example.com', claimId: 'claim-pending-1', approval: 'pending', pairAllowed: true, enabled: false },
               ],
               commands: [
                 { id: 'cmd_pair_1', type: 'pair', payload: { number: '265998887766', label: 'Pair Me' } },

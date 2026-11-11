@@ -124,13 +124,6 @@ const findUserIndex = (users, ids, sessionDir = null) => {
   return users.findIndex(u => v.has(u.number) || (u.alt || []).some(a => v.has(a)));
 };
 
-/**
- * Same lookup, but a disabled entry does not count.
- *
- * The dashboard's Allow/Disallow switch writes `enabled: false` instead of
- * deleting the number, so the gate has to skip it — while `.disallow` (which
- * removes the entry) keeps using findUserIndex.
- */
 // Records predating approvals have no approval field and retain their access.
 // A pending pairing must never be treated as approved even if a malformed or
 // stale snapshot also says enabled=true.
