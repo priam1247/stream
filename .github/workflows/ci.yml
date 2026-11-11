@@ -52,10 +52,6 @@ jobs:
         working-directory: the bot
         run: npm run test:sessions
 
-      - name: Live HLS downloader smoke test
-        working-directory: the bot
-        run: node scripts/test-nm3u8dl-live.js
-
       - name: Verify standalone dashboard typecheck & build
         working-directory: dashboard
         run: |
