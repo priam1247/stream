@@ -28,7 +28,7 @@ beforeEach(() => {
     catch (error) { return Response.json({ success: false, errors: [{ message: (error as Error).message }] }, { status: 400 }); }
   }));
 });
-afterEach(() => { db.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); globalThis.__zafarD1SchemaV6Ready = undefined; globalThis.__zafarD1SchemaV6Promise = undefined; globalThis.__zafarD1UnreachableInDev = undefined; });
+afterEach(() => { db.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); globalThis.__zafarD1SchemaV6Ready = undefined; globalThis.__zafarD1SchemaV6Promise = undefined; });
 function setting(key: string, value: string) { db.prepare('INSERT OR REPLACE INTO portal_settings VALUES (?, ?, ?)').run(key, value, '2026-01-01'); }
 
 describe('single Botkeep storage with old database values', () => {

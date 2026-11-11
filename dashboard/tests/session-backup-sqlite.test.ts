@@ -29,7 +29,7 @@ beforeEach(() => {
     } catch (error) { return Response.json({ success: false, errors: [{ message: (error as Error).message }] }, { status: 400 }); }
   }));
 });
-afterEach(() => { db.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); globalThis.__zafarD1SchemaV6Ready = undefined; globalThis.__zafarD1SchemaV6Promise = undefined; globalThis.__zafarD1UnreachableInDev = undefined; });
+afterEach(() => { db.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); globalThis.__zafarD1SchemaV6Ready = undefined; globalThis.__zafarD1SchemaV6Promise = undefined; });
 function owner(email: string, claim: string, date: string) {
   db.prepare(`INSERT OR REPLACE INTO portal_whatsapp_access VALUES (?, 'Member', 1, ?, ?, 'approved', ?)`).run(number, email, date, claim);
 }
