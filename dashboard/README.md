@@ -100,14 +100,9 @@ separate deployment branch remains owner-managed.
   approved numbers keep their access. One pending claim per member and the bot's
   linked-account cap limit resource use. Blocking a member does not approve a
   pending request.
-- **WhatsApp → Commands** switches individual member commands on or off, using
-  the service's canonical command names (the member catalog mirrors the service
-  exactly, including aliases). Aliases and pending selections use the same
-  policy; the owner and the configured bot admin numbers keep access. Changes
-  show **awaiting service sync** until the bot reports the matching policy
-  version, and the bot refuses switched-off commands on the next message.
-  Work already running is not forcibly cancelled. The page also lists every
-  service command, owner-only ones included, for reference.
+- The command catalog is a read-only reference. Command availability and the
+  bot's local user allowlist are controlled on the bot and are never sent to or
+  changed by the dashboard.
 - **Report a problem** is a private member/administrator conversation. The
   server derives the member from the signed-in account and checks the admin role.
   Production reports require D1 rather than silently using ephemeral Vercel disk;

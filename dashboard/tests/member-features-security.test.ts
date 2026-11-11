@@ -5,7 +5,6 @@ import { NextRequest } from 'next/server';
 const state = vi.hoisted(() => ({ role: 'member' as 'member' | 'admin' | 'none', linked: false, memberAllowed: true, linkClaim: 'token-one' }));
 const calls = vi.hoisted(() => ({
   resolve: vi.fn(async () => ({ number: '265991234567', label: 'Member', enabled: true, approval: 'approved' })),
-  updatePolicy: vi.fn(async () => {}),
   supportMessages: vi.fn(async () => []),
   addMessage: vi.fn(async () => ({ id: 1, text: 'hello' })),
   listThreads: vi.fn(async () => [{ email: 'member@example.com', preview: 'hello', latestAt: 1, unread: 1 }]),
@@ -21,16 +20,12 @@ vi.mock('../lib/storage', () => ({
   getStoredWhatsAppUser: vi.fn(async () => ({ number: '265991234567', addedBy: 'member@example.com', approval: 'pending', enabled: false, pairAllowed: true })),
   resolvePendingWhatsAppUser: calls.resolve,
   sessionBackupClaim: () => ({ token: 'token-one', identity: { key: 'claim-one' } }),
-  getBotHeartbeat: vi.fn(async () => ({ lastSeenAt: Date.now(), commandPolicyVersion: 'wrong' })),
-  getMemberCommandPolicy: vi.fn(async () => ({ disabled: [], version: 'abc' })),
-  setMemberCommandDisabled: calls.updatePolicy,
   listSupportThreads: calls.listThreads,
   listSupportMessages: calls.supportMessages,
   countMemberSupportUnread: vi.fn(async () => 2),
   addSupportMessage: calls.addMessage,
 }));
 import { POST as approval } from '../app/api/admin/approvals/route';
-import { GET as commandsGet, PATCH as commandsPatch } from '../app/api/admin/commands/route';
 import { GET as supportGet, POST as supportPost } from '../app/api/support/route';
 const request = (url: string, body?: unknown, method = 'POST') => new NextRequest(`https://portal.example${url}`, body === undefined ? {} : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
@@ -49,28 +44,6 @@ describe('new management routes', () => {
     state.linkClaim = 'token-one';
     expect((await approval(request('/api/admin/approvals', { number: '265991234567', action: 'approve' }))).status).toBe(200);
     expect(calls.resolve).toHaveBeenCalledWith('265991234567', 'member@example.com', true, 'claim-one');
-  });
-  it('only admins may change canonical member commands and a stale heartbeat stays pending', async () => {
-    expect((await commandsGet(request('/api/admin/commands'))).status).toBe(403);
-    expect((await commandsPatch(request('/api/admin/commands', { name: 'movie', disabled: true }, 'PATCH'))).status).toBe(403);
-    state.role = 'admin';
-    expect((await commandsPatch(request('/api/admin/commands', { name: 'film', disabled: true }, 'PATCH'))).status).toBe(400);
-    const response = await commandsPatch(request('/api/admin/commands', { name: 'movie', disabled: true }, 'PATCH'));
-    expect(response.status).toBe(200); expect((await response.json()).sync).toBe('pending');
-    expect(calls.updatePolicy).toHaveBeenCalledWith('movie', true);
-  });
-  it('allows only admins to control remaining media commands and rejects retired ones', async () => {
-    const patch = (name: string) => commandsPatch(request('/api/admin/commands', { name, disabled: true }, 'PATCH'));
-    expect((await patch('tiktok')).status).toBe(403);
-    state.role = 'admin';
-    expect((await patch('ig')).status).toBe(400);
-    for (const name of ['tiktok', 'song', 'video']) {
-      expect((await patch(name)).status).toBe(200);
-      expect(calls.updatePolicy).toHaveBeenCalledWith(name, true);
-    }
-    for (const name of ['reddit', 'ytv', 'dl', 'spotify', 'bilibili', 'audius', 'commons', 'deezer', 'youku']) {
-      expect((await patch(name)).status).toBe(400);
-    }
   });
   it('keeps support available to a restricted member and refreshes owner unread after reading', async () => {
     state.memberAllowed = false;

@@ -17,8 +17,8 @@ export const VAULT_STATS = {
 // Mirrors `the bot/commands` exactly — verified against gateway/registry.js
 // (`loadCommands()`). ownerOnly commands run for OWNER_NUMBER only; adminOk
 // commands also accept the configured ADMIN_NUMBERS. Anything not listed here
-// does not exist on the service. Member commands sync through the member
-// command policy (see /api/admin/commands).
+// does not exist on the service. This is a read-only reference; command
+// access switches are controlled locally by the bot.
 export const BOT_COMMANDS: CommandEntry[] = [
   {
     name: 'song',

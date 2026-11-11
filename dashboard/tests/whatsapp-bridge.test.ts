@@ -43,6 +43,7 @@ beforeEach(() => {
   ]);
   state.commands = new Map();
   state.sequence = 0;
+  mocks.enqueue.mockClear();
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
@@ -74,28 +75,27 @@ describe('independent pairing bridge', () => {
     expect(state.users.get('15550001111')?.addedBy).toBe('member@example.com');
   });
 
-  it('does not let the direct pairing route re-enable a revoked number', async () => {
-    state.config.botApiUrl = 'https://direct.example';
-    state.config.botAdminToken = 'secret';
-    const fetchMock = vi.fn(async (_url: string) => {
-      state.users.get('15550001111')!.enabled = false;
-      return { ok: true, status: 200, json: async () => ({ code: 'TESTCODE', expiresInSeconds: 60, issuedAt: Date.now() }) };
-    });
+  it('does not queue a pairing command for a withdrawn number', async () => {
+    state.users.get('15550001111')!.enabled = false;
+    const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const result = await requestLiveBotPairingCode('15550001111', 'One', 'member@example.com', true);
-    expect(result).toMatchObject({ ok: false, status: 403 });
-    expect(JSON.stringify(result)).not.toContain('TESTCODE');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe('https://direct.example/admin/api/pair');
-    expect(state.users.get('15550001111')?.enabled).toBe(false);
+    expect(await requestLiveBotPairingCode('15550001111', 'One', 'member@example.com', true))
+      .toMatchObject({ ok: false, status: 403 });
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('treats a direct success response without a code as a gateway error', async () => {
+  it('uses the signed sync command even when the optional direct API is configured', async () => {
     state.config.botApiUrl = 'https://direct.example';
     state.config.botAdminToken = 'secret';
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })));
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
     expect(await requestLiveBotPairingCode('15550001111', 'One', 'member@example.com', true))
-      .toMatchObject({ ok: false, status: 502 });
+      .toMatchObject({ ok: true, code: 'CODE-1111' });
+    expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'pair', payload: { number: '15550001111', label: 'One' },
+    }));
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('keeps a clock-skewed issuance fallback fixed across later polls', async () => {

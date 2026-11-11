@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { NextRequest } from 'next/server';
-import { getBotConnectionConfig } from './storage';
+import { consumeBotSyncNonce, getBotConnectionConfig } from './storage';
 
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000; // ±5 minutes
 const MAX_NONCE_CACHE = 4096;
@@ -108,6 +108,13 @@ export async function verifyBotSyncRequest(
   // An invalid signature must not consume a valid request's nonce.
   if (!consumeNonce(nonceHeader)) {
     return { ok: false, status: 409, error: 'Duplicate or invalid service request nonce (replay blocked).' };
+  }
+  try {
+    if (!(await consumeBotSyncNonce(nonceHeader, Date.now() + MAX_CLOCK_SKEW_MS))) {
+      return { ok: false, status: 409, error: 'Duplicate or invalid service request nonce (replay blocked).' };
+    }
+  } catch {
+    return { ok: false, status: 503, error: 'Could not verify the service request nonce.' };
   }
 
   return { ok: true, status: 200 };

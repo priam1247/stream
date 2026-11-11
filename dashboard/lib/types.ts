@@ -155,7 +155,6 @@ export interface BotHeartbeatRecord {
   queueHeavy?: number;
   /** Version of the last whitelist snapshot the bot reports applying. */
   whitelistVersion?: string;
-  commandPolicyVersion?: string;
   sessionBackup?: { state: 'disabled' | 'starting' | 'ready' | 'error' | 'conflict'; lastBackupAt: number | null; sessions?: number; backedUp?: number };
 }
 
@@ -236,7 +235,6 @@ export interface MemberOverviewPayload {
   queueLight?: number | null;
   queueHeavy?: number | null;
   numbers: ApprovedUser[];
-  disabledMemberCommands?: string[];
 }
 
 export interface PairCodePayload {

@@ -11,7 +11,6 @@ const { safeErrorMessage } = require('../lib/userErrors');
 const telemetry = require('../lib/telemetry');
 const memberTelemetry = require('./users/usage');
 const accountSockets = require('../lib/accountSockets');
-const memberCommandPolicy = require('./users/policy');
 const log = require('../lib/logger')('commands');
 const guards = require('./guards');
 const registry = require('./registry');
@@ -96,11 +95,6 @@ async function runCommand(sock, msg, name, args, { from, sender, senderIds }) {
     return true;
   }
 
-  if (!isOwner(senderIds, sock.__sessionDir) && memberCommandPolicy.isUnavailable(command.name || invoked)) {
-    await sock.sendMessage(from, { text: 'This command is temporarily unavailable. Please try again later.' }, selections.quoteOpts(msg));
-    return true;
-  }
-
   if (registry.disabledInfo(command.name || invoked)) {
     await sock.sendMessage(from, { text: `⛔ .${command.name || invoked} is switched off. Try again later.` }, selections.quoteOpts(msg));
     return true;
@@ -171,10 +165,6 @@ async function handleSelection(sock, msg, body, { from, sender, senderIds, quote
   if (picked) {
     const originatingName = picked.entry.commandName || '';
     const canonicalName = commands.get(originatingName)?.name || originatingName;
-    if (!isOwner(senderIds, sock.__sessionDir) && memberCommandPolicy.isUnavailable(canonicalName)) {
-      await sock.sendMessage(from, { text: 'This command is temporarily unavailable. Please try again later.' }, selections.quoteOpts(msg));
-      return true;
-    }
     await reactToCommand(sock, msg, from, canonicalName);
     try {
       await picked.entry.run(sock, msg, buildExtra(sock, msg, { from, sender, senderIds, commandName: originatingName }), picked.item);

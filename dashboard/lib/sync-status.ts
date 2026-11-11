@@ -6,8 +6,8 @@ import type { ApprovedUser, WhitelistSyncState } from './types';
 export function whitelistSyncState(
   live: { connectionMode: string; reachable: boolean; whitelistVersion?: string | null },
   users: ApprovedUser[],
-  botEnabledForMembers: boolean,
+  _botEnabledForMembers?: boolean,
 ): WhitelistSyncState {
   if (live.connectionMode !== 'heartbeat' || !live.reachable || !live.whitelistVersion) return 'unknown';
-  return live.whitelistVersion === whitelistVersionFor(users, botEnabledForMembers) ? 'synced' : 'pending';
+  return live.whitelistVersion === whitelistVersionFor(users) ? 'synced' : 'pending';
 }

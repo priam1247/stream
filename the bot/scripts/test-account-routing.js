@@ -104,43 +104,15 @@ test('choices and quoted replies from the same chat do not cross account boundar
   assert.notEqual(offerA, offerB);
 });
 
-test('member maintenance policy covers aliases and outstanding selections, while owners can test', async () => {
-  const policy = botRequire('../gateway/users/policy');
-  const file = path.join(BOT, 'database', 'member-command-policy.json');
-  const saved = [file, `${file}.bak`].map((name) => fs.existsSync(name) ? fs.readFileSync(name) : null);
-  try {
-    policy.apply(['ping'], policy.versionFor(['ping']));
-    const member = socket(second, 'linked:15550009999');
-    const owner = socket(first, 'primary');
-    await handler.handleMessage(member, msg('.p', 'member-alias'));
-    assert.match(member.sent.map((value) => value.text || '').join(' '), /temporarily unavailable/i);
-    await handler.handleMessage(owner, msg('.ping', 'owner-test'));
-    assert.match(owner.sent.map((value) => value.text || '').join(' '), /pong/i);
-    let ran = false;
-    selections.offer({ chatId: 'group@g.us', sender: [member.__accountNumber + '@s.whatsapp.net', member.user.id], scope: member.__sessionId,
-      sessionDir: second, commandName: 'p', items: ['one'], run: async () => { ran = true; } });
-    await handler.handleMessage(member, msg('.1', 'disabled-selection'));
-    assert.equal(ran, false);
-    assert.match(member.sent.map((value) => value.text || '').join(' '), /temporarily unavailable/i);
-    policy.apply(['instagram'], policy.versionFor(['instagram']));
-    member.sent.length = 0;
-    owner.sent.length = 0;
-    await handler.handleMessage(member, msg('.ig', 'member-instagram-alias'));
-    assert.match(member.sent.map((value) => value.text || '').join(' '), /temporarily unavailable/i);
-    await handler.handleMessage(owner, msg('.ig', 'owner-instagram-alias'));
-    assert.match(owner.sent.map((value) => value.text || '').join(' '), /usage/i);
-    policy.apply([], policy.versionFor([]));
-    await handler.handleMessage(member, msg('.p', 'enabled-alias'));
-    assert.match(member.sent.map((value) => value.text || '').join(' '), /pong/i);
-  } finally {
-    [file, `${file}.bak`].forEach((name, index) => saved[index] ? fs.writeFileSync(name, saved[index]) : fs.rmSync(name, { force: true }));
-  }
+test('linked accounts can invoke commands without dashboard command switches', async () => {
+  const member = socket(second, 'linked:15550009999');
+  await handler.handleMessage(member, msg('.p', 'member-no-policy'));
+  assert.match(member.sent.map((value) => value.text || '').join(' '), /pong/i);
 });
 
 test('hot reload retains account sockets and delivery state while updating handlers', async () => {
   process.env.FAKE_YTDLP = '1';
   process.env.NM3U8DL_DISABLE_AUTOINSTALL = '1';
-  const policy = botRequire('../gateway/users/policy');
   const sockets = botRequire('../lib/accountSockets');
   const delivery = botRequire('../lib/jobDelivery');
   const sock = socket(second, 'linked:15550009999');
@@ -149,7 +121,6 @@ test('hot reload retains account sockets and delivery state while updating handl
   const result = reloadRuntime();
   assert.ok(result.evicted > 0);
   assert.strictEqual(botRequire('../lib/accountSockets'), sockets);
-  assert.strictEqual(botRequire('../gateway/users/policy'), policy);
   assert.strictEqual(botRequire('../lib/jobDelivery'), delivery);
   assert.strictEqual(sockets.getOnline(sock.__sessionId), sock);
   await result.handler.handleMessage(sock, msg('.ping', 'after-reload'));

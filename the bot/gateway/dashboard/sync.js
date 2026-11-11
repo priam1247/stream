@@ -3,8 +3,8 @@
  *
  * Works behind the Botkeep network with no open bot port:
  *   1. Pushes live heartbeat ("last seen Xs ago", WhatsApp socket state, disk MB)
- *   2. Pushes unsynced WhatsApp `.allow` numbers up to Cloudflare D1 and pulls
- *      versioned `whitelist.json` deltas down atomically via `accessControl.js`
+ *   2. Pulls the authoritative approved-number snapshot into `whitelist.json`
+ *      and sends telemetry, results, and linked-number commands over signed sync
  *   3. Claims queued `pair` and `unlink` commands from Cloudflare D1 and reports
  *      the pairing result back to the dashboard
  *   4. Signs every request with `HMAC-SHA256` + timestamp + random nonce
@@ -22,7 +22,6 @@ const telemetry = require('../../lib/telemetry');
 const memberTelemetry = require('../users/usage');
 const log = require('../../lib/logger')('dashboardSync');
 
-const memberCommandPolicy = require('../users/policy');
 const WL_FILE = path.join(__dirname, '..', '..', 'database', 'whitelist.json');
 const BOT_BOOT_AT = Date.now();
 
@@ -58,25 +57,6 @@ function buildSignedHeaders(token, _method, _urlPath, bodyText = '') {
   };
 }
 
-function collectUnsyncedLocalUsers(wlFile = WL_FILE) {
-  const current = readWL({ force: true, filePath: wlFile });
-  const list = Array.isArray(current?.users) ? current.users : [];
-  const out = [];
-  for (const u of list) {
-    const num = cleanDigits(u?.number);
-    if (num.length < 7 || num.length > 15) continue;
-    const isUnsyncedLocal =
-      !u.syncedToPortal && (!u.addedBy || u.addedBy === 'whatsapp');
-    if (isUnsyncedLocal && isApprovedUser(u)) {
-      out.push({
-        number: num,
-        label: String(u.label || 'Added via WhatsApp .allow'),
-      });
-    }
-  }
-  return out;
-}
-
 function applyWhitelistSnapshot(users, wlFile = WL_FILE) {
   if (!Array.isArray(users)) return false;
   const current = readWL({ force: true, filePath: wlFile });
@@ -92,28 +72,25 @@ function applyWhitelistSnapshot(users, wlFile = WL_FILE) {
     const num = cleanDigits(raw?.number);
     if (num.length < 7 || num.length > 15) continue;
     const prev = existingByNum.get(num);
+    const claimId = typeof raw?.claimId === 'string' ? raw.claimId.trim() : '';
+    const addedBy = typeof raw?.addedBy === 'string' ? raw.addedBy.trim().toLowerCase() : '';
+    // Claims must be supplied explicitly and remain stable. Never derive ownership
+    // from addedAt or a previous local row.
+    if (!claimId || !addedBy) continue;
     remoteMap.set(num, {
       number: num,
       ...(Array.isArray(prev?.alt) && prev.alt.length ? { alt: prev.alt } : {}),
-      ...(prev?.allowedVia ? { allowedVia: prev.allowedVia } : {}),
-      label: String(raw?.label || prev?.label || ''),
-      addedBy: String(raw?.addedBy || prev?.addedBy || 'dashboard'),
-      addedAt: Number(raw?.addedAt || prev?.addedAt || Date.now()),
+      label: String(raw?.label || ''),
+      addedBy,
+      addedAt: Number(raw?.addedAt) || Date.now(),
       // Legacy approved rows omit approval; pending/rejected rows fail closed
       // even if a malformed snapshot claims they are enabled.
       enabled: raw?.enabled === true && isApprovedUser(raw),
       pairAllowed: raw?.pairAllowed === true && canPairUser(raw),
       ...(raw?.approval != null ? { approval: String(raw.approval) } : {}),
-      backupClaim: crypto.createHash('sha256').update(JSON.stringify([raw?.claimId || raw?.addedAt || '', String(raw?.addedBy || '').toLowerCase()])).digest('hex'),
+      backupClaim: crypto.createHash('sha256').update(JSON.stringify([claimId, addedBy])).digest('hex'),
       syncedToPortal: true,
     });
-  }
-
-  // Keep brand-new `.allow` entries that haven't been pushed to the portal yet
-  for (const [num, prev] of existingByNum.entries()) {
-    if (!remoteMap.has(num) && !prev.syncedToPortal && (!prev.addedBy || prev.addedBy === 'whatsapp')) {
-      remoteMap.set(num, prev);
-    }
   }
 
   writeWL({ users: Array.from(remoteMap.values()) }, { filePath: wlFile });
@@ -124,8 +101,6 @@ function startDashboardSync(opts = {}) {
   const env = opts.env || process.env;
   const fetchImpl = opts.fetchImpl || fetch;
   const wlFile = opts.wlFile || WL_FILE;
-  const commandPolicy = opts.commandPolicy || memberCommandPolicy;
-
   const baseUrl = String(opts.dashboardUrl ?? env.DASHBOARD_URL ?? '')
     .trim()
     .replace(/\/+$/, '');
@@ -152,6 +127,7 @@ function startDashboardSync(opts = {}) {
   let rerunImmediately = false;
   let lastWhitelistVersion = '';
   let hasWhitelist = false;
+  let permissionsReady = false;
   let consecutiveFailures = 0;
   const pendingResults = [];
 
@@ -268,7 +244,6 @@ function startDashboardSync(opts = {}) {
         /* non-fatal */
       }
 
-      const localUsers = collectUnsyncedLocalUsers(wlFile);
       batchResults = pendingResults.splice(0, pendingResults.length);
       const bodyObj = {
         connected: Boolean(status.connected),
@@ -286,10 +261,8 @@ function startDashboardSync(opts = {}) {
         diskUsedMB,
         diskBudgetMB,
         whitelistVersion: lastWhitelistVersion,
-        commandPolicyVersion: commandPolicy.version(),
         memberUsage: memberTelemetry.snapshot(readWL({ force: true, filePath: wlFile }).users),
         ...(typeof opts.getBackupStatus === 'function' ? { sessionBackup: opts.getBackupStatus() } : {}),
-        ...(localUsers.length ? { localUsers } : {}),
         completedResults: batchResults,
       };
 
@@ -320,11 +293,6 @@ function startDashboardSync(opts = {}) {
       if (stopped) return { ok: false, stopped: true };
       consecutiveFailures = 0;
 
-      let policyConfirmed = false;
-      if (Array.isArray(data.disabledMemberCommands) && typeof data.commandPolicyVersion === 'string') {
-        commandPolicy.apply(data.disabledMemberCommands, data.commandPolicyVersion);
-        policyConfirmed = true;
-      }
       if (data.whitelistChanged && Array.isArray(data.users)) {
         applyWhitelistSnapshot(data.users, wlFile);
         if (typeof data.whitelistVersion === 'string') {
@@ -335,9 +303,9 @@ function startDashboardSync(opts = {}) {
       } else if (typeof data.whitelistVersion === 'string' && !lastWhitelistVersion) {
         lastWhitelistVersion = data.whitelistVersion;
       }
-      // After restart, do not authorize linked members on an old disk cache
-      // until this process has received both current portal snapshots.
-      if (hasWhitelist && policyConfirmed) {
+      // A changed whitelist is authoritative; never wait for obsolete command-policy state.
+      if (hasWhitelist && !permissionsReady) {
+        permissionsReady = true;
         try { opts.onPermissionsReady?.(); } catch { /* non-fatal */ }
       }
 
@@ -409,5 +377,4 @@ module.exports = {
   triggerImmediateSync,
   buildSignedHeaders,
   applyWhitelistSnapshot,
-  collectUnsyncedLocalUsers,
 };

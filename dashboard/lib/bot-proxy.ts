@@ -10,8 +10,6 @@ import type { WhatsAppAccountStatus } from './types';
 import { readAccountStatuses, serviceText } from './whatsapp-accounts';
 
 const STATUS_TIMEOUT_MS = 3_000;
-const SYNC_TIMEOUT_MS = 2_500;
-const PAIR_TIMEOUT_MS = 45_000;
 export const HEARTBEAT_FRESH_SECONDS = 45;
 
 export function normalizePhoneNumber(input: unknown): string {
@@ -262,59 +260,22 @@ async function probeDirectBotStatus(target: {
   }
 }
 
-/**
- * Signal fast-poll so outbound bot sync picks up whitelist updates within seconds,
- * and also push directly if an inbound Bot Server URL is configured.
- */
+/** Wake the outbound sync poll so the bot receives the authoritative list sooner. */
 export async function syncNumberToLiveBot(
-  number: string,
-  label: string,
-  enabled: boolean,
-  pairAllowed = false,
+  _number: string,
+  _label: string,
+  _enabled: boolean,
+  _pairAllowed = false,
 ): Promise<'accepted' | 'pending'> {
+  // The authoritative list is returned by /api/bot/sync. Never mirror it
+  // through the optional direct admin API.
   await setFastPollWindow(30_000).catch(() => {});
-  const { baseUrl, token } = await getResolvedBotTarget();
-  if (baseUrl && token) {
-    try {
-      const response = await fetch(`${baseUrl}/admin/api/users`, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ number, label, enabled, pairAllowed }),
-        cache: 'no-store',
-        redirect: 'error',
-        signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
-      });
-      if (response.ok) return 'accepted';
-    } catch {
-      // The stored snapshot can still be picked up by outbound heartbeat sync.
-    }
-  }
   return 'pending';
 }
 
-export async function removeNumberFromLiveBot(number: string): Promise<void> {
+export async function removeNumberFromLiveBot(_number: string): Promise<void> {
+  // Withdrawal is reflected in the next authoritative whitelist snapshot.
   await setFastPollWindow(30_000).catch(() => {});
-  const { baseUrl, token } = await getResolvedBotTarget();
-  if (!baseUrl || !token) return;
-
-  try {
-    await fetch(`${baseUrl}/admin/api/users/${encodeURIComponent(number)}`, {
-      method: 'DELETE',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      cache: 'no-store',
-      redirect: 'error',
-      signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
-    });
-  } catch {
-    // ignore if bot offline
-  }
 }
 
 export async function checkQueuedPairCommand(requestId: string, requestedBy?: string): Promise<{
@@ -394,108 +355,34 @@ export async function requestLiveBotPairingCode(
   issuedAt?: number;
   error?: string;
 }> {
-  const [{ baseUrl, token }, hb] = await Promise.all([
-    getResolvedBotTarget(),
-    getBotHeartbeat(),
-  ]);
-
-  const hbFresh =
-    Boolean(hb) && Date.now() - (hb?.lastSeenAt || 0) <= HEARTBEAT_FRESH_SECONDS * 1000;
-
-  // A fresh outbound heartbeat can queue the request without opening a port or
-  // holding a serverless function during the WhatsApp handshake.
-  if (hbFresh) {
-    const queued = await enqueueBotCommand({
-      type: 'pair',
-      payload: { number, label },
-      requestedBy,
-      ttlMs: 90_000,
-    });
-
-    const deadline = Date.now() + 2_500;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 400));
-      const check = await checkQueuedPairCommand(queued.id, requireNumberOwnership ? requestedBy : undefined);
-      if (!check.pending) return check;
-    }
-    return { ok: true, status: 202, pending: true, requestId: queued.id };
+  const stored = await getStoredWhatsAppUser(number);
+  if (!(stored?.enabled || stored?.pairAllowed) ||
+      (requireNumberOwnership && (!requestedBy || (stored.addedBy || '').toLowerCase() !== requestedBy.toLowerCase()))) {
+    return { ok: false, status: 403, error: 'This number is no longer allowed to link.' };
   }
 
-  if (baseUrl && token) {
-    try {
-      // Approval is synchronized separately; pairing must never re-enable a
-      // number that was revoked while this request was in flight.
-      const requestedAt = Date.now();
-      const res = await fetch(`${baseUrl}/admin/api/pair`, {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ number }),
-        cache: 'no-store',
-        redirect: 'error',
-        signal: AbortSignal.timeout(PAIR_TIMEOUT_MS),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.code) {
-        const stored = await getStoredWhatsAppUser(number);
-        if (!(stored?.enabled || stored?.pairAllowed) || (requireNumberOwnership && (!requestedBy || (stored.addedBy || '').toLowerCase() !== requestedBy.toLowerCase()))) {
-          return { ok: false, status: 403, error: 'This number is no longer approved for linking.' };
-        }
-        const reportedSeconds = Number(data.expiresInSeconds);
-        const expiresInSeconds = Number.isFinite(reportedSeconds) ? Math.min(60, Math.max(1, reportedSeconds)) : 60;
-        const reportedAt = Number(data.issuedAt);
-        const issuedAt = Number.isFinite(reportedAt) && reportedAt >= requestedAt && reportedAt <= Date.now() ? reportedAt : requestedAt;
-        if (Date.now() >= issuedAt + expiresInSeconds * 1000) {
-          return { ok: false, status: 410, error: 'This linking code has expired. Request a new one.' };
-        }
-        return { ok: true, status: 200, code: String(data.code), expiresInSeconds, issuedAt };
-      }
-      return {
-        ok: false,
-        status: res.ok ? 502 : res.status,
-        error: serviceText(String(data?.error || (res.ok ? 'The service did not return a linking code.' : `Service returned HTTP ${res.status}`))),
-      };
-    } catch (err) {
-      return { ok: false, status: 502, error: humanizeBotFetchError(err) };
-    }
+  await setFastPollWindow(60_000).catch(() => {});
+  const queued = await enqueueBotCommand({
+    type: 'pair', payload: { number, label }, requestedBy, ttlMs: 90_000,
+  });
+  const deadline = Date.now() + 2_500;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const check = await checkQueuedPairCommand(queued.id, requireNumberOwnership ? requestedBy : undefined);
+    if (!check.pending) return check;
   }
-
-  return {
-    ok: false,
-    status: 400,
-    error:
-      'The WhatsApp service is offline. Set DASHBOARD_URL + BOT_SYNC_TOKEN on the server and start it.',
-  };
+  return { ok: true, status: 202, pending: true, requestId: queued.id };
 }
 
 /** Dispatch a version-guarded unlink; never fall back to removing approval alone. */
-export async function requestLiveBotUnlink(number: string, sessionId: string, owner: string, claimKey: string): Promise<{
+export async function requestLiveBotUnlink(number: string, sessionId: string, owner: string, claimKey: string, requestedBy = owner): Promise<{
   ok: boolean; status: number; pending?: boolean; requestId?: string; error?: string;
 }> {
-  const [{ baseUrl, token }, hb] = await Promise.all([getResolvedBotTarget(), getBotHeartbeat()]);
-  const hbFresh = Boolean(hb) && Date.now() - (hb?.lastSeenAt || 0) <= HEARTBEAT_FRESH_SECONDS * 1000;
-  if (hbFresh) {
-    const cmd = await enqueueBotCommand({
-      type: 'unlink', payload: { number, sessionId, owner: owner.toLowerCase(), claimKey }, requestedBy: owner, ttlMs: 90_000,
-    });
-    return { ok: true, status: 202, pending: true, requestId: cmd.id };
-  }
-  if (!baseUrl || !token) return { ok: false, status: 503, error: 'The WhatsApp service is offline. Try again when it reconnects.' };
-  try {
-    const res = await fetch(`${baseUrl}/admin/api/unlink`, {
-      method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ number, sessionId }), cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(12_000),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, status: res.status, error: serviceText(String(data?.error || 'Could not unlink this number.')) };
-    if (data?.unlinked !== true || data?.number !== number || data?.sessionId !== sessionId) {
-      return { ok: false, status: 502, error: 'The service did not confirm the unlink.' };
-    }
-    return { ok: true, status: 200 };
-  } catch (err) {
-    return { ok: false, status: 502, error: humanizeBotFetchError(err) };
-  }
+  const cmd = await enqueueBotCommand({
+    type: 'unlink',
+    payload: { number, sessionId, owner: owner.toLowerCase(), claimKey },
+    requestedBy,
+    ttlMs: 90_000,
+  });
+  return { ok: true, status: 202, pending: true, requestId: cmd.id };
 }

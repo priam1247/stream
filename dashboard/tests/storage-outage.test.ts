@@ -6,7 +6,7 @@ vi.mock('node:fs', () => ({ default: {
   mkdirSync: () => {}, writeFileSync: (_path: string, value: string) => { disk.text = value; },
 } }));
 import { claimPendingBotCommands, completeBotCommand, enqueueBotCommand, getBotCommandById, getBotHeartbeat,
-  getEligibleSessionBackup, getSessionBackup, importLocalWhatsAppUser, listSessionBackupMetadata, putSessionBackup,
+  getEligibleSessionBackup, getSessionBackup, listSessionBackupMetadata, putSessionBackup,
   revokeSessionBackup, saveBotHeartbeat } from '../lib/storage';
 beforeEach(() => {
   disk.text = null;
@@ -32,7 +32,6 @@ it('allows disk fallback only when isolated development explicitly opts in', asy
   expect((await claimPendingBotCommands()).map((item) => item.id)).toContain(command.id);
   await completeBotCommand({ id: command.id, ok: true });
   expect(await getBotCommandById(command.id)).toMatchObject({ status: 'completed' });
-  expect(await importLocalWhatsAppUser('15550001111', 'Member', 'owner@example.com')).toBe(true);
 });
 it('never treats an unavailable recovery database as an empty backup', async () => {
   vi.stubEnv('ZAFAR_DEV_STANDALONE_FALLBACK', '1');
