@@ -106,7 +106,7 @@ export function ServerPage() {
                   Approved numbers
                 </h2>
                 <span className="whitespace-nowrap font-mono text-xs text-ink/60 tabular-nums">
-                  {enabledNumbersCount}/{data.users.length} allowed
+                  {enabledNumbersCount}/{data.users.length} enabled
                 </span>
               </div>
 

@@ -52,7 +52,7 @@ export function ControlRoomHome({ data, overviewCheckedAt, overviewError, alerts
   const enabledNumbers = data.users.filter((item) => item.enabled).length;
   const allowedMembers = data.members.filter((item) => item.allowed).length;
   const numberSummary = hasBotCheck ? `${enabledNumbers} enabled ${enabledNumbers === 1 ? 'number' : 'numbers'}` : 'Status unavailable';
-  const memberSummary = hasBotCheck ? `${allowedMembers} allowed ${allowedMembers === 1 ? 'member' : 'members'}` : 'Status unavailable';
+  const memberSummary = hasBotCheck ? `${allowedMembers} approved ${allowedMembers === 1 ? 'member' : 'members'}` : 'Status unavailable';
 
   return (
     <div className="space-y-5">
