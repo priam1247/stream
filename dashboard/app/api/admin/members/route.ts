@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
   }
 
   await setMemberPermission(email, isAdminEmail(email) ? true : allowed, name);
-  await recordActivity({ category: 'members', action: allowed ? 'Member allowed' : 'Member blocked', actor: session.user.email, outcome: 'success', detail: email });
+  await recordActivity({ category: 'members', action: allowed ? 'Member approved' : 'Member blocked', actor: session.user.email, outcome: 'success', detail: email });
   const members = await listAllMembers(isAdminEmail);
   return NextResponse.json({ ok: true, members }, { status: 201 });
 }
@@ -79,7 +79,7 @@ export async function PATCH(req: NextRequest) {
     ),
   );
 
-  await recordActivity({ category: 'members', action: allowed ? 'Member allowed' : 'Member blocked', actor: session.user.email, outcome: 'success', detail: email });
+  await recordActivity({ category: 'members', action: allowed ? 'Member approved' : 'Member blocked', actor: session.user.email, outcome: 'success', detail: email });
   const [members, users] = await Promise.all([
     listAllMembers(isAdminEmail),
     listStoredWhatsAppUsers(),

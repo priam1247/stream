@@ -6,7 +6,7 @@ import {
   setFastPollWindow,
 } from './storage';
 import type { WhatsAppAccountStatus } from './types';
-import { readAccountStatuses, serviceText } from './whatsapp-accounts';
+import { readAccountStatuses } from './whatsapp-accounts';
 
 /** A heartbeat older than this is reported as stale, never as a live probe. */
 const HEARTBEAT_FRESH_SECONDS = 45;
@@ -157,7 +157,7 @@ export async function checkQueuedPairCommand(requestId: string, requestedBy?: st
     return {
       ok: false,
       status: 409,
-      error: serviceText(cmd.error || 'The service could not issue a linking code.'),
+      error: cmd.error || 'The service could not issue a linking code.',
     };
   }
   if (Date.now() > cmd.expiresAt) {

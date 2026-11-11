@@ -4,7 +4,6 @@ import { useMemo, useState } from 'react';
 import { Activity, AlertCircle, Bell, CheckCircle2, ChevronRight, Clock3, RefreshCw, Search } from 'lucide-react';
 import type { ActivityCategory, ActivityEvent } from '@/lib/types';
 import type { ActivityPage, RoomAlert } from '@/lib/control-room';
-import { serviceText } from '@/lib/whatsapp-accounts';
 import { SectionNav } from './section-nav';
 
 interface Props {
@@ -40,7 +39,7 @@ export function ControlRoomActivity({ alerts, unreadAlertIds, events, storage, l
   const [search, setSearch] = useState('');
   const visible = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return events.filter((event) => (filter === 'all' || event.category === filter) && (!query || `${serviceText(event.action)} ${event.actor} ${event.detail}`.toLowerCase().includes(query)));
+    return events.filter((event) => (filter === 'all' || event.category === filter) && (!query || `${event.action} ${event.actor} ${event.detail}`.toLowerCase().includes(query)));
   }, [events, filter, search]);
 
   return (
@@ -82,8 +81,8 @@ export function ControlRoomActivity({ alerts, unreadAlertIds, events, storage, l
                 <li key={event.id} className="flex items-start gap-3 py-3.5">
                   <span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${event.outcome === 'failed' ? 'bg-accent/10 text-accent' : event.outcome === 'requested' ? 'bg-accent/10 text-accent' : 'bg-accent/10 text-accent'}`}>{event.outcome === 'failed' ? <AlertCircle className="h-4 w-4" /> : event.outcome === 'requested' ? <Clock3 className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}</span>
                   <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-ink">{serviceText(event.action)}</p><span className="rounded-md bg-ink/5 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ink/60">{event.outcome}</span></div>
-                    <p className="mt-1 break-all text-xs leading-5 text-ink/60">{event.actor || 'System'}{event.detail ? ` · ${serviceText(event.detail)}` : ''}</p>
+                    <div className="flex flex-wrap items-center gap-2"><p className="text-sm font-semibold text-ink">{event.action}</p><span className="rounded-md bg-ink/5 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-ink/60">{event.outcome}</span></div>
+                    <p className="mt-1 break-all text-xs leading-5 text-ink/60">{event.actor || 'System'}{event.detail ? ` · ${event.detail}` : ''}</p>
                     <p className="mt-0.5 text-[11px] text-ink/40">{dateText(event.createdAt)}</p>
                   </div>
                 </li>

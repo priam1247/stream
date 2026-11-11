@@ -25,7 +25,7 @@ function mockApi() {
     if (url === '/api/auth/me') return reply({ user: { id: 1, name: 'Owner', email: 'owner@example.com', isAdmin: true }, quota: null });
     if (url === '/api/admin/status') return reply(overview);
     if (url === '/api/admin/panel/status') return reply({ configured: true, reachable: true, state: 'running', error: null, checkedAt: Date.now() });
-    if (url === '/api/admin/activity') return reply({ ok: true, storage: 'local', events: [{ id: '1', category: 'members', action: 'Member allowed', actor: 'owner@example.com', detail: 'member@example.com', outcome: 'success', createdAt: '2026-01-01T12:00:00Z' }] });
+    if (url === '/api/admin/activity') return reply({ ok: true, storage: 'local', events: [{ id: '1', category: 'members', action: 'Member approved', actor: 'owner@example.com', detail: 'member@example.com', outcome: 'success', createdAt: '2026-01-01T12:00:00Z' }] });
     if (url.endsWith('/sync')) return reply({ ok: true, result: 'pending', message: 'Saved list is waiting for the bot to check in. Sync is not yet confirmed.' });
     if (url === '/api/admin/panel') return reply({ ok: true, message: 'Request accepted.' });
     return reply({ error: `Unexpected request: ${url}` }, 404);
@@ -77,7 +77,7 @@ describe('owner control room', () => {
     expect(screen.getByText(/server’s local disk/)).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Current alerts' })).toBeNull();
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search activity' }), { target: { value: 'member@example.com' } });
-    expect(screen.getByText('Member allowed')).toBeTruthy();
+    expect(screen.getByText('Member approved')).toBeTruthy();
   });
 
   it('reduces the unread badge for each opened alert without hiding unresolved warnings', async () => {

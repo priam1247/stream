@@ -41,7 +41,7 @@ import {
   setSavedSessionToken,
 } from '@/lib/client-session';
 import { PairingCodeBanner } from './pairing-code-banner';
-import { accountStatusLabel, serviceText } from '@/lib/whatsapp-accounts';
+import { accountStatusLabel } from '@/lib/whatsapp-accounts';
 import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
 import { CommandDirectory } from './command-directory';
@@ -55,7 +55,9 @@ import { isRoomAlertRead, resolvedRoomAlertIds } from '@/lib/room-alert-reads';
 import { useRoomAlertReads } from './use-room-alert-reads';
 
 type AdminTab = OwnerTab;
-type MemberFilter = 'all' | 'allowed' | 'disallowed';
+type MemberFilter = 'all' | 'approved' | 'denied';
+
+const MEMBER_FILTER_LABELS: Record<MemberFilter, string> = { all: 'All', approved: 'Approved', denied: 'Denied' };
 const WHATSAPP_PAGES: { id: WhatsAppPage; label: string }[] = [
   { id: 'numbers', label: 'Numbers' },
   { id: 'commands', label: 'Commands' },
@@ -92,7 +94,7 @@ export function AdminConsole() {
     botServerLinked: false,
     hasBotSyncToken: false,
     botEnabledForMembers: true,
-    storageEngine: 'persistent-db',
+    storageEngine: 'unavailable',
     connected: false,
     botNumber: null,
     users: [],
@@ -237,8 +239,8 @@ export function AdminConsole() {
   const filteredMembers = useMemo(() => {
     const q = memberSearch.trim().toLowerCase();
     return data.members.filter((m) => {
-      if (memberFilter === 'allowed' && !m.allowed) return false;
-      if (memberFilter === 'disallowed' && m.allowed) return false;
+      if (memberFilter === 'approved' && !m.allowed) return false;
+      if (memberFilter === 'denied' && m.allowed) return false;
       if (!q) return true;
       return (
         m.email.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)
@@ -288,10 +290,10 @@ export function AdminConsole() {
       setData((prev) => ({ ...prev, members: json.members }));
       setNewMemberEmail('');
       setNewMemberName('');
-      setNotice({ text: `Allowed ${newMemberEmail.trim().toLowerCase()}` });
+      setNotice({ text: `Approved ${newMemberEmail.trim().toLowerCase()}` });
     } catch (err) {
       setNotice({
-        text: err instanceof Error ? err.message : 'Failed to allow member',
+        text: err instanceof Error ? err.message : 'Failed to approve member',
         bad: true,
       });
     } finally {
@@ -304,7 +306,7 @@ export function AdminConsole() {
     allowed: boolean,
     name: string,
   ) => {
-    if (!window.confirm(`${allowed ? 'Allow' : 'Block'} ${email}? This will also ${allowed ? 'enable' : 'disable'} their linked numbers.`)) return;
+    if (!window.confirm(`${allowed ? 'Approve' : 'Block'} ${email}? This will also ${allowed ? 'enable' : 'disable'} their linked numbers.`)) return;
     setBusyEmail(email);
     try {
       const res = await fetch('/api/admin/members', {
@@ -320,7 +322,7 @@ export function AdminConsole() {
         users: json.users || prev.users,
       }));
       setNotice({
-        text: allowed ? `Allowed ${email}` : `Disallowed ${email}`,
+        text: allowed ? `Approved ${email}` : `Denied ${email}`,
       });
     } catch (err) {
       setNotice({
@@ -426,7 +428,7 @@ export function AdminConsole() {
       if (!enabled && activePair?.number === number) setActivePair(null);
       await loadOverview(true, false);
       setNotice({
-        text: enabled ? `Allowed +${number}` : `Disallowed +${number}`,
+        text: enabled ? `Enabled +${number}` : `Disabled +${number}`,
       });
     } catch (err) {
       setNotice({
@@ -651,7 +653,7 @@ export function AdminConsole() {
   }
 
   const lastRestartEvent = events.find((event) => event.action === 'Service restart requested' || event.action === 'Bot restart requested');
-  const allowedMembersCount = data.members.filter((m) => m.allowed).length;
+  const approvedMembersCount = data.members.filter((m) => m.allowed).length;
   const enabledNumbersCount = data.users.filter((u) => u.enabled).length;
   const navGroups: WorkspaceNavGroup<AdminTab>[] = [
     { label: 'Workspace', items: [
@@ -734,7 +736,7 @@ export function AdminConsole() {
                   </div>
                   {overviewError && <p role="alert" className="mt-3 text-xs text-accent">Status could not be refreshed. Check Sync settings.</p>}
                   {!overviewError && data.botVersion && <p className="mt-3 break-all text-xs text-ink/60">Reported version {data.botVersion}</p>}
-                  {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-accent">{serviceText(data.botError)} Check the service process and Sync settings.</p>}
+                  {!overviewError && data.botError && <p className="mt-3 text-xs leading-5 text-accent">{data.botError} Check the service process and Sync settings.</p>}
                 </section>
                 {/* Live Server Analytics: Commands, Successful Downloads, Failed, Uptime + RAM/Disk/Queues */}
                 <LiveAnalytics
@@ -802,7 +804,7 @@ export function AdminConsole() {
               <h2 className="text-sm font-bold text-ink">Encrypted session recovery</h2>
               <p className="mt-1 text-xs leading-5 text-ink/60">{!data.botReachable ? 'Service offline; backup status cannot be confirmed.' : !data.sessionBackup ? 'The service has not reported recovery status. Update the service to enable it.' : data.sessionBackup.state === 'disabled' ? 'Not configured. Set a private SESSION_BACKUP_KEY on the service and configure durable D1 storage.' : data.sessionBackup.state === 'error' ? 'Backup or revocation failed. Check the service logs and dashboard storage.' : data.sessionBackup.state === 'conflict' ? 'Local sessions were preserved; a backup conflict needs review.' : data.sessionBackup.state === 'starting' ? 'Connecting to encrypted recovery.' : data.sessionBackup.lastBackupAt ? `Recovery connected. Last encrypted snapshot: ${new Date(data.sessionBackup.lastBackupAt).toLocaleString()}.` : 'Recovery connected. No session snapshot has been saved yet.'}</p>
               {data.botReachable && data.sessionBackup?.state === 'ready' && data.sessionBackup.sessions !== undefined && data.sessionBackup.backedUp !== undefined && <p className="mt-2 text-xs font-semibold text-ink/80">{data.sessionBackup.backedUp} of {data.sessionBackup.sessions} registered sessions have a current snapshot.</p>}
-              {data.storageEngine !== 'cloudflare-d1' && <p className="mt-2 text-xs font-semibold text-accent">Durable D1 storage has not been confirmed.</p>}
+              {data.storageEngine !== 'cloudflare-d1' && <p className="mt-2 text-xs font-semibold text-accent">Cloudflare D1 has not been confirmed. Storage calls fail until it is configured.</p>}
             </section>}
 
             {whatsAppPage === 'numbers' && <section className="rounded-2xl border border-ink/10 bg-paper p-4 shadow-sm sm:p-5">
@@ -1136,7 +1138,7 @@ export function AdminConsole() {
               </h2>
 
               <div className="flex items-center gap-1 rounded-xl bg-ink/5 p-1 text-xs">
-                {(['all', 'allowed', 'disallowed'] as MemberFilter[]).map((f) => (
+                {(['all', 'approved', 'denied'] as MemberFilter[]).map((f) => (
                   <button
                     key={f}
                     type="button"
@@ -1147,7 +1149,7 @@ export function AdminConsole() {
                         : 'text-ink/60 hover:text-ink'
                     }`}
                   >
-                    {f}
+                    {MEMBER_FILTER_LABELS[f]}
                   </button>
                 ))}
               </div>
@@ -1165,7 +1167,7 @@ export function AdminConsole() {
               })}</div>
             </div>}
 
-            <p className="mt-2 text-xs leading-5 text-ink/60">{allowedMembersCount} of {data.members.length} allowed.</p>
+            <p className="mt-2 text-xs leading-5 text-ink/60">{approvedMembersCount} of {data.members.length} approved.</p>
             <form
               onSubmit={handleAddMember}
               className="mt-3.5 grid grid-cols-1 gap-2.5 rounded-xl border border-ink/10 bg-ink/5 p-3 sm:grid-cols-[1.2fr_1fr_auto] sm:items-end"
@@ -1249,12 +1251,12 @@ export function AdminConsole() {
                           ) : member.allowed ? (
                             <span className="inline-flex items-center gap-1 rounded-full bg-ink/5 px-2 py-0.5 text-[10px] font-bold uppercase text-ink ring-1 ring-ink/15">
                               <ShieldCheck className="h-3 w-3" />
-                              Allowed
+                              Approved
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-bold uppercase text-accent ring-1 ring-accent/25">
                               <ShieldBan className="h-3 w-3" />
-                              Blocked
+                              Not approved
                             </span>
                           )}
                         </div>

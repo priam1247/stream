@@ -19,10 +19,9 @@ Self-hosting with `npm start` enforces `JWT_SECRET_KEY` (minimum 16 characters) 
 | `JWT_SECRET_KEY` | **Required in production** | Signs HS256 session tokens (min 16 chars; generate via `openssl rand -hex 32`). Production startup refuses to run without it. |
 | `ADMIN_EMAIL` | Recommended | Comma-separated administrator email(s) allowed into `/admin` (default: `troykunsauka@gmail.com`). |
 | `ADMIN_INITIAL_PASSWORD` | Optional | Bootstraps the verified `ADMIN_EMAIL` account in D1 on first sign-in before email delivery is configured. |
-| `CLOUDFLARE_ACCOUNT_ID` / `D1_DATABASE_ID` / `CLOUDFLARE_API_TOKEN` | Required for durable serverless state | Cloudflare D1 stores accounts, permissions, numbers, bot settings, activity, support messages, and encrypted session backups. Without D1 the portal uses `.data/zafar-db.json` on local disk, which must be writable and may be ephemeral or inconsistent across serverless instances. |
+| `CLOUDFLARE_ACCOUNT_ID` / `D1_DATABASE_ID` / `CLOUDFLARE_API_TOKEN` | **Required** | Cloudflare D1 is the only store: accounts, permissions, numbers, bot settings, activity, support messages, queued commands and encrypted session backups. Without it every storage call fails loudly with `Cloudflare D1 is required`; there is no local-file fallback. |
 | `RESEND_API_KEY` + `EMAIL_FROM` | Pick Resend **or** SMTP | Sends 6-digit verification & password-reset codes over HTTPS (works cleanly on serverless/edge hosts). |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Pick Resend **or** SMTP | Direct SMTP mail delivery (e.g. Gmail App Password on port `587` or `465`). |
-| `ZAFAR_AUTH_API_URL` | Optional (legacy migration only) | Leave empty. If set during migration from an older external auth service, existing accounts are verified once (6 s cap) and migrated permanently into local D1. |
 | `BOT_SYNC_TOKEN` | Recommended | The one shared private token for the bot’s outbound sync. The dashboard holds no other bot credential and never calls the bot directly. |
 | `HIDENCLOUD_SERVER_ID` / `HIDENCLOUD_API_KEY` | Optional | HiddenCloud panel (Pterodactyl-compatible client API) for server status and power. The API key is a client key (`ptlc_…`) with Control permission from **Account → API Credentials**. The server ID defaults to `a6451c6c` (troyzafarings – Free Server #236941); the panel address is hardcoded to `https://freepanel.hidencloud.com`. Legacy `BOTKEEP_WORKLOAD_ID` / `BOTKEEP_API_KEY` are still honored as fallbacks. |
 
@@ -78,7 +77,7 @@ separate deployment branch remains owner-managed.
   a member changes that member's stored numbers too; allowing re-enables them.
 - Activity is owner-only and best effort: actions are recorded without passwords,
   pairing codes, tokens or full phone numbers. D1 retains entries for approximately
-  90 days (cleanup occurs when writing); local fallback keeps the latest 1,000.
+  90 days (cleanup occurs when writing).
   Alerts are derived from checks while a page is open; there is no background or
   email notification when the website is closed. Opening an alert marks it read
   in that owner's browser, but the active warning stays visible until resolved.
@@ -103,8 +102,8 @@ separate deployment branch remains owner-managed.
   changed by the dashboard.
 - **Report a problem** is a private member/administrator conversation. The
   server derives the member from the signed-in account and checks the admin role.
-  Production reports require D1 rather than silently using ephemeral Vercel disk;
-  local disk is for development only. Reports are website-only and are not email
+  Reports are stored in D1; there is no ephemeral disk copy. They are
+  website-only and are not email
   notifications. Members should not send passwords or pairing codes.
 - Optional encrypted WhatsApp recovery requires D1, HTTPS bot sync, the updated
   bot, a private stable `SESSION_BACKUP_KEY` on that bot, and a successfully saved
@@ -125,8 +124,8 @@ npm test
 npm run build
 ```
 
-If D1 is configured but unreachable, requests fail rather than silently using
-local disk. For **isolated local development only**, set
-`ZAFAR_DEV_STANDALONE_FALLBACK=1` to opt into the disk fallback. Never use that
-override for a dashboard connected to live accounts. It has no effect in
-production. Encrypted session recovery always requires D1.
+D1 is required in every environment, including local development: the tests
+run against an in-memory SQLite stand-in for the D1 HTTP API. If D1 is not
+configured or cannot be reached, requests fail with an explicit error instead
+of falling back to a local file, so a missing database can never look like
+saved state. Encrypted session recovery needs D1 as well.

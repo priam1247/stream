@@ -37,7 +37,7 @@ export async function PATCH(
   if (!user) return NextResponse.json({ error: 'Approved number not found.' }, { status: 404 });
 
   await requestWhitelistSync();
-  await recordActivity({ category: 'numbers', action: user.enabled ? 'Number allowed' : 'Number blocked', actor: session.user.email, outcome: 'success', detail: maskedNumber(user.number) });
+  await recordActivity({ category: 'numbers', action: user.enabled ? 'Number approved' : 'Number blocked', actor: session.user.email, outcome: 'success', detail: maskedNumber(user.number) });
   return NextResponse.json({ ok: true, user });
 }
 

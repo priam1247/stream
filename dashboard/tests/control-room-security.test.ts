@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 
 const state = vi.hoisted(() => ({ role: 'admin' as 'admin' | 'member' | 'anonymous' }));
 const store = vi.hoisted(() => ({
-  listActivity: vi.fn(async () => [{ id: '1', category: 'members', action: 'Member allowed' }]),
+  listActivity: vi.fn(async () => [{ id: '1', category: 'members', action: 'Member approved' }]),
 }));
 vi.mock('../lib/auth-engine', () => ({
   getAuthenticatedSession: vi.fn(async () => state.role === 'anonymous' ? null : { user: { isAdmin: state.role === 'admin', email: `${state.role}@example.com` } }),

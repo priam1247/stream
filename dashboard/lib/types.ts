@@ -169,7 +169,7 @@ export interface AdminOverviewPayload {
   botServerLinked: boolean;
   hasBotSyncToken?: boolean;
   botEnabledForMembers: boolean;
-  storageEngine: 'bot-live' | 'cloudflare-d1' | 'persistent-db';
+  storageEngine: 'cloudflare-d1' | 'unavailable';
   connectionMode?: 'heartbeat' | 'unconfigured';
   botReachable?: boolean;
   botError?: string | null;

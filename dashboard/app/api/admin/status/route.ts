@@ -61,7 +61,7 @@ export async function GET(req: NextRequest) {
     connectionMode: liveStatus.connectionMode,
     hasBotSyncToken: Boolean(target.botSyncToken),
     botEnabledForMembers: target.botEnabledForMembers,
-    storageEngine: d1Active ? 'cloudflare-d1' : 'persistent-db',
+    storageEngine: d1Active ? 'cloudflare-d1' : 'unavailable',
     botReachable: liveStatus.reachable,
     botError: liveStatus.error || null,
     connected: liveStatus.connected,

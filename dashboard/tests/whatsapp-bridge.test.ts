@@ -32,7 +32,7 @@ vi.mock('../lib/storage', () => ({
 }));
 
 import { checkQueuedPairCommand, fetchLiveBotStatus, requestLiveBotPairingCode } from '../lib/bot-proxy';
-import { accountStatusLabel, readAccountStatuses, serviceText } from '../lib/whatsapp-accounts';
+import { accountStatusLabel, readAccountStatuses } from '../lib/whatsapp-accounts';
 
 beforeEach(() => {
   state.heartbeat = null;
@@ -143,7 +143,6 @@ describe('reported link status', () => {
     expect(accountStatusLabel(old.accounts, '15550001111')).toBe('Link status unknown');
     expect(accountStatusLabel([{ number: '15550001111', state: 'awaiting_link' }], '15550001111')).toBe('Waiting for linking');
     expect(accountStatusLabel([{ number: '15550001111', state: 'connected' }], '15550001111')).toBe('Linked and connected');
-    expect(serviceText('ZaFar Bot is waiting')).toBe('WhatsApp service is waiting');
   });
 
   it('does not reuse stale individual account states while the service is offline', async () => {
