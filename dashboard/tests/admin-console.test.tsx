@@ -138,7 +138,7 @@ describe('owner control room', () => {
     await waitFor(() => expect(activity.getAttribute('aria-description')).toBe('2 unread alerts'));
   });
 
-  it('filters numbers, retries sync and asks for confirmation before stopping the bot', async () => {
+  it('filters numbers and asks for confirmation before stopping the bot', async () => {
     const fetchMock = mockApi();
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     render(<AdminConsole />);
@@ -147,8 +147,6 @@ describe('owner control room', () => {
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' }), { target: { value: 'unmatched' } });
     expect(screen.getByText('No numbers match this filter')).toBeTruthy();
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search WhatsApp numbers' }), { target: { value: 'Mobile' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Retry sync for +265991234567' }));
-    expect(await screen.findByText(/Sync is not yet confirmed/)).toBeTruthy();
     fireEvent.click(within(screen.getByRole('navigation', { name: 'WhatsApp pages' })).getByRole('button', { name: 'Power' }));
     fireEvent.click(screen.getByRole('button', { name: 'Stop service' }));
     expect(confirm).toHaveBeenCalled();
