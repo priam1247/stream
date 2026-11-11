@@ -179,7 +179,7 @@ zafar-bot/
 │   ├── ctx.js            the helper bag every command receives (reply, status, isOwner)
 │   ├── registry.js       loads commands/<folder>, isolates failures, on/off + breaker state
 │   ├── sessions/         linked-number sessions, reconnect, backup, startup/shutdown
-│   ├── users/            approved list (access), member command policy, usage counters
+│   ├── users/            approved-number access and usage counters
 │   └── dashboard/        dashboard sync and the admin API
 │
 ├── commands/             ONE FOLDER PER COMMAND (a folder may export several related triggers)
@@ -412,10 +412,10 @@ fails. Legacy session manifests without an ownership claim bind once to the
 current portal claim; their earlier ownership cannot be proven. No inbound Botkeep port is needed. Repository CI does not upload or restart
 the service.
 
-Members' command switches are controlled under **WhatsApp → Commands**. The
-service enforces canonical commands, their aliases, and outstanding selections;
-the owner can still test. A switch remains **awaiting service sync** until the
-running bot acknowledges it. Already-running work is not forcibly cancelled.
+Command availability is controlled locally by the bot owner. The dashboard
+reports analytics and handles linked-number approval; it does not import
+`.allow` entries or distribute command switches. Pairing and unlink requests
+are queued through the signed outbound sync channel.
 
 ## Disk Budget & Concurrency (10 GB Panel Plan)
 

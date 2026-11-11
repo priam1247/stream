@@ -3,8 +3,9 @@ import crypto from 'node:crypto';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ cfg: { botApiUrl: '', botAdminToken: 'bridge-secret-123', botSyncToken: 'botkeep-sync-secret-123', botEnabledForMembers: true } }));
-vi.mock('../lib/storage', () => ({ getBotConnectionConfig: async () => state.cfg }));
+const state = vi.hoisted(() => ({ cfg: { botApiUrl: '', botAdminToken: 'bridge-secret-123', botSyncToken: 'botkeep-sync-secret-123', botEnabledForMembers: true }, durableNonces: new Set<string>() }));
+vi.mock('../lib/storage', () => ({ getBotConnectionConfig: async () => state.cfg,
+  consumeBotSyncNonce: async (nonce: string) => { if (state.durableNonces.has(nonce)) return false; state.durableNonces.add(nonce); return true; } }));
 import { verifyBotSyncRequest } from '../lib/bot-sync-auth';
 const body = JSON.stringify({ connected: true });
 function request(token: string, opts: { signed?: boolean; timestamp?: number; nonce?: string; signature?: string } = {}) {
@@ -14,7 +15,7 @@ function request(token: string, opts: { signed?: boolean; timestamp?: number; no
   return new NextRequest('https://dashboard.example/api/bot/sync', { method: 'POST', body,
     headers: { authorization: `Bearer ${token}`, ...(opts.signed === false ? {} : { 'x-bot-timestamp': ts, 'x-bot-nonce': nonce, 'x-bot-signature': sig }) } });
 }
-beforeEach(() => { state.cfg = { botApiUrl: '', botAdminToken: 'bridge-secret-123', botSyncToken: 'botkeep-sync-secret-123', botEnabledForMembers: true }; globalThis.__zafarBotReplayNonces?.clear(); });
+beforeEach(() => { state.cfg = { botApiUrl: '', botAdminToken: 'bridge-secret-123', botSyncToken: 'botkeep-sync-secret-123', botEnabledForMembers: true }; state.durableNonces.clear(); globalThis.__zafarBotReplayNonces?.clear(); });
 afterEach(() => { vi.unstubAllEnvs(); globalThis.__zafarBotReplayNonces?.clear(); });
 
 describe('single-service sync authentication', () => {
@@ -33,6 +34,9 @@ describe('single-service sync authentication', () => {
     expect(await verifyBotSyncRequest(good, body)).toMatchObject({ ok: true });
     expect(await verifyBotSyncRequest(good, body)).toMatchObject({ ok: false, status: 409 });
     expect(await verifyBotSyncRequest(request(state.cfg.botSyncToken, { timestamp: Date.now() - 301_000 }), body)).toMatchObject({ ok: false, status: 401 });
+    // The durable reservation blocks replay after a serverless instance restart.
+    globalThis.__zafarBotReplayNonces?.clear();
+    expect(await verifyBotSyncRequest(good, body)).toMatchObject({ ok: false, status: 409 });
   });
   it('does not authenticate a superseded environment secret independently of resolved settings', async () => {
     vi.stubEnv('BOT_SYNC_TOKEN', 'superseded-secret');

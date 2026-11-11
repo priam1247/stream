@@ -44,7 +44,6 @@ import { PairingCodeBanner } from './pairing-code-banner';
 import { accountStatusLabel, serviceText } from '@/lib/whatsapp-accounts';
 import { AccountModal } from './account-modal';
 import { LiveAnalytics } from './live-analytics';
-import { MemberCommandControls } from './member-command-controls';
 import { CommandDirectory } from './command-directory';
 import { SupportDesk } from './support-desk';
 import { ControlRoomHome } from './control-room-home';
@@ -469,8 +468,19 @@ export function AdminConsole() {
         method: 'DELETE',
         headers: authHeaders(),
       });
-      const json = await res.json();
+      let json = await res.json();
       if (!res.ok) throw new Error(json?.error || 'Remove failed');
+      if (json.pending && typeof json.requestId === 'string') {
+        for (let attempt = 0; attempt < 90; attempt++) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+          const check = await fetch(`/api/admin/users/${encodeURIComponent(number)}?requestId=${encodeURIComponent(json.requestId)}`, { headers: authHeaders(), cache: 'no-store' });
+          json = await check.json();
+          if (check.status === 202 && json.pending) continue;
+          if (!check.ok) throw new Error(json?.error || 'Unlink failed');
+          break;
+        }
+        if (json.pending) throw new Error('Unlink is still pending. Approval has been withdrawn; check back before removing the row.');
+      }
       setData((prev) => ({ ...prev, users: json.users || [] }));
       if (activePair?.number === number) setActivePair(null);
       setConfirmDeleteNum(null);
@@ -809,8 +819,7 @@ export function AdminConsole() {
               </section>
             )}
 
-            {whatsAppPage === 'commands' && <><MemberCommandControls />
-              <section aria-label="Service command reference" className="mt-4 space-y-2.5"><h2 className="px-0.5 text-sm font-bold text-ink sm:text-base">Service command reference</h2><p className="px-0.5 text-xs text-ink/60">Every command on the service, including owner-only ones. Members only see the member catalog.</p><CommandDirectory /></section></>}
+            {whatsAppPage === 'commands' && <section aria-label="Service command reference" className="space-y-2.5"><h2 className="px-0.5 text-sm font-bold text-ink sm:text-base">Service command reference</h2><p className="px-0.5 text-xs text-ink/60">Reference only; command access is controlled by the bot.</p><CommandDirectory /></section>}
 
             {whatsAppPage === 'sync' && <section className="rounded-2xl border border-ink/10 bg-paper p-4 shadow-sm" aria-label="Session recovery status">
               <h2 className="text-sm font-bold text-ink">Encrypted session recovery</h2>

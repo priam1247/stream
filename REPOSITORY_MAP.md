@@ -72,7 +72,7 @@ engine/media/index.js → metadata, registry, resolver, providers, downloaders
                      engine/host.js → utils/movieHost.js → bot media helpers
 ```
 
-`handler.js` accepts the linked account's own prefixed messages, scopes selections and delivery to the originating session, and checks owner/member command policy. `sessionManager.js` owns account lifecycle; `sessionBackup.js` handles encrypted backup and restore; `dashboardSync.js` exchanges heartbeats, policy, and queued work with the dashboard. `jobQueue.js` starts requested work concurrently with resource safeguards. `persistentJobs.js` and `jobDelivery.js` recover previously saved jobs and scope delivery to the originating account.
+`handler.js` accepts the linked account's own prefixed messages and scopes selections and delivery to the originating session. `sessionManager.js` owns account lifecycle; `sessionBackup.js` handles encrypted backup and restore; `dashboardSync.js` exchanges heartbeats, the authoritative approved-number snapshot, and queued commands with the dashboard. `jobQueue.js` starts requested work concurrently with resource safeguards. `persistentJobs.js` and `jobDelivery.js` recover previously saved jobs and scope delivery to the originating account.
 
 The bot is CommonJS. The nested `engine/package.json` switches that subtree to ES modules; the bridge uses dynamic `import()`. The engine entry point statically registers its selected stream and torrent providers. The three files in `engine/providers/ddl/` register themselves if loaded, but are not imported by the current `engine/media/index.js`; their presence alone does not mean they are active.
 
@@ -176,7 +176,6 @@ Next.js discovers each endpoint from its `app/api/.../route.ts` path. Methods be
 |---|---|---|
 | `/api/admin/activity` | GET | [`admin/activity/route.ts`](dashboard/app/api/admin/activity/route.ts) |
 | `/api/admin/approvals` | POST | [`admin/approvals/route.ts`](dashboard/app/api/admin/approvals/route.ts) |
-| `/api/admin/commands` | GET, PATCH | [`admin/commands/route.ts`](dashboard/app/api/admin/commands/route.ts) |
 | `/api/admin/members` | POST, PATCH | [`admin/members/route.ts`](dashboard/app/api/admin/members/route.ts) |
 | `/api/admin/members/scribd` | PATCH | [`admin/members/scribd/route.ts`](dashboard/app/api/admin/members/scribd/route.ts) |
 | `/api/admin/pair` | GET, POST | [`admin/pair/route.ts`](dashboard/app/api/admin/pair/route.ts) |
@@ -360,7 +359,6 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── lazy-embed.tsx
 │   │   ├── live-analytics.tsx
 │   │   ├── media-vault-desk.tsx
-│   │   ├── member-command-controls.tsx
 │   │   ├── member-connection.tsx
 │   │   ├── member-home.tsx
 │   │   ├── member-portal.tsx
@@ -421,7 +419,6 @@ Each leaf is one Git-tracked file in this snapshot, including the two map docume
 │   │   ├── email-branding.test.ts
 │   │   ├── embed-utils.test.ts
 │   │   ├── member-cancel-pending.test.ts
-│   │   ├── member-command-controls.test.tsx
 │   │   ├── member-features-security.test.ts
 │   │   ├── member-home.test.tsx
 │   │   ├── member-insights.test.ts

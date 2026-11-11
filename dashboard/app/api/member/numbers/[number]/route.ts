@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { maskedNumber, recordActivity } from '@/lib/activity';
 import { getAuthenticatedSession } from '@/lib/auth-engine';
 import {
+  fetchLiveBotStatus,
   normalizePhoneNumber,
   removeNumberFromLiveBot,
   syncNumberToLiveBot,
@@ -82,6 +83,14 @@ export async function DELETE(
     (existing.addedBy || '').toLowerCase() !== session.user.email.toLowerCase()
   ) {
     return NextResponse.json({ error: 'Number not found on your account.' }, { status: 404 });
+  }
+
+  const live = await fetchLiveBotStatus();
+  if (!live.reachable || !live.accounts) {
+    return NextResponse.json({ error: 'The WhatsApp service must be reachable before removing this number.' }, { status: 503 });
+  }
+  if (live.accounts.some((account) => account.number === cleanNumber && account.sessionId)) {
+    return NextResponse.json({ error: 'This number has a service session. Use Unlink so its session is closed before removing approval.' }, { status: 409 });
   }
 
   if (!(await deleteWhatsAppUserIfOwned(cleanNumber, session.user.email, sessionBackupClaim(existing).identity.key))) {

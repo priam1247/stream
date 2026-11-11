@@ -62,8 +62,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Enter a valid international WhatsApp number.' }, { status: 400 });
   }
   const stored = await getStoredWhatsAppUser(number);
-  if (!stored?.enabled) {
-    return NextResponse.json({ error: 'Approve and enable this number before requesting a pairing code.' }, { status: 403 });
+  if (!(stored?.enabled || stored?.pairAllowed)) {
+    return NextResponse.json({ error: 'This number is not currently allowed to link.' }, { status: 403 });
   }
 
   const requestedAt = Date.now();

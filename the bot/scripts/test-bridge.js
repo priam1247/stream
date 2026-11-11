@@ -51,7 +51,7 @@ test('a slow pairing handshake does not block heartbeats or other pairing comman
   const calls = [];
   const fx = fixture(t, {
     whitelistChanged: true, whitelistVersion: '0123456789abcdef',
-    users: [{ number: '15550001111', enabled: true }, { number: '15550002222', enabled: true }],
+    users: [{ number: '15550001111', enabled: true, claimId: 'one', addedBy: 'member@example.com' }, { number: '15550002222', enabled: true, claimId: 'two', addedBy: 'member@example.com' }],
     commands: [
       { id: 'slow', type: 'pair', payload: { number: '15550001111' }, expiresAt: Date.now() + 60_000 },
       { id: 'fast', type: 'pair', payload: { number: '15550002222' }, expiresAt: Date.now() + 60_000 },
@@ -80,7 +80,7 @@ test('revoked, absent and expired queued requests cannot re-enable a number or g
   const calls = [];
   const fx = fixture(t, {
     whitelistChanged: true, whitelistVersion: 'fedcba9876543210',
-    users: [{ number: '15550001111', enabled: false }, { number: '15550003333', enabled: true }],
+    users: [{ number: '15550001111', enabled: false, claimId: 'one', addedBy: 'member@example.com' }, { number: '15550003333', enabled: true, claimId: 'three', addedBy: 'member@example.com' }],
     commands: [
       { id: 'disabled', type: 'pair', payload: { number: '15550001111' } },
       { id: 'removed', type: 'pair', payload: { number: '15550002222' } },
@@ -139,14 +139,13 @@ test('member access waits until this process has both current portal snapshots',
   let ready = 0; let calls = 0;
   const sync = startDashboardSync({
     dashboardUrl: 'https://dashboard.example', token: 'test-token', manualOnly: true, wlFile: path.join(root, 'whitelist.json'),
-    commandPolicy: { version: () => '', apply: () => {} },
     onPermissionsReady: () => { ready++; },
     fetchImpl: async () => ({ ok: true, json: async () => ++calls === 1
       ? { whitelistChanged: true, whitelistVersion: '1234567890abcdef', users: [], commands: [] }
-      : { whitelistChanged: false, whitelistVersion: '1234567890abcdef', disabledMemberCommands: [], commandPolicyVersion: '0123456789abcdef', commands: [] } }),
+      : { whitelistChanged: false, whitelistVersion: '1234567890abcdef', commands: [] } }),
   });
   t.after(() => sync.stop());
-  await sync.syncNow(); assert.equal(ready, 0);
+  await sync.syncNow(); assert.equal(ready, 1);
   await sync.syncNow(); assert.equal(ready, 1);
 });
 

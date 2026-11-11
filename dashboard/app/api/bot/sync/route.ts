@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAdminEmail } from '@/lib/auth-engine';
 import { verifyBotSyncRequest } from '@/lib/bot-sync-auth';
 import { readAccountStatuses } from '@/lib/whatsapp-accounts';
 import { changedConfirmedLinks, mergeConfirmedLinks, readServiceMemberUsage } from '@/lib/member-insights-server';
@@ -13,12 +12,11 @@ import {
   completeBotCommand,
   computeWhitelistSnapshot,
   getBotHeartbeat,
-  getMemberCommandPolicy,
   getNextBotPollMs,
-  importLocalWhatsAppUser,
   releaseClaimedBotCommands,
   saveBotHeartbeatIfNewer,
   saveConfirmedMemberLinks,
+  serializeWhitelistUsers,
 } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -29,7 +27,9 @@ const SYNC_FIELDS = new Set([
   'connected', 'botNumber', 'accounts', 'botName', 'version', 'uptimeSeconds',
   'commandsTotal', 'downloadsSuccess', 'failedTotal', 'ramUsedMB', 'queueLight',
   'queueHeavy', 'diskUsedMB', 'diskBudgetMB', 'whitelistVersion',
-  'commandPolicyVersion', 'sessionBackup', 'localUsers', 'completedResults', 'memberUsage',
+  'sessionBackup', 'completedResults', 'memberUsage',
+  // Accepted for rolling upgrades, but deliberately ignored.
+  'localUsers', 'commandPolicyVersion',
 ]);
 
 export async function POST(req: NextRequest) {
@@ -71,38 +71,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unsupported service protocol. Update the Botkeep service.' }, { status: 409 });
   }
 
-  // 1. Import any unsynced WhatsApp `.allow` numbers from the bot into D1
-  let importedAnyLocal = false;
-  if (Array.isArray(body.localUsers)) {
-    const adminOwner = getAdminEmail();
-    for (const raw of body.localUsers.slice(0, 200)) {
-      if (!raw || typeof raw !== 'object') continue;
-      const item = raw as Record<string, unknown>;
-      const num = String(item.number || '').replace(/[^0-9]/g, '');
-      if (num.length < 7 || num.length > 15) continue;
-      const label = String(item.label || 'Added via WhatsApp .allow').slice(0, 60);
-      importedAnyLocal = await importLocalWhatsAppUser(num, label, adminOwner) || importedAnyLocal;
-    }
-  }
-
-  // 2. Record completed command results reported by the bot
+  // Record completed command results reported by the bot.
   if (Array.isArray(body.completedResults)) {
-    for (const item of body.completedResults) {
-      if (item && typeof item === 'object' && typeof item.id === 'string') {
-        await completeBotCommand({
-          id: item.id,
-          ok: Boolean(item.ok),
-          result:
-            item.result && typeof item.result === 'object'
-              ? (item.result as Record<string, unknown>)
-              : undefined,
-          error: typeof item.error === 'string' ? item.error : undefined,
-        });
-      }
-    }
+    await Promise.all(body.completedResults.slice(0, 100).map((item) => {
+      if (!item || typeof item !== 'object' || typeof item.id !== 'string') return Promise.resolve();
+      return completeBotCommand({
+        id: item.id,
+        ok: Boolean(item.ok),
+        result:
+          item.result && typeof item.result === 'object'
+            ? (item.result as Record<string, unknown>)
+            : undefined,
+        error: typeof item.error === 'string' ? item.error : undefined,
+      });
+    }));
   }
 
-  // 3. Store fresh bot heartbeat + live telemetry counters
+  // Store fresh bot heartbeat + live telemetry counters.
   const [prevHb, snapshot] = await Promise.all([getBotHeartbeat(), computeWhitelistSnapshot()]);
   const accounts = readAccountStatuses(body.accounts);
   const memberUsage = readServiceMemberUsage(body.memberUsage, snapshot.users, receivedAt) || prevHb?.memberUsage;
@@ -131,8 +116,6 @@ export async function POST(req: NextRequest) {
       typeof body.whitelistVersion === 'string' && /^[a-f0-9]{16}$/i.test(body.whitelistVersion)
         ? body.whitelistVersion.toLowerCase()
         : undefined,
-    commandPolicyVersion: typeof body.commandPolicyVersion === 'string' && /^[a-f0-9]{16}$/i.test(body.commandPolicyVersion)
-      ? body.commandPolicyVersion.toLowerCase() : undefined,
     sessionBackup: (() => {
       const raw = body.sessionBackup;
       if (!raw || typeof raw !== 'object' || !('state' in raw)) return undefined;
@@ -152,12 +135,10 @@ export async function POST(req: NextRequest) {
   const commands = await claimPendingBotCommands();
   let responseSnapshot: typeof snapshot;
   let nextPollMs: number;
-  let policy: Awaited<ReturnType<typeof getMemberCommandPolicy>>;
   try {
-    [responseSnapshot, nextPollMs, policy] = await Promise.all([
+    [responseSnapshot, nextPollMs] = await Promise.all([
       commands.length ? computeWhitelistSnapshot() : Promise.resolve(snapshot),
       getNextBotPollMs(),
-      getMemberCommandPolicy(),
     ]);
   } catch (error) {
     await releaseClaimedBotCommands(commands.map((command) => command.id)).catch(() => {});
@@ -165,7 +146,7 @@ export async function POST(req: NextRequest) {
   }
   const clientVersion =
     typeof body.whitelistVersion === 'string' ? body.whitelistVersion.trim() : '';
-  const whitelistChanged = importedAnyLocal || clientVersion !== responseSnapshot.version;
+  const whitelistChanged = clientVersion !== responseSnapshot.version;
 
   return NextResponse.json({
     ok: true,
@@ -173,15 +154,7 @@ export async function POST(req: NextRequest) {
     nextPollMs: commands.length > 0 ? 2_000 : nextPollMs,
     whitelistVersion: responseSnapshot.version,
     whitelistChanged,
-    commandPolicyVersion: policy.version,
-    disabledMemberCommands: policy.disabled,
-    ...(whitelistChanged
-      ? {
-          botEnabledForMembers: responseSnapshot.botEnabledForMembers,
-          users: responseSnapshot.users,
-          numbers: responseSnapshot.numbers,
-        }
-      : {}),
+    ...(whitelistChanged ? { users: serializeWhitelistUsers(responseSnapshot.users) } : {}),
     commands: commands.map((c) => ({
       id: c.id,
       type: c.type,

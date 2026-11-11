@@ -10,7 +10,7 @@ vi.mock('node:fs', () => ({
     writeFileSync: (_path: string, value: string) => { if (disk.fail) throw new Error('read-only'); disk.text = value; },
   },
 }));
-import { appendActivity, claimPairCooldown, completeBotCommand, deleteWhatsAppUserIfOwned, enqueueBotCommand, getBotCommandById, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, updateStoredWhatsAppUser, resolvePendingWhatsAppUser, setMemberPermission, getMemberCommandPolicy, setMemberCommandDisabled, addSupportMessage, listSupportMessages, listSupportThreads, countMemberSupportUnread, listRecentActivity, releasePairCooldown, saveCompletedPairResult, saveMemberWhatsAppUser, saveStoredWhatsAppUser } from '../lib/storage';
+import { appendActivity, claimPairCooldown, completeBotCommand, deleteWhatsAppUserIfOwned, enqueueBotCommand, getBotCommandById, getLatestPairCommand, getPairCooldown, getStoredWhatsAppUser, updateStoredWhatsAppUser, resolvePendingWhatsAppUser, setMemberPermission, addSupportMessage, listSupportMessages, listSupportThreads, countMemberSupportUnread, listRecentActivity, releasePairCooldown, saveCompletedPairResult, saveMemberWhatsAppUser, saveStoredWhatsAppUser, serializeWhitelistUsers } from '../lib/storage';
 import { whitelistVersionFor } from '../lib/storage';
 import { maskedNumber } from '../lib/activity';
 
@@ -49,6 +49,19 @@ describe('local control-room persistence', () => {
     expect(await getBotCommandById(cmd.id)).toMatchObject({
       status: 'completed', result: { code: 'FIRST', _dashboardReceivedAt: receivedAt },
     });
+  });
+
+  it('keeps claim IDs stable and serializes the bot whitelist contract fields', async () => {
+    await saveStoredWhatsAppUser('265991234567', 'Member', 'Owner@Example.com');
+    const initial = await getStoredWhatsAppUser('265991234567');
+    expect(initial?.claimId).toBeTruthy();
+    await saveStoredWhatsAppUser('265991234567', 'Renamed', 'new-owner@example.com');
+    const transferred = await getStoredWhatsAppUser('265991234567');
+    expect(transferred?.claimId).toBe(initial?.claimId);
+    const [wire] = serializeWhitelistUsers([transferred!]);
+    expect(wire).toMatchObject({ number: '265991234567', addedBy: 'new-owner@example.com', claimId: initial?.claimId, enabled: true, approval: 'approved' });
+    expect(typeof wire.addedAt).toBe('number');
+    expect(wire).not.toHaveProperty('pairAllowed');
   });
 
   it('persists a three-minute phone cooldown and releases only the matching attempt', async () => {
@@ -110,16 +123,6 @@ describe('local control-room persistence', () => {
     expect(whitelistVersionFor([samePermissions], true)).not.toBe(whitelistVersionFor([rejected!], true));
     disk.text = JSON.stringify({ whatsappUsers: [{ number: '11111111', enabled: true, approval: 'unexpected' }] });
     expect(await getStoredWhatsAppUser('11111111')).toMatchObject({ approval: 'rejected', enabled: false, pairAllowed: false });
-  });
-
-  it('stores independent command switches with a version that changes on each policy change', async () => {
-    const original = await getMemberCommandPolicy();
-    await setMemberCommandDisabled('movie', true); await setMemberCommandDisabled('song', true);
-    const changed = await getMemberCommandPolicy();
-    expect(changed.disabled).toEqual(['movie', 'song']);
-    expect(changed.version).not.toBe(original.version);
-    await setMemberCommandDisabled('movie', false);
-    expect((await getMemberCommandPolicy()).disabled).toEqual(['song']);
   });
 
   it('persists separate support conversations, read positions and send throttles', async () => {

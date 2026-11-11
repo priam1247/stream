@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PANEL_BASE_URL, DEFAULT_PANEL_SERVER_ID } from '../lib/panel-config';
 import { cancelPendingWhatsAppUser, claimPairCooldown, claimPendingBotCommands, completeBotCommand, deleteWhatsAppUserIfOwned, getBotConnectionConfig, getBotHeartbeat, getPanelConnectionConfig,
-  importLocalWhatsAppUser, listConfirmedMemberLinks, releaseClaimedBotCommands, saveBotConnectionConfig, saveBotHeartbeat,
+  listConfirmedMemberLinks, releaseClaimedBotCommands, saveBotConnectionConfig, saveBotHeartbeat,
   saveBotHeartbeatIfNewer, saveConfirmedMemberLinks, savePanelConnectionConfig, sessionBackupClaim, getStoredWhatsAppUser, resolvePendingWhatsAppUser } from '../lib/storage';
 import type { ApprovedUser, ConfirmedMemberLink } from '../lib/types';
 
@@ -107,13 +107,6 @@ describe('single Botkeep storage with old database values', () => {
     expect(await getStoredWhatsAppUser('15550003333')).toMatchObject({ approval: 'approved', enabled: true, pairAllowed: false });
     expect(await resolvePendingWhatsAppUser('15550001111', 'member@example.com', true, 'claim'))
       .toMatchObject({ approval: 'approved', enabled: true });
-  });
-  it('does not let a local owner import overwrite or re-enable a member', async () => {
-    db.prepare(`INSERT INTO portal_whatsapp_access VALUES (?, 'Member', 0, 'member@example.com', '2026-01-01', 'pending', 'claim')`).run('15550001111');
-    expect(await importLocalWhatsAppUser('15550001111', 'Local', 'owner@example.com')).toBe(false);
-    expect(db.prepare('SELECT enabled, added_by, claim_id FROM portal_whatsapp_access WHERE number = ?').get('15550001111'))
-      .toMatchObject({ enabled: 0, added_by: 'member@example.com', claim_id: 'claim' });
-    expect(await importLocalWhatsAppUser('15550002222', 'Local', 'owner@example.com')).toBe(true);
   });
   it('stores independently claimed links in batches, without creating a heartbeat', async () => {
     const users: ApprovedUser[] = Array.from({ length: 20 }, (_, i) => ({ number: `26599${String(i).padStart(7, '0')}`,

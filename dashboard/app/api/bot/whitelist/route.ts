@@ -5,7 +5,7 @@ import {
   getClientIp,
   recordRateLimitHit,
 } from '@/lib/rate-limit';
-import { computeWhitelistSnapshot } from '@/lib/storage';
+import { computeWhitelistSnapshot, serializeWhitelistUsers } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,9 +47,7 @@ export async function GET(req: NextRequest) {
     {
       ok: true,
       version: snapshot.version,
-      botEnabledForMembers: snapshot.botEnabledForMembers,
-      numbers: snapshot.numbers,
-      users: snapshot.users,
+      users: serializeWhitelistUsers(snapshot.users),
     },
     {
       headers: { ETag: etag },

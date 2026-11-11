@@ -67,7 +67,6 @@ files remain those of the generated snapshot.
   - **References:**
     - [`dashboard/app/api/admin/activity/route.ts`](../dashboard/app/api/admin/activity/route.ts) — documentation link.
     - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — documentation link.
-    - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — documentation link.
     - [`dashboard/app/api/admin/members/route.ts`](../dashboard/app/api/admin/members/route.ts) — documentation link.
     - [`dashboard/app/api/admin/members/scribd/route.ts`](../dashboard/app/api/admin/members/scribd/route.ts) — documentation link.
     - [`dashboard/app/api/admin/pair/route.ts`](../dashboard/app/api/admin/pair/route.ts) — documentation link.
@@ -201,7 +200,6 @@ files remain those of the generated snapshot.
     - [`dashboard/tests/control-room-storage.test.ts`](../dashboard/tests/control-room-storage.test.ts) — test discovery.
     - [`dashboard/tests/d1-initialization.test.ts`](../dashboard/tests/d1-initialization.test.ts) — test discovery.
     - [`dashboard/tests/email-branding.test.ts`](../dashboard/tests/email-branding.test.ts) — test discovery.
-    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — test discovery.
     - [`dashboard/tests/member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — test discovery.
     - [`dashboard/tests/member-home.test.tsx`](../dashboard/tests/member-home.test.tsx) — test discovery.
     - [`dashboard/tests/member-link-api.test.ts`](../dashboard/tests/member-link-api.test.ts) — test discovery.
@@ -292,20 +290,6 @@ files remain those of the generated snapshot.
     - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
   - **Referenced by:**
     - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
-    - [`dashboard/tests/member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — import, route URL reference.
-  - **Outside modules:** `next/server`.
-
-### `dashboard/app/api/admin/commands/`
-
-- [`route.ts`](../dashboard/app/api/admin/commands/route.ts) — Read or change member command policy. Next.js discovers this API route by its path.
-  - **References:**
-    - [`dashboard/lib/activity.ts`](../dashboard/lib/activity.ts) — import.
-    - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
-    - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
-    - [`dashboard/lib/storage.ts`](../dashboard/lib/storage.ts) — import.
-  - **Referenced by:**
-    - [`REPOSITORY_MAP.md`](../REPOSITORY_MAP.md) — documentation link.
-    - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — route URL reference.
     - [`dashboard/tests/member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — import, route URL reference.
   - **Outside modules:** `next/server`.
 
@@ -542,7 +526,7 @@ files remain those of the generated snapshot.
 
 ### `dashboard/app/api/bot/sync/`
 
-- [`route.ts`](../dashboard/app/api/bot/sync/route.ts) — Receive bot heartbeat/results and return queue, access, and command policy changes. Next.js discovers this API route by its path.
+- [`route.ts`](../dashboard/app/api/bot/sync/route.ts) — Receive bot telemetry/results and return the authoritative approved-number snapshot and queued commands. Next.js discovers this API route by its path.
   - **References:**
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — import.
     - [`dashboard/lib/bot-sync-auth.ts`](../dashboard/lib/bot-sync-auth.ts) — import.
@@ -876,7 +860,6 @@ files remain those of the generated snapshot.
     - [`dashboard/components/control-room-activity.tsx`](../dashboard/components/control-room-activity.tsx) — import.
     - [`dashboard/components/control-room-home.tsx`](../dashboard/components/control-room-home.tsx) — import.
     - [`dashboard/components/live-analytics.tsx`](../dashboard/components/live-analytics.tsx) — import.
-    - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — import.
     - [`dashboard/components/pairing-code-banner.tsx`](../dashboard/components/pairing-code-banner.tsx) — import.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — import.
     - [`dashboard/components/section-nav.tsx`](../dashboard/components/section-nav.tsx) — import.
@@ -949,14 +932,11 @@ files remain those of the generated snapshot.
     - [`dashboard/components/member-portal.tsx`](../dashboard/components/member-portal.tsx) — import.
   - **Outside modules:** `lucide-react`, `react`.
 
-- [`member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — Owner controls for member command availability.
   - **References:**
-    - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — route URL reference.
     - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
     - [`dashboard/lib/client-session.ts`](../dashboard/lib/client-session.ts) — import.
   - **Referenced by:**
     - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — import.
-    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — import.
   - **Outside modules:** `lucide-react`, `react`.
 
 - [`member-connection.tsx`](../dashboard/components/member-connection.tsx) — Member account connection, linking, pairing, and approval interface.
@@ -1113,7 +1093,6 @@ files remain those of the generated snapshot.
     - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — type import.
   - **Referenced by:**
     - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — import.
-    - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — import.
     - [`dashboard/app/api/admin/members/route.ts`](../dashboard/app/api/admin/members/route.ts) — import.
     - [`dashboard/app/api/admin/members/scribd/route.ts`](../dashboard/app/api/admin/members/scribd/route.ts) — import.
     - [`dashboard/app/api/admin/pair/route.ts`](../dashboard/app/api/admin/pair/route.ts) — import.
@@ -1150,7 +1129,6 @@ files remain those of the generated snapshot.
   - **Referenced by:**
     - [`dashboard/app/api/admin/activity/route.ts`](../dashboard/app/api/admin/activity/route.ts) — import.
     - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — import.
-    - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — import.
     - [`dashboard/app/api/admin/members/route.ts`](../dashboard/app/api/admin/members/route.ts) — import.
     - [`dashboard/app/api/admin/members/scribd/route.ts`](../dashboard/app/api/admin/members/scribd/route.ts) — import.
     - [`dashboard/app/api/admin/pair/route.ts`](../dashboard/app/api/admin/pair/route.ts) — import.
@@ -1197,12 +1175,9 @@ files remain those of the generated snapshot.
   - **References:**
     - [`dashboard/lib/types.ts`](../dashboard/lib/types.ts) — import.
   - **Referenced by:**
-    - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — import.
     - [`dashboard/components/command-directory.tsx`](../dashboard/components/command-directory.tsx) — import.
     - [`dashboard/components/media-vault-desk.tsx`](../dashboard/components/media-vault-desk.tsx) — import.
-    - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — import.
     - [`dashboard/components/member-connection.tsx`](../dashboard/components/member-connection.tsx) — import.
-    - [`dashboard/tests/member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — import.
 
 - [`bot-proxy.ts`](../dashboard/lib/bot-proxy.ts) — Dashboard-to-bot HTTP proxy and queued-command fallback.
   - **References:**
@@ -1251,7 +1226,6 @@ files remain those of the generated snapshot.
     - [`dashboard/app/page.tsx`](../dashboard/app/page.tsx) — import.
     - [`dashboard/app/support/page.tsx`](../dashboard/app/support/page.tsx) — import.
     - [`dashboard/components/admin-console.tsx`](../dashboard/components/admin-console.tsx) — import.
-    - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — import.
     - [`dashboard/components/member-connection.tsx`](../dashboard/components/member-connection.tsx) — import.
     - [`dashboard/components/member-portal.tsx`](../dashboard/components/member-portal.tsx) — import.
     - [`dashboard/components/scribd-desk.tsx`](../dashboard/components/scribd-desk.tsx) — import.
@@ -1437,7 +1411,6 @@ files remain those of the generated snapshot.
   - **Referenced by:**
     - [`dashboard/app/api/admin/activity/route.ts`](../dashboard/app/api/admin/activity/route.ts) — import.
     - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — import.
-    - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — import.
     - [`dashboard/app/api/admin/members/route.ts`](../dashboard/app/api/admin/members/route.ts) — import.
     - [`dashboard/app/api/admin/members/scribd/route.ts`](../dashboard/app/api/admin/members/scribd/route.ts) — import.
     - [`dashboard/app/api/admin/pair/route.ts`](../dashboard/app/api/admin/pair/route.ts) — import.
@@ -1687,9 +1660,7 @@ files remain those of the generated snapshot.
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
   - **Outside modules:** `vitest`.
 
-- [`member-command-controls.test.tsx`](../dashboard/tests/member-command-controls.test.tsx) — Tests admin command controls, alias search, and the remaining media catalog.
   - **References:**
-    - [`dashboard/components/member-command-controls.tsx`](../dashboard/components/member-command-controls.tsx) — import.
     - [`dashboard/lib/bot-data.ts`](../dashboard/lib/bot-data.ts) — import.
   - **Referenced by:**
     - [`dashboard/vitest.config.ts`](../dashboard/vitest.config.ts) — test discovery.
@@ -1698,7 +1669,6 @@ files remain those of the generated snapshot.
 - [`member-features-security.test.ts`](../dashboard/tests/member-features-security.test.ts) — Vitest regression tests for member features security; see direct references below for the exercised modules.
   - **References:**
     - [`dashboard/app/api/admin/approvals/route.ts`](../dashboard/app/api/admin/approvals/route.ts) — import, route URL reference.
-    - [`dashboard/app/api/admin/commands/route.ts`](../dashboard/app/api/admin/commands/route.ts) — import, route URL reference.
     - [`dashboard/app/api/support/route.ts`](../dashboard/app/api/support/route.ts) — import, route URL reference.
     - [`dashboard/lib/activity.ts`](../dashboard/lib/activity.ts) — test mock.
     - [`dashboard/lib/auth-engine.ts`](../dashboard/lib/auth-engine.ts) — test mock.
