@@ -251,7 +251,9 @@ def cmd_pick(args: argparse.Namespace) -> int:
         print(f"{idx:3d}. {grp}{ch.name}")
 
     try:
-        raw = input(f"\nEnter number (1-{len(shown)}) to download, or 'q' to quit: ").strip()
+        raw = input(
+            f"\nEnter number (e.g. 1, 1-5, or 'all') to download, or 'q' to quit: "
+        ).strip()
     except (EOFError, KeyboardInterrupt):
         print()
         return 0
@@ -259,20 +261,43 @@ def cmd_pick(args: argparse.Namespace) -> int:
     if not raw or raw.lower() == "q":
         return 0
 
-    try:
-        choice = int(raw)
-    except ValueError:
-        print("Invalid selection.", file=sys.stderr)
-        return 1
+    selected_indices: list[int] = []
+    if raw.lower() == "all":
+        selected_indices = list(range(len(shown)))
+    else:
+        for part in raw.split(","):
+            part = part.strip()
+            if "-" in part:
+                try:
+                    start_s, end_s = part.split("-", 1)
+                    start, end = int(start_s), int(end_s)
+                    if not (1 <= start <= end <= len(shown)):
+                        raise ValueError
+                    selected_indices.extend(range(start - 1, end))
+                except ValueError:
+                    print(f"Invalid range: {part}", file=sys.stderr)
+                    return 1
+            else:
+                try:
+                    idx = int(part)
+                    if not 1 <= idx <= len(shown):
+                        raise ValueError
+                    selected_indices.append(idx - 1)
+                except ValueError:
+                    print(f"Invalid selection: {part}", file=sys.stderr)
+                    return 1
 
-    if not 1 <= choice <= len(shown):
-        print("Selection out of range.", file=sys.stderr)
-        return 1
-
-    ch = shown[choice - 1]
-    out_name = args.output or f"{sanitize_filename(ch.name)}.mp4"
-    print(f"Downloading: {ch.name} -> {out_name}")
-    return download_stream(ch.url, out_name, duration=args.duration, retries=args.retries)
+    rc = 0
+    for idx in selected_indices:
+        ch = shown[idx]
+        if args.output and len(selected_indices) == 1:
+            out_name = args.output
+        else:
+            out_name = f"{sanitize_filename(ch.name)}.mp4"
+        print(f"Downloading: {ch.name} -> {out_name}")
+        if download_stream(ch.url, out_name, duration=args.duration, retries=args.retries) != 0:
+            rc = 1
+    return rc
 
 
 def cmd_download(args: argparse.Namespace) -> int:
