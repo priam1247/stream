@@ -223,6 +223,56 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_groups(args: argparse.Namespace) -> int:
+    channels = load_playlist(args.source)
+    counts: dict[str, int] = {}
+    for ch in channels:
+        grp = ch.group or "(Uncategorized)"
+        counts[grp] = counts.get(grp, 0) + 1
+    print(f"Found {len(counts)} group(s) across {len(channels)} entries:")
+    for grp, count in sorted(counts.items(), key=lambda x: (-x[1], x[0].lower())):
+        print(f"  {count:4d}  {grp}")
+    return 0
+
+
+def cmd_pick(args: argparse.Namespace) -> int:
+    channels = load_playlist(args.source)
+    matches = filter_channels(channels, query=args.query, group=args.group)
+    if not matches:
+        print("No matching channels/titles found.", file=sys.stderr)
+        return 1
+
+    shown = matches[: args.limit]
+    print(f"Found {len(matches)} matching item(s) (showing {len(shown)}):")
+    for idx, ch in enumerate(shown, start=1):
+        grp = f"[{ch.group}] " if ch.group else ""
+        print(f"{idx:3d}. {grp}{ch.name}")
+
+    try:
+        raw = input(f"\nEnter number (1-{len(shown)}) to download, or 'q' to quit: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 0
+
+    if not raw or raw.lower() == "q":
+        return 0
+
+    try:
+        choice = int(raw)
+    except ValueError:
+        print("Invalid selection.", file=sys.stderr)
+        return 1
+
+    if not 1 <= choice <= len(shown):
+        print("Selection out of range.", file=sys.stderr)
+        return 1
+
+    ch = shown[choice - 1]
+    out_name = args.output or f"{sanitize_filename(ch.name)}.mp4"
+    print(f"Downloading: {ch.name} -> {out_name}")
+    return download_stream(ch.url, out_name, duration=args.duration, retries=args.retries)
+
+
 def cmd_download(args: argparse.Namespace) -> int:
     if args.url:
         url = args.url
@@ -268,6 +318,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("-w", "--workers", type=int, default=8, help="Concurrent workers")
     p_check.add_argument("-t", "--timeout", type=int, default=5, help="Per-stream timeout (s)")
     p_check.set_defaults(func=cmd_check)
+
+    p_groups = sub.add_parser("groups", help="List all categories/groups in a playlist")
+    p_groups.add_argument("source", nargs="?", default="all", help="Preset (tv, xxx, all), URL, or file")
+    p_groups.set_defaults(func=cmd_groups)
+
+    p_pick = sub.add_parser("pick", help="Interactively search and pick a movie/series/anime/channel to download")
+    p_pick.add_argument("source", nargs="?", default="all", help="Preset (tv, xxx, all), URL, or file")
+    p_pick.add_argument("-q", "--query", default="", help="Title/channel name filter")
+    p_pick.add_argument("-g", "--group", default="", help="Group/category filter (e.g. Anime, Peliculas, Series)")
+    p_pick.add_argument("-n", "--limit", type=int, default=30, help="Max results to display")
+    p_pick.add_argument("-o", "--output", help="Output file path (optional)")
+    p_pick.add_argument("-d", "--duration", type=int, help="Optional duration limit in seconds (omit for full VOD)")
+    p_pick.add_argument("-r", "--retries", type=int, default=2, help="Retry count on failure")
+    p_pick.set_defaults(func=cmd_pick)
 
     p_dl = sub.add_parser("download", help="Download/record a stream using ffmpeg")
     p_dl.add_argument("source", nargs="?", default="tv", help="Preset (tv, xxx, all), URL, or file")
