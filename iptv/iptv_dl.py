@@ -23,6 +23,8 @@ PLAYLIST_PRESETS = {
     "tv": "https://raw.githubusercontent.com/dzh0ni/iPTV-FREE-LIST/master/iPTV-Free-List_TV.m3u",
     "xxx": "https://raw.githubusercontent.com/dzh0ni/iPTV-FREE-LIST/master/iPTV-Free-List_XXX.m3u",
     "all": "https://raw.githubusercontent.com/dzh0ni/iPTV-FREE-LIST/master/iPTV-Free-List.m3u",
+    "popeye": "https://raw.githubusercontent.com/dzh0ni/iPTV-FREE-LIST/master/Maratones/Maratones_Popeye_El_Marino.m3u",
+    "iptv-org": "https://iptv-org.github.io/iptv/index.m3u",
 }
 
 EXTINF_ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
